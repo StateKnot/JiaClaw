@@ -5,18 +5,24 @@ function status(text, error = false) { $('status').textContent = text; $('status
 function controls() {
   $('new-session').disabled = !connected || busy;
   $('refresh').disabled = !connected || busy;
-  $('delete-session').disabled = !selected || busy;
-  $('message').disabled = !selected || busy;
-  $('send').disabled = !selected || busy;
-  for (const button of $('sessions').querySelectorAll('button')) button.disabled = busy;
+  $('delete-session').disabled = !connected || !selected || busy;
+  $('message').disabled = !connected || !selected || busy;
+  $('send').disabled = !connected || !selected || busy;
+  for (const button of $('sessions').querySelectorAll('button')) button.disabled = !connected || busy;
   for (const element of $('connect-form').elements) element.disabled = busy;
+}
+function clearIdentity() {
+  token = ''; connected = false; selected = null; sessionList = [];
+  $('api-token').value = ''; $('message').value = '';
+  $('session-title').textContent = '开始一段对话';
+  renderMessages([]); renderSessions();
 }
 async function api(path, method = 'GET', body) {
   const response = await fetch(path, { method, credentials: 'omit', cache: 'no-store', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (response.status === 401) { clearIdentity(); throw new Error('鉴权失败，请重新连接并检查 API Token。'); }
   let data;
   try { data = await response.json(); } catch { throw new Error(`服务响应异常（HTTP ${response.status}）`); }
   if (!response.ok) {
-    if (response.status === 401) { connected = false; throw new Error('鉴权失败，请重新连接并检查 API Token。'); }
     throw new Error(data.error || `请求失败（HTTP ${response.status}）`);
   }
   return data;
@@ -56,10 +62,9 @@ async function task(fn) {
 }
 $('connect-form').addEventListener('submit', event => {
   event.preventDefault(); task(async () => {
-    token = $('api-token').value.trim(); $('api-token').value = ''; status('连接中…');
+    const nextToken = $('api-token').value.trim(); clearIdentity(); token = nextToken; status('连接中…');
     await refresh(); connected = true;
-    if (selected && sessionList.some(session => session.id === selected)) await select(selected);
-    else { selected = null; renderMessages([]); $('session-title').textContent = '开始一段对话'; status('已连接 · 选择或新建会话'); }
+    status('已连接 · 选择或新建会话');
   });
 });
 $('refresh').addEventListener('click', () => task(async () => { await refresh(); status('会话列表已更新'); }));
@@ -67,11 +72,11 @@ $('new-session').addEventListener('click', () => task(async () => {
   const data = await api('/api/sessions', 'POST'); await refresh(); await select(data.session_id);
 }));
 $('delete-session').addEventListener('click', () => {
-  if (!selected || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
+  if (!connected || !selected || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
   task(async () => { await api(`/api/sessions/${encodeURIComponent(selected)}`, 'DELETE'); selected = null; renderMessages([]); $('session-title').textContent = '开始一段对话'; await refresh(); status('会话已删除'); });
 });
 $('chat-form').addEventListener('submit', event => {
-  event.preventDefault(); const text = $('message').value.trim(); if (!text || !selected) return;
+  event.preventDefault(); const text = $('message').value.trim(); if (!connected || !text || !selected) return;
   task(async () => {
     status('JiaClaw 正在处理…');
     await api('/api/chat', 'POST', { messages: [{ role: 'user', content: text }], session_id: selected, stream: false });

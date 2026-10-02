@@ -1,0 +1,42 @@
+[agent]
+# Must match gateway.backends[].id; each backend serves exactly one user.
+name = "alice"
+description = "Isolated personal assistant for Alice"
+system_instructions = "You are a personal assistant in Alice's dedicated workspace."
+max_turns = 10
+workspace_path = "/data/workspace"
+tool_timeout_secs = 30
+max_tool_iterations = 5
+
+[provider]
+provider_type = "brokerrouter"
+# Attach the operator-managed Alice Brokerrouter to Alice's private network.
+base_url = "http://brokerrouter-alice:8080"
+model = "YOUR_CERTIFIED_ALICE_LOGICAL_MODEL"
+max_tokens = 4096
+
+[http]
+bind = "0.0.0.0:8080"
+persist = true
+persist_path = "/data/state/sessions.sqlite3"
+metrics_public = false
+rate_limit_per_minute = 60
+max_body_bytes = 1048576
+shutdown_timeout_secs = 30
+channels = []
+
+[tools.exec]
+enabled = false
+[tools.web_search]
+enabled = false
+[tools.web_fetch]
+enabled = false
+[mcp]
+servers = []
+[scheduler]
+enabled = false
+[heartbeat]
+enabled = false
+[logging]
+format = "json"
+level = "info"

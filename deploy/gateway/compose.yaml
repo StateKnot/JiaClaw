@@ -1,0 +1,131 @@
+x-runtime: &runtime
+  image: ${JIACLAW_IMAGE:?Set a verified immutable JiaClaw image digest}
+  user: "10001:10001"
+  init: true
+  # Start only after the host firewall guard is installed and verified.
+  restart: "no"
+  read_only: true
+  sysctls:
+    net.ipv6.conf.all.disable_ipv6: "1"
+    net.ipv6.conf.default.disable_ipv6: "1"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=16m
+  stop_grace_period: 35s
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  healthcheck:
+    test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8080/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+
+services:
+  gateway:
+    <<: *runtime
+    stop_grace_period: 320s
+    command: [gateway, serve, --config, /etc/jiaclaw/gateway.json]
+    ports:
+      - "127.0.0.1:${JIACLAW_GATEWAY_PORT:-8088}:8080"
+    networks: [ingress, alice_private, bob_private]
+    volumes:
+      - type: volume
+        source: gateway_registry
+        target: /data
+        volume: {nocopy: true}
+      - type: bind
+        source: ./gateway.json
+        target: /etc/jiaclaw/gateway.json
+        read_only: true
+        bind: {create_host_path: false}
+    secrets:
+      - alice_backend_token
+      - bob_backend_token
+    depends_on:
+      alice-backend: {condition: service_healthy}
+      bob-backend: {condition: service_healthy}
+
+  alice-backend:
+    <<: *runtime
+    entrypoint: [/bin/sh, /etc/jiaclaw/backend-entrypoint.sh]
+    networks: [alice_private]
+    volumes:
+      - type: volume
+        source: alice_data
+        target: /data
+        volume: {nocopy: true}
+      - type: bind
+        source: ./alice.toml
+        target: /etc/jiaclaw/config.toml
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./backend-entrypoint.sh
+        target: /etc/jiaclaw/backend-entrypoint.sh
+        read_only: true
+        bind: {create_host_path: false}
+    secrets:
+      - source: alice_backend_token
+        target: backend_api_token
+      - source: alice_brokerrouter_key
+        target: brokerrouter_virtual_key
+
+  bob-backend:
+    <<: *runtime
+    entrypoint: [/bin/sh, /etc/jiaclaw/backend-entrypoint.sh]
+    networks: [bob_private]
+    volumes:
+      - type: volume
+        source: bob_data
+        target: /data
+        volume: {nocopy: true}
+      - type: bind
+        source: ./bob.toml
+        target: /etc/jiaclaw/config.toml
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./backend-entrypoint.sh
+        target: /etc/jiaclaw/backend-entrypoint.sh
+        read_only: true
+        bind: {create_host_path: false}
+    secrets:
+      - source: bob_backend_token
+        target: backend_api_token
+      - source: bob_brokerrouter_key
+        target: brokerrouter_virtual_key
+
+# Backends share no network with each other and have no published host ports.
+# Attach separately governed model gateways only to the relevant private network.
+networks:
+  ingress: {}
+  alice_private: {internal: true}
+  bob_private: {internal: true}
+
+# Operators must provision and verify separate byte/inode limits before deployment.
+# Compose must not silently create ordinary unbounded local volumes.
+volumes:
+  gateway_registry:
+    external: true
+    name: ${JIACLAW_GATEWAY_VOLUME:?Set an existing bounded registry volume}
+  alice_data:
+    external: true
+    name: ${JIACLAW_ALICE_VOLUME:?Set an existing bounded Alice volume}
+  bob_data:
+    external: true
+    name: ${JIACLAW_BOB_VOLUME:?Set an existing bounded Bob volume}
+
+secrets:
+  alice_backend_token:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/alice-backend-token
+  bob_backend_token:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/bob-backend-token
+  alice_brokerrouter_key:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/alice-brokerrouter-key
+  bob_brokerrouter_key:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/bob-brokerrouter-key
