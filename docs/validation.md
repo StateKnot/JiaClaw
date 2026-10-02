@@ -142,3 +142,15 @@ Rust 镜像摘要取自 [Docker 官方 repo-info 历史](https://github.com/dock
 这项验收只证明应用提交前选择逻辑模型并保留网关治理边界，不等于真实供应商认证或已执行网关内部端点降级。所有请求使用本地 fixture 和一次性凭据。渠道事件与会话没有新增持久模型审计；模型操作身份、未知提交恢复及 StateKnot durable 仍未完成。合同、预算含义及上线前提见[模型路由](model-routing.md)。跨平台、Chromium、真实 Docker 沙箱与镜像由本批 draft PR CI 验证最终提交。
 
 原有 e2e、MCP、native tools、scheduler、channels、scheduled delivery、飞书、企业微信、钉钉和 installer 十组回归全部通过。收尾修正 OpenAPI 的人工核查状态拼写以匹配既有 `requireshumaninput` 回执，契约测试和 TOML/JSON 示例等价复核通过；最终重建后二次执行模型路由 fixture 仍通过。
+
+## 独立用户网关批次
+
+2026-10-03，macOS arm64，Rust 1.88.0，锁定依赖。
+
+- 全量 Rust 回归：725 passed、0 failed；1 项真实 Docker 专项仍独立 ignored。Clippy correctness/suspicious、格式和锁定构建通过，保留 style/pedantic warnings。网关新增 19 项测试，覆盖严格配置、密钥绑定/配额、事务回滚、并发准入、旧回执、重启核对、取消中的阻塞鉴权容量。
+- `tests/user_gateway.py` 使用真实二进制与两个本机协议后端，验证同名用户请求隔离、单实例恢复锁、在线轮换/撤销/禁用、慢正文期间再次检查撤销、禁止客户端身份头和编码路径、体积/时限、重定向不跟随、取消不释放在途许可、SIGKILL 后只核对不重放、未完成或畸形 200 回执不解锁。
+- Chromium 验收通过：除原有工作台流程，增加失败身份切换和非 JSON 401 后清空 Token、会话、消息与输入草稿；Key 不进入浏览器持久存储。
+- 全部十二项本机进程/协议脚本通过：e2e、MCP、native_tools、model_routing、user_gateway、scheduler、channels、scheduled_delivery、feishu、wecom、dingtalk、installer。
+- 网关专用 Compose、Secret 入口、JSON/TOML、Python/Shell 语法已检查。`tests/gateway_container.py` 的真实 Linux 容器/限额/防火墙验证由本批 draft PR CI 执行；macOS 静态检查不冒充 loop device/宿主网络验收。
+
+仅交付独立后端的 HTTP/工作台聊天、会话与本地管理 Key。多用户渠道和后台任务绑定、逐 token 流式、模型操作身份恢复、真实供应商、TLS/egress 部署、StateKnot durable 均未据此认证。生产拓扑、管理员核对和备份回退边界见[网关指南](gateway.md)。

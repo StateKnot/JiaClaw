@@ -1,0 +1,12 @@
+{
+  "bind": "0.0.0.0:8080",
+  "registry_path": "/data/gateway/registry.sqlite3",
+  "backends": [
+    {"id": "alice", "url": "http://alice-backend:8080", "token_file": "/run/secrets/alice_backend_token"},
+    {"id": "bob", "url": "http://bob-backend:8080", "token_file": "/run/secrets/bob_backend_token"}
+  ],
+  "request_timeout_seconds": 180,
+  "max_in_flight": 16,
+  "allow_private_http": true,
+  "allow_remote_bind": true
+}

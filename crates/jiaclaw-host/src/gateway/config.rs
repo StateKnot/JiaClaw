@@ -1,0 +1,310 @@
+// Copyright 2026 JiaClaw contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Administrator-owned, bounded gateway configuration; request data never selects a backend.
+use anyhow::{ensure, Context, Result};
+use serde::Deserialize;
+use std::{
+    collections::HashSet,
+    fs::File,
+    io::Read,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
+
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    pub registry_path: PathBuf,
+    pub backends: Vec<BackendConfig>,
+    #[serde(default = "default_timeout")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_concurrency")]
+    pub max_in_flight: usize,
+    /// Administrator assertion that HTTP backends are confined to a trusted private network.
+    #[serde(default)]
+    pub allow_private_http: bool,
+    /// Non-loopback listeners require an independently configured TLS reverse proxy.
+    #[serde(default)]
+    pub allow_remote_bind: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackendConfig {
+    pub id: String,
+    pub url: String,
+    pub token_file: PathBuf,
+}
+
+fn default_bind() -> String {
+    "127.0.0.1:8081".into()
+}
+fn default_timeout() -> u64 {
+    180
+}
+fn default_concurrency() -> usize {
+    16
+}
+
+impl Config {
+    pub fn load(path: &Path) -> Result<Self> {
+        ensure!(
+            std::fs::metadata(path)
+                .context("cannot inspect gateway configuration")?
+                .is_file(),
+            "gateway configuration must be a regular file"
+        );
+        let mut file = File::open(path).context("cannot open gateway configuration")?;
+        let metadata = file
+            .metadata()
+            .context("cannot inspect gateway configuration")?;
+        ensure!(
+            metadata.is_file(),
+            "gateway configuration must be a regular file"
+        );
+        ensure!(
+            metadata.len() <= MAX_CONFIG_BYTES,
+            "gateway configuration exceeds 64 KiB"
+        );
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(MAX_CONFIG_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .context("cannot read gateway configuration")?;
+        ensure!(
+            bytes.len() as u64 <= MAX_CONFIG_BYTES,
+            "gateway configuration exceeds 64 KiB"
+        );
+        // Parser diagnostics can quote input values. Configuration may name secret files.
+        let config: Self = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid gateway configuration JSON or fields"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let bind: SocketAddr = self
+            .bind
+            .parse()
+            .context("gateway bind must be a literal IP:port")?;
+        ensure!(
+            bind.ip().is_loopback() || self.allow_remote_bind,
+            "non-loopback gateway bind requires allow_remote_bind and a TLS reverse proxy"
+        );
+        ensure!(
+            self.registry_path.is_absolute(),
+            "gateway registry_path must be absolute"
+        );
+        ensure!(
+            (1..=32).contains(&self.backends.len()),
+            "gateway requires 1..32 backends"
+        );
+        ensure!(
+            (10..=300).contains(&self.request_timeout_seconds),
+            "gateway request_timeout_seconds must be 10..300"
+        );
+        ensure!(
+            (1..=64).contains(&self.max_in_flight),
+            "gateway max_in_flight must be 1..64"
+        );
+        let mut ids = HashSet::new();
+        let mut origins = HashSet::new();
+        for backend in &self.backends {
+            ensure!(
+                !backend.id.is_empty()
+                    && backend.id.len() <= 64
+                    && backend
+                        .id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+                "backend id must contain 1..64 ASCII letters, digits, underscores or hyphens"
+            );
+            ensure!(ids.insert(&backend.id), "duplicate gateway backend id");
+            ensure!(
+                backend.token_file.is_absolute(),
+                "backend token_file must be absolute"
+            );
+            ensure!(
+                backend.url.len() <= 2048
+                    && !backend.url.contains('\\')
+                    && backend.url.trim() == backend.url
+                    && !backend.url.chars().any(char::is_control),
+                "invalid backend URL"
+            );
+            let url = reqwest::Url::parse(&backend.url)
+                .map_err(|_| anyhow::anyhow!("invalid backend URL"))?;
+            let raw_origin = backend.url.split_once("://").map(|(_, rest)| rest);
+            let authority = raw_origin.map(|rest| rest.split('/').next().unwrap_or(rest));
+            let root_only = raw_origin
+                .is_some_and(|rest| rest.split_once('/').is_none_or(|(_, path)| path.is_empty()));
+            ensure!(
+                matches!(url.scheme(), "https" | "http")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && !authority.is_some_and(|value| value.contains('@'))
+                    && root_only
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "backend URL must be an HTTP(S) root origin without userinfo, query or fragment"
+            );
+            if url.scheme() == "http" && !self.allow_private_http {
+                let host = authority.and_then(|value| {
+                    if let Some(bracketed) = value.strip_prefix('[') {
+                        bracketed.split_once(']').map(|(host, _)| host)
+                    } else {
+                        Some(value.split(':').next().unwrap_or(value))
+                    }
+                });
+                let loopback = host
+                    .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                    .is_some_and(|ip| ip.is_loopback());
+                ensure!(loopback, "HTTP backend requires a literal loopback address or allow_private_http on a trusted network");
+            }
+            ensure!(
+                origins.insert(url.origin().ascii_serialization()),
+                "duplicate gateway backend origin"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    fn value() -> serde_json::Value {
+        json!({"registry_path":"/tmp/gateway-registry.sqlite3", "backends":[{"id":"alice-1", "url":"http://127.0.0.1:9001", "token_file":"/tmp/backend.token"}]})
+    }
+    fn config(value: serde_json::Value) -> Config {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn defaults_and_explicit_network_boundaries() {
+        let mut c = config(value());
+        c.validate().unwrap();
+        assert_eq!(c.bind, "127.0.0.1:8081");
+        assert_eq!(c.request_timeout_seconds, 180);
+        assert_eq!(c.max_in_flight, 16);
+        for url in [
+            "http://[::1]:9001/",
+            "http://127.0.0.2:9001",
+            "https://backend.example:9443/",
+        ] {
+            c.backends[0].url = url.into();
+            c.validate().unwrap();
+        }
+        c.backends[0].url = "http://tenant-alice:8080".into();
+        assert!(c.validate().is_err());
+        c.allow_private_http = true;
+        c.validate().unwrap();
+        c.bind = "0.0.0.0:8081".into();
+        assert!(c.validate().is_err());
+        c.allow_remote_bind = true;
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_credential_bearing_backend_urls() {
+        for url in [
+            "ftp://example.com/",
+            "file:///tmp/a",
+            "https://example.com/path",
+            "https://example.com/?x=1",
+            "https://example.com/#x",
+            "https://secret@example.com",
+            "https://:secret@example.com",
+            "https://@example.com",
+            "http://localhost:9001",
+            "http://2130706433",
+            "https://example.com/../",
+            "https://example.com\\",
+            " https://example.com",
+            "https://example.com\n",
+        ] {
+            let mut c = config(value());
+            c.backends[0].url = url.into();
+            let error = c.validate().expect_err(url).to_string();
+            assert!(!error.contains("secret"));
+        }
+        let mut c = config(value());
+        c.backends.push(BackendConfig {
+            id: "bob".into(),
+            url: "http://127.0.0.1:9001/".into(),
+            token_file: "/tmp/bob.token".into(),
+        });
+        assert!(c.validate().is_err());
+        c.backends[1].url = "http://127.0.0.1:9002".into();
+        c.validate().unwrap();
+        c.backends[1].id = "alice-1".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn bounds_ids_paths_counts_and_limits() {
+        for id in ["", "alice/bob", " alice", "alice.bob", "用户"] {
+            let mut c = config(value());
+            c.backends[0].id = id.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(value());
+        c.backends[0].id = "x".repeat(65);
+        assert!(c.validate().is_err());
+        for timeout in [0, 9, 301, u64::MAX] {
+            let mut c = config(value());
+            c.request_timeout_seconds = timeout;
+            assert!(c.validate().is_err());
+        }
+        for limit in [0, 65, usize::MAX] {
+            let mut c = config(value());
+            c.max_in_flight = limit;
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(value());
+        c.registry_path = "relative.sqlite3".into();
+        assert!(c.validate().is_err());
+        let mut c = config(value());
+        c.backends[0].token_file = "relative.token".into();
+        assert!(c.validate().is_err());
+        let mut c = config(value());
+        c.backends.clear();
+        assert!(c.validate().is_err());
+        let mut c = config(value());
+        c.backends = vec![c.backends[0].clone(); 33];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn strict_json_and_bounded_load_do_not_echo_input() {
+        let dir =
+            std::env::temp_dir().join(format!("jiaclaw-gateway-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("gateway.json");
+        for invalid in [
+            json!({"unexpected":"sensitive-config-value"}),
+            json!({"registry_path":"/tmp/a","backends":[{"id":"a","url":"https://example.com","token_file":"/tmp/t","token":"sensitive-config-value"}]}),
+        ] {
+            std::fs::write(&path, invalid.to_string()).unwrap();
+            let error = Config::load(&path).err().unwrap().to_string();
+            assert!(!error.contains("sensitive-config-value"));
+        }
+        std::fs::write(
+            &path,
+            vec![b' '; usize::try_from(MAX_CONFIG_BYTES).unwrap() + 1],
+        )
+        .unwrap();
+        assert!(Config::load(&path).is_err());
+        std::fs::write(&path, value().to_string()).unwrap();
+        Config::load(&path).unwrap();
+        assert!(Config::load(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

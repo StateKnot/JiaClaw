@@ -123,3 +123,7 @@ Telegram/Slack/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_
 企业微信企业自建应用使用 `wecom_app_secret`、`wecom_callback_token`、`wecom_encoding_aes_key`，对应 `JIACLAW_WECOM_APP_SECRET`、`JIACLAW_WECOM_CALLBACK_TOKEN`、`JIACLAW_WECOM_ENCODING_AES_KEY` 环境变量优先；缺省不配置。安装身份为 `CorpID:AgentID`，不另填 app_id。发送者与 conversation_id 都使用小写成员 UserID，thread_id 必须为空。仅接成员与应用的私聊文本及精确定时成员通知；须使用由 JiaClaw 独占发送权的专用应用。回调加密、平台额度、持久预算及真实安装验收见[企业微信指南](wecom.md)。
 
 钉钉仅接企业内部应用机器人的成员私聊文本与精确定时成员通知；`dingtalk_app_secret` 默认未配置，`JIACLAW_DINGTALK_APP_SECRET` 优先。安装身份为 `robotCode:corpId`，`app_id` 必须另填 Client ID；不能假定它与 robotCode 相同。发送者和 conversation_id 都是保留大小写的单个成员 UserID，应用支持 1–64 个 ASCII 字符：首位字母或数字，其余可含 `_-.@`；thread_id 必须为空。启用并发布应用机器人，明确应用可见范围和消息权限。回调身份、可信 HTTPS 边界及真实安装验收见[钉钉指南](dingtalk.md)。
+
+## 独立用户网关
+
+`jiaclaw gateway` 使用独立、严格校验的 JSON 配置与私有身份 SQLite，不读取上述 Agent 配置，也不创建共享 Agent。具体 `serve`、用户/Key 管理命令、限额、TLS/容器/磁盘隔离、未知写入恢复见[网关指南](gateway.md)。现有普通 `serve` 配置仍是一用户一实例。

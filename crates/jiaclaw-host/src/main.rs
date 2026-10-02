@@ -59,6 +59,7 @@ mod dingtalk;
 mod dingtalk_outbound;
 mod feishu;
 mod feishu_outbound;
+mod gateway;
 mod jobs;
 mod outbound;
 mod schedule;
@@ -110,6 +111,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run an authenticated gateway for separately isolated user backends
+    Gateway {
+        #[command(subcommand)]
+        action: gateway::cli::Commands,
+    },
     /// 初始化工作空间和配置
     Init {
         /// 工作空间路径
@@ -289,6 +295,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
+        Commands::Gateway { action } => gateway::cli::run(action).await?,
         Commands::Init { path, force } => {
             init_command(path, force)?;
         }

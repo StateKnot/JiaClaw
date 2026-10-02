@@ -30,6 +30,7 @@ jobs:
       - run: python3 tests/mcp.py target/debug/jiaclaw
       - run: python3 tests/native_tools.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
+      - run: python3 tests/user_gateway.py target/debug/jiaclaw
       - run: python3 tests/scheduler.py target/debug/jiaclaw
       - name: Select OpenSSL 3 for channel signature fixtures
         if: runner.os == 'macOS'
@@ -65,3 +66,5 @@ jobs:
       - run: docker build --tag jiaclaw:ci .
       - name: Image startup as non-root with read-only root filesystem
         run: python3 tests/container.py jiaclaw:ci
+      - name: Isolated user gateway with bounded persistent volumes
+        run: python3 tests/gateway_container.py jiaclaw:ci
