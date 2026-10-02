@@ -40,7 +40,8 @@
       "expose_headers": [
         "X-Request-Id"
       ]
-    }
+    },
+    "channels": []
   },
   "tools": {
     "copy": {

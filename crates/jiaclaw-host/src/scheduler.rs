@@ -328,7 +328,11 @@ pub(super) async fn start(state: AppState) -> Result<Option<Scheduler>> {
                 }
                 _ = tick.tick(), if active.len() < MAX_CONCURRENCY => {
                     let capacity = MAX_CONCURRENCY - active.len();
-                    let claimed = with_sessions(&state, move |store| store.claim_due_jobs(now_ms(), capacity)).await;
+                    let health = state.scheduler_health.clone();
+                    let claimed = with_sessions(&state, move |store| {
+                        if health.load(Ordering::Acquire) != 1 { return Ok(vec![]); }
+                        store.claim_due_jobs(now_ms(), capacity)
+                    }).await;
                     match claimed {
                         Ok(runs) => for run in runs {
                             let worker_state = state.clone();

@@ -1564,6 +1564,7 @@ dependencies = [
  "jiaclaw",
  "jiaclaw-core",
  "minreq",
+ "reqwest 0.12.28",
  "ring",
  "rusqlite",
  "serde",

@@ -1264,9 +1264,41 @@ impl HttpCorsConfig {
     }
 }
 
+/// An explicitly authorized installation for unattended channel work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelBinding {
+    /// Supported platform: telegram, slack or discord.
+    pub channel: String,
+    /// Telegram bot ID, Slack team ID or Discord application ID.
+    pub installation_id: String,
+    #[serde(default)]
+    /// Slack application ID, matched independently from the team.
+    pub app_id: Option<String>,
+    /// Exact platform user IDs authorized to invoke this agent.
+    pub allowed_senders: Vec<String>,
+    /// Exact platform chat/channel IDs authorized for ingress and reply.
+    pub allowed_conversations: Vec<String>,
+    /// Nonempty list of registered, qualified background tools.
+    pub enabled_tools: Vec<String>,
+    #[serde(default = "default_channel_timeout")]
+    /// Total model run deadline, including session lock wait and compaction.
+    pub timeout_secs: u64,
+    /// Explicit local HTTP fixture endpoint; production uses the platform URL.
+    #[serde(default)]
+    pub local_test_api_base: Option<String>,
+}
+
+fn default_channel_timeout() -> u64 {
+    120
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
+    /// Channels are closed until an explicit installation and identity policy exists.
+    #[serde(default)]
+    pub channels: Vec<ChannelBinding>,
     /// HTTP 服务绑定地址
     #[serde(default = "default_http_bind")]
     pub bind: String,
@@ -1287,37 +1319,33 @@ pub struct HttpConfig {
 
     /// Telegram Bot API token（可选，环境变量 `JIACLAW_TELEGRAM_BOT_TOKEN` 优先）
     ///
-    /// 配置后，`POST /hooks/telegram` 在得到 assistant 回复时会调用 Bot `sendMessage` 推回聊天。
-    /// 未配置则仅同步 JSON 回传 `reply`（与仅入站切片行为一致）。
+    /// 须同时配置 channels 安装/身份/工具策略；回复通过持久 outbox 投递。
     #[serde(default)]
     pub telegram_bot_token: Option<String>,
 
     /// Slack Events API signing secret（可选，环境变量 `JIACLAW_SLACK_SIGNING_SECRET` 优先）
     ///
     /// 配置后，`POST /hooks/slack` 校验 `X-Slack-Signature` + `X-Slack-Request-Timestamp`
-    ///（官方 v0 HMAC-SHA256，时间窗 ±5 分钟）。未配置则开放（开发友好，与 telegram 一致）。
+    ///（官方 v0 HMAC-SHA256，时间窗 ±5 分钟）。未配置则关闭。
     #[serde(default)]
     pub slack_signing_secret: Option<String>,
 
     /// Slack Bot token（可选，环境变量 `JIACLAW_SLACK_BOT_TOKEN` 优先）
     ///
-    /// 配置后，`POST /hooks/slack` 在得到 assistant 回复时会调用 `chat.postMessage` 推回 channel。
-    /// 未配置则仅同步 JSON 回传 `reply`。
+    /// 须同时配置 channels 安装/身份/工具策略；回复通过持久 outbox 投递。
     #[serde(default)]
     pub slack_bot_token: Option<String>,
 
     /// Discord Interactions 公钥（可选，环境变量 `JIACLAW_DISCORD_PUBLIC_KEY` 优先）
     ///
     /// 配置后，`POST /hooks/discord` 校验 `X-Signature-Ed25519` + `X-Signature-Timestamp`
-    ///（官方 Ed25519，签名消息为 `timestamp + raw body`）。未配置则开放（开发友好，与 slack 一致）。
+    ///（官方 Ed25519，签名消息为 `timestamp + raw body`）。未配置则关闭。
     #[serde(default)]
     pub discord_public_key: Option<String>,
 
     /// Discord Bot token（可选，环境变量 `JIACLAW_DISCORD_BOT_TOKEN` 优先）
     ///
-    /// 配置后，`POST /hooks/discord` 在 deferred ACK 之后会
-    /// `PATCH /webhooks/{application_id}/{interaction_token}/messages/@original` 编辑最终回复。
-    /// 未配置则仅记录 session 并 warn，无法 follow-up。
+    /// 兼容读取旧配置；interaction 出站使用加密保存的 interaction token，不发送 Bot Authorization。
     #[serde(default)]
     pub discord_bot_token: Option<String>,
 
@@ -1394,6 +1422,7 @@ fn default_max_body_bytes() -> u64 {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
+            channels: vec![],
             bind: default_http_bind(),
             api_token: None,
             webhook_secret: None,
