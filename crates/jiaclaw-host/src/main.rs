@@ -3555,6 +3555,9 @@ fn persist_path_from_config(config: &AgentConfig) -> PathBuf {
 
 fn open_configured_session_store(config: &AgentConfig) -> Result<SessionStore> {
     let path = persist_path_from_config(config);
+    // Fresh externally provisioned volumes intentionally do not copy image data.
+    // Create the declared workspace before comparing canonical storage paths.
+    std::fs::create_dir_all(&config.workspace_path).context("create configured workspace")?;
     let workspace = config.workspace_path.canonicalize()?;
     let parent = path
         .parent()
@@ -8578,6 +8581,33 @@ mod tests {
 
         assert!(webhook_response2.ok);
         assert_eq!(webhook_response2.session_id, "webhook:persistent-chat");
+    }
+
+    #[test]
+    fn fresh_data_directory_initializes_separate_workspace_and_session_store() {
+        let root =
+            std::env::temp_dir().join(format!("jiaclaw-fresh-volume-{}", uuid::Uuid::new_v4()));
+        let mut config = AgentConfig::default();
+        config.workspace_path = root.join("workspace");
+        config.http.persist = true;
+        config.http.persist_path = root
+            .join("state/sessions.sqlite3")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!root.exists());
+        let mut store = open_configured_session_store(&config).unwrap();
+        assert!(config.workspace_path.is_dir());
+        assert!(root.join("state/sessions.sqlite3").is_file());
+        store.flush().unwrap();
+        drop(store);
+        // A second start keeps existing workspace content and durable state.
+        std::fs::write(config.workspace_path.join("MEMORY.md"), "retained").unwrap();
+        drop(open_configured_session_store(&config).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(config.workspace_path.join("MEMORY.md")).unwrap(),
+            "retained"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
