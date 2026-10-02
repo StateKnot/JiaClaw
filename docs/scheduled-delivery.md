@@ -1,6 +1,6 @@
 # 定时任务结果投递
 
-定时任务可以把成功结果发送到已配置的 Telegram 或 Slack 安装。每次执行的会话、运行结果和待发送消息在一个 SQLite 事务中提交，随后由统一渠道发送器处理。没有 `delivery` 的任务继续只保存运行结果和会话。
+定时任务可以把成功结果发送到已配置的 Telegram、Slack 或飞书安装。每次执行的会话、运行结果和待发送消息在一个 SQLite 事务中提交，随后由统一渠道发送器处理。没有 `delivery` 的任务继续只保存运行结果和会话。
 
 ## 配置目的地授权
 
@@ -103,7 +103,7 @@ resolve、cancel 和投递审计 DELETE 成功返回 204。delivered 的人工�
 
 ## 存储故障与验收
 
-SQLite schema v4 为统一发件箱增加任务运行来源。升级前按现有部署流程停止服务并备份 SQLite；升级使用数据库事务，延续同一文件的独占进程锁。不要用多个 JiaClaw 进程共享同一个数据库。
+SQLite schema v4 为统一发件箱增加任务运行来源，当前 v5 保留所有来源、回执和序列高水位并允许飞书通知。升级前按现有部署流程停止服务并备份 SQLite；升级使用数据库事务，延续同一文件的独占进程锁。不要用多个 JiaClaw 进程共享同一个数据库。
 
 如果会话、运行终态或发件箱写入失败，整个完成事务回滚。调度器报告 failed，拒绝创建和恢复任务；原 running 由恢复流程记为 interrupted 并暂停，避免重放可能已发生的工具副作用。修复存储后需要重启；仅删除故障条件不会自动重新启用调度器。发送结果提交失败也保留不确定性，由恢复流程核对，不能通过再次调用平台补偿。
 
@@ -115,3 +115,5 @@ python3 tests/scheduled_delivery.py target/debug/jiaclaw
 验收使用真实 JiaClaw 二进制、临时 SQLite 与本地模型/平台 fixture，覆盖 Telegram/Slack 原生工具结果、线程、精确目的地和工具授权、401、运行与会话及发件箱原子性、429 防止重叠、unknown 暂停、强杀恢复、人工核查后仅恢复未来运行、撤销授权和审计清理。测试通过一次性 SQLite trigger 模拟完成事务失败，产品没有故障注入接口。
 
 本地 fixture 不代替实际平台安装验收。部署者仍需验证目标 Bot/App 的安装归属、发送权限、真实 thread/topic、账户限流及运行环境的网络与持久存储。底层模型供应商认证和 StateKnot durable 接线的剩余边界仍见 [上游差距](brokerrouter-gaps.md)。
+
+飞书使用同一任务 API 和恢复流程，`delivery.channel = "feishu"`，installation_id 为应用和租户复合身份。conversation_id 是 `oc_` chat ID；thread_id 为 `om_` 根消息 ID，省略时向会话顶层发送。配置和独立进程验收见[飞书指南](feishu.md)。

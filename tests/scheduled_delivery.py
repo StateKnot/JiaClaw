@@ -352,7 +352,7 @@ try:
         assert request(delivery_path(telegram, slack_run) + '/cancel', 'POST')[0] == 404
         assert request(delivery_path(telegram, slack_run), 'DELETE')[0] == 404
         with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=rw', uri=True, timeout=5)) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 5
             assert db.execute('SELECT count(*) FROM channel_outbox WHERE '
                               '(event_id IS NULL) = (job_run_id IS NULL)').fetchone()[0] == 0
 

@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
   },
   "servers": [
     {
@@ -1820,6 +1820,140 @@
         ],
         "description": "Rejects running computation or submitting delivery. Does not retract external messages or resume the job."
       }
+    },
+    "/hooks/feishu": {
+      "post": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "飞书企业自建应用文本回调",
+        "operationId": "inboundFeishu",
+        "description": "Self-built China Feishu app, one tenant per installation. Ordinary schema 2.0 events require SHA256(timestamp + nonce + Encrypt Key + original body), timestamp ±5 minutes, matching app_id/tenant_key/token and explicit sender/chat/tools policy. Optional AES-256-CBC encrypted envelope. URL verification requires the verification token (inside decrypted payload if encrypted), and may omit signature headers. Deduplication uses message.message_id, not header.event_id. Raw body <=128 KiB, decrypted body <=64 KiB, text <=32 KiB. Group replies use the om_ root message ID. See docs/feishu.md.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Feishu schema 2.0 event, URL verification payload, or {encrypt: base64(IV + ciphertext)}."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Durable event ACK, authenticated ignored event, or URL verification challenge.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChannelAck"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "challenge"
+                      ],
+                      "properties": {
+                        "challenge": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid callback signature, timestamp, token, app/tenant binding, payload or identity authorization.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Invalid platform payload or expired interaction"
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Lark-Request-Timestamp",
+            "in": "header",
+            "required": false,
+            "description": "Required for ordinary events; exempt for token-authenticated URL verification.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Lark-Request-Nonce",
+            "in": "header",
+            "required": false,
+            "description": "Required for ordinary events; exempt for token-authenticated URL verification.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Lark-Signature",
+            "in": "header",
+            "required": false,
+            "description": "Required for ordinary events; exempt for token-authenticated URL verification.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2663,18 +2797,21 @@
             "enum": [
               "telegram",
               "slack",
-              "discord"
+              "discord",
+              "feishu"
             ]
           },
           "installation_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Feishu: app_id:tenant_key. Other platforms: configured installation ID."
           },
           "conversation_id": {
             "type": "string"
           },
           "thread_id": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat."
           },
           "interaction_id": {
             "type": "string",
@@ -2936,11 +3073,13 @@
             "type": "string",
             "enum": [
               "telegram",
-              "slack"
+              "slack",
+              "feishu"
             ]
           },
           "installation_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Feishu: app_id:tenant_key. Other platforms: configured installation ID."
           },
           "conversation_id": {
             "type": "string"
@@ -2948,7 +3087,8 @@
           "thread_id": {
             "type": "string",
             "nullable": true,
-            "default": null
+            "default": null,
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat."
           }
         },
         "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted."

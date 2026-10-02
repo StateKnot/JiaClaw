@@ -1,10 +1,10 @@
 # 可靠渠道接入与消息恢复
 
-Telegram、Slack 和 Discord 共用 SQLite 收件箱、受监督的 Agent worker 及持久化发件箱。合法事件先入库再返回 webhook ACK；模型调用、会话提交和向平台发送消息在后台执行。在去重保留期内，平台重投同一事件不会再次运行 Agent。现有安装必须补齐下面的安装身份、发送者、会话和工具白名单；只配置旧平台密钥的服务会启动失败，需要先迁移配置。
+Telegram、Slack、Discord 和飞书共用 SQLite 收件箱、受监督的 Agent worker 及持久化发件箱。合法事件先入库再返回 webhook ACK；模型调用、会话提交和向平台发送消息在后台执行。在去重保留期内，平台重投同一事件不会再次运行 Agent。现有安装必须补齐下面的安装身份、发送者、会话和工具白名单；只配置旧平台密钥的服务会启动失败，需要先迁移配置。
 
 ## 部署与身份
 
-渠道要求 `http.persist = true`、非空 API Token 和工作空间之外的 SQLite 路径。模型提供商必须是 `brokerrouter`，离线验收可显式使用 `stub`。一个进程每个平台最多配置一个安装，最多三个安装；SQLite 沿用独占进程锁，不支持多实例共享同一个文件。
+渠道要求 `http.persist = true`、非空 API Token 和工作空间之外的 SQLite 路径。模型提供商必须是 `brokerrouter`，离线验收可显式使用 `stub`。一个进程每个平台最多配置一个安装，最多四个安装；SQLite 沿用独占进程锁，不支持多实例共享同一个文件。
 
 下面是同时配置三个平台的结构。ID 必须替换为实际安装及获准使用人的平台 ID；只启用所需的 `[[http.channels]]` 项。
 
@@ -73,7 +73,7 @@ Telegram 使用 webhook secret 校验，并忽略 bot 消息和无文本事件�
 
 Discord 校验 Ed25519 签名与 ±5 分钟时间窗，校验 application_id、用户与会话后才接受应用命令；PING 返回 type 1，已入库命令立即返回 type 5。当前只接受一个 type 3 字符串选项，不提供任意嵌套命令解析。平台要求在 3 秒内响应交互，并将交互 token 的使用期限制为 15 分钟；JiaClaw 从 interaction snowflake ID 解出实际创建时间，保守在创建后 14 分钟停止新发送并清理凭证字段。Agent 的执行期限同时受此到期时间限制，并预留 10 秒发送时间，重新投递不会延长旧 token 的寿命。[Discord 官方交互文档](https://docs.discord.com/developers/interactions/receiving-and-responding)
 
-Telegram 和 Slack 成功接收返回：
+Telegram、Slack 和飞书成功接收返回：
 
 ```json
 {"ok":true,"event_id":"本地事件 UUID","duplicate":false}
@@ -85,7 +85,7 @@ Telegram 和 Slack 成功接收返回：
 
 全局最多处理 4 个 Agent 事件，每个会话同一时刻只处理一个。完成一次 Agent 调用时，会话消息、事件终态和所有待发送片段在一个 SQLite 事务中提交；提交失败不会留下只有会话或只有发件箱的半个结果。
 
-发送器按目的地顺序领取片段，同一安装最多一条发送请求在途。为限制突发，安装级最短发送间隔分别为 Telegram 3.1 秒、Slack 1.1 秒、Discord 0.3 秒，并持久化到数据库。这是保守基础节流，平台返回的有效 429 冷却期会进一步延长它。SDK 不隐式重试或跟随重定向；每次 HTTP 发送连接超时 2 秒、总超时 10 秒，响应体上限 64 KiB。
+发送器按目的地顺序领取片段，同一安装最多一条发送请求在途。为限制突发，安装级最短发送间隔分别为 Telegram 3.1 秒、Slack 1.1 秒、Discord 0.3 秒、飞书 1.1 秒，并持久化到数据库。这是保守基础节流，平台返回的有效 429 冷却期会进一步延长它。SDK 不隐式重试或跟随重定向；每次 HTTP 发送连接超时 2 秒、总超时 10 秒，响应体上限 64 KiB。
 
 回复总量最多 16 KiB UTF-8，每片最多 2,000 个 UTF-16 单位、总共最多 16 片。Discord 进一步限定最多 6 片，即编辑原始回复加 5 条 follow-up，兼容 user-installed 应用的 follow-up 上限。拆分保留原始 Unicode 文本，不静默截断；超出总量或片数时整批不入发件箱，事件转为 needs_review。Telegram 关闭链接预览且不设置 parse_mode；Slack 关闭 mrkdwn、名称展开和链接/媒体预览，并转义 `&<>` 控制字符；Discord 明确禁止自动 mentions。
 
@@ -100,13 +100,13 @@ Telegram 和 Slack 成功接收返回：
 | 投递 | pending | 已入库但尚未发送 |
 | 投递 | submitting | 已保存发送意图，正在等待平台或提交回执 |
 | 投递 | delivered | 已校验平台回执，或管理员提供已送达证据 |
-| 投递 | retry_wait | 收到有效平台 429，等待持久化冷却期 |
+| 投递 | retry_wait | 收到有效平台限流拒绝，等待持久化冷却期 |
 | 投递 | unknown | 发送是否生效未知；需要平台侧核对，不自动重发 |
 | 投递 | permanent_failed | 明确拒绝或达到有限重试上限；需人工处理 |
 | 投递 | expired | Discord 凭证过期，停止未发送片段 |
 | 投递 | cancelled | 管理员核对后取消余下投递；并不撤回平台已经收到的消息 |
 
-只有可验证的 429 限流响应会自动重试，每片最多 5 次尝试；重启不会清除 attempts 或安装冷却期。Slack 使用 Retry-After，Telegram 使用 parameters.retry_after，Discord 使用 retry_after；无效或缺失的冷却期归入 unknown。平台 429 的限流范围不同，当前采取安装范围的保守冷却。[Slack 限流文档](https://docs.slack.dev/apis/web-api/rate-limits/)、[Discord 限流文档](https://docs.discord.com/developers/topics/rate-limits)
+只有可验证的平台限流响应会自动重试，每片最多 5 次尝试；重启不会清除 attempts 或安装冷却期。Slack 使用 Retry-After，Telegram 使用 parameters.retry_after，Discord 使用 retry_after；无效或缺失的冷却期归入 unknown。平台 429 的限流范围不同，当前采取安装范围的保守冷却。[Slack 限流文档](https://docs.slack.dev/apis/web-api/rate-limits/)、[Discord 限流文档](https://docs.discord.com/developers/topics/rate-limits)
 
 断线、发送超时、5xx、重定向、损坏/错目标回执以及重启发现的 submitting 都进入 unknown。同一目的地后续片段不会越过未解决的发送结果。进程被强杀后，processing 进入 needs_review，submitting 进入 unknown；正常关闭先停止领取、等待配置的退出宽限期，然后记录未完成工作。管理员不能把“JiaClaw 没有收到成功响应”解释成“平台没有发送”。本地去重和回执日志不提供跨系统 exactly-once；unknown 没有自动“重试发送”按钮。
 
@@ -140,3 +140,7 @@ python3 tests/channels.py target/debug/jiaclaw
 脚本只使用本地 HTTP fixture、临时 SQLite、一次性平台凭证，以及支持 Ed25519 的 OpenSSL CLI。它覆盖真实二进制入站签名、白名单、快速 ACK 与重投、原生工具闭环、Unicode 分片、Discord follow-up 和整批上限、回执、429 有限重试与重启冷却、错误不泄密、processing/submitting 强杀恢复和无自动重放。它还验证 unknown 第一片会阻塞后续片段，以及数据库写锁延迟下合法的 1 毫秒 Discord 重试间隔不会使 worker 失败。SQLite trigger 只在临时测试库中模拟完成事务故障，以验证会话和发件箱一起回滚、worker failed 和拒绝新任务；产品没有故障注入端点。
 
 这些测试验证本地契约。正式上线仍须在目标安装验证平台回调配置、Bot/App 权限与安装归属、真实消息的线程位置、账号级限流、Discord 交互时限，以及反向代理的延迟和 body 保真。本轮没有使用真实渠道凭证，也没有宣称真实渠道认证完成。模型供应商默认认证、StateKnot durable 恢复与 Brokerrouter 原生输出契约的剩余边界见 [上游能力差距](brokerrouter-gaps.md)。
+
+## 飞书企业自建应用
+
+`POST /hooks/feishu` 已接入同一持久收件箱、发件箱与管理接口，使用应用和租户复合身份、message_id 去重、SHA-256 签名和可选 AES-CBC 回调解密。定时通知通过独立目的地白名单授权。飞书已知限流包含 HTTP 429 和旧版 400，须有匹配错误码及有效 `x-ogw-ratelimit-reset`；其他不确定响应保持 unknown。完整配置、线程语义、token 缓存和真实安装验收见[飞书指南](feishu.md)。
