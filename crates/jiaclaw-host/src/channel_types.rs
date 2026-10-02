@@ -22,6 +22,47 @@ pub(super) struct Destination {
     pub expires_ms: Option<i64>,
 }
 
+/// A durable proactive destination. It cannot carry interaction credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ScheduledDestination {
+    pub channel: Channel,
+    pub installation_id: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+}
+
+impl ScheduledDestination {
+    pub(super) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.channel != Channel::Discord,
+            "scheduled delivery supports Telegram or Slack, not expiring Discord interactions"
+        );
+        anyhow::ensure!(
+            !self.installation_id.is_empty()
+                && self.installation_id.len() <= 128
+                && self
+                    .installation_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
+            "invalid scheduled installation identity"
+        );
+        super::outbound::validate_destination(&self.destination())
+    }
+
+    pub(super) fn destination(&self) -> Destination {
+        Destination {
+            channel: self.channel,
+            installation_id: self.installation_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+            thread_id: self.thread_id.clone(),
+            interaction_id: None,
+            expires_ms: None,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct EventSpec {

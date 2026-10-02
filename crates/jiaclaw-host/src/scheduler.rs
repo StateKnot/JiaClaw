@@ -110,7 +110,7 @@ fn validate_tools(state: &AppState, spec: &JobSpec) -> Result<(), AppError> {
             )));
         }
     }
-    Ok(())
+    super::channels::validate_scheduled_job(state, spec)
 }
 
 #[derive(Deserialize)]
@@ -302,12 +302,14 @@ impl Scheduler {
 }
 
 pub(super) async fn start(state: AppState) -> Result<Option<Scheduler>> {
+    if state.persist_enabled {
+        with_sessions(&state, |store| store.recover_jobs(now_ms()))
+            .await
+            .map_err(|_| anyhow::anyhow!("scheduler recovery failed"))?;
+    }
     if !state.agent.config().scheduler.enabled {
         return Ok(None);
     }
-    with_sessions(&state, |store| store.recover_jobs(now_ms()))
-        .await
-        .map_err(|_| anyhow::anyhow!("scheduler recovery failed"))?;
     state.scheduler_health.store(1, Ordering::Release);
     let (stop, mut shutdown) = watch::channel(false);
     let handle = tokio::spawn(async move {
@@ -487,6 +489,17 @@ async fn execute(state: AppState, run: JobRun) -> Result<(), AppError> {
         status = "needs_review";
         error = Some("response exceeded storage limit; detailed results omitted".into());
     }
+    if run.spec.delivery.is_some() && status == "completed" {
+        if super::outbound::split_text(&response.message.content).is_err() {
+            status = "needs_review";
+            response.status = RunStatus::RequiresHumanInput;
+            error = Some("scheduled response exceeds outbound bounds; no fragments queued".into());
+        } else if !super::channels::scheduled_job_authorized(&state, &run.spec) {
+            status = "needs_review";
+            response.status = RunStatus::RequiresHumanInput;
+            error = Some("scheduled delivery authorization changed; no fragments queued".into());
+        }
+    }
     response.session_id = Some(run.session_id.clone());
     messages.push(response.message.clone());
     finish(
@@ -530,6 +543,7 @@ mod tests {
                         schedule: ScheduleSpec::Interval { seconds: 60 },
                         enabled_tools: vec!["datetime_now".into()],
                         timeout_secs: 120,
+                        delivery: None,
                     },
                     0,
                 )

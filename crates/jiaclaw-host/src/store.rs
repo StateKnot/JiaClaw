@@ -91,7 +91,7 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 3 {
+        if version > 4 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
         if version < 1 {
@@ -103,6 +103,18 @@ impl SessionStore {
         if version < 3 {
             tx.execute_batch(super::channel_store::SCHEMA_V3)?;
         }
+        if version < 4 {
+            tx.execute_batch(super::channel_store::SCHEMA_V4)?;
+        }
+        let violation = tx
+            .prepare("PRAGMA foreign_key_check")?
+            .query([])?
+            .next()?
+            .is_some();
+        anyhow::ensure!(
+            !violation,
+            "session database foreign key integrity check failed"
+        );
         tx.commit()?;
         Ok(Self::Sqlite {
             conn,
@@ -278,7 +290,7 @@ impl SessionStore {
                 for id in expired {
                     if !active.contains(&id) {
                         deleted += tx.execute(
-                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled'))))",
+                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled')))) AND NOT EXISTS (SELECT 1 FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE r.session_id=sessions.id AND d.state NOT IN ('delivered','cancelled'))",
                             params![id, cutoff],
                         )?;
                     }
@@ -375,14 +387,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=4;").unwrap();
+        conn.execute_batch("PRAGMA user_version=5;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();

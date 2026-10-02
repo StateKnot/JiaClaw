@@ -1,6 +1,6 @@
 # 持久化定时任务
 
-JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。结果保存在会话及运行历史中；当前任务不自动向 Telegram、Slack 等渠道发送通知。
+JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。默认只保存会话和运行结果；可通过显式 `delivery` 与独立目的地白名单发送 Telegram/Slack 通知，见[定时通知指南](scheduled-delivery.md)。
 
 ## 启用
 
@@ -87,7 +87,7 @@ JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabl
 | 状态 | 含义 |
 |---|---|
 | `running` | 已领取，尚未提交终态 |
-| `completed` | Agent 返回已完成；会话消息与运行结果在同一 SQLite 事务提交 |
+| `completed` | Agent 返回已完成；会话消息、运行结果和可选发件计划在同一 SQLite 事务提交；平台送达状态须另查 deliveries |
 | `failed` | 运行失败；任务暂停，需检查后再恢复 |
 | `needs_review` | Agent 返回部分完成、工具错误或结果需要人工核对；任务暂停，不自动重试 |
 | `interrupted` | 超时、关闭期间取消，或重启发现没有提交终态的运行；保留原运行 ID，暂停任务 |
@@ -99,7 +99,7 @@ JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabl
 
 ## 保留与验收
 
-任务上限为 100，包含软删除记录；每个任务保留最多 100 条运行，总运行记录上限为 10,000。系统只自动淘汰较旧的 completed、failed、skipped；needs_review 和 interrupted 不自动清除。审计记录占满上限时暂停该任务，要求显式核对与清理，不删除未知效果的证据来继续执行。
+任务上限为 100，包含软删除记录；每个任务保留最多 100 条运行，总运行记录上限为 10,000。系统只自动淘汰较旧的 completed、failed、skipped，以及这些运行全部已 delivered/cancelled 的投递；needs_review、interrupted 和仍有未解决投递的运行不自动清除。审计记录占满上限时暂停该任务，要求显式核对与清理，不删除未知效果的证据来继续执行。长期审计需在保留窗口之外另行归档。
 
 构建后运行真实进程验收：
 

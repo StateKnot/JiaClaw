@@ -926,6 +926,14 @@ fn build_router_with_body_limit(
             get(scheduler::get).delete(scheduler::delete),
         )
         .route("/api/jobs/:id/runs", get(scheduler::runs))
+        .route(
+            "/api/jobs/:id/runs/:run_id/deliveries",
+            get(channels::job_deliveries).delete(channels::purge_job_delivery),
+        )
+        .route(
+            "/api/jobs/:id/runs/:run_id/deliveries/cancel",
+            post(channels::cancel_job_delivery),
+        )
         .route("/api/jobs/:id/pause", post(scheduler::pause))
         .route("/api/jobs/:id/resume", post(scheduler::resume))
         .route(
@@ -10141,6 +10149,8 @@ mod tests {
             "/api/tools",
             "/api/skills",
             "/api/skills/reload",
+            "/api/jobs/{id}/runs/{run_id}/deliveries",
+            "/api/jobs/{id}/runs/{run_id}/deliveries/cancel",
             "/hooks/inbound",
             "/hooks/telegram",
             "/hooks/slack",

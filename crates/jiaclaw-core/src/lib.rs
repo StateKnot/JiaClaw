@@ -1264,6 +1264,17 @@ impl HttpCorsConfig {
     }
 }
 
+/// An exact destination authorized for scheduled notifications, independently of ingress.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledChannelDestination {
+    /// Exact platform chat/channel ID.
+    pub conversation_id: String,
+    /// Exact topic/thread, or None for a new top-level message.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+}
+
 /// An explicitly authorized installation for unattended channel work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1279,6 +1290,9 @@ pub struct ChannelBinding {
     pub allowed_senders: Vec<String>,
     /// Exact platform chat/channel IDs authorized for ingress and reply.
     pub allowed_conversations: Vec<String>,
+    /// Exact targets for scheduled notifications; empty disables proactive delivery.
+    #[serde(default)]
+    pub scheduled_destinations: Vec<ScheduledChannelDestination>,
     /// Nonempty list of registered, qualified background tools.
     pub enabled_tools: Vec<String>,
     #[serde(default = "default_channel_timeout")]

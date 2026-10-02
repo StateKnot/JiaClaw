@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw 个人持久化智能体运行时 HTTP 接口草图。\n\n鉴权：\n- Bearer：当配置了 `JIACLAW_API_TOKEN` 或 `[http].api_token` 时，`/api/*` 需要 `Authorization: Bearer <token>` 或 `X-Api-Token`。未配置时无需鉴权（本地开发友好）。\n- Webhook secret：当配置了 `JIACLAW_WEBHOOK_SECRET` 或 `[http].webhook_secret` 时，`POST /hooks/inbound` 需要 `X-Webhook-Secret`。\n- Telegram secret：当配置了 `JIACLAW_TELEGRAM_SECRET` 或 `[http].telegram_secret` 时，`POST /hooks/telegram` 需要 `X-Telegram-Bot-Api-Secret-Token`（Telegram 官方 secret token）。未配置则与本地 webhook 一样开放。\n- Slack signing secret：当配置了 `JIACLAW_SLACK_SIGNING_SECRET` 或 `[http].slack_signing_secret` 时，`POST /hooks/slack` 校验 `X-Slack-Signature` + `X-Slack-Request-Timestamp`（官方 v0 HMAC-SHA256，时间窗 ±5 分钟）。签名使用原始 body 字节。未配置则开放（开发友好）。\n- Discord 公钥：当配置了 `JIACLAW_DISCORD_PUBLIC_KEY` 或 `[http].discord_public_key` 时，`POST /hooks/discord` 校验 `X-Signature-Ed25519` + `X-Signature-Timestamp`（官方 Ed25519，消息为 `timestamp + raw body`）。未配置则开放（开发友好）。\n\nTelegram 出站：当配置了 `JIACLAW_TELEGRAM_BOT_TOKEN` 或 `[http].telegram_bot_token` 时，成功得到 assistant 回复后会调用 Bot `sendMessage` 推回聊天（文本按 4096 截断）。出站失败仍返回 200 + 原 `reply`，避免 Telegram webhook 重试；响应可带 `delivered` / `delivery_error`。未配置 token 时仅同步 JSON。用 `setWebhook` 将公网 `https://…/hooks/telegram` 登记到 Bot，并可带 `secret_token`。\n\nSlack 出站：当配置了 `JIACLAW_SLACK_BOT_TOKEN` 或 `[http].slack_bot_token` 时，成功得到 assistant 回复后会调用 `chat.postMessage` 推回 channel（文本按 40000 截断）。出站失败仍 200 + 原 `reply`，避免 Slack Events 重试。\n\nDiscord 出站：当配置了 `JIACLAW_DISCORD_BOT_TOKEN` 或 `[http].discord_bot_token` 时，`POST /hooks/discord` 立即返回 `type=5` deferred ACK，后台 chat 完成后 `PATCH /webhooks/{application_id}/{interaction_token}/messages/@original` 编辑原始回复（文本按 2000 截断）。未配置 token 时仍 ACK 并记录 session，但无法 follow-up。长任务必须走 deferred（Discord 要求 3s 内 ACK）。\n\n限流：当配置了 `JIACLAW_RATE_LIMIT_PER_MINUTE` 或 `[http].rate_limit_per_minute`（正整数）时，`/api/*` 与 `/hooks/inbound`、`/hooks/telegram`、`/hooks/slack`、`/hooks/discord` 的响应带 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`（Unix 纪元秒，表示剩余配额补满到 Limit 的时刻）。超限返回 429，并额外带 `Retry-After`（秒，距下一次可请求）。未配置限流时不发送这些头。`GET /health` 与 `GET /metrics` 不限流、不带这些头。\n\n请求体上限：`[http] max_body_bytes`（默认 1048576 / 1MiB）或环境变量 `JIACLAW_MAX_BODY_BYTES`（正整数优先；`0`/非法回退配置或默认）。超限返回 413，JSON `error` 为 `payload_too_large`，仍回写 `X-Request-Id`。`GET /health` 与 `GET /metrics` 不检查该上限。不支持上传/multipart 存储。\n\nMetrics：`GET /metrics` 返回 Prometheus 0.0.4 文本。默认无需 API Bearer（便于 scrape）。`[http] metrics_public = false` 或 `JIACLAW_METRICS_REQUIRE_AUTH=1` 时与 `/api/*` 相同鉴权。进程内计数，不引入 telemetry SDK。\n\nSession TTL：当配置了 `JIACLAW_SESSION_TTL_SECS` 或 `[http].session_ttl_secs`（正整数）时，闲置超过该秒数的会话会从 store 删除。`GET /api/sessions` 只返回未过期项；对已过期 id 的 GET/DELETE/export 与不存在一致（GET/export 为 404）。create/chat/get/list 会刷新 last_accessed；export 只读，不刷新、不触发摘要、不改写 store。\n\n请求追踪：所有响应回写 `X-Request-Id`。若请求未携带该头，服务端生成 UUID。\n\nCORS：默认关闭，不发送 CORS 头。`[http.cors] enabled=true` 或 `JIACLAW_CORS_ENABLED=1` 时，对匹配的 `Origin` 回写 `Access-Control-Allow-Origin`（精确匹配；`*` 仅在 `allowed_origins` / `JIACLAW_CORS_ORIGINS` 显式配置时），并处理 OPTIONS preflight（不要求 API Bearer，并仍回写 `X-Request-Id`）。默认允许方法 GET/POST/DELETE/OPTIONS；允许头 Authorization、Content-Type、X-Request-Id、Accept；暴露 X-Request-Id、X-RateLimit-Limit、X-RateLimit-Remaining、X-RateLimit-Reset、Retry-After。未匹配的 Origin 不回声。\n\n可选 SSE：`POST /api/chat` 在 `Accept: text/event-stream` 或 body `stream: true` 时返回 `text/event-stream`（事件：meta / token / tool / done / error）。未请求流式时 JSON 响应不变。当前为整轮 tool loop 完成后的分块推送；Brokerrouter 真流式后续。"
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
   },
   "servers": [
     {
@@ -1620,7 +1620,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Resolve unknown with manual platform receipt evidence, or cancel all remaining messages for the source event or scheduled run. Does not resume a paused job or resend messages."
       },
       "parameters": [
         {
@@ -1632,6 +1633,193 @@
           }
         }
       ]
+    },
+    "/api/jobs/{id}/runs/{run_id}/deliveries": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "listScheduledDeliveries",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelDelivery"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        ],
+        "summary": "List deliveries for one scheduled run",
+        "description": "Requires API Token and SQLite, even when scheduler or channels are disabled. Source run must belong to this job."
+      },
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "purgeScheduledDeliveryAudit",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "description": "Keeps the run and session. Rejects active or unresolved deliveries; removes only the outbox audit. Never requeues work.",
+        "summary": "Purge a run delivery audit after every fragment is delivered or cancelled",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/jobs/{id}/runs/{run_id}/deliveries/cancel": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "cancelScheduledDeliveries",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "summary": "Acknowledge and cancel the remaining deliveries for a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Rejects running computation or submitting delivery. Does not retract external messages or resume the job."
+      }
     }
   },
   "components": {
@@ -1880,6 +2068,38 @@
             "minimum": 1,
             "maximum": 600,
             "default": 120
+          },
+          "delivery": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "channel",
+              "installation_id",
+              "conversation_id"
+            ],
+            "properties": {
+              "channel": {
+                "type": "string",
+                "enum": [
+                  "telegram",
+                  "slack"
+                ]
+              },
+              "installation_id": {
+                "type": "string"
+              },
+              "conversation_id": {
+                "type": "string"
+              },
+              "thread_id": {
+                "type": "string",
+                "nullable": true,
+                "default": null
+              }
+            },
+            "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted.",
+            "nullable": true,
+            "default": null
           }
         }
       },
@@ -1962,7 +2182,8 @@
             "type": "string",
             "nullable": true
           }
-        }
+        },
+        "description": "Persisted execution and result. completed means the result and any outbound plan committed atomically; inspect deliveries separately for platform acceptance."
       },
       "HealthResponse": {
         "type": "object",
@@ -2577,7 +2798,8 @@
             "type": "string"
           },
           "event_id": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "destination": {
             "$ref": "#/components/schemas/ChannelDestination"
@@ -2631,6 +2853,14 @@
           "next_attempt_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "job_run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "job_id": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -2647,7 +2877,8 @@
           "started_ms",
           "finished_ms",
           "next_attempt_ms"
-        ]
+        ],
+        "description": "Exactly one source: event_id or job_run_id. job_id identifies the scheduled run owner. Pausing/deleting a job does not cancel its existing messages."
       },
       "ChannelResolution": {
         "type": "object",
@@ -2691,6 +2922,36 @@
           "state",
           "max_processing"
         ]
+      },
+      "ScheduledDestination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "channel",
+          "installation_id",
+          "conversation_id"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "telegram",
+              "slack"
+            ]
+          },
+          "installation_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string",
+            "nullable": true,
+            "default": null
+          }
+        },
+        "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted."
       }
     }
   }

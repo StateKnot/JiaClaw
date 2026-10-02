@@ -34,6 +34,7 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
       - run: python3 tests/channels.py target/debug/jiaclaw
+      - run: python3 tests/scheduled_delivery.py target/debug/jiaclaw
       - run: python3 tests/installer.py
       - name: Browser acceptance
         if: runner.os == 'Linux'

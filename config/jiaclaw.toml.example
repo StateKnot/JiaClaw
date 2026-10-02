@@ -48,6 +48,7 @@ shutdown_timeout_secs = 30
 # installation_id = "123456"  # Numeric prefix of your Bot Token.
 # allowed_senders = ["YOUR_USER_ID"]
 # allowed_conversations = ["YOUR_CHAT_ID"]
+# scheduled_destinations = [{ conversation_id = "YOUR_CHAT_ID" }] # Explicit proactive permission.
 # enabled_tools = ["datetime_now"]
 # timeout_secs = 120
 

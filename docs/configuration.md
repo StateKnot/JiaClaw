@@ -101,8 +101,10 @@ Telegram、Slack、Discord 必须配置 `http.channels` 安装/身份/工具白�
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v3（包含调度与渠道状态），旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v4（包含入站事件和定时运行两种发件来源），旧二进制拒绝降级；升级前应按部署指南停机备份。
 
 ### 渠道授权与持久消息
 
 `http.channels` 默认为空，渠道关闭。启用 Telegram/Slack/Discord 时须同时设置安装身份、发送者/会话/后台工具精确白名单，SQLite 和 API Token。旧版本只有平台密钥的配置须按[渠道指南](channels.md)显式迁移，不能依赖同步 JSON reply 或空工具列表放行所有工具。Discord 另需环境变量 `JIACLAW_CHANNEL_STATE_KEY`（32 字节密钥的 64 位十六进制编码）。
+
+Telegram/Slack 每个安装可额外配置 `scheduled_destinations = [{ conversation_id = "...", thread_id = "..." }]`；thread_id 省略表示只授权会话顶层。该列表默认空，最多 100 个精确且不重复的目的地，独立于入站会话白名单。有通知的任务工具必须同时获得该安装授权；任务 `delivery` 不允许携带凭证或服务端点。详见[定时通知指南](scheduled-delivery.md)。
