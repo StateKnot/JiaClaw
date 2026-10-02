@@ -5892,6 +5892,18 @@ mod tests {
     };
     use tower::ServiceExt;
 
+    // HTTP, channel and storage fixtures run offline deliberately. Production
+    // provider defaults remain unchanged and are validated by integration tests.
+    fn offline_test_config() -> AgentConfig {
+        AgentConfig {
+            provider: jiaclaw_core::ProviderConfig {
+                provider_type: "stub".to_string(),
+                ..jiaclaw_core::ProviderConfig::default()
+            },
+            ..AgentConfig::default()
+        }
+    }
+
     fn create_test_app() -> Router {
         create_test_app_with_auth(None, None)
     }
@@ -5932,7 +5944,7 @@ mod tests {
         rate_limit_per_minute: Option<u32>,
         max_body_bytes: u64,
     ) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let metrics = Arc::new(Metrics::default());
         let agent = attach_tool_metrics(
             JiaClawAgent::new(config).expect("创建测试 agent 失败"),
@@ -5966,7 +5978,7 @@ mod tests {
     }
 
     fn create_test_app_with_telegram_secret(telegram_secret: Option<String>) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
@@ -6055,7 +6067,7 @@ mod tests {
         bot_token: Option<String>,
         api_base: String,
     ) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
@@ -6100,7 +6112,7 @@ mod tests {
     }
 
     fn create_test_app_with_slack_signing_secret(signing_secret: Option<String>) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
@@ -6130,7 +6142,7 @@ mod tests {
     }
 
     fn create_test_app_with_slack_outbound(bot_token: Option<String>, api_base: String) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
@@ -6225,7 +6237,7 @@ mod tests {
         bot_token: Option<String>,
         api_base: String,
     ) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
@@ -6350,7 +6362,7 @@ mod tests {
         session_ttl_secs: Option<u64>,
         metrics_require_auth: bool,
     ) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let metrics = Arc::new(Metrics::default());
         let agent = attach_tool_metrics(
             JiaClawAgent::new(config).expect("创建测试 agent 失败"),
@@ -6392,7 +6404,7 @@ mod tests {
         cors: &HttpCorsConfig,
         api_token: Option<String>,
     ) -> Router {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let metrics = Arc::new(Metrics::default());
         let agent = attach_tool_metrics(
             JiaClawAgent::new(config).expect("创建测试 agent 失败"),
@@ -7177,7 +7189,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_session_does_not_compact_or_rewrite() {
-        let state = create_test_state_from_config(AgentConfig::default());
+        let state = create_test_state_from_config(offline_test_config());
         let session_id = "export-no-compact".to_string();
         let history = overflow_history(60);
         let original_len = history.len();
@@ -7506,7 +7518,7 @@ mod tests {
     async fn test_import_session_persists_when_enabled() {
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-import-{}.json", uuid::Uuid::new_v4()));
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let state = AppState {
             agent: Arc::new(agent),
@@ -7714,7 +7726,7 @@ mod tests {
             content: "将过期".to_string(),
         }];
 
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let state = AppState {
             agent: Arc::new(agent),
@@ -7766,7 +7778,7 @@ mod tests {
     fn test_state_for_workspace(workspace: PathBuf) -> AppState {
         let config = AgentConfig {
             workspace_path: workspace,
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -7804,7 +7816,7 @@ mod tests {
                 path: path.to_string(),
                 ..HeartbeatConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         }
     }
 
@@ -7891,7 +7903,7 @@ mod tests {
                 path: "HEARTBEAT.md".to_string(),
                 session_id: "heartbeat".to_string(),
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
 
         let state = test_state_for_workspace(ws.clone());
@@ -8101,7 +8113,7 @@ mod tests {
         disk_map.insert(session_id.clone(), disk_messages);
         save_sessions(&persist_path, &disk_map).expect("保存失败");
 
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let mut mem_map = HashMap::new();
         mem_map.insert(session_id.clone(), SessionRecord::new(mem_messages));
@@ -8151,7 +8163,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_message_limit() {
-        let state = create_test_state_from_config(AgentConfig::default());
+        let state = create_test_state_from_config(offline_test_config());
         let session_id = "test-limit-session".to_string();
 
         {
@@ -8233,7 +8245,7 @@ mod tests {
                 summarize_on_overflow: true,
                 keep_recent: 10,
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let state = create_test_state_from_config(config);
         let session_id = "test-summarize-session".to_string();
@@ -8312,7 +8324,7 @@ mod tests {
                 summarize_on_overflow: true,
                 keep_recent: 10,
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let state = create_test_state_from_config(config);
         let session_id = "webhook:overflow-chat".to_string();
@@ -8466,7 +8478,7 @@ mod tests {
                 },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8526,7 +8538,7 @@ mod tests {
                 },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8587,7 +8599,7 @@ mod tests {
                 memory_search: MemorySearchToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8662,7 +8674,7 @@ mod tests {
                 memory_write: MemoryWriteToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8736,7 +8748,7 @@ mod tests {
                 read_file: ReadFileToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8797,7 +8809,7 @@ mod tests {
                 list_dir: ListDirToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8858,7 +8870,7 @@ mod tests {
                 write_file: WriteFileToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8923,7 +8935,7 @@ mod tests {
                 delete_file: DeleteFileToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -8988,7 +9000,7 @@ mod tests {
                 str_replace: StrReplaceToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -9057,7 +9069,7 @@ mod tests {
                 grep: GrepToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -9130,7 +9142,7 @@ mod tests {
                 glob: GlobToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -9203,7 +9215,7 @@ mod tests {
                 mkdir: MkdirToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -9272,7 +9284,7 @@ mod tests {
                 r#move: MoveToolConfig { enabled: false },
                 ..ToolsConfig::default()
             },
-            ..AgentConfig::default()
+            ..offline_test_config()
         };
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let persist_path =
@@ -11254,7 +11266,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_persistence_disabled() {
-        let config = AgentConfig::default();
+        let config = offline_test_config();
         let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
         let persist_path =
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));

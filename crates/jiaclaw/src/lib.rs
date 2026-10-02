@@ -31,6 +31,7 @@ mod heartbeat;
 mod identity;
 mod mcp;
 mod memory;
+mod native_agent;
 pub use mcp::inspect_mcp_server;
 mod provider;
 mod session;
@@ -358,10 +359,13 @@ impl JiaClawAgent {
     /// 根据配置选择提供商：
     /// 1. `brokerrouter` - 推荐的生产路径（通过 Brokerrouter Gateway）
     /// 2. `openai_compatible` - 已废弃的直连模式（仅作开发逃生舱）
-    /// 3. 如果未配置 API key，回退到存根实现
+    /// 3. `stub` - 显式选择的离线存根模式
     ///
     /// 本方法会自动处理工具调用循环（上限见 [`AgentConfig::effective_max_tool_iterations`]）。
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, JiaClawError> {
+        let allowed_tools = self.allowed_tool_names(request)?;
+        let env_key = std::env::var("JIACLAW_API_KEY").ok();
+        let api_key = Self::resolve_provider_api_key(&self.config.provider, env_key.as_deref())?;
         // 短锁快照：reload 期间进行中的 chat 继续使用本轮技能表，不持锁。
         let skills = self.skills.snapshot();
         // 检查是否有技能应该被自动触发（仅在 auto_skills 为 true 时）
@@ -399,49 +403,77 @@ impl JiaClawAgent {
         // 构建完整的系统提示（包含工作空间内容）
         let system_prompt = self.build_system_prompt_with_skills(&request_with_skills, &skills);
 
-        // 从配置或环境变量获取 API key
-        let env_key = std::env::var("JIACLAW_API_KEY").ok();
-        let api_key = env_key
-            .as_deref()
-            .or(self.config.provider.api_key.as_deref());
-
         // 根据提供商类型执行工具循环
         let provider_type = self.config.provider.provider_type.as_str();
         match (api_key, provider_type) {
-            (Some(key), "brokerrouter" | "openai_compatible") => {
+            (Some(key), "brokerrouter") => {
+                self.execute_brokerrouter_loop(&request_with_skills, &system_prompt, &key)
+                    .await
+            }
+            (Some(key), "openai_compatible") => {
                 // 使用工具执行循环
                 self.execute_tool_loop(
                     request_with_skills.messages.clone(),
                     &system_prompt,
                     provider_type,
-                    Some(key),
+                    Some(&key),
+                    &allowed_tools,
                 )
                 .await
             }
-            (Some(_), unknown_type) => {
-                tracing::warn!("未知的提供商类型 '{}', 回退到存根模式", unknown_type);
-                // 存根模式也支持工具执行
+            (None, "stub") => {
                 self.execute_tool_loop(
                     request_with_skills.messages.clone(),
                     &system_prompt,
                     "stub",
                     None,
+                    &allowed_tools,
                 )
                 .await
             }
-            (None, _) => {
-                // 存根模式也支持工具执行
-                tracing::warn!(
-                    "未配置 API key（通过配置文件或 JIACLAW_API_KEY 环境变量），使用存根模式"
-                );
-                self.execute_tool_loop(
-                    request_with_skills.messages.clone(),
-                    &system_prompt,
-                    "stub",
-                    None,
-                )
-                .await
+            _ => Err(JiaClawError::Configuration(format!(
+                "无效的模型提供商配置: {provider_type}"
+            ))),
+        }
+    }
+
+    /// A request may narrow the configured registry, never expand it. The empty
+    /// list retains the API's existing meaning: all registered tools are allowed.
+    fn allowed_tool_names(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<std::collections::HashSet<String>, JiaClawError> {
+        if request.enabled_tools.is_empty() {
+            return Ok(self.tools.list().into_iter().map(str::to_owned).collect());
+        }
+        for name in &request.enabled_tools {
+            if self.tools.get(name).is_none() {
+                return Err(JiaClawError::InvalidRequest(format!(
+                    "请求启用了未注册的工具: {name}"
+                )));
             }
+        }
+        Ok(request.enabled_tools.iter().cloned().collect())
+    }
+
+    fn resolve_provider_api_key(
+        provider: &ProviderConfig,
+        env_key: Option<&str>,
+    ) -> Result<Option<String>, JiaClawError> {
+        match provider.provider_type.as_str() {
+            "stub" => Ok(None),
+            "brokerrouter" | "openai_compatible" => {
+                let key = env_key.or(provider.api_key.as_deref());
+                match key {
+                    Some(key) if !key.trim().is_empty() => Ok(Some(key.to_owned())),
+                    _ => Err(JiaClawError::Configuration(
+                        "模型提供商缺少 API Key；离线模式需显式配置 provider_type='stub'".into(),
+                    )),
+                }
+            }
+            other => Err(JiaClawError::Configuration(format!(
+                "未知的提供商类型: {other}"
+            ))),
         }
     }
 
@@ -459,7 +491,7 @@ impl JiaClawAgent {
 
     /// 使用当前 LLM provider 生成会话摘要（无工具、限制 `max_tokens`）。
     ///
-    /// 无 API key 时返回确定性本地摘要，不走 stub tool loop。
+    /// 显式 stub 模式返回确定性本地摘要，不走 tool loop。
     ///
     /// # Errors
     ///
@@ -481,9 +513,7 @@ impl JiaClawAgent {
 
         let transcript = format_messages_for_summary(messages);
         let env_key = std::env::var("JIACLAW_API_KEY").ok();
-        let api_key = env_key
-            .as_deref()
-            .or(self.config.provider.api_key.as_deref());
+        let api_key = Self::resolve_provider_api_key(&self.config.provider, env_key.as_deref())?;
 
         let Some(key) = api_key else {
             return Ok(local_conversation_digest(messages));
@@ -499,7 +529,7 @@ impl JiaClawAgent {
                 SESSION_SUMMARY_PROMPT,
                 &prompt_messages,
                 self.config.provider.provider_type.as_str(),
-                key,
+                &key,
                 SESSION_SUMMARY_TEMPERATURE,
                 SESSION_SUMMARY_MAX_TOKENS,
             )
@@ -613,7 +643,12 @@ impl JiaClawAgent {
         }
 
         // 添加可用工具列表
-        let tool_list = self.tools.list();
+        let mut tool_list = self.tools.list();
+        tool_list.retain(|name| {
+            request.enabled_tools.is_empty()
+                || request.enabled_tools.iter().any(|allowed| allowed == name)
+        });
+        tool_list.sort_unstable();
         if !tool_list.is_empty() {
             prompt.push_str("\n\n## Available Tools\n\n");
             prompt.push_str("你可以使用以下工具来完成任务。每个工具的详细信息如下：\n\n");
@@ -627,8 +662,9 @@ impl JiaClawAgent {
                     ));
                 }
             }
-            prompt.push_str(
-                "## Tool Calling Format\n\n\
+            if self.config.provider.provider_type != "brokerrouter" {
+                prompt.push_str(
+                    "## Tool Calling Format\n\n\
                  要调用工具，请在你的响应中使用以下 JSON 代码块格式：\n\n\
                  ```tool\n\
                  {\n\
@@ -638,7 +674,8 @@ impl JiaClawAgent {
                  ```\n\n\
                  你可以在一条消息中调用多个工具，每个工具调用使用一个单独的 ```tool 代码块。\n\
                  我会执行这些工具并将结果返回给你，然后你可以继续处理。\n\n",
-            );
+                );
+            }
         }
 
         prompt
@@ -767,7 +804,7 @@ impl JiaClawAgent {
                     "未知的提供商类型: {provider_type}"
                 ))),
             }
-        } else {
+        } else if provider_type == "stub" {
             let request = ChatRequest {
                 messages: messages.to_vec(),
                 enabled_tools: vec![],
@@ -776,6 +813,10 @@ impl JiaClawAgent {
                 session_id: None,
             };
             Ok(self.stub_chat(&request, system_prompt))
+        } else {
+            Err(JiaClawError::Configuration(
+                "模型提供商缺少 API Key；离线模式需显式配置 provider_type='stub'".into(),
+            ))
         }
     }
 
@@ -808,6 +849,7 @@ impl JiaClawAgent {
         system_prompt: &str,
         provider_type: &str,
         api_key: Option<&str>,
+        allowed_tools: &std::collections::HashSet<String>,
     ) -> Result<ChatResponse, JiaClawError> {
         let max_iterations = self.config.effective_max_tool_iterations();
         let mut iteration = 0;
@@ -828,6 +870,18 @@ impl JiaClawAgent {
                     status: response.status,
                     session_id: None,
                 });
+            }
+
+            // Validate the whole model response before executing any side effect.
+            // Tool descriptions and prompts alone are not an authorization boundary.
+            if let Some(denied) = tool_calls
+                .iter()
+                .find(|call| !allowed_tools.contains(&call.tool_name))
+            {
+                return Err(JiaClawError::InvalidRequest(format!(
+                    "模型请求了本轮未授权的工具: {}",
+                    denied.tool_name
+                )));
             }
 
             if iteration >= max_iterations {
@@ -869,7 +923,7 @@ impl JiaClawAgent {
         }
     }
 
-    /// 存根实现（无 API key 时使用）
+    /// 显式选择 stub 提供商时的离线实现。
     fn stub_chat(&self, request: &ChatRequest, system_prompt: &str) -> ChatResponse {
         // 获取最后一条用户消息
         let last_user_message = request
@@ -1170,6 +1224,207 @@ impl ConversationSummarizer for JiaClawAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stub_config() -> AgentConfig {
+        AgentConfig {
+            provider: ProviderConfig {
+                provider_type: "stub".into(),
+                ..ProviderConfig::default()
+            },
+            ..AgentConfig::default()
+        }
+    }
+
+    #[test]
+    fn provider_configuration_requires_explicit_stub_and_nonempty_key() {
+        for provider_type in ["brokerrouter", "openai_compatible"] {
+            for missing_key in [None, Some(""), Some(" \t\n")] {
+                let provider = ProviderConfig {
+                    provider_type: provider_type.into(),
+                    api_key: missing_key.map(str::to_owned),
+                    ..ProviderConfig::default()
+                };
+                let error = JiaClawAgent::resolve_provider_api_key(&provider, None).unwrap_err();
+                assert!(matches!(error, JiaClawError::Configuration(_)));
+                assert!(error.to_string().contains("API Key"));
+            }
+        }
+        let unknown = ProviderConfig {
+            provider_type: "unsupported-provider".into(),
+            api_key: Some("configured-secret".into()),
+            ..ProviderConfig::default()
+        };
+        let error =
+            JiaClawAgent::resolve_provider_api_key(&unknown, Some("env-secret")).unwrap_err();
+        assert!(matches!(error, JiaClawError::Configuration(_)));
+        assert!(!error.to_string().contains("secret"));
+        assert_eq!(
+            JiaClawAgent::resolve_provider_api_key(&stub_config().provider, Some("env-secret"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn environment_key_overrides_configuration_including_empty_values() {
+        let provider = ProviderConfig {
+            api_key: Some("configured-secret".into()),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            JiaClawAgent::resolve_provider_api_key(&provider, Some("env-secret")).unwrap(),
+            Some("env-secret".into())
+        );
+        assert_eq!(
+            JiaClawAgent::resolve_provider_api_key(&provider, None).unwrap(),
+            Some("configured-secret".into())
+        );
+        assert!(JiaClawAgent::resolve_provider_api_key(&provider, Some("")).is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_provider_never_returns_a_successful_stub_response() {
+        let agent = JiaClawAgent::new(AgentConfig {
+            provider: ProviderConfig {
+                provider_type: "misspelled-provider".into(),
+                api_key: None,
+                ..ProviderConfig::default()
+            },
+            ..AgentConfig::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            agent.chat(&sample_request()).await,
+            Err(JiaClawError::Configuration(_))
+        ));
+        assert!(matches!(
+            agent
+                .summarize_conversation(&sample_request().messages)
+                .await,
+            Err(JiaClawError::Configuration(_))
+        ));
+        assert!(matches!(
+            agent
+                .complete_turn(&sample_request().messages, "", "brokerrouter", None)
+                .await,
+            Err(JiaClawError::Configuration(_))
+        ));
+    }
+
+    #[test]
+    fn request_tool_allowlist_filters_prompt_and_empty_list_keeps_registered_tools() {
+        let agent = JiaClawAgent::new(stub_config()).unwrap();
+        let mut request = sample_request();
+        assert_eq!(
+            agent.allowed_tool_names(&request).unwrap().len(),
+            agent.tools.list().len()
+        );
+        request.enabled_tools = vec!["datetime_now".into(), "datetime_now".into()];
+        assert_eq!(agent.allowed_tool_names(&request).unwrap().len(), 1);
+        let prompt = agent.build_system_prompt(&request);
+        assert!(prompt.contains("### datetime_now\n"));
+        assert!(!prompt.contains("### file_write\n"));
+        assert!(!prompt.contains("### workspace_list\n"));
+    }
+
+    #[tokio::test]
+    async fn unknown_requested_tools_are_rejected_before_model_execution() {
+        let agent = JiaClawAgent::new(stub_config()).unwrap();
+        let mut request = sample_request();
+        request.enabled_tools = vec!["unknown-tool".into()];
+        let error = agent.chat(&request).await.unwrap_err();
+        assert!(matches!(error, JiaClawError::InvalidRequest(_)));
+        assert!(error.to_string().contains("unknown-tool"));
+    }
+
+    struct CountExecutionTool(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for CountExecutionTool {
+        fn name(&self) -> &str {
+            "count_execution"
+        }
+        fn description(&self) -> &str {
+            "test-only side effect counter"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> Result<String, JiaClawError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("executed".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn model_cannot_execute_a_registered_tool_outside_request_allowlist() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut agent = JiaClawAgent::new(stub_config()).unwrap();
+        agent.register_tool_for_test(Box::new(CountExecutionTool(counter.clone())));
+        agent.force_repeat_tool_for_test("count_execution");
+        let mut request = sample_request();
+        request.enabled_tools = vec!["datetime_now".into()];
+        let error = agent.chat(&request).await.unwrap_err();
+        assert!(matches!(error, JiaClawError::InvalidRequest(_)));
+        assert!(error.to_string().contains("count_execution"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn model_can_execute_a_tool_in_request_allowlist() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut agent = JiaClawAgent::new(AgentConfig {
+            max_tool_iterations: 2,
+            ..stub_config()
+        })
+        .unwrap();
+        agent.register_tool_for_test(Box::new(CountExecutionTool(counter.clone())));
+        agent.force_repeat_tool_for_test("count_execution");
+        let mut request = sample_request();
+        request.enabled_tools = vec!["count_execution".into()];
+        let response = agent.chat(&request).await.unwrap();
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            response.tool_calls[0].result,
+            Some(serde_json::json!("executed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_model_batch_is_authorized_before_any_tool_executes() {
+        let content = "```tool\n{\"tool_name\":\"count_execution\",\"arguments\":{}}\n```\n\
+                       ```tool\n{\"tool_name\":\"file_write\",\"arguments\":{}}\n```";
+        let mock = mockito::mock("POST", "/chat/completions")
+            .match_header("Authorization", "Bearer permission-test")
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": content}}]
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create();
+        let mut agent = JiaClawAgent::new(AgentConfig {
+            provider: ProviderConfig {
+                provider_type: "openai_compatible".into(),
+                base_url: mockito::server_url(),
+                api_key: Some("permission-test".into()),
+                ..ProviderConfig::default()
+            },
+            ..AgentConfig::default()
+        })
+        .unwrap();
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        agent.register_tool_for_test(Box::new(CountExecutionTool(counter.clone())));
+        let mut request = sample_request();
+        request.enabled_tools = vec!["count_execution".into()];
+        let error = agent.chat(&request).await.unwrap_err();
+        assert!(matches!(error, JiaClawError::InvalidRequest(_)));
+        assert!(error.to_string().contains("file_write"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+        mock.assert();
+    }
 
     #[test]
     fn test_agent_creation() {
@@ -2149,7 +2404,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_stub() {
-        let config = AgentConfig::default();
+        let config = stub_config();
         let agent = JiaClawAgent::new(config).unwrap();
 
         let request = ChatRequest {
@@ -2169,7 +2424,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_execution_in_stub_mode() {
-        let config = AgentConfig::default();
+        let config = stub_config();
         let agent = JiaClawAgent::new(config).unwrap();
 
         // 测试工具调用触发
@@ -2275,7 +2530,7 @@ mod tests {
     async fn configured_timeout_does_not_fail_fast_tools() {
         let config = AgentConfig {
             tool_timeout_secs: Some(30),
-            ..AgentConfig::default()
+            ..stub_config()
         };
         let agent = JiaClawAgent::new(config).unwrap();
 
@@ -2354,7 +2609,7 @@ mod tests {
         let config = AgentConfig {
             workspace_path: dir.clone(),
             max_tool_iterations: 2,
-            ..AgentConfig::default()
+            ..stub_config()
         };
         assert_eq!(config.effective_max_tool_iterations(), 2);
 
@@ -2409,7 +2664,7 @@ mod tests {
         let dir = unique_workspace("jiaclaw_max_tool_iter_default");
         let config = AgentConfig {
             workspace_path: dir.clone(),
-            ..AgentConfig::default()
+            ..stub_config()
         };
         assert_eq!(
             config.effective_max_tool_iterations(),
@@ -2461,7 +2716,7 @@ mod tests {
     #[tokio::test]
     async fn test_auto_skills_disabled() {
         // 测试禁用自动技能激活
-        let config = AgentConfig::default();
+        let config = stub_config();
         let agent = JiaClawAgent::new(config).unwrap();
 
         // 假设有一个技能会被 "搜索" 触发
@@ -2487,7 +2742,7 @@ mod tests {
     #[tokio::test]
     async fn test_auto_skills_enabled() {
         // 测试启用自动技能激活
-        let config = AgentConfig::default();
+        let config = stub_config();
         let agent = JiaClawAgent::new(config).unwrap();
 
         let request = ChatRequest {
@@ -2509,7 +2764,7 @@ mod tests {
     async fn test_explicit_skills_with_auto_disabled() {
         // 测试显式指定技能 + 禁用自动激活
         // 显式技能应该仍然生效
-        let config = AgentConfig::default();
+        let config = stub_config();
         let agent = JiaClawAgent::new(config).unwrap();
 
         let request = ChatRequest {
@@ -2823,13 +3078,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_session_messages_on_uses_local_digest_without_api_key() {
+    async fn compact_session_messages_on_uses_local_digest_in_explicit_stub_mode() {
         let config = AgentConfig {
             session: SessionConfig {
                 summarize_on_overflow: true,
                 keep_recent: 10,
             },
-            ..AgentConfig::default()
+            ..stub_config()
         };
         let agent = JiaClawAgent::new(config).unwrap();
         let compacted = agent.compact_session_messages(overflow_messages(51)).await;
@@ -2848,7 +3103,8 @@ mod tests {
                 "message": {
                     "role": "assistant",
                     "content": "Summary: user asked about 0-9."
-                }
+                },
+                "finish_reason": "stop"
             }]
         });
         let _mock = mockito::mock("POST", "/v1/chat/completions")
@@ -2973,7 +3229,7 @@ mod tests {
         let agent = std::sync::Arc::new(
             JiaClawAgent::new(AgentConfig {
                 workspace_path: dir.clone(),
-                ..AgentConfig::default()
+                ..stub_config()
             })
             .unwrap(),
         );

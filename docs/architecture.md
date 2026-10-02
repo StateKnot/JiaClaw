@@ -17,6 +17,8 @@ SQLite history -> JiaClawAgent -> BrokerrouterProvider -> Brokerrouter -> model
    commit SQLite before completed response
 ```
 
+Brokerrouter 使用原生 `tools` / `assistant.tool_calls` / `role:tool`；请求白名单控制工具目录与执行权限，完整批次预检后按 ID 回传结果。后续模型失败时保留已经执行的工具记录并返回需人工核查状态。正文代码块不触发工具，详情见 [原生工具合同](native-tools.md)。
+
 模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。MCP 使用 StateKnot 的发布版 HTTP client，启动时完成固定 endpoint、白名单、descriptor pin 和 schema 校验，再一次性注册到 ToolRegistry。未批准的工具和 server instructions 不进入模型提示。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
 
 ## 会话边界
