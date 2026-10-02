@@ -460,6 +460,13 @@ impl SessionStore {
             )
             .into());
         }
+        let cancelled = tx
+            .prepare("SELECT id FROM channel_outbox WHERE job_run_id=?1 AND state='unknown'")?
+            .query_map([run_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for delivery in cancelled {
+            super::channel_store::settle_wecom_delivery_budget(&tx, &delivery, now)?;
+        }
         tx.execute("UPDATE channel_outbox SET state='cancelled',finished_ms=?2,error=COALESCE(error,'remaining scheduled delivery explicitly cancelled after review') WHERE job_run_id=?1 AND state<>'delivered'", params![run_id,now])?;
         tx.commit()?;
         Ok(true)
@@ -622,7 +629,13 @@ impl SessionStore {
             }) {
                 Err(anyhow::anyhow!("tool failure requires review"))
             } else {
-                super::outbound::split_text(&answer.message.content)
+                super::outbound::split_text_for(
+                    spec.delivery
+                        .as_ref()
+                        .expect("delivery checked above")
+                        .channel,
+                    &answer.message.content,
+                )
             };
             match result {
                 Ok(chunks) => Some(chunks),
@@ -1307,7 +1320,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);

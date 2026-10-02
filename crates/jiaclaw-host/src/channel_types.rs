@@ -10,6 +10,7 @@ pub(super) enum Channel {
     Slack,
     Discord,
     Feishu,
+    Wecom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,10 +39,14 @@ impl ScheduledDestination {
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.channel != Channel::Discord,
-            "scheduled delivery supports Telegram, Slack or Feishu, not expiring Discord interactions"
+            "scheduled delivery supports Telegram, Slack, Feishu or WeCom, not expiring Discord interactions"
         );
         if self.channel == Channel::Feishu {
             super::feishu::validate_installation(&self.installation_id)?;
+            return super::outbound::validate_destination(&self.destination());
+        }
+        if self.channel == Channel::Wecom {
+            super::wecom::validate_installation(&self.installation_id)?;
             return super::outbound::validate_destination(&self.destination());
         }
         anyhow::ensure!(

@@ -28,6 +28,7 @@ use crate::channel_types::{Channel, Destination};
 pub(super) const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_PARTS: usize = 16;
 pub(super) const MAX_PART_UTF16: usize = 2000;
+pub(super) const WECOM_TEXT_BYTES: usize = 2048;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +147,7 @@ impl OutboundClient {
                         "allowed_mentions": {"parse": [], "replied_user": false}
                     }))
             }
-            Channel::Feishu => return rejected("dedicated_sender_required"),
+            Channel::Feishu | Channel::Wecom => return rejected("dedicated_sender_required"),
         };
         let Ok(response) = request.send().await else {
             return unknown("transport_error");
@@ -243,6 +244,52 @@ pub(super) fn split_text(text: &str) -> Result<Vec<String>> {
     Ok(parts)
 }
 
+/// Split before durable admission. `WeCom` truncates text above its byte limit,
+/// so measure the final plain-text rendering while retaining original slices.
+pub(super) fn split_text_for(channel: Channel, text: &str) -> Result<Vec<String>> {
+    if channel != Channel::Wecom {
+        return split_text(text);
+    }
+    if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+        bail!("outbound text must contain 1..=16384 UTF-8 bytes");
+    }
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (offset, character) in text.char_indices() {
+        let cost = wecom_character_bytes(character);
+        if bytes + cost > WECOM_TEXT_BYTES {
+            parts.push(text[start..offset].to_owned());
+            start = offset;
+            bytes = 0;
+        }
+        bytes += cost;
+    }
+    parts.push(text[start..].to_owned());
+    if parts.len() > MAX_PARTS {
+        bail!("outbound text exceeds 16 parts after platform rendering");
+    }
+    Ok(parts)
+}
+
+fn wecom_character_bytes(character: char) -> usize {
+    if matches!(character, '<' | '>') {
+        3
+    } else {
+        character.len_utf8()
+    }
+}
+
+pub(super) fn valid_wecom_text(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= WECOM_TEXT_BYTES
+        && text.chars().map(wecom_character_bytes).sum::<usize>() <= WECOM_TEXT_BYTES
+}
+
+pub(super) fn wecom_text(text: &str) -> String {
+    text.replace('<', "＜").replace('>', "＞")
+}
+
 pub(super) fn validate_destination(destination: &Destination) -> Result<()> {
     let valid = match destination.channel {
         Channel::Telegram => {
@@ -277,6 +324,13 @@ pub(super) fn validate_destination(destination: &Destination) -> Result<()> {
                 && destination.interaction_id.is_none()
                 && destination.expires_ms.is_none()
         }
+        Channel::Wecom => {
+            super::wecom::validate_installation(&destination.installation_id).is_ok()
+                && super::wecom::user_id(&destination.conversation_id)
+                && destination.thread_id.is_none()
+                && destination.interaction_id.is_none()
+                && destination.expires_ms.is_none()
+        }
     };
     if !valid {
         bail!("invalid outbound destination");
@@ -294,6 +348,7 @@ pub(super) fn validate_api_base(
         Channel::Slack => "https://slack.com/api",
         Channel::Discord => "https://discord.com/api/v10",
         Channel::Feishu => "https://open.feishu.cn/open-apis",
+        Channel::Wecom => "https://qyapi.weixin.qq.com/cgi-bin",
     };
     if api_base == official || api_base == format!("{official}/") {
         return Ok(());
@@ -315,6 +370,7 @@ pub(super) fn validate_api_base(
         Channel::Slack => "/api",
         Channel::Discord => "/api/v10",
         Channel::Feishu => "/open-apis",
+        Channel::Wecom => "/cgi-bin",
     };
     if !allow_loopback
         || !literal_loopback
@@ -403,7 +459,7 @@ fn valid_credential(channel: Channel, credential: &str) -> bool {
             .split_once(':')
             .is_some_and(|(bot, token)| positive_id(bot).is_some() && safe_token(token)),
         Channel::Slack | Channel::Discord => safe_token(credential),
-        Channel::Feishu => false,
+        Channel::Feishu | Channel::Wecom => false,
     }
 }
 
@@ -499,7 +555,7 @@ fn parse_receipt(destination: &Destination, body: &[u8]) -> DeliveryOutcome {
                 };
             }
         }
-        Channel::Feishu => return rejected("dedicated_sender_required"),
+        Channel::Feishu | Channel::Wecom => return rejected("dedicated_sender_required"),
     }
     unknown("invalid_receipt")
 }
@@ -570,7 +626,7 @@ fn retry_delay(channel: Channel, headers: &HeaderMap, body: &[u8]) -> Option<i64
             #[allow(clippy::cast_possible_truncation)]
             Some((seconds * 1000.0).ceil() as i64)
         }
-        Channel::Feishu => None,
+        Channel::Feishu | Channel::Wecom => None,
     }
 }
 
@@ -593,6 +649,7 @@ mod tests {
                 Channel::Slack => "C123ABC456",
                 Channel::Discord => "234567890123456789",
                 Channel::Feishu => "oc_testchat",
+                Channel::Wecom => "test-user",
             }
             .to_owned(),
             thread_id: None,
@@ -606,7 +663,7 @@ mod tests {
             Channel::Telegram => "123456:secret_TG-token",
             Channel::Slack => "xoxb-test-token",
             Channel::Discord => "interaction-secret_token",
-            Channel::Feishu => "dedicated-sender-only",
+            Channel::Feishu | Channel::Wecom => "dedicated-sender-only",
         }
     }
 
@@ -709,6 +766,48 @@ mod tests {
         assert_eq!(parts, vec!["a".repeat(1999), "🙂".to_owned()]);
         assert!(split_text("").is_err());
         assert!(split_text(&"a".repeat(16 * 1024 + 1)).is_err());
+    }
+
+    #[test]
+    fn wecom_split_preserves_source_and_bounds_rendered_utf8() {
+        for input in [
+            "a".repeat(16 * 1024),
+            "🙂".repeat(4096),
+            "中文\n  e\u{301}<a href=\"link\">正文</a>".repeat(100),
+            format!("{}🙂", "中".repeat(682)),
+            "<".repeat(682 * 16),
+        ] {
+            let parts = split_text_for(Channel::Wecom, &input).unwrap();
+            assert_eq!(parts.concat(), input);
+            assert!(parts.len() <= 16);
+            assert!(parts.iter().all(|part| valid_wecom_text(part)));
+            assert!(parts
+                .iter()
+                .all(|part| wecom_text(part).len() <= WECOM_TEXT_BYTES));
+        }
+        assert_eq!(
+            split_text_for(Channel::Wecom, &"a".repeat(2048)).unwrap(),
+            vec!["a".repeat(2048)]
+        );
+        assert_eq!(
+            split_text_for(Channel::Wecom, &"<".repeat(683)).unwrap(),
+            vec!["<".repeat(682), "<".into()]
+        );
+        assert!(split_text_for(Channel::Wecom, &"<".repeat(682 * 16 + 1)).is_err());
+        assert!(split_text_for(Channel::Wecom, &"a".repeat(16 * 1024 + 1)).is_err());
+        assert!(split_text_for(Channel::Wecom, "").is_err());
+        for channel in [
+            Channel::Telegram,
+            Channel::Slack,
+            Channel::Discord,
+            Channel::Feishu,
+        ] {
+            let input = format!("{}🙂<>", "中".repeat(2000));
+            assert_eq!(
+                split_text_for(channel, &input).unwrap(),
+                split_text(&input).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -823,7 +922,9 @@ mod tests {
                     Channel::Telegram => Some("42".to_owned()),
                     Channel::Slack => Some("1234567890.000002".to_owned()),
                     Channel::Discord => None,
-                    Channel::Feishu => unreachable!("dedicated sender is tested separately"),
+                    Channel::Feishu | Channel::Wecom => {
+                        unreachable!("dedicated sender is tested separately")
+                    }
                 };
                 let server = fixture(Some(response(200, "", body))).await;
                 let outcome = OutboundClient::new_with_loopback(true)
@@ -846,7 +947,9 @@ mod tests {
                 let (headers, body) = request.split_once("\r\n\r\n").unwrap();
                 let json: serde_json::Value = serde_json::from_str(body).unwrap();
                 match channel {
-                    Channel::Feishu => unreachable!("dedicated sender is tested separately"),
+                    Channel::Feishu | Channel::Wecom => {
+                        unreachable!("dedicated sender is tested separately")
+                    }
                     Channel::Telegram => {
                         assert!(headers
                             .starts_with("POST /bot123456:secret_TG-token/sendMessage HTTP/1.1"));

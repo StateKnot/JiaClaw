@@ -1,6 +1,6 @@
 # 持久化定时任务
 
-JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。默认只保存会话和运行结果；可通过显式 `delivery` 与独立目的地白名单发送 Telegram/Slack/飞书通知，见[定时通知指南](scheduled-delivery.md)。
+JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。默认只保存会话和运行结果；可通过显式 `delivery` 与独立目的地白名单发送 Telegram/Slack/飞书/企业微信通知，见[定时通知指南](scheduled-delivery.md)。
 
 ## 启用
 

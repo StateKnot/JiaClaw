@@ -123,6 +123,8 @@ fn runtime_with_key(key: &[u8; 32]) -> Arc<ChannelRuntime> {
             api_base: "https://discord.com/api/v10".into(),
             feishu_sender: None,
             feishu_verification_token: None,
+            wecom_sender: None,
+            wecom_callback: None,
         }],
         client: OutboundClient::new().unwrap(),
         cipher: Some(aead::LessSafeKey::new(

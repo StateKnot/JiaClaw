@@ -44,6 +44,11 @@ shutdown_timeout_secs = 30
 # feishu_encrypt_key = "..."       # JIACLAW_FEISHU_ENCRYPT_KEY
 # feishu_verification_token = "..." # JIACLAW_FEISHU_VERIFICATION_TOKEN
 # Feishu uses installation_id="cli_APP:TENANT", without app_id. See docs/feishu.md.
+# wecom_app_secret = ""           # JIACLAW_WECOM_APP_SECRET
+# wecom_callback_token = ""       # JIACLAW_WECOM_CALLBACK_TOKEN
+# wecom_encoding_aes_key = ""     # JIACLAW_WECOM_ENCODING_AES_KEY
+# WeCom self-built app: installation_id="CORP_ID:1000002", no app_id or thread_id.
+# Member IDs in allowlists must be lowercase. Dedicated app required; see docs/wecom.md.
 # discord_public_key = "..."       # JIACLAW_DISCORD_PUBLIC_KEY
 # Discord replies use interaction tokens; set JIACLAW_CHANNEL_STATE_KEY (64 hex).
 # No Discord Bot Authorization is sent for interaction replies.

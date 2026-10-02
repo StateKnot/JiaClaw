@@ -1279,9 +1279,9 @@ pub struct ScheduledChannelDestination {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelBinding {
-    /// Supported platform: telegram, slack, discord or feishu.
+    /// Supported platform: telegram, slack, discord, feishu or wecom.
     pub channel: String,
-    /// Telegram bot ID, Slack team ID, Discord app ID or Feishu app_id:tenant_key.
+    /// Telegram bot ID, Slack team ID, Discord app ID, Feishu app_id:tenant_key or WeCom corp_id:agent_id.
     pub installation_id: String,
     #[serde(default)]
     /// Slack application ID, matched independently from the team.
@@ -1359,6 +1359,16 @@ pub struct HttpConfig {
     /// Feishu callback Verification Token (JIACLAW_FEISHU_VERIFICATION_TOKEN overrides).
     #[serde(default)]
     pub feishu_verification_token: Option<String>,
+
+    /// WeCom application secret (JIACLAW_WECOM_APP_SECRET overrides).
+    #[serde(default)]
+    pub wecom_app_secret: Option<String>,
+    /// WeCom callback token (JIACLAW_WECOM_CALLBACK_TOKEN overrides).
+    #[serde(default)]
+    pub wecom_callback_token: Option<String>,
+    /// WeCom callback EncodingAESKey (JIACLAW_WECOM_ENCODING_AES_KEY overrides).
+    #[serde(default)]
+    pub wecom_encoding_aes_key: Option<String>,
 
     /// Discord Interactions 公钥（可选，环境变量 `JIACLAW_DISCORD_PUBLIC_KEY` 优先）
     ///
@@ -1457,6 +1467,9 @@ impl Default for HttpConfig {
             feishu_app_secret: None,
             feishu_encrypt_key: None,
             feishu_verification_token: None,
+            wecom_app_secret: None,
+            wecom_callback_token: None,
+            wecom_encoding_aes_key: None,
             discord_public_key: None,
             discord_bot_token: None,
             cors: HttpCorsConfig::default(),
@@ -1750,6 +1763,37 @@ impl HttpConfig {
         resolve_optional_secret(
             self.feishu_verification_token.clone(),
             std::env::var("JIACLAW_FEISHU_VERIFICATION_TOKEN")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    /// Resolve the WeCom app secret, preferring the environment.
+    #[must_use]
+    pub fn effective_wecom_app_secret(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.wecom_app_secret.clone(),
+            std::env::var("JIACLAW_WECOM_APP_SECRET").ok().as_deref(),
+        )
+    }
+
+    /// Resolve the WeCom callback token, preferring the environment.
+    #[must_use]
+    pub fn effective_wecom_callback_token(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.wecom_callback_token.clone(),
+            std::env::var("JIACLAW_WECOM_CALLBACK_TOKEN")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    /// Resolve the WeCom encoding aes key, preferring the environment.
+    #[must_use]
+    pub fn effective_wecom_encoding_aes_key(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.wecom_encoding_aes_key.clone(),
+            std::env::var("JIACLAW_WECOM_ENCODING_AES_KEY")
                 .ok()
                 .as_deref(),
         )
