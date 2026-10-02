@@ -436,10 +436,17 @@ try:
 
     # Only Alice's fresh 64 MiB ext4 filesystem is filled, never the host filesystem.
     filled = docker('exec', backend_names['alice'], 'dd', 'if=/dev/zero', 'of=/data/fixture-fill.bin',
-                    'bs=1048576', check=False, timeout=30)
+                    'bs=4096', 'conv=fsync', check=False, timeout=30)
     assert filled.returncode != 0 and 'No space left on device' in filled.stderr, sanitized(filled.stderr)
-    available = docker('exec', backend_names['alice'], 'df', '-B1', '--output=avail', '/data').stdout.splitlines()[-1]
-    assert int(available.strip()) == 0
+    capacity, available = map(int, docker('exec', backend_names['alice'], 'df', '-B1',
+                                        '--output=size,avail', '/data').stdout.splitlines()[-1].split())
+    written = int(docker('exec', backend_names['alice'], 'stat', '-c', '%s', '/data/fixture-fill.bin').stdout)
+    # ext4 may retain internally reserved or fragmented free blocks at ENOSPC.
+    # df's available counter is not proof that this UID can allocate those blocks.
+    # Qualify the real failed write and the actual hard filesystem capacity instead.
+    assert 0 < capacity <= 64 * 1024 * 1024, capacity
+    assert 32 * 1024 * 1024 <= written <= 64 * 1024 * 1024, written
+    print(f'PASS: real ENOSPC after {written} bytes on bounded {capacity}-byte filesystem (df reports {available} available bytes)')
     assert docker('exec', backend_names['bob'], 'test', '-e', '/data/fixture-fill.bin', check=False).returncode == 1
     chat(b, 'Bob continues while Alice is out of disk.')
     assert len(messages(b)) == 4
