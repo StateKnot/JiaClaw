@@ -227,7 +227,7 @@ def verify_runtime(name, expected_networks, expected_volume, published=False):
     else:
         assert not host['PortBindings'], host['PortBindings']
     namespace = docker('exec', name, 'readlink', '/proc/1/ns/pid').stdout.strip()
-    assert namespace != os.readlink('/proc/1/ns/pid'), 'container shares host PID namespace'
+    assert namespace != privileged('readlink', '/proc/1/ns/pid').stdout.strip(), 'container shares host PID namespace'
     return namespace
 
 
