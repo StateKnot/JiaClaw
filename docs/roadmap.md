@@ -11,7 +11,7 @@
 | 5 | Web 工作台 | 实现 | 内置同源静态资源，鉴权后创建/选择/聊天/删除会话，无模型 HTML 执行、无浏览器持久密钥 |
 | 6 | cron 多任务 | 待实现 | 持久化任务表、增删查、时区/DST、误触发/漏触发政策、单次领取、重启与取消测试；不能直接堆 interval |
 | 7 | 渠道统一出站 | 待实现 | Telegram/Slack/Discord 统一消息与错误合同，持久 outbox/幂等、重试和速率限制，再接飞书/企微/钉钉/WhatsApp |
-| 8 | StateKnot durable + 委派 | 待认证/接线 | admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
+| 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 上游有支持；应用待策略接线 | 由 Brokerrouter 按能力/模型策略路由，仅明确未提交可安全重试；预算/审批不绕过 |
 | 10 | 多用户与 Key 管理 | 待实现 | 鉴权主体、授权检查、workspace/记忆/会话隔离、Key 哈希/轮换/撤销、渠道身份绑定与越权测试 |
 | 11 | 真正流式 | 上游已支持；应用待实现 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压，不能把完成后分块作为 token streaming |
