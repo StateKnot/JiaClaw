@@ -1,0 +1,32 @@
+[Unit]
+Description=JiaClaw personal agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jiaclaw
+Group=jiaclaw
+WorkingDirectory=/var/lib/jiaclaw
+EnvironmentFile=/etc/jiaclaw/environment
+ExecStart=/usr/local/bin/jiaclaw serve --config /etc/jiaclaw/config.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35
+UMask=0077
+StateDirectory=jiaclaw
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/jiaclaw
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

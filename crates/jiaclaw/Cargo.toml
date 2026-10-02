@@ -15,9 +15,7 @@ homepage.workspace = true
 [dependencies]
 jiaclaw-core = { version = "=0.1.0", path = "../jiaclaw-core" }
 
-# StateKnot dependencies - commented out until Rust edition 2024 support
-# stateknot-core = { workspace = true }
-# stateknot-runtime = { workspace = true }
+# StateKnot integration gates: docs/stateknot-gaps.md
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -29,8 +27,11 @@ tracing = { workspace = true }
 uuid = { version = "=1.7.0", features = ["v4"] }
 async-trait = "0.1"
 indexmap = { workspace = true }
+libc = "0.2"
+cap-std = "=3.4.5"
 
 [dev-dependencies]
+tempfile = "=3.16.0"
 mockito = "0.31"
 
 [lints]

@@ -1,0 +1,30 @@
+[agent]
+name = "JiaClaw"
+description = "Personal assistant"
+system_instructions = "You are JiaClaw, a helpful personal assistant."
+max_turns = 10
+workspace_path = "/data/workspace"
+tool_timeout_secs = 45
+max_tool_iterations = 5
+
+[provider]
+provider_type = "brokerrouter"
+# Gateway must be accessible from the container; configure your own address/model.
+base_url = "http://brokerrouter:8080"
+model = "YOUR_CERTIFIED_LOGICAL_MODEL"
+
+[http]
+bind = "0.0.0.0:8080"
+persist = true
+persist_path = "/data/state/sessions.sqlite3"
+metrics_public = false
+rate_limit_per_minute = 60
+max_body_bytes = 1048576
+shutdown_timeout_secs = 30
+
+[tools.exec]
+enabled = false
+
+[logging]
+format = "json"
+level = "info"

@@ -235,8 +235,8 @@ mod tests {
         let ws = unique_temp("jiaclaw_id_resolve");
         let soul = resolve_identity_path(&ws, DEFAULT_SOUL_PATH).unwrap();
         let user = resolve_identity_path(&ws, DEFAULT_USER_PATH).unwrap();
-        assert_eq!(soul, ws.join("SOUL.md"));
-        assert_eq!(user, ws.join("USER.md"));
+        assert_eq!(soul, ws.canonicalize().unwrap().join("SOUL.md"));
+        assert_eq!(user, ws.canonicalize().unwrap().join("USER.md"));
         let _ = fs::remove_dir_all(&ws);
     }
 

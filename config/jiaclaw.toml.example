@@ -1,303 +1,113 @@
-# JiaClaw 配置示例
-# 复制此文件为 config/jiaclaw.toml 并根据需要调整
-
+# Only fields consumed by AgentConfig are included. See docs/configuration.md.
 [agent]
-# Agent 名称
 name = "JiaClaw"
-
-# Agent 描述
-description = "Personal durable agent runtime"
-
-# 系统指令
-system_instructions = """
-You are JiaClaw, a helpful personal assistant.
-You can use tools, manage skills, and maintain conversation context.
-Always be polite, concise, and accurate.
-"""
-
-# 最大对话轮次
+description = "Personal assistant"
+system_instructions = "You are JiaClaw, a helpful personal assistant."
 max_turns = 10
+# Defaults to ~/.jiaclaw/workspace. Use an absolute path; ~ is not expanded.
+# workspace_path = "/absolute/path/workspace"
+tool_timeout_secs = 45
+max_tool_iterations = 5
 
-# 工具调用超时（可选，环境变量 JIACLAW_TOOL_TIMEOUT_SECS 优先）
-# 正整数：单次 tool 执行超过该秒数则把超时错误写入 tool result 并继续 loop
-# 未设置或 0：不限制（默认，保持现状）
-# tool_timeout_secs = 30
-
-# 工具循环上限（可选，环境变量 JIACLAW_MAX_TOOL_ITERATIONS 优先）
-# 正整数：整轮 tool loop 最大迭代次数。默认 5（与历史硬编码一致）
-# 0 / 非法环境变量忽略；生效值钳制到 1–32，防止工具风暴
-# max_tool_iterations = 5
-
-[runtime]
-# StateKnot 运行时配置（当 StateKnot 集成可用时）
-# 
-# # PostgreSQL 连接字符串
-# database_url = "postgresql://user:password@localhost:5432/jiaclaw"
-#
-# # 租户 ID
-# tenant_id = "default"
-#
-# # 工作目录
-# work_dir = "/var/lib/jiaclaw"
-
-[server]
-# HTTP 服务器绑定地址
-bind = "127.0.0.1:8080"
-
-# 请求超时（秒）
-timeout = 300
-
-# 最大并发请求数
-max_concurrent_requests = 100
+[provider]
+provider_type = "brokerrouter"
+# Address of YOUR running gateway, not a public hosted-service promise.
+base_url = "http://127.0.0.1:8081"
+model = "YOUR_CERTIFIED_LOGICAL_MODEL"
+# Set JIACLAW_API_KEY to a Brokerrouter virtual key (recommended).
+# api_key = "..."
+temperature = 0.7
+max_tokens = 4096
+# For offline verification only: provider_type = "stub"
 
 [http]
-# HTTP 服务绑定地址（优先级高于 [server] bind）
 bind = "127.0.0.1:8080"
+# Set JIACLAW_API_TOKEN to an independent random API token.
+# api_token = "..."
+persist = true
+# Relative to workspace, but MUST resolve outside workspace.
+persist_path = "../state/sessions.sqlite3"
+metrics_public = false
+rate_limit_per_minute = 60
+max_body_bytes = 1048576
+shutdown_timeout_secs = 30
+# Unset/0: no expiration. Expiration deletes history, including persisted history.
+# session_ttl_secs = 2592000
+# Each webhook is CLOSED until its own secret/public key is configured.
+# webhook_secret = "..."           # JIACLAW_WEBHOOK_SECRET
+# telegram_secret = "..."          # JIACLAW_TELEGRAM_SECRET
+# telegram_bot_token = "..."       # JIACLAW_TELEGRAM_BOT_TOKEN
+# slack_signing_secret = "..."     # JIACLAW_SLACK_SIGNING_SECRET
+# slack_bot_token = "..."          # JIACLAW_SLACK_BOT_TOKEN
+# discord_public_key = "..."       # JIACLAW_DISCORD_PUBLIC_KEY
+# discord_bot_token = "..."        # JIACLAW_DISCORD_BOT_TOKEN
 
-# Webhook 鉴权密钥（可选，环境变量 JIACLAW_WEBHOOK_SECRET 优先）
-# 如果设置，/hooks/inbound 端点将验证 X-Webhook-Secret 请求头
-# webhook_secret = "your-secret-here"
+[http.cors]
+enabled = false
+allowed_origins = []
+allowed_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+allowed_headers = ["Authorization", "Content-Type", "X-Request-Id", "Accept"]
+expose_headers = ["X-Request-Id"]
 
-# Telegram Bot webhook secret token（可选，环境变量 JIACLAW_TELEGRAM_SECRET 优先）
-# 如果设置，/hooks/telegram 校验头 X-Telegram-Bot-Api-Secret-Token（Telegram 官方 secret token）
-# 未设置则与本地 webhook 一样开放（开发友好）
-# telegram_secret = "your-telegram-secret-token"
+[tools.copy]
+enabled = true
 
-# Telegram Bot API token（可选，环境变量 JIACLAW_TELEGRAM_BOT_TOKEN 优先）
-# 如果设置，/hooks/telegram 在得到 assistant 回复后会 POST sendMessage 推回聊天（文本按 4096 截断）
-# 出站失败仍返回 200 + 原 JSON reply，避免 Telegram webhook 重试。未设置则仅同步 JSON（与仅入站行为一致）
-# telegram_bot_token = "123456:ABC-your-bot-token"
-
-# Slack Events API signing secret（可选，环境变量 JIACLAW_SLACK_SIGNING_SECRET 优先）
-# 如果设置，/hooks/slack 校验 X-Slack-Signature + X-Slack-Request-Timestamp（v0 HMAC-SHA256，±5 分钟）
-# 未设置则开放（开发友好）。签名使用原始 body 字节。
-# slack_signing_secret = "your-slack-signing-secret"
-
-# Slack Bot token（可选，环境变量 JIACLAW_SLACK_BOT_TOKEN 优先）
-# 如果设置，成功回复后会 POST chat.postMessage 推回 channel；未设置则仅同步 JSON
-# slack_bot_token = "xoxb-your-bot-token"
-
-# Discord Interactions 公钥（可选，环境变量 JIACLAW_DISCORD_PUBLIC_KEY 优先）
-# 如果设置，/hooks/discord 校验 X-Signature-Ed25519 + X-Signature-Timestamp（Ed25519，timestamp + raw body）
-# 未设置则开放（开发友好，doctor 警告）
-# discord_public_key = "your-discord-hex-public-key"
-
-# Discord Bot token（可选，环境变量 JIACLAW_DISCORD_BOT_TOKEN 优先）
-# 如果设置，deferred ACK 后会 PATCH 编辑原始 Interaction；未设置则仅记 session
-# discord_bot_token = "your-discord-bot-token"
-
-# 将公网 HTTPS 端点登记为 Discord Interactions Endpoint URL：
-# https://your-host.example/hooks/discord
-
-# 将公网 HTTPS 端点登记为 Bot webhook（secret_token 对应上方 telegram_secret）：
-# curl "https://api.telegram.org/bot<token>/setWebhook" \
-#   -d "url=https://your-host.example/hooks/telegram" \
-#   -d "secret_token=<telegram_secret>"
-
-# 可选浏览器 CORS（默认关闭，不发送 CORS 头，避免无意放行）
-# 本地 Web UI 可开启，并填写精确 Origin。`*` 仅在显式写出时表示允许所有来源。
-# 环境变量 JIACLAW_CORS_ENABLED、JIACLAW_CORS_ORIGINS（逗号分隔）优先。
-# [http.cors]
-# enabled = true
-# allowed_origins = ["http://localhost:5173"]
-# allowed_methods = ["GET", "POST", "DELETE", "OPTIONS"]
-# allowed_headers = ["Authorization", "Content-Type", "X-Request-Id", "Accept"]
-# expose_headers = ["X-Request-Id"]
-# max_age_secs = 600
-
-# Session 持久化配置
-# 是否将 session 持久化到磁盘（默认 false）
-# 启用后，进程重启时可恢复多轮对话历史
-persist = false
-
-# Session 持久化文件路径（相对于 workspace_path）
-# 默认: .jiaclaw/sessions.json
-persist_path = ".jiaclaw/sessions.json"
-
-# HTTP 限流（可选，环境变量 JIACLAW_RATE_LIMIT_PER_MINUTE 优先）
-# 正整数：对 /api/* 与 /hooks/inbound、/hooks/telegram、/hooks/slack、/hooks/discord 做进程内全局限流（次/分钟）
-# 未设置或 0：不限流。GET /health 与 GET /metrics 始终不限流。
-# 超限返回 429 并带 Retry-After。
-# rate_limit_per_minute = 60
-
-# HTTP 请求体上限（可选，环境变量 JIACLAW_MAX_BODY_BYTES 优先）
-# 正整数：超过该字节数返回 413 Payload Too Large（JSON error=payload_too_large，仍带 X-Request-Id）
-# 未设置、0 或非法回退默认 1048576（1MiB）。GET /health 与 GET /metrics 不检查。
-# 不做上传 / multipart 存储。
-# max_body_bytes = 1048576
-
-# GET /metrics 是否公开（默认 true，无需 API Bearer，便于 Prometheus scrape）
-# 设为 false 时与 /api/* 相同鉴权。环境变量 JIACLAW_METRICS_REQUIRE_AUTH=1 优先表示要求鉴权。
-# metrics_public = true
-
-# Session 闲置 TTL（可选，环境变量 JIACLAW_SESSION_TTL_SECS 优先）
-# 正整数：闲置超过该秒数后从内存 store 删除；落盘开启时同步 save
-# 未设置或 0：不启用。create/chat/get/list 触达会刷新 last_accessed。
-# session_ttl_secs = 3600
-
-# 优雅退出宽限期（可选，环境变量 JIACLAW_SHUTDOWN_TIMEOUT_SECS 优先）
-# 收到 SIGINT/SIGTERM 后停止接受新连接，尽量完成进行中请求，超时则丢弃剩余连接。
-# 正整数生效；未设置、0 或非法回退默认 15 秒。落盘开启时关闭路径会再刷一次 sessions。
-# shutdown_timeout_secs = 15
-
-[session]
-# 接近消息条数上限（50）时是否摘要压缩（默认 false，保持硬截断）
-# 环境变量 JIACLAW_SESSION_SUMMARIZE_ON_OVERFLOW=1/true 可强制开启
-# summarize_on_overflow = false
-# 摘要后保留的最近消息条数（默认 10）
-# keep_recent = 10
-
-[logging]
-# 日志格式: text（默认，与当前人类可读 tracing 一致）或 json（每行一条 JSON）
-# 环境变量 JIACLAW_LOG_FORMAT 优先（json / text；无法识别则回退配置）
-# format = "json"
-format = "text"
-
-# 日志级别指令（可选，例如 info 或 jiaclaw=debug）
-# 优先级：JIACLAW_LOG_LEVEL > RUST_LOG > 本字段 > info
-# level = "info"
-
-[tools]
-# 启用的工具列表（示例，当前不驱动注册）
-enabled = [
-    # "search",
-    # "calculator",
-    # "file_operations",
-]
-
-# MCP 服务器配置（示例）
-# [[tools.mcp_servers]]
-# name = "example-server"
-# url = "http://localhost:3000"
-# auth_token = "your-token-here"
+[tools.exec]
+enabled = false
+# Enabling requires installed Docker, pre-pulled digest pin, explicit commands,
+# and an API token when serving HTTP. Never mounts a Docker socket in a container.
+# docker_path = "/usr/bin/docker"  # macOS often /usr/local/bin/docker
+# image = "YOUR_IMAGE@sha256:YOUR_64_HEX_DIGEST"
+timeout_secs = 30
+max_output_bytes = 65536
+workspace_read_only = true
+user = "65534:65534"
+# [tools.exec.commands]
+# cat = "/bin/cat"
+# ls = "/bin/ls"
 
 [tools.web_search]
-# 可选联网检索（默认启用并注册）。无 Brave key 时调用返回友好错误，不访问网络。
-# 环境变量 JIACLAW_BRAVE_API_KEY 优先于 brave_api_key；doctor / 日志不打印明文。
-# 申请: https://brave.com/search/api/
 enabled = true
-# brave_api_key = "BSA..."
-
+# brave_api_key = "..."  # JIACLAW_BRAVE_API_KEY takes precedence.
 [tools.web_fetch]
-# 可选网页抓取（默认启用并注册）。GET 页面，HTML 去标签为可读文本。
-# 默认拒绝 localhost / 私网（127.0.0.0/8、::1、10/8、172.16/12、192.168/16、链路本地）。
-# 内网调试可设 allow_private = true。HTTP 超时约 15s，并遵守 [agent] tool_timeout_secs。
 enabled = true
-# allow_private = false
-
+allow_private = false
 [tools.memory_search]
-# 可选工作区记忆检索（默认启用并注册）。按关键词/子串在 MEMORY / SOUL / USER 中找片段。
-# 大小写不敏感；返回 {path, line, excerpt}。单文件超过 512KiB 截断并 warn。
-# 可选参数 paths 指定工作区相对路径；禁止 .. / 绝对路径 / symlink 逃逸。不引入向量数据库。
 enabled = true
-
 [tools.memory_write]
-# 可选工作区记忆写入（默认启用并注册）。只写配置的 MEMORY.md / [memory] path。
-# content 必填；mode=append（默认）追加，mode=overwrite 覆盖。结果上限 32KiB（与注入截断对齐）。
-# tmp + rename 原子写；忽略 path 参数，禁止穿越。enabled = false 不注册。不引入向量库或远程 sync。
 enabled = true
-
 [tools.read_file]
-# 可选工作区只读文件（默认启用并注册）。path 为工作区相对路径；可选 offset/limit 按行切片（1-indexed）。
-# 超过 256KiB 明确报错；二进制（NUL / 非 UTF-8）拒绝读取。禁止 .. / 绝对路径 / symlink 逃逸。
-# enabled = false 不注册。无 shell、不调用 LLM。
 enabled = true
-
 [tools.list_dir]
-# 可选工作区列目录（默认启用并注册）。path 默认 . ；可选 max_entries（默认 200，钳制 1..=1000）。
-# 默认不递归（recursive=false）。返回 name / type(file|dir) / 可选 size。禁止穿越。
-# enabled = false 不注册。无 shell、不调用 LLM。
 enabled = true
-
 [tools.write_file]
-# 可选工作区文件写入（默认启用并注册）。path / content 必填；可选 mode=overwrite|append（默认 overwrite）。
-# 结果文件超过 256KiB（与 read_file 对齐）明确报错且不落盘。tmp + rename 原子写。可创建中间目录。
-# 禁止 .. / 绝对路径 / symlink 逃逸；只写工作区内常规文件。enabled = false 不注册。无 shell、不调用 LLM。
 enabled = true
-
 [tools.delete_file]
-# 可选工作区文件删除（默认启用并注册）。path 必填。只删常规文件，拒绝目录；文件不存在时明确报错（不静默成功）。
-# 禁止 .. / 绝对路径 / symlink 逃逸。不递归、无 shell、不调用 LLM。enabled = false 不注册。
 enabled = true
-
 [tools.str_replace]
-# 可选工作区精确字符串替换（默认启用并注册）。path / old_str / new_str 必填；replace_all 默认 false（必须恰好 1 次）。
-# 读入或写出超过 256KiB（与 read/write 对齐）明确报错且不落盘。tmp + rename 原子写。拒绝二进制。
-# 禁止 .. / 绝对路径 / symlink 逃逸。enabled = false 不注册。无 shell、不调用 LLM。
 enabled = true
-
-[skills]
-# 启用的技能列表（示例）
-enabled = [
-    # "file_management",
-    # "web_search",
-    # "code_assistant",
-]
-
-# 技能加载路径
-# skill_paths = [
-#     "./skills",
-#     "~/.jiaclaw/skills",
-# ]
+[tools.grep]
+enabled = true
+[tools.glob]
+enabled = true
+[tools.mkdir]
+enabled = true
+[tools.move]
+enabled = true
 
 [memory]
-# 工作区长期记忆文件（相对于 workspace，默认 MEMORY.md）
-# 每次对话开始时若文件存在且非空则注入系统提示；过大时截断到 32KiB。
-# 可用工具 memory_write（mode=append|overwrite，上限 32KiB）或 memory_append 写入；变长后可用 memory_search 按关键词检索。缺省本段不影响现有配置。
 path = "MEMORY.md"
-
 [identity]
-# 人格与用户画像（相对于 workspace；缺省本段即为 SOUL.md / USER.md）
-# 每次对话开始时若文件存在且非空则分别注入独立区块；各文件独立 32KiB 截断。
-# 可用工具 soul_write / user_write（默认覆盖整文件）。
 soul_path = "SOUL.md"
 user_path = "USER.md"
-
 [heartbeat]
-# 可选定时心跳（仅 jiaclaw serve 进程内；CLI chat 不跑）
-# 默认关闭。启用后按 interval_secs 读取约定文件全文，作为 user 消息跑一轮 chat，
-# 结果写入固定 session（默认 heartbeat），日志只打摘要。
-# 文件缺失或为空：跳过本轮（debug），不退出。路径相对于 workspace，禁止穿越。
 enabled = false
 interval_secs = 3600
 path = "HEARTBEAT.md"
 session_id = "heartbeat"
-# 环境变量 JIACLAW_HEARTBEAT_INTERVAL_SECS 可覆盖间隔（正整数）
-
-[limits]
-# 资源限制配置
-
-# 最大消息长度（字符）
-max_message_length = 10000
-
-# 最大会话历史长度
-max_history_length = 100
-
-# 工具调用超时（秒）—— 实际生效字段为 [agent] tool_timeout_secs / JIACLAW_TOOL_TIMEOUT_SECS
-# tool_timeout = 30
-
-# 工具循环上限 —— 实际生效字段为 [agent] max_tool_iterations / JIACLAW_MAX_TOOL_ITERATIONS
-# max_tool_iterations = 5
-
-# 模型调用超时（秒）
-model_timeout = 120
-
-[provider]
-# 模型提供商配置
-#
-# 推荐: Brokerrouter (生产路径)
-type = "brokerrouter"
-base_url = "https://api.brokerrouter.dev"
-# API 密钥（建议使用环境变量 JIACLAW_API_KEY）
-# api_key = "brk_live_..."
-model = "claude-3-5-sonnet-20241022"
-temperature = 0.7
-max_tokens = 4096
-
-# 备选: OpenAI-compatible (已废弃，仅作开发逃生舱)
-# type = "openai_compatible"
-# base_url = "https://api.openai.com/v1"
-# api_key = "sk-..."
-# model = "gpt-4o-mini"
-# temperature = 0.7
-# max_tokens = 4096
+[session]
+summarize_on_overflow = false
+keep_recent = 10
+[logging]
+format = "text"
+level = "info"

@@ -1,97 +1,118 @@
 {
   "agent": {
     "name": "JiaClaw",
-    "description": "Personal durable agent runtime",
+    "description": "Personal assistant",
     "system_instructions": "You are JiaClaw, a helpful personal assistant.",
     "max_turns": 10,
-    "provider": {
-      "provider_type": "brokerrouter",
-      "base_url": "https://api.brokerrouter.dev",
-      "model": "claude-3-5-sonnet-20241022",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    "tool_timeout_secs": null,
+    "tool_timeout_secs": 45,
     "max_tool_iterations": 5
   },
-  "server": {
+  "provider": {
+    "provider_type": "brokerrouter",
+    "base_url": "http://127.0.0.1:8081",
+    "model": "YOUR_CERTIFIED_LOGICAL_MODEL",
+    "temperature": 0.7,
+    "max_tokens": 4096
+  },
+  "http": {
     "bind": "127.0.0.1:8080",
-    "timeout": 300
+    "persist": true,
+    "persist_path": "../state/sessions.sqlite3",
+    "metrics_public": false,
+    "rate_limit_per_minute": 60,
+    "max_body_bytes": 1048576,
+    "shutdown_timeout_secs": 30,
+    "cors": {
+      "enabled": false,
+      "allowed_origins": [],
+      "allowed_methods": [
+        "GET",
+        "POST",
+        "DELETE",
+        "OPTIONS"
+      ],
+      "allowed_headers": [
+        "Authorization",
+        "Content-Type",
+        "X-Request-Id",
+        "Accept"
+      ],
+      "expose_headers": [
+        "X-Request-Id"
+      ]
+    }
+  },
+  "tools": {
+    "copy": {
+      "enabled": true
+    },
+    "exec": {
+      "enabled": false,
+      "timeout_secs": 30,
+      "max_output_bytes": 65536,
+      "workspace_read_only": true,
+      "user": "65534:65534"
+    },
+    "web_search": {
+      "enabled": true
+    },
+    "web_fetch": {
+      "enabled": true,
+      "allow_private": false
+    },
+    "memory_search": {
+      "enabled": true
+    },
+    "memory_write": {
+      "enabled": true
+    },
+    "read_file": {
+      "enabled": true
+    },
+    "list_dir": {
+      "enabled": true
+    },
+    "write_file": {
+      "enabled": true
+    },
+    "delete_file": {
+      "enabled": true
+    },
+    "str_replace": {
+      "enabled": true
+    },
+    "grep": {
+      "enabled": true
+    },
+    "glob": {
+      "enabled": true
+    },
+    "mkdir": {
+      "enabled": true
+    },
+    "move": {
+      "enabled": true
+    }
+  },
+  "memory": {
+    "path": "MEMORY.md"
+  },
+  "identity": {
+    "soul_path": "SOUL.md",
+    "user_path": "USER.md"
+  },
+  "heartbeat": {
+    "enabled": false,
+    "interval_secs": 3600,
+    "path": "HEARTBEAT.md",
+    "session_id": "heartbeat"
+  },
+  "session": {
+    "summarize_on_overflow": false,
+    "keep_recent": 10
   },
   "logging": {
     "format": "text",
     "level": "info"
-  },
-    "http": {
-      "bind": "127.0.0.1:8080",
-      "cors": {
-        "enabled": false,
-        "allowed_origins": [],
-        "allowed_methods": ["GET", "POST", "DELETE", "OPTIONS"],
-        "allowed_headers": ["Authorization", "Content-Type", "X-Request-Id", "Accept"],
-        "expose_headers": ["X-Request-Id"],
-        "max_age_secs": null
-      },
-      "persist": false,
-      "persist_path": ".jiaclaw/sessions.json",
-      "rate_limit_per_minute": null,
-      "max_body_bytes": 1048576,
-      "session_ttl_secs": null,
-      "metrics_public": true,
-      "webhook_secret": null,
-      "telegram_secret": null,
-      "telegram_bot_token": null,
-      "slack_signing_secret": null,
-      "slack_bot_token": null,
-      "discord_public_key": null,
-      "discord_bot_token": null
-    },
-    "memory": {
-      "path": "MEMORY.md"
-    },
-    "identity": {
-      "soul_path": "SOUL.md",
-      "user_path": "USER.md"
-    },
-    "heartbeat": {
-      "enabled": false,
-      "interval_secs": 3600,
-      "path": "HEARTBEAT.md",
-      "session_id": "heartbeat"
-    },
-    "session": {
-      "summarize_on_overflow": false,
-      "keep_recent": 10
-    },
-    "tools": {
-      "web_search": {
-        "enabled": true,
-        "brave_api_key": null
-      },
-      "web_fetch": {
-        "enabled": true,
-        "allow_private": false
-      },
-      "memory_search": {
-        "enabled": true
-      },
-      "memory_write": {
-        "enabled": true
-      },
-      "read_file": {
-        "enabled": true
-      },
-      "list_dir": {
-        "enabled": true
-      },
-      "write_file": {
-        "enabled": true
-      },
-      "delete_file": {
-        "enabled": true
-      },
-      "str_replace": {
-        "enabled": true
-      }
-    }
+  }
 }

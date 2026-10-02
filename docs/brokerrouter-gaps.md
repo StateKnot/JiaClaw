@@ -1,74 +1,31 @@
-# Brokerrouter 能力差距跟踪（JiaClaw 消费方）
+# Brokerrouter 消费方状态
 
-> 更新：Brokerrouter 仓库为 **private**（不是缺失）。已具备 `POST /v1/chat/completions`（text-nonstream-v1）。
-> JiaClaw 强制经 Brokerrouter 作为 AI Gateway；以下议题针对**真实契约**而非臆测 404。
+核对日期：2026-10-02；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
-## 已创建的上游议题
+| 能力 | 上游当前状态 | JiaClaw 状态 |
+|---|---|---|
+| 文本 Chat Completions | 已支持 | BrokerrouterProvider 接入非流式请求 |
+| SSE | 已支持，受端点能力与护栏限制 | 尚未接通逐事件读取；现有 API SSE 是完成后分块 |
+| embeddings | 已有网关契约 | 尚未实现 embedding 适配与向量索引 |
+| 个人配置 `init-personal` | 已实现事务化初始化 | 可按上游消费者指南接入自己的网关 |
+| 工具调用 | 端点能力控制；fixture 已认证 | 本地协议测试通过，缺真实供应商生产默认 |
+| 多端点路由/降级 | 最多 3 个候选；仅已证明 not_sent 可换端点 | 不另做盲目供应商重试 |
+| 多模态 chat content | 明确拒绝 | JiaClaw 当前文本契约 |
+| 媒体任务 | 已有独立子系统，认证仍待完成 | 图片/语音尚未接线 |
 
-| 优先级 | 议题 | 链接 |
-|--------|------|------|
-| P0 | 消费方接入指南（虚拟密钥 / Idempotency-Key） | https://github.com/StateKnot/Brokerrouter/issues/28 |
-| P1 | Chat SSE `stream:true` | https://github.com/StateKnot/Brokerrouter/issues/29 |
-| P0 | 单人本地 personal/dev 一键配置 | https://github.com/StateKnot/Brokerrouter/issues/30 |
-| P1 | Agent tool roundtrip 认证清单 | https://github.com/StateKnot/Brokerrouter/issues/31 |
+## 上游议题
 
-详见各 issue 正文。
+- [#28 消费方指南](https://github.com/StateKnot/Brokerrouter/issues/28)：已关闭。
+- [#29 SSE](https://github.com/StateKnot/Brokerrouter/issues/29)：已关闭。不能再将 JiaClaw 自身流式接线列成上游不支持。
+- [#30 个人配置](https://github.com/StateKnot/Brokerrouter/issues/30)：已关闭。
+- [#31 真实工具闭环认证](https://github.com/StateKnot/Brokerrouter/issues/31)：仍开放。当前没有上游能标记为 JiaClaw 生产默认的真实供应商工具路径；继续沿用该议题，不重复提交。
 
-## 当前集成策略
+## 消费合同与下一步
 
-1. **推荐路径**：`provider_type = "brokerrouter"` → `{base_url}/v1/chat/completions`，Bearer 虚拟密钥，每次尝试生成 `Idempotency-Key`。
-2. **临时路径**：`openai_compatible` 直连（仅开发逃生舱，目标废弃）。
-3. **离线路径**：`stub` 永久保留。
+`provider.provider_type="brokerrouter"`，`base_url` 是自己运行的网关，`model` 为授权逻辑模型，`JIACLAW_API_KEY` 是有限预算的虚拟 Key。JiaClaw 每次请求生成 Idempotency-Key，不启用 SDK 自动重试。完整合同见 [上游消费者指南](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/jiaclaw-consumer-guide.md)。
 
-## 已知契约要点（来自 Brokerrouter M2）
+目前每次模型调用的操作 ID 与 request ID 没有持久化。下游断开或 `submission_unknown` 后，不能以新键自动重发，也不能假设计费未发生。durable 集成需要保存原操作身份、使用网关状态/结果恢复，最终 `[DONE]` 才能确认 SSE 已持久结算。
 
-- 支持非流式 chat + function tools（协议层）
-- 拒绝 `stream:true`、多模态 content、`n>1` 等
-- 收费 POST 必须带幂等键
-- 人民币账本 / 虚拟密钥 / 租户模型
+工具生产默认需要在固定供应商/地域/模型版本/网关提交上，完成原样 assistant.tool_calls → tool message → 最终回答两轮调用，并核对 usage、人民币账本、预留归零、幂等重放。矩阵见 [上游认证证据](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/tool-roundtrip-certification.md)。没有真实供应商凭证与该证据时，不能以 mock 测试关闭 #31。
 
-## 集成状态
-
-✅ **已完成**：
-- `BrokerrouterProvider` 实现（`crates/jiaclaw/src/provider/brokerrouter.rs`）
-- Bearer 虚拟密钥认证
-- 自动幂等性密钥生成（`jiaclaw-{UUID}`，1-200 可打印 ASCII）
-- 非流式聊天补全（`stream: false`）
-- 请求追踪（捕获 `x-request-id` / `x-brokerrouter-request-id`）
-- HTTP 模拟测试（wiremock）
-- 错误处理和状态码映射
-- 配置示例更新（推荐 Brokerrouter）
-
-## 使用示例
-
-### TOML 配置（推荐）
-
-```toml
-[provider]
-type = "brokerrouter"
-base_url = "https://api.brokerrouter.dev"
-api_key = "brk_live_..."  # 或使用环境变量 JIACLAW_API_KEY
-model = "claude-3-5-sonnet-20241022"
-temperature = 0.7
-max_tokens = 4096
-```
-
-### 环境变量
-
-```bash
-export JIACLAW_API_KEY=brk_live_...
-jiaclaw chat "你好"
-```
-
-## 测试
-
-```bash
-# 运行所有测试
-cargo test
-
-# 运行 Brokerrouter 特定测试
-cargo test --package jiaclaw brokerrouter
-
-# 运行 clippy 检查
-cargo clippy -- -D warnings
-```
+真正流式、语义记忆现在属于 JiaClaw 的待实现适配任务。遇到具体上游契约缺陷时，提交含固定版本、脱敏重现与验收要求的新 issue；不要重复提交已经完成的能力。
