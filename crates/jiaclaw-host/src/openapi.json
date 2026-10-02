@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu/WeCom destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom/DingTalk hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu/WeCom/DingTalk destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
   },
   "servers": [
     {
@@ -34,7 +34,7 @@
     },
     {
       "name": "hooks",
-      "description": "Webhook / Telegram / Slack / Discord / Feishu / WeCom 入站与异步回复"
+      "description": "Webhook / Telegram / Slack / Discord / Feishu / WeCom / DingTalk 入站与异步回复"
     },
     {
       "name": "discovery",
@@ -2185,6 +2185,111 @@
           }
         }
       }
+    },
+    "/hooks/dingtalk": {
+      "post": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "钉钉企业机器人 HTTP 消息回调",
+        "operationId": "receiveDingtalkRobotMessage",
+        "description": "Internal enterprise app robot HTTP mode, private member text only. Bind configured robotCode:corpId plus separate Client ID; verify unique timestamp/sign headers and ±1-hour millisecond timestamp. HMAC-SHA256 covers timestamp + newline + Client Secret, NOT the body: trusted HTTPS termination and confidential headers are required. Require matching robotCode, chatbotCorpId and senderCorpId for supported private text; senderStaffId retains case and is the destination. msgId is a bounded opaque dedup key. Ignore sessionWebhook entirely. Persist authorized text before empty 200 ACK; model and fixed OpenAPI sends run asynchronously. Body <=min(http.max_body_bytes,128 KiB), text <=32 KiB, JSON depth <=64. No vendor callback deadline or retry guarantee is asserted. See docs/dingtalk.md.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,18})$"
+            },
+            "description": "Canonical nonnegative i64 Unix milliseconds within ±3600000ms; duplicate headers rejected."
+          },
+          {
+            "name": "sign",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 44,
+              "maxLength": 44
+            },
+            "description": "Standard padded Base64 HMAC-SHA256 signature. Reusable authorization within its time window; do not log it. Duplicate headers rejected."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DingtalkRobotCallback"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Empty body after authorized text is durably admitted, or authenticated unsupported event is ignored. No model result, synchronous text reply or internal event ID.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or duplicate signature/timestamp headers, JSON, robotCode/corporate identity binding or member authorization.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the route or smaller configured HTTP limit."
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Configured background tools unavailable or invalid event metadata."
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3030,32 +3135,33 @@
               "slack",
               "discord",
               "feishu",
-              "wecom"
+              "wecom",
+              "dingtalk"
             ]
           },
           "installation_id": {
             "type": "string",
-            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID."
+            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID. DingTalk: fixed robotCode:corpId; Client ID belongs in channel policy app_id, not this field."
           },
           "conversation_id": {
             "type": "string",
-            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets."
+            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets. DingTalk: exact case-preserved member UserID (supported ASCII alphanumeric first, then alphanumeric or _-.@, 1–64 bytes), not the callback opaque conversationId."
           },
           "thread_id": {
             "type": "string",
             "nullable": true,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk requires null or omission."
           },
           "interaction_id": {
             "type": "string",
             "nullable": true,
-            "description": "Discord interaction metadata; null for WeCom."
+            "description": "Discord interaction metadata; null for WeCom. Null for DingTalk."
           },
           "expires_ms": {
             "type": "integer",
             "format": "int64",
             "nullable": true,
-            "description": "Discord interaction metadata; null for WeCom."
+            "description": "Discord interaction metadata; null for WeCom. Null for DingTalk."
           }
         },
         "required": [
@@ -3310,25 +3416,85 @@
               "telegram",
               "slack",
               "feishu",
-              "wecom"
+              "wecom",
+              "dingtalk"
             ]
           },
           "installation_id": {
             "type": "string",
-            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID."
+            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID. DingTalk: fixed robotCode:corpId; Client ID belongs in channel policy app_id, not this field."
           },
           "conversation_id": {
             "type": "string",
-            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets."
+            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets. DingTalk: exact case-preserved member UserID (supported ASCII alphanumeric first, then alphanumeric or _-.@, 1–64 bytes), not the callback opaque conversationId."
           },
           "thread_id": {
             "type": "string",
             "nullable": true,
             "default": null,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk requires null or omission."
           }
         },
         "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted."
+      },
+      "DingtalkRobotCallback": {
+        "type": "object",
+        "description": "Known fields reject duplicates. Extra platform metadata is ignored, including temporary webhook URLs and tokens. Private text additionally requires all identity/message fields described here.",
+        "required": [
+          "robotCode",
+          "chatbotCorpId"
+        ],
+        "properties": {
+          "robotCode": {
+            "type": "string"
+          },
+          "chatbotCorpId": {
+            "type": "string"
+          },
+          "senderCorpId": {
+            "type": "string"
+          },
+          "senderStaffId": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "conversationType": {
+            "type": "string",
+            "enum": [
+              "1",
+              "2"
+            ]
+          },
+          "conversationId": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "msgId": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "msgtype": {
+            "type": "string"
+          },
+          "text": {
+            "type": "object",
+            "required": [
+              "content"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "Nonblank, <=32768 UTF-8 bytes."
+              }
+            }
+          },
+          "errorCode": {
+            "type": "integer",
+            "enum": [
+              20001
+            ]
+          }
+        }
       }
     }
   }

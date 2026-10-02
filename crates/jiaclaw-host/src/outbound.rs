@@ -147,7 +147,9 @@ impl OutboundClient {
                         "allowed_mentions": {"parse": [], "replied_user": false}
                     }))
             }
-            Channel::Feishu | Channel::Wecom => return rejected("dedicated_sender_required"),
+            Channel::Feishu | Channel::Wecom | Channel::Dingtalk => {
+                return rejected("dedicated_sender_required")
+            }
         };
         let Ok(response) = request.send().await else {
             return unknown("transport_error");
@@ -324,6 +326,13 @@ pub(super) fn validate_destination(destination: &Destination) -> Result<()> {
                 && destination.interaction_id.is_none()
                 && destination.expires_ms.is_none()
         }
+        Channel::Dingtalk => {
+            super::dingtalk::validate_installation(&destination.installation_id).is_ok()
+                && super::dingtalk::user_id(&destination.conversation_id)
+                && destination.thread_id.is_none()
+                && destination.interaction_id.is_none()
+                && destination.expires_ms.is_none()
+        }
         Channel::Wecom => {
             super::wecom::validate_installation(&destination.installation_id).is_ok()
                 && super::wecom::user_id(&destination.conversation_id)
@@ -349,6 +358,7 @@ pub(super) fn validate_api_base(
         Channel::Discord => "https://discord.com/api/v10",
         Channel::Feishu => "https://open.feishu.cn/open-apis",
         Channel::Wecom => "https://qyapi.weixin.qq.com/cgi-bin",
+        Channel::Dingtalk => "https://api.dingtalk.com",
     };
     if api_base == official || api_base == format!("{official}/") {
         return Ok(());
@@ -371,6 +381,7 @@ pub(super) fn validate_api_base(
         Channel::Discord => "/api/v10",
         Channel::Feishu => "/open-apis",
         Channel::Wecom => "/cgi-bin",
+        Channel::Dingtalk => "/",
     };
     if !allow_loopback
         || !literal_loopback
@@ -459,7 +470,7 @@ fn valid_credential(channel: Channel, credential: &str) -> bool {
             .split_once(':')
             .is_some_and(|(bot, token)| positive_id(bot).is_some() && safe_token(token)),
         Channel::Slack | Channel::Discord => safe_token(credential),
-        Channel::Feishu | Channel::Wecom => false,
+        Channel::Feishu | Channel::Wecom | Channel::Dingtalk => false,
     }
 }
 
@@ -555,7 +566,9 @@ fn parse_receipt(destination: &Destination, body: &[u8]) -> DeliveryOutcome {
                 };
             }
         }
-        Channel::Feishu | Channel::Wecom => return rejected("dedicated_sender_required"),
+        Channel::Feishu | Channel::Wecom | Channel::Dingtalk => {
+            return rejected("dedicated_sender_required")
+        }
     }
     unknown("invalid_receipt")
 }
@@ -626,7 +639,7 @@ fn retry_delay(channel: Channel, headers: &HeaderMap, body: &[u8]) -> Option<i64
             #[allow(clippy::cast_possible_truncation)]
             Some((seconds * 1000.0).ceil() as i64)
         }
-        Channel::Feishu | Channel::Wecom => None,
+        Channel::Feishu | Channel::Wecom | Channel::Dingtalk => None,
     }
 }
 
@@ -650,6 +663,7 @@ mod tests {
                 Channel::Discord => "234567890123456789",
                 Channel::Feishu => "oc_testchat",
                 Channel::Wecom => "test-user",
+                Channel::Dingtalk => "Test.User",
             }
             .to_owned(),
             thread_id: None,
@@ -663,7 +677,7 @@ mod tests {
             Channel::Telegram => "123456:secret_TG-token",
             Channel::Slack => "xoxb-test-token",
             Channel::Discord => "interaction-secret_token",
-            Channel::Feishu | Channel::Wecom => "dedicated-sender-only",
+            Channel::Feishu | Channel::Wecom | Channel::Dingtalk => "dedicated-sender-only",
         }
     }
 
@@ -922,7 +936,7 @@ mod tests {
                     Channel::Telegram => Some("42".to_owned()),
                     Channel::Slack => Some("1234567890.000002".to_owned()),
                     Channel::Discord => None,
-                    Channel::Feishu | Channel::Wecom => {
+                    Channel::Feishu | Channel::Wecom | Channel::Dingtalk => {
                         unreachable!("dedicated sender is tested separately")
                     }
                 };
@@ -947,7 +961,7 @@ mod tests {
                 let (headers, body) = request.split_once("\r\n\r\n").unwrap();
                 let json: serde_json::Value = serde_json::from_str(body).unwrap();
                 match channel {
-                    Channel::Feishu | Channel::Wecom => {
+                    Channel::Feishu | Channel::Wecom | Channel::Dingtalk => {
                         unreachable!("dedicated sender is tested separately")
                     }
                     Channel::Telegram => {

@@ -33,7 +33,7 @@ SQLite 是服务/CLI 的权威会话存储，支持 WAL/FULL 同步与独占进�
 - `/api/chat`：历史会话或一次性聊天；现有 `stream=true` 是完成后 SSE，不是真正 token streaming。
 - `/api/sessions`：GET 列表 / POST 空会话；`/:id` GET/DELETE；`/:id/export` GET；`/import` POST。
 - `/api/tools`, `/api/skills`, `/api/skills/reload`, `/api/openapi.json`：工具/技能管理与 API 草图。
-- `/hooks/inbound`, `/hooks/telegram`, `/hooks/slack`, `/hooks/discord`, `/hooks/feishu`, `/hooks/wecom`：按各平台合同验证 secret、公钥、签名或加密消息；具名渠道还要求显式安装及身份策略。企业微信同一路径支持 GET 验证和 POST 加密 XML 回调。
+- `/hooks/inbound`, `/hooks/telegram`, `/hooks/slack`, `/hooks/discord`, `/hooks/feishu`, `/hooks/wecom`, `/hooks/dingtalk`：按各平台合同验证 secret、公钥、签名或加密消息；具名渠道还要求显式安装及身份策略。企业微信同一路径支持 GET 验证和 POST 加密 XML 回调。钉钉为企业内部机器人 HTTP 私聊，timestamp/sign 不涵盖正文，依赖可信 HTTPS 入口并独立校验安装与企业成员；不消费 sessionWebhook。
 - `/health` 公开；`/metrics` 依配置鉴权。API 使用 Bearer 或 X-Api-Token。共享限流、body 上限、request ID 与优雅退出沿用现有中间件。
 
 当前 API token 是实例级鉴权，不是用户身份。个人工作区与渠道共用资源，不支持多租户授权隔离。
@@ -56,6 +56,6 @@ exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上�
 
 ## 可靠渠道
 
-Telegram、Slack、Discord、飞书和企业微信共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite v6 保存 inbox/outbox、去重记录及投递回执，并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)与[企业微信指南](wecom.md)。
+Telegram、Slack、Discord、飞书、企业微信和钉钉共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite v7 保存 inbox/outbox、去重记录及投递回执，并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)、[企业微信指南](wecom.md)和[钉钉指南](dingtalk.md)。
 
-定时 Telegram/Slack/飞书/企业微信通知使用独立的目的地与工具授权，复用同一发送器、容量预留和目的地顺序。任务运行、会话和所有消息分片一起提交；有未解决投递的任务不会产生下一轮执行，发送结果未知或永久失败会暂停任务。清理历史必须保留被发件箱引用的来源，显式核对后才可删除；详见[定时通知](scheduled-delivery.md)。
+定时 Telegram/Slack/飞书/企业微信/钉钉通知使用独立的目的地与工具授权，复用同一发送器、容量预留和目的地顺序。任务运行、会话和所有消息分片一起提交；有未解决投递的任务不会产生下一轮执行，发送结果未知或永久失败会暂停任务。清理历史必须保留被发件箱引用的来源，显式核对后才可删除；详见[定时通知](scheduled-delivery.md)。

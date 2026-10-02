@@ -70,7 +70,7 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 ## 渠道、记忆、技能与心跳
 
-Telegram、Slack、Discord、飞书和企业微信必须配置 `http.channels` 安装/身份/工具白名单及平台鉴权后开放；未启用返回 404。旧密钥配置缺少策略时启动失败。API Token 不替代渠道鉴权。
+Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.channels` 安装/身份/工具白名单及平台鉴权后开放；未启用返回 404。旧密钥配置缺少策略时启动失败。API Token 不替代渠道鉴权。
 
 | 端点 | 入站配置 / 环境变量 | 出站配置 / 环境变量 |
 |---|---|---|
@@ -80,8 +80,9 @@ Telegram、Slack、Discord、飞书和企业微信必须配置 `http.channels` �
 | `/hooks/discord` | `http.discord_public_key` / `JIACLAW_DISCORD_PUBLIC_KEY`，Ed25519 | interaction token；`JIACLAW_CHANNEL_STATE_KEY` 加密存储 |
 | `POST /hooks/feishu` | `http.feishu_encrypt_key` / `JIACLAW_FEISHU_ENCRYPT_KEY` 和 `http.feishu_verification_token` / `JIACLAW_FEISHU_VERIFICATION_TOKEN`，签名与可选解密 | `http.feishu_app_secret` / `JIACLAW_FEISHU_APP_SECRET` |
 | `GET/POST /hooks/wecom` | `http.wecom_callback_token` / `JIACLAW_WECOM_CALLBACK_TOKEN` 和 `http.wecom_encoding_aes_key` / `JIACLAW_WECOM_ENCODING_AES_KEY`，查询签名与 AES-CBC 解密 | `http.wecom_app_secret` / `JIACLAW_WECOM_APP_SECRET` |
+| `POST /hooks/dingtalk` | `http.dingtalk_app_secret` / `JIACLAW_DINGTALK_APP_SECRET`，毫秒 timestamp 与 HMAC-SHA256 sign 请求头 | 同一 Client Secret；`http.channels[].app_id` 为独立 Client ID |
 
-五个平台使用统一持久 inbox/outbox 与有界异步发送；fixture 测试覆盖协议，不等于真实渠道联调认证。会话按安装、会话、线程和发送者绑定；工作区仍是实例共享，没有多用户工作区隔离。
+六个平台使用统一持久 inbox/outbox 与有界异步发送；fixture 测试覆盖协议，不等于真实渠道联调认证。会话按安装、会话、线程和发送者绑定；工作区仍是实例共享，没有多用户工作区隔离。
 
 `memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md；系统提示各文件最多注入 32 KiB。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。
 
@@ -103,14 +104,16 @@ Telegram、Slack、Discord、飞书和企业微信必须配置 `http.channels` �
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v6（保留入站事件和定时运行两种发件来源，支持飞书、企业微信及独立的企业微信发送额度账本），旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v7（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本），旧二进制拒绝降级；升级前应按部署指南停机备份。
 
 ### 渠道授权与持久消息
 
-`http.channels` 默认为空，渠道关闭。启用 Telegram/Slack/Discord/飞书/企业微信时须同时设置安装身份、发送者/会话/后台工具精确白名单，SQLite 和 API Token。旧版本只有平台密钥的配置须按[渠道指南](channels.md)显式迁移，不能依赖同步 JSON reply 或空工具列表放行所有工具。Discord 另需环境变量 `JIACLAW_CHANNEL_STATE_KEY`（32 字节密钥的 64 位十六进制编码）。
+`http.channels` 默认为空，渠道关闭。启用 Telegram/Slack/Discord/飞书/企业微信/钉钉时须同时设置安装身份、发送者/会话/后台工具精确白名单，SQLite 和 API Token。旧版本只有平台密钥的配置须按[渠道指南](channels.md)显式迁移，不能依赖同步 JSON reply 或空工具列表放行所有工具。Discord 另需环境变量 `JIACLAW_CHANNEL_STATE_KEY`（32 字节密钥的 64 位十六进制编码）。
 
-Telegram/Slack/飞书/企业微信每个安装可额外配置 `scheduled_destinations = [{ conversation_id = "...", thread_id = "..." }]`；thread_id 省略表示只授权会话顶层。该列表默认空，最多 100 个精确且不重复的目的地，独立于入站会话白名单。有通知的任务工具必须同时获得该安装授权；任务 `delivery` 不允许携带凭证或服务端点。详见[定时通知指南](scheduled-delivery.md)。
+Telegram/Slack/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_destinations = [{ conversation_id = "...", thread_id = "..." }]`；thread_id 省略表示只授权会话顶层。该列表默认空，最多 100 个精确且不重复的目的地，独立于入站会话白名单。有通知的任务工具必须同时获得该安装授权；任务 `delivery` 不允许携带凭证或服务端点。详见[定时通知指南](scheduled-delivery.md)。
 
 飞书企业自建应用使用 `feishu_app_secret`、`feishu_encrypt_key`、`feishu_verification_token`（对应 `JIACLAW_FEISHU_APP_SECRET`、`JIACLAW_FEISHU_ENCRYPT_KEY`、`JIACLAW_FEISHU_VERIFICATION_TOKEN` 环境变量优先）。安装身份为 `cli_<app>:<tenant_key>`，不另填 app_id；群组 thread_id 指 `om_` 根消息 ID。配置、签名、token 生命周期和验收范围见[飞书指南](feishu.md)。
 
 企业微信企业自建应用使用 `wecom_app_secret`、`wecom_callback_token`、`wecom_encoding_aes_key`，对应 `JIACLAW_WECOM_APP_SECRET`、`JIACLAW_WECOM_CALLBACK_TOKEN`、`JIACLAW_WECOM_ENCODING_AES_KEY` 环境变量优先；缺省不配置。安装身份为 `CorpID:AgentID`，不另填 app_id。发送者与 conversation_id 都使用小写成员 UserID，thread_id 必须为空。仅接成员与应用的私聊文本及精确定时成员通知；须使用由 JiaClaw 独占发送权的专用应用。回调加密、平台额度、持久预算及真实安装验收见[企业微信指南](wecom.md)。
+
+钉钉仅接企业内部应用机器人的成员私聊文本与精确定时成员通知；`dingtalk_app_secret` 默认未配置，`JIACLAW_DINGTALK_APP_SECRET` 优先。安装身份为 `robotCode:corpId`，`app_id` 必须另填 Client ID；不能假定它与 robotCode 相同。发送者和 conversation_id 都是保留大小写的单个成员 UserID，应用支持 1–64 个 ASCII 字符：首位字母或数字，其余可含 `_-.@`；thread_id 必须为空。启用并发布应用机器人，明确应用可见范围和消息权限。回调身份、可信 HTTPS 边界及真实安装验收见[钉钉指南](dingtalk.md)。
