@@ -1871,67 +1871,9 @@ impl Tool for FileCopyTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let source_rel = args
-            .get("source")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'source'".to_string()))?;
-
-        let dest_rel = args
-            .get("destination")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'destination'".to_string()))?;
-
-        let source_path = self.workspace_path.join(source_rel);
-        let dest_path = self.workspace_path.join(dest_rel);
-
-        // 安全检查源文件
-        let source_canonical = source_path
-            .canonicalize()
-            .map_err(|_| JiaClawError::ToolExecution(format!("源文件不存在: {source_rel}")))?;
-
-        if !source_canonical.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 源文件 {source_rel} 在工作空间外部"
-            )));
-        }
-
-        // 安全检查目标路径
-        let dest_parent = dest_path
-            .parent()
-            .ok_or_else(|| JiaClawError::ToolExecution("无效的目标路径".to_string()))?;
-
-        // 规范化父目录路径（如果存在）进行安全检查
-        let canonical_dest_parent = if dest_parent.exists() {
-            dest_parent
-                .canonicalize()
-                .unwrap_or_else(|_| dest_parent.to_path_buf())
-        } else {
-            dest_parent.to_path_buf()
-        };
-
-        if !canonical_dest_parent.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 目标路径 {dest_rel} 在工作空间外部"
-            )));
-        }
-
-        if !source_canonical.is_file() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "源路径 {source_rel} 不是文件"
-            )));
-        }
-
-        // 创建目标父目录（使用原始路径，因为 canonicalize 需要路径存在）
-        std::fs::create_dir_all(dest_parent)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法创建目标目录: {e}")))?;
-
-        // 复制文件
-        let bytes_copied = std::fs::copy(&source_canonical, &dest_path)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法复制文件: {e}")))?;
-
-        Ok(format!(
-            "✅ 文件已复制:\n  从: {source_rel}\n  到: {dest_rel}\n  大小: {bytes_copied} 字节"
-        ))
+        let tool = crate::WorkspaceCopyTool::legacy(&self.workspace_path);
+        let output = tool.execute(args).await?;
+        Ok(format!("✅ 文件已复制: {output}"))
     }
 }
 
@@ -1948,16 +1890,6 @@ impl ShellExecTool {
             workspace_path: workspace_path.to_path_buf(),
         }
     }
-
-    /// 安全命令白名单
-    fn is_safe_command(cmd: &str) -> bool {
-        const SAFE_COMMANDS: &[&str] = &[
-            "ls", "pwd", "echo", "cat", "head", "tail", "wc", "grep", "find", "which", "date",
-            "whoami", "hostname", "uname", "env",
-        ];
-
-        SAFE_COMMANDS.contains(&cmd)
-    }
 }
 
 #[async_trait]
@@ -1967,7 +1899,7 @@ impl Tool for ShellExecTool {
     }
 
     fn description(&self) -> &str {
-        "执行安全的Shell命令（白名单：ls, pwd, echo, cat, head, tail, wc, grep, find, which, date, whoami, hostname, uname, env）"
+        "已停用的旧构造器；通过 tools.exec 显式配置 Docker 沙箱"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1989,63 +1921,9 @@ impl Tool for ShellExecTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let command = args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'command'".to_string()))?;
-
-        // 白名单检查
-        if !Self::is_safe_command(command) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "命令 '{command}' 不在安全白名单中。\n允许的命令: ls, pwd, echo, cat, head, tail, wc, grep, find, which, date, whoami, hostname, uname, env"
-            )));
-        }
-
-        let cmd_args = args
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(String::from)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        // 在工作空间目录中执行
-        let workspace_path = self.workspace_path.clone();
-        let command_owned = command.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new(&command_owned)
-                .args(&cmd_args)
-                .current_dir(&workspace_path)
-                .output()
-                .map_err(|e| JiaClawError::ToolExecution(format!("命令执行失败: {e}")))?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let status = output.status;
-
-            let mut result = format!("命令: {} {}\n", command_owned, cmd_args.join(" "));
-            result.push_str(&format!("工作目录: {}\n", workspace_path.display()));
-            result.push_str(&format!("退出码: {}\n\n", status.code().unwrap_or(-1)));
-
-            if !stdout.is_empty() {
-                result.push_str("标准输出:\n");
-                result.push_str(&stdout);
-                result.push('\n');
-            }
-
-            if !stderr.is_empty() {
-                result.push_str("标准错误:\n");
-                result.push_str(&stderr);
-            }
-
-            Ok(result)
-        })
-        .await
-        .map_err(|e| JiaClawError::ToolExecution(format!("任务执行失败: {e}")))?
+        let _ = args;
+        let _ = &self.workspace_path;
+        Err(JiaClawError::ToolExecution("shell_exec 的宿主机执行已移除；执行权限默认关闭，使用 tools.exec 配置 Docker 沙箱和安全白名单".into()))
     }
 }
 
@@ -2390,27 +2268,10 @@ mod tests {
 
         assert_eq!(tool.name(), "shell_exec");
 
-        // 测试安全命令
         let result = tool
-            .execute(serde_json::json!({
-                "command": "echo",
-                "args": ["hello", "world"]
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.contains("hello world") || result.contains("命令: echo"));
-
-        // 测试不安全命令
-        let result = tool
-            .execute(serde_json::json!({
-                "command": "rm",
-                "args": ["-rf", "/"]
-            }))
+            .execute(serde_json::json!({"command":"echo","args":["hello"]}))
             .await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("不在安全白名单中"));
+        assert!(result.unwrap_err().to_string().contains("默认关闭"));
 
         let _ = fs::remove_dir_all(&temp_workspace);
     }

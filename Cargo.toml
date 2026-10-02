@@ -12,23 +12,16 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 authors = ["JiaClaw contributors"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/jiawenyao401/JiaClaw"
 homepage = "https://github.com/jiawenyao401/JiaClaw"
 
 [workspace.dependencies]
-# StateKnot framework - using git dependency for pre-alpha version
-# NOTE: StateKnot requires Rust edition 2024 (future version, requires nightly or Rust 1.88+)
-# Currently commented out until the toolchain requirement is met.
-# Uncomment when using Rust nightly or when edition 2024 is stable.
-#
-# stateknot = { git = "https://github.com/StateKnot/StateKnot", rev = "84bae785764a5f3ece5de775024ce6951a098f70" }
-# stateknot-core = { git = "https://github.com/StateKnot/StateKnot", rev = "84bae785764a5f3ece5de775024ce6951a098f70" }
-# stateknot-runtime = { git = "https://github.com/StateKnot/StateKnot", rev = "84bae785764a5f3ece5de775024ce6951a098f70" }
-# stateknot-integrations = { git = "https://github.com/StateKnot/StateKnot", rev = "84bae785764a5f3ece5de775024ce6951a098f70" }
-# stateknot-store-postgres = { git = "https://github.com/StateKnot/StateKnot", rev = "84bae785764a5f3ece5de775024ce6951a098f70" }
+# StateKnot 0.1.0-alpha.1 is published and requires Rust 1.88+.
+# Its production qualification is still pending. The current application does
+# not link the runtime; see docs/stateknot-gaps.md for the integration gates.
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

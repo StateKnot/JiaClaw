@@ -1,0 +1,55 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install locked toolchain
+        run: rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
+      - run: cargo build --locked -p jiaclaw-host
+      - run: python3 tests/e2e.py target/debug/jiaclaw
+      - run: python3 tests/installer.py
+      - name: Browser acceptance
+        if: runner.os == 'Linux'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/jiaclaw-browser" --no-save --package-lock=false playwright@1.62.1
+          "$RUNNER_TEMP/jiaclaw-browser/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/browser.cjs target/debug/jiaclaw
+      - name: Real container sandbox acceptance
+        if: runner.os == 'Linux'
+        env:
+          JIACLAW_TEST_DOCKER: /usr/bin/docker
+          JIACLAW_TEST_EXEC_IMAGE: alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
+        run: |
+          docker pull "$JIACLAW_TEST_EXEC_IMAGE"
+          cargo test -p jiaclaw real_container --locked -- --ignored
+          test -z "$(docker ps -aq --filter label=jiaclaw.sandbox=true)"
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: docker build --tag jiaclaw:ci .
+      - name: Image startup as non-root with read-only root filesystem
+        run: python3 tests/container.py jiaclaw:ci

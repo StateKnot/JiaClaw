@@ -745,6 +745,14 @@ fn default_move_enabled() -> bool {
 /// `[tools.memory_search]`、`[tools.memory_write]`、`[tools.read_file]`、`[tools.list_dir]`、`[tools.write_file]`、`[tools.delete_file]`、`[tools.str_replace]`、`[tools.grep]`、`[tools.glob]`、`[tools.mkdir]` 与 `[tools.move]`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
+    /// 原子复制文件，默认启用。
+    #[serde(default)]
+    pub copy: CopyToolConfig,
+
+    /// 容器隔离的命令执行，默认关闭。
+    #[serde(default)]
+    pub exec: ExecToolConfig,
+
     /// `web_search` 工具配置
     #[serde(default)]
     pub web_search: WebSearchToolConfig,
@@ -796,6 +804,57 @@ pub struct ToolsConfig {
     /// `move` 工具配置（Rust 关键字，字段名为 `r#move`，序列化为 `move`）
     #[serde(default)]
     pub r#move: MoveToolConfig,
+}
+
+/// 文件复制开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyToolConfig {
+    /// 是否注册 copy 工具及 `file_copy` 兼容名称。
+    #[serde(default = "default_move_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for CopyToolConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// Docker 沙箱执行配置。必须显式启用并指定不可变镜像。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExecToolConfig {
+    /// 是否注册 exec / `shell_exec`，默认 false。
+    pub enabled: bool,
+    /// 本机 Docker CLI 的绝对路径。
+    pub docker_path: std::path::PathBuf,
+    /// 预先拉取的 image@sha256:digest，不允许运行时拉取。
+    pub image: String,
+    /// 模型可用的命令名到容器内绝对可执行文件的映射。
+    pub commands: std::collections::BTreeMap<String, String>,
+    /// 包括创建容器的总期限，1..=300 秒。
+    pub timeout_secs: u64,
+    /// stdout/stderr 各自的最大保留字节数，1..=1048576。
+    pub max_output_bytes: usize,
+    /// 是否只读挂载工作区，默认 true。
+    pub workspace_read_only: bool,
+    /// 容器 UID:GID，必须为非 root 数字。
+    pub user: String,
+}
+
+impl Default for ExecToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            docker_path: "/usr/bin/docker".into(),
+            image: String::new(),
+            commands: std::collections::BTreeMap::new(),
+            timeout_secs: 30,
+            max_output_bytes: 65536,
+            workspace_read_only: true,
+            user: "65534:65534".into(),
+        }
+    }
 }
 
 /// 可选 `web_search` 联网检索配置
@@ -1246,8 +1305,8 @@ pub struct HttpConfig {
     #[serde(default)]
     pub cors: HttpCorsConfig,
 
-    /// 是否持久化 session 到磁盘
-    #[serde(default)]
+    /// 是否使用 SQLite 持久化 session（默认 true）
+    #[serde(default = "default_http_persist")]
     pub persist: bool,
 
     /// Session 持久化文件路径（相对于 `workspace_path`）
@@ -1292,8 +1351,12 @@ fn default_http_bind() -> String {
     "127.0.0.1:8080".to_string()
 }
 
+fn default_http_persist() -> bool {
+    true
+}
+
 fn default_persist_path() -> String {
-    ".jiaclaw/sessions.json".to_string()
+    "../state/sessions.sqlite3".to_string()
 }
 
 fn default_metrics_public() -> bool {
@@ -1321,7 +1384,7 @@ impl Default for HttpConfig {
             discord_public_key: None,
             discord_bot_token: None,
             cors: HttpCorsConfig::default(),
-            persist: false,
+            persist: true,
             persist_path: default_persist_path(),
             rate_limit_per_minute: None,
             session_ttl_secs: None,
@@ -1857,6 +1920,27 @@ impl AgentConfig {
         }
 
         Ok(config_file.agent)
+    }
+}
+
+#[cfg(test)]
+mod example_tests {
+    use super::AgentConfig;
+
+    #[test]
+    fn shipped_toml_and_json_examples_parse_to_the_same_effective_config() {
+        let toml = AgentConfig::from_toml_str(include_str!("../../../config/jiaclaw.toml.example"))
+            .unwrap();
+        let json = AgentConfig::from_json_str(include_str!("../../../config/jiaclaw.json.example"))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&toml).unwrap(),
+            serde_json::to_value(&json).unwrap()
+        );
+        assert!(toml.http.persist);
+        assert!(toml.tools.copy.enabled);
+        assert!(!toml.tools.exec.enabled);
+        assert_eq!(toml.provider.provider_type, "brokerrouter");
     }
 }
 

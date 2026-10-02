@@ -1,326 +1,49 @@
-# JiaClaw 架构
+# 当前架构
 
-本文档描述 JiaClaw 的架构设计，以及它如何构建在 StateKnot 之上。
+`jiaclaw-core` 保存配置与领域类型，`jiaclaw` 实现工作区/技能/工具/对话循环和 Provider，`jiaclaw-host` 承载 CLI、HTTP、渠道、SQLite 与内置 Web。
 
-## 系统概览
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        JiaClaw 层                            │
-├─────────────────────────────────────────────────────────────┤
-│  用户界面层                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
-│  │   CLI    │  │   HTTP   │  │   SSE    │                  │
-│  │  (Chat)  │  │  (REST)  │  │ (Events) │                  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘                  │
-│       └─────────────┼─────────────┘                         │
-│                     │                                        │
-│  应用逻辑层          │                                        │
-│  ┌──────────────────▼────────────────────┐                 │
-│  │      JiaClawAgent (jiaclaw crate)     │                 │
-│  │  - 聊天协调                            │                 │
-│  │  - 工具管理                            │                 │
-│  │  - 技能编排                            │                 │
-│  │  - 会话状态                            │                 │
-│  └──────────────────┬────────────────────┘                 │
-│                     │                                        │
-│  提供商适配层        │                                        │
-│  ┌──────────────────▼────────────────────┐                 │
-│  │    Provider Adapter (provider.rs)     │                 │
-│  │  - StubProvider (离线模式)            │                 │
-│  │  - BrokerrouterProvider (生产模式)    │                 │
-│  │  - DirectProvider (临时，待废弃)      │                 │
-│  └──────────────────┬────────────────────┘                 │
-│                     │                                        │
-│  领域模型层          │                                        │
-│  ┌──────────────────▼────────────────────┐                 │
-│  │    Core Types (jiaclaw-core crate)    │                 │
-│  │  - ChatRequest / ChatResponse          │                 │
-│  │  - ChatMessage / MessageRole           │                 │
-│  │  - ToolCall / RunStatus                │                 │
-│  │  - AgentConfig / ProviderConfig        │                 │
-│  │  - SessionConfig（可选溢出摘要）        │                 │
-│  └──────────────────┬────────────────────┘                 │
-└────────────────────┬┬────────────────────────────────────┬─┘
-                     ││                                    │
-                     ││  集成边界                          │
-                     ││                                    │
-┌────────────────────▼▼────────────────────────────────────▼─┐
-│                   Brokerrouter Gateway                      │
-│              (AI Model Routing Layer)                       │
-├─────────────────────────────────────────────────────────────┤
-│  - OpenAI-compatible API (/v1/chat/completions)            │
-│  - 多提供商路由（OpenAI, Anthropic, Ollama, etc.）         │
-│  - 认证与授权                                               │
-│  - 错误处理与重试                                           │
-│  - 可观测性（文本 / 可选 JSON 行日志、指标）                                   │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     │  上游提供商
-                     │
-         ┌───────────┼───────────┐
-         ▼           ▼           ▼
-    ┌────────┐  ┌────────┐  ┌────────┐
-    │ OpenAI │  │Anthropic│  │ Ollama │
-    └────────┘  └────────┘  └────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    StateKnot 框架                           │
-├─────────────────────────────────────────────────────────────┤
-│  Runtime 层                                                 │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  AgentBuilder<I,O> / TypedAgent<I,O>                 │  │
-│  │  DurableAgentAdmission / DurableAgentRuns            │  │
-│  │  ProviderNativeAgentGraph                            │  │
-│  │  AgentServiceV1 / AgentHost                          │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Execution 层                                               │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  DurableInvocationExecutor                           │  │
-│  │  DurableAgentLoop                                    │  │
-│  │  Graph Driver (checkpoints, barriers)                │  │
-│  │  Fair Scheduler (tenant-aware)                       │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Integration 层                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Model Adapters: (与 Brokerrouter 协同)              │  │
-│  │  Protocol Adapters: MCP, A2A                         │  │
-│  │  McpRemoteTool / A2aRemoteAgent                      │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Persistence 层                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  PostgreSQL Store (runs, events, checkpoints)        │  │
-│  │  Artifact Store (S3-compatible)                      │  │
-│  │  Journal / Ledger (invocation records)               │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+```text
+CLI / Web / channel webhook / HEARTBEAT
+             |
+     per-session turn lock
+             |
+SQLite history -> JiaClawAgent -> BrokerrouterProvider -> Brokerrouter -> model
+                       |
+                 ToolRegistry
+               /
+       workspace tools      controlled exec
+       cap-std copy         digest-pinned Docker sandbox
+             |
+   commit SQLite before completed response
 ```
 
-## 组件说明
+模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。没有伪装成框架调用的替代 MCP、A2A 或子 Agent。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
 
-### JiaClaw 层
+## 会话边界
 
-#### 1. `jiaclaw-core` - 核心领域类型
+SQLite 是服务/CLI 的权威会话存储，支持 WAL/FULL 同步与独占进程锁。数据库放在 Agent 工作区外，工具不能把数据库当工作文件操作。同一会话的读取-模型调用-工具循环-提交通过异步锁串行化，跨会话可并发。SQLite 操作在线程池执行；TTL 清理不删除活跃轮次。状态写入失败对外返回错误，不继续声称成功。
 
-定义 JiaClaw 的核心业务概念：
+会话存储不保存工具 attempt、幂等身份或审批决策。进程在工具副作用发生后、历史提交前崩溃，历史可能没有这一步；人工重新发送可能再次执行。StateKnot durable 集成必须处理这个语义，当前不提供自动恢复工具轮次。
 
-- **ChatMessage / ChatRequest / ChatResponse** - 聊天交互契约
-- **ToolCall** - 工具调用记录
-- **RunStatus** - 运行状态枚举
-- **AgentConfig** - Agent 配置
+## HTTP 契约
 
-这些类型是 JiaClaw 特定的，独立于 StateKnot 的实现细节。
+- `GET /` 与 `/ui/app.js`, `/ui/app.css`：同源工作台，CSP 禁止第三方脚本/嵌入；模型内容用 textContent 呈现。
+- `/api/chat`：历史会话或一次性聊天；现有 `stream=true` 是完成后 SSE，不是真正 token streaming。
+- `/api/sessions`：GET 列表 / POST 空会话；`/:id` GET/DELETE；`/:id/export` GET；`/import` POST。
+- `/api/tools`, `/api/skills`, `/api/skills/reload`, `/api/openapi.json`：工具/技能管理与 API 草图。
+- `/hooks/inbound`, `/hooks/telegram`, `/hooks/slack`, `/hooks/discord`：只有配置各自入站 secret/公钥才开放；现有渠道签名继续验证原始 body。
+- `/health` 公开；`/metrics` 依配置鉴权。API 使用 Bearer 或 X-Api-Token。共享限流、body 上限、request ID 与优雅退出沿用现有中间件。
 
-#### 2. `jiaclaw` - StateKnot 集成层
+当前 API token 是实例级鉴权，不是用户身份。个人工作区与渠道共用资源，不支持多租户授权隔离。
 
-提供 StateKnot 之上的应用层抽象：
+## 文件与执行边界
 
-- **JiaClawAgent** - 主要的 Agent 包装器
-  - 封装 StateKnot 的 `TypedAgent<ChatRequest, ChatResponse>`
-  - 管理聊天会话和对话历史
-  - 协调工具调用和技能执行
-  - 技能注册表支持运行时热加载（`reload_skills`：锁外扫描，失败保留旧表）
-  - 处理持久化和恢复逻辑
+copy 使用目录能力与相对路径，拒绝链接/特殊文件，有界读取，临时文件 fsync 后 atomic publish；无覆盖使用 hard link，覆盖使用 rename。其他现有文件工具仍由各自实现处理路径与大小限制，不能推断为完整 OS 沙箱。
 
-- **Provider 适配器** - 模型提供商抽象
-  - `StubProvider` - 离线存根模式（无需外部服务）
-  - `BrokerrouterProvider` - 生产模式（通过 Brokerrouter Gateway）
-  - `DirectProvider` - 临时直连模式（待废弃）
-  
-- **Workspace** - 工作空间管理
-  - 加载和管理 `AGENTS.md`, `SOUL.md`, `USER.md`, `MEMORY.md`；可选 `HEARTBEAT.md` 供 serve 定时自检
-  - 每次对话重读 `SOUL.md` / `USER.md` / `MEMORY.md`（或 `[identity]` / `[memory]` 路径）并注入系统提示；各文件独立过大截断
-  - 工具 `soul_write` / `user_write` / `memory_append` / `memory_write` 只能写约定路径（禁止穿越）
-  - 工具 `memory_search` 在 MEMORY / SOUL / USER（或安全相对路径）中按关键词检索行窗片段
-  - 工具 `memory_write` 向配置的 MEMORY.md 追加或覆盖（`mode=append|overwrite`，结果上限 32KiB，原子写）
-  - 工具 `read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move` 读取、列出、写入、删除、精确替换、字面量搜索、按模式找文件、创建目录或移动/重命名（禁 `..` / 绝对路径 / symlink 逃逸；`read_file` / `write_file` / `str_replace` 上限 256KiB；`list_dir` 默认不递归；`write_file` 支持 overwrite/append 原子写；`delete_file` 只删常规文件、拒绝目录、缺文件报错；`str_replace` 默认恰好匹配 1 次，`replace_all` 可替换全部；`grep` 为字面量搜索非正则，默认最多 50 条；`glob` 只返回常规文件路径，默认最多 100 条；`mkdir` 默认 `mkdir -p`，目录已存在幂等成功、已存在文件报错；`move` 文档主名 `from`/`to`，默认不覆盖，支持文件与目录，优先同卷 rename）
+exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上限；模型只能选择已配置命令和有限参数。沙箱不继承宿主凭证或网络，仅挂载工作区。取消清理由独立线程完成；daemon 不可达或宿主被硬终止时需运维确认残留。容器部署不暴露 Docker socket。
 
-#### 3. `jiaclaw-host` - 可执行宿主
+## 验收证据
 
-提供运行时和用户界面：
+单元与 HTTP fixture 测试覆盖本地工具、配置和渠道协议；`tests/e2e.py` 启动实际二进制，覆盖 API 鉴权、并发会话、关闭未配置渠道、SIGKILL 恢复与持久删除。`tests/browser.cjs` 在实际 Chromium 验收连接/聊天/删除、文本渲染、内存 Token 与移动布局；`tests/installer.py` 用本地 Release fixture 验证安装与失败保留旧版本；`tests/container.py` 使用实际镜像/命名卷验证非 root 与重启恢复。
 
-- **CLI 接口**
-  - `jiaclaw serve` - 启动 HTTP 服务
-  - `jiaclaw chat <message>` - 单次聊天
-  - `jiaclaw doctor` - 配置诊断（含 MEMORY / SOUL / USER / HEARTBEAT 是否存在及大小；Heartbeat 是否启用与间隔；工具循环上限生效值；web_search / web_fetch / memory_search / memory_write / read_file / list_dir / write_file / delete_file / str_replace / grep / glob / mkdir / move 是否启用；可选 CORS 是否启用；日志 format；serve 优雅退出宽限期）
-  - `jiaclaw memory show` - 显示工作区长期记忆
-  - `jiaclaw session export <id> [-o file]` - 从落盘 store 只读导出 JSONL
-  - `jiaclaw session import <file> [--id ID] [--overwrite]` - 导入 JSONL/JSON 到落盘 store（不调用 LLM）
-  - `jiaclaw soul show` / `jiaclaw user show` - 显示人格与用户画像
-  - `jiaclaw version` - 版本信息
-
-- **HTTP 服务**（计划）
-  - REST API 端点
-  - SSE 事件流
-  - 身份验证和授权
-
-### StateKnot 框架层
-
-JiaClaw 依赖 StateKnot 的以下能力：
-
-#### Runtime 层
-
-- **AgentBuilder** - 构建类型化 Agent 定义
-- **TypedAgent<I, O>** - 类型安全的 Agent 执行器
-- **DurableAgentAdmission** - 原子化的持久化准入
-- **DurableAgentRuns** - 运行状态和结果管理
-- **AgentHost** - 协调 HTTP、Worker 和维护角色
-
-#### Execution 层
-
-- **Graph Driver** - 确定性图执行
-- **DurableInvocationExecutor** - 持久化调用（模型/工具）
-- **Fair Scheduler** - 跨租户公平调度
-- **Checkpoint/Barrier** - 状态检查点和同步屏障
-
-#### Integration 层
-
-- **Model Adapters** - OpenAI、Anthropic 等模型提供者
-- **MCP Support** - 工具协议（Model Context Protocol）
-- **A2A Support** - Agent-to-Agent 协议
-
-#### Persistence 层
-
-- **PostgreSQL Store** - 运行日志、事件、检查点
-- **Artifact Store** - S3 兼容的对象存储
-- **Journal/Ledger** - 不可变调用记录
-
-## 数据流
-
-### 1. 聊天请求流程
-
-```
-用户输入
-  │
-  ▼
-jiaclaw-host (CLI/HTTP)
-  │
-  ▼
-JiaClawAgent.chat(request)
-  │
-  ├─> 1. 序列化 ChatRequest
-  │   TypedAgent::prepare_request()
-  │
-  ├─> 2. 持久化准入
-  │   DurableAgentAdmission::admit()
-  │   - 分配 run/thread/invocation IDs
-  │   - 提交初始状态和检查点
-  │   - 进入调度器队列
-  │
-  ├─> 3. 图执行
-  │   DurableAgentLoop 循环：
-  │   - 恢复检查点
-  │   - 执行模型调用（DurableInvocationExecutor）
-  │   - 处理工具提议
-  │   - 执行工具（MCP/A2A）
-  │   - 提交检查点
-  │   - 检查终止条件
-  │
-  ├─> 4. 终止和结果
-  │   - AgentResult::Success/Failure
-  │   - 验证输出 schema
-  │
-  └─> 5. 响应反序列化
-      TypedAgent::decode_result()
-      - 验证来源和预算证据
-      - 反序列化 ChatResponse
-  │
-  ▼
-返回 ChatResponse 给用户
-```
-
-### 2. 持久化和恢复
-
-```
-运行时崩溃或重启
-  │
-  ▼
-AgentHost 启动
-  │
-  ├─> PostgreSQL 恢复
-  │   - 加载 journal 和 checkpoint
-  │   - 验证租约（lease fencing）
-  │   - 重建待处理工作集
-  │
-  ├─> 调度器扫描
-  │   - 发现可运行的 runs
-  │   - 申领租约
-  │
-  ├─> 图驱动器恢复
-  │   - plan_ready_nodes() 
-  │   - 区分已完成/可调度/进行中的节点
-  │   - 重放已完成的结果（不重新执行）
-  │
-  └─> 继续执行
-      - 从最后的检查点恢复
-      - 继续未完成的模型/工具调用
-      - 保证 at-least-once 语义
-```
-
-## 关键设计决策
-
-### 1. 类型化优先
-
-JiaClaw 使用 StateKnot 的类型化 Agent API（`TypedAgent<ChatRequest, ChatResponse>`），而不是无类型的 map。这提供：
-
-- 编译时安全
-- JSON Schema 验证
-- 清晰的输入/输出契约
-
-### 2. 持久化优先
-
-所有 Agent 运行都是持久化的：
-
-- 每个状态转换提交到 PostgreSQL
-- 检查点记录完整的执行状态
-- 支持暂停、恢复、崩溃恢复
-
-### 3. 协议原生互操作
-
-通过 StateKnot 的适配器支持标准协议：
-
-- **MCP** - 工具发现和调用
-- **A2A** - Agent 间通信
-- 避免协议类型泄露到核心领域模型
-
-### 4. 生产就绪的治理
-
-利用 StateKnot 的治理特性：
-
-- 租户隔离
-- 资源策略和预算
-- 审计日志
-- OpenTelemetry 跟踪
-
-## 当前限制
-
-由于 StateKnot 处于 pre-alpha 阶段，以下集成尚未完成：
-
-1. **公共 API 稳定性** - StateKnot 的核心类型尚未发布
-2. **完整的持久化配置** - 需要 PostgreSQL 连接和迁移
-3. **模型提供者注册** - 需要 OpenAI/Anthropic API 密钥
-4. **HTTP 服务集成** - 需要 AgentHost + 身份验证
-5. **工具和技能注册** - 需要 MCP 客户端配置
-
-参见 [StateKnot 能力差距](stateknot-gaps.md) 了解详细跟踪和上游议题。
-
-## 下一步
-
-1. **等待 Brokerrouter** - 作为 AI Gateway 层的优先路径
-2. **监控 StateKnot 发布** - 等待稳定的公共 API
-3. **实现持久化配置** - PostgreSQL 设置和迁移
-4. **注册示例工具** - 基本 MCP 工具集成
-5. **实现 HTTP 服务** - RESTful API 和 SSE 事件
-6. **添加示例技能** - 可扩展的技能系统
-
-## 参考资料
-
-- [StateKnot 文档](https://stknot.com/docs/)
-- [StateKnot 仓库](https://github.com/StateKnot/StateKnot)
-- [Brokerrouter 仓库](https://github.com/StateKnot/Brokerrouter)
-- [Brokerrouter 差距文档](brokerrouter-gaps.md)
-- [StateKnot RFC 和设计文档](https://github.com/StateKnot/StateKnot/tree/main/docs)
+真实供应商计费、真实渠道出站和 StateKnot durable 故障恢复不在上述 fixture 证据内。依赖的认证门槛见上游状态文档。

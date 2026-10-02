@@ -966,7 +966,7 @@ mod tests {
     fn resolve_default_path() {
         let ws = unique_temp("jiaclaw_mem_resolve");
         let path = resolve_memory_path(&ws, DEFAULT_MEMORY_PATH).unwrap();
-        assert_eq!(path, ws.join("MEMORY.md"));
+        assert_eq!(path, ws.canonicalize().unwrap().join("MEMORY.md"));
         let _ = fs::remove_dir_all(&ws);
     }
 

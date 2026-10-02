@@ -52,6 +52,10 @@ use std::{
 use tokio::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+mod store;
+mod ui;
+use store::SessionStore;
+
 mod metrics;
 use metrics::{classify_http_path, Metrics, PROMETHEUS_CONTENT_TYPE};
 
@@ -428,13 +432,13 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
 
     println!("\n📝 下一步:");
     println!("   1. 编辑工作空间文件以个性化你的 Agent");
-    println!("   2. 配置 API key（可选）:");
+    println!("   2. 配置 Brokerrouter 虚拟 API key:");
     println!("      export JIACLAW_API_KEY=your-key-here");
     println!("   3. 开始聊天:");
     println!("      jiaclaw chat \"你好\"");
 
     println!("\n💡 提示:");
-    println!("   • 无 API key 时将使用存根模式（演示功能）");
+    println!("   • 离线验收需显式配置 provider_type = stub");
     println!("   • 可选 HEARTBEAT.md：仅 serve 进程可按间隔自检（默认关闭，见 [heartbeat]）");
     println!("   • 参见 config/jiaclaw.toml.example 了解完整配置选项");
 
@@ -445,6 +449,7 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
 const SESSION_TTL_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 内存中的一条会话：消息 + 最近触达时间。
+#[derive(Clone)]
 struct SessionRecord {
     messages: Vec<ChatMessage>,
     last_accessed: Instant,
@@ -471,7 +476,8 @@ impl SessionRecord {
 #[derive(Clone)]
 struct AppState {
     agent: Arc<JiaClawAgent>,
-    sessions: Arc<Mutex<HashMap<String, SessionRecord>>>,
+    sessions: Arc<Mutex<SessionStore>>,
+    turn_locks: Arc<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     api_token: Option<String>,
     webhook_secret: Option<String>,
     telegram_secret: Option<String>,
@@ -1728,6 +1734,9 @@ fn build_router_with_body_limit(
     let metrics = state.metrics.clone();
     let body_limit = max_body_bytes_usize(max_body_bytes);
     let mut router = Router::new()
+        .route("/", get(ui::index))
+        .route("/ui/app.js", get(ui::javascript))
+        .route("/ui/app.css", get(ui::stylesheet))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/chat", post(chat_handler))
@@ -2225,31 +2234,54 @@ async fn run_heartbeat_tick(
     }
 }
 
-fn sessions_from_messages(
-    raw: HashMap<String, Vec<ChatMessage>>,
-) -> HashMap<String, SessionRecord> {
-    raw.into_iter()
-        .map(|(id, messages)| (id, SessionRecord::new(messages)))
-        .collect()
-}
-
-fn messages_from_sessions(
-    sessions: &HashMap<String, SessionRecord>,
-) -> HashMap<String, Vec<ChatMessage>> {
-    sessions
-        .iter()
-        .map(|(id, rec)| (id.clone(), rec.messages.clone()))
-        .collect()
-}
-
-fn persist_session_map(state: &AppState, sessions: &HashMap<String, SessionRecord>) {
+fn persist_session_map(state: &AppState, sessions: &SessionStore) -> Result<()> {
     if !state.persist_enabled {
-        return;
+        return Ok(());
     }
-    let raw = messages_from_sessions(sessions);
-    if let Err(e) = save_sessions(&state.persist_path, &raw) {
-        tracing::error!("保存 sessions 失败: {}", e);
+    match sessions {
+        SessionStore::Sqlite { .. } => sessions.flush(),
+        SessionStore::Memory(map) => {
+            let raw = map
+                .iter()
+                .map(|(id, rec)| (id.clone(), rec.messages.clone()))
+                .collect();
+            save_sessions(&state.persist_path, &raw)
+        }
     }
+}
+
+async fn with_sessions<T: Send + 'static>(
+    state: &AppState,
+    operation: impl FnOnce(&mut SessionStore) -> Result<T> + Send + 'static,
+) -> Result<T, AppError> {
+    let sessions = state.sessions.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut store = sessions
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session store lock poisoned"))?;
+        operation(&mut store)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "会话存储失败");
+        AppError::Internal("session_storage_error".into())
+    })
+}
+
+async fn session_turn_lock(state: &AppState, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = state.turn_locks.lock().unwrap();
+        locks.retain(|_, value| value.strong_count() > 0);
+        if let Some(lock) = locks.get(id).and_then(std::sync::Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(id.into(), Arc::downgrade(&lock));
+            lock
+        }
+    };
+    lock.lock_owned().await
 }
 
 /// 合并 session 历史与本轮入站消息，并在超过上限时压缩（共享写入前的唯一裁剪点）。
@@ -2261,18 +2293,19 @@ async fn prepare_session_chat_messages(
     incoming: Vec<ChatMessage>,
     request_id: &str,
     channel_label: &str,
-) -> Vec<ChatMessage> {
-    let history = {
-        let sessions = state.sessions.lock().unwrap();
-        sessions.get(session_id).map(|rec| rec.messages.clone())
-    };
+) -> Result<Vec<ChatMessage>, AppError> {
+    let id = session_id.to_string();
+    let history = with_sessions(state, move |sessions| {
+        Ok(sessions.get(&id)?.map(|rec| rec.messages))
+    })
+    .await?;
 
     let Some(history) = history else {
         tracing::info!(
             request_id = %request_id,
             "创建新 {channel_label} session: {session_id}"
         );
-        return incoming;
+        return Ok(incoming);
     };
 
     let mut all_messages = history;
@@ -2291,46 +2324,56 @@ async fn prepare_session_chat_messages(
         "使用 {channel_label} session {session_id}, 合并后消息数: {} (压缩前 {before})",
         compacted.len()
     );
-    compacted
+    Ok(compacted)
 }
 
 /// 将压缩后的完整历史写回共享 session store（含可选落盘）。
-fn commit_session_messages(
+async fn commit_session_messages(
     state: &AppState,
     session_id: &str,
     messages: Vec<ChatMessage>,
     request_id: &str,
     channel_label: &str,
-) {
-    let mut sessions = state.sessions.lock().unwrap();
-    let message_count = messages.len();
-    sessions.insert(session_id.to_string(), SessionRecord::new(messages));
-    tracing::info!(
-        request_id = %request_id,
-        "更新 {channel_label} session {session_id}, 当前消息数: {message_count}"
-    );
-    persist_session_map(state, &sessions);
+) -> Result<(), AppError> {
+    let id = session_id.to_string();
+    let state_copy = state.clone();
+    with_sessions(state, move |sessions| {
+        sessions.insert(id, SessionRecord::new(messages))?;
+        persist_session_map(&state_copy, sessions)
+    })
+    .await?;
+    tracing::info!(request_id, channel_label, session_id, "会话提交成功");
+    Ok(())
 }
 
-fn purge_expired_sessions(state: &AppState) -> usize {
+async fn purge_expired_sessions(state: &AppState) -> usize {
     let Some(ttl) = state.session_ttl else {
         return 0;
     };
-    let now = Instant::now();
-    let mut sessions = state.sessions.lock().unwrap();
-    let before = sessions.len();
-    sessions.retain(|id, rec| {
-        let keep = !rec.is_expired(ttl, now);
-        if !keep {
-            tracing::info!("Session {id} 已闲置过期，移出 store");
+    let active = state
+        .turn_locks
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, lock)| lock.strong_count() > 0)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let state_copy = state.clone();
+    match with_sessions(state, move |sessions| {
+        let removed = sessions.purge(ttl, &active)?;
+        if removed > 0 {
+            persist_session_map(&state_copy, sessions)?;
         }
-        keep
-    });
-    let removed = before.saturating_sub(sessions.len());
-    if removed > 0 {
-        persist_session_map(state, &sessions);
+        Ok(removed)
+    })
+    .await
+    {
+        Ok(n) => n,
+        Err(_) => {
+            tracing::error!("TTL 清理失败");
+            0
+        }
     }
-    removed
 }
 
 fn spawn_session_ttl_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
@@ -2340,7 +2383,7 @@ fn spawn_session_ttl_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
         interval.tick().await;
         loop {
             interval.tick().await;
-            let removed = purge_expired_sessions(&state);
+            let removed = purge_expired_sessions(&state).await;
             if removed > 0 {
                 tracing::info!("Session TTL 扫描移除 {removed} 个过期会话");
             }
@@ -2389,11 +2432,10 @@ fn flush_sessions_on_shutdown(state: &AppState) -> bool {
         }
     };
 
-    let raw = messages_from_sessions(&sessions);
-    match save_sessions(&state.persist_path, &raw) {
+    match persist_session_map(state, &sessions) {
         Ok(()) => {
             tracing::info!(
-                count = sessions.len(),
+                count = sessions.len().unwrap_or_default(),
                 path = %state.persist_path.display(),
                 "关闭时已刷盘 sessions"
             );
@@ -2475,6 +2517,22 @@ struct InboundWebhookResponse {
     error: Option<String>,
 }
 
+fn validate_host_provider(config: &AgentConfig) -> Result<()> {
+    match config.provider.provider_type.as_str() {
+        "stub" => Ok(()),
+        "brokerrouter" | "openai_compatible" => {
+            let key = std::env::var("JIACLAW_API_KEY")
+                .ok()
+                .or_else(|| config.provider.api_key.clone());
+            if key.is_none_or(|key| key.trim().is_empty()) {
+                anyhow::bail!("模型提供商缺少 API Key；不会自动回退到 stub。离线验收请显式配置 provider_type='stub'");
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("未知 provider_type: {other}"),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Result<()> {
     // 加载配置
@@ -2517,15 +2575,31 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         .ok()
         .or(config.http.api_token.clone());
 
+    let api_token = api_token.filter(|token| !token.trim().is_empty());
+    validate_host_provider(&config)?;
+    let bind_address: std::net::SocketAddr = config
+        .http
+        .bind
+        .parse()
+        .context("bind 必须为 IP:端口，例如 127.0.0.1:8080")?;
+    if !bind_address.ip().is_loopback() && api_token.is_none() {
+        anyhow::bail!("非本机监听必须设置 JIACLAW_API_TOKEN 或 http.api_token");
+    }
+    if config.tools.exec.enabled && api_token.is_none() {
+        anyhow::bail!("启用 exec 必须设置 API Token");
+    }
+
     // 读取 webhook secret（环境变量优先于配置文件）
     let webhook_secret = std::env::var("JIACLAW_WEBHOOK_SECRET")
         .ok()
-        .or(config.http.webhook_secret.clone());
+        .or(config.http.webhook_secret.clone())
+        .filter(|value| !value.trim().is_empty());
 
     // 读取 Telegram secret token（环境变量优先于配置文件）
     let telegram_secret = std::env::var("JIACLAW_TELEGRAM_SECRET")
         .ok()
-        .or(config.http.telegram_secret.clone());
+        .or(config.http.telegram_secret.clone())
+        .filter(|value| !value.trim().is_empty());
 
     // 读取 Telegram Bot API token（环境变量优先于配置文件）
     let telegram_bot_token = config.http.effective_telegram_bot_token();
@@ -2552,18 +2626,16 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     // 解析持久化路径
     let persist_path = persist_path_from_config(&config);
 
-    // 加载持久化的 sessions（如果启用）
     let sessions = if config.http.persist {
-        tracing::info!("Session 持久化已启用，路径: {}", persist_path.display());
-        sessions_from_messages(load_sessions(&persist_path))
+        open_configured_session_store(&config)?
     } else {
-        tracing::info!("Session 持久化未启用");
-        HashMap::new()
+        SessionStore::memory()
     };
 
     let state = AppState {
         agent: Arc::new(agent),
         sessions: Arc::new(Mutex::new(sessions)),
+        turn_locks: Arc::new(Mutex::new(HashMap::new())),
         api_token: api_token.clone(),
         webhook_secret: webhook_secret.clone(),
         telegram_secret: telegram_secret.clone(),
@@ -2610,12 +2682,15 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
 
     // 构建路由（限流中间件不依赖 ConnectInfo，oneshot 测试不会 500）
     let shutdown_state = state.clone();
-    let app = build_router_with_body_limit(state, cors_layer, max_body_bytes);
+    let app = build_router_with_body_limit(state.clone(), cors_layer, max_body_bytes)
+        .layer(middleware::from_fn_with_state(state, configured_hooks_only));
 
     // 绑定地址
     let listener = tokio::net::TcpListener::bind(&config.http.bind)
         .await
         .with_context(|| format!("无法绑定到地址: {}", config.http.bind))?;
+
+    config.http.bind = listener.local_addr()?.to_string();
 
     // 启动日志
     tracing::info!("✅ HTTP 服务已启动于 http://{}", config.http.bind);
@@ -2808,7 +2883,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             }
         );
     } else {
-        println!("   • Webhook 鉴权: ⚠️  未启用（任何请求都可访问 /hooks/inbound）");
+        println!("   • Webhook 鉴权: ⚠️  未配置（/hooks/inbound 已关闭）");
     }
 
     if telegram_secret.is_some() {
@@ -2821,7 +2896,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             }
         );
     } else {
-        println!("   • Telegram 鉴权: ⚠️  未启用（任何请求都可访问 /hooks/telegram）");
+        println!("   • Telegram 鉴权: ⚠️  未配置（/hooks/telegram 已关闭）");
     }
 
     if telegram_bot_token.is_some() {
@@ -2839,7 +2914,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             slack_signing_secret_config_source()
         );
     } else {
-        println!("   • Slack 签名校验: ⚠️  未启用（任何请求都可访问 /hooks/slack）");
+        println!("   • Slack 签名校验: ⚠️  未配置（/hooks/slack 已关闭）");
     }
 
     if slack_bot_token.is_some() {
@@ -2857,7 +2932,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             discord_public_key_config_source()
         );
     } else {
-        println!("   • Discord 签名校验: ⚠️  未启用（任何请求都可访问 /hooks/discord）");
+        println!("   • Discord 签名校验: ⚠️  未配置（/hooks/discord 已关闭）");
     }
 
     if discord_bot_token.is_some() {
@@ -3086,6 +3161,30 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     .await
 }
 
+// Production entry point closes each channel until its own authentication is configured.
+// A browser/API token does not authenticate provider webhooks.
+async fn configured_hooks_only(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let configured = match request.uri().path() {
+        "/hooks/inbound" => state.webhook_secret.as_deref(),
+        "/hooks/telegram" => state.telegram_secret.as_deref(),
+        "/hooks/slack" => state.slack_signing_secret.as_deref(),
+        "/hooks/discord" => state.discord_public_key.as_deref(),
+        _ => return next.run(request).await,
+    };
+    if configured.is_none_or(|value| value.trim().is_empty()) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"channel_disabled"})),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 /// 检查 API Token 鉴权
 fn check_api_auth(state: &AppState, headers: &HeaderMap) -> bool {
     // 如果未配置 token，则不需要鉴权
@@ -3145,7 +3244,7 @@ async fn metrics_handler(
     let sessions_active = state
         .sessions
         .lock()
-        .map(|guard| u64::try_from(guard.len()).unwrap_or(u64::MAX))
+        .map(|guard| u64::try_from(guard.len().unwrap_or_default()).unwrap_or(u64::MAX))
         .unwrap_or(0);
     let body = state
         .metrics
@@ -3277,7 +3376,7 @@ fn build_chat_sse_events(
             for call in &response.tool_calls {
                 events.push(sse_json_event("tool", &tool_sse_payload(call)));
             }
-            // TODO(true-streaming): 底层 LLM 暂无 token stream；此处为整段生成后的分块推送。
+            // TODO(true-streaming): Brokerrouter 已支持 SSE；应用 provider 尚未接线，当前完成后分块。
             for chunk in chunk_assistant_text(&response.message.content) {
                 events.push(sse_json_event("token", &json!({ "text": chunk })));
             }
@@ -3330,7 +3429,12 @@ async fn chat_handler(
 
     let session_id = request.session_id.clone();
 
-    purge_expired_sessions(&state);
+    let _turn_guard = if let Some(ref sid) = session_id {
+        Some(session_turn_lock(&state, sid).await)
+    } else {
+        None
+    };
+    purge_expired_sessions(&state).await;
 
     if let Some(ref sid) = session_id {
         request.messages = prepare_session_chat_messages(
@@ -3340,7 +3444,7 @@ async fn chat_handler(
             &request_id,
             "http",
         )
-        .await;
+        .await?;
     }
 
     let response = match state.agent.chat(&request).await {
@@ -3364,7 +3468,7 @@ async fn chat_handler(
     if let Some(ref sid) = session_id {
         let mut messages = request.messages.clone();
         messages.push(response.message.clone());
-        commit_session_messages(&state, sid, messages, &request_id, "http");
+        commit_session_messages(&state, sid, messages, &request_id, "http").await?;
     }
 
     tracing::info!(
@@ -3413,7 +3517,7 @@ struct CreateSessionResponse {
     session_id: String,
 }
 
-/// 列出会话：读内存中的当前 store（落盘开启时也以内存为准，与 chat/delete 一致）。
+/// 从权威会话存储读取列表，与 chat/delete 使用相同后端。
 async fn list_sessions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3426,21 +3530,22 @@ async fn list_sessions_handler(
         return Err(AppError::Unauthorized);
     }
 
-    purge_expired_sessions(&state);
+    purge_expired_sessions(&state).await;
 
-    let mut sessions: Vec<SessionSummary> = {
-        let mut map = state.sessions.lock().unwrap();
-        let now = Instant::now();
-        for rec in map.values_mut() {
-            rec.last_accessed = now;
+    let mut sessions: Vec<SessionSummary> = with_sessions(&state, move |map| {
+        let entries = map.list()?;
+        for (id, _) in &entries {
+            map.touch(id)?;
         }
-        map.iter()
+        Ok(entries
+            .into_iter()
             .map(|(id, rec)| SessionSummary {
-                id: id.clone(),
+                id,
                 message_count: rec.messages.len(),
             })
-            .collect()
-    };
+            .collect())
+    })
+    .await?;
     sessions.sort_by(|a, b| a.id.cmp(&b.id));
 
     tracing::info!(
@@ -3451,7 +3556,7 @@ async fn list_sessions_handler(
     Ok(Json(ListSessionsResponse { sessions }))
 }
 
-/// 读取会话历史；不存在返回 404。读内存 store，不重新扫盘。
+/// 从权威会话存储读取历史；不存在返回 404。
 async fn get_session_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3465,15 +3570,17 @@ async fn get_session_handler(
         return Err(AppError::Unauthorized);
     }
 
-    purge_expired_sessions(&state);
+    purge_expired_sessions(&state).await;
 
-    let messages = {
-        let mut map = state.sessions.lock().unwrap();
-        map.get_mut(&session_id).map(|rec| {
-            rec.touch();
-            rec.messages.clone()
-        })
-    };
+    let id = session_id.clone();
+    let messages = with_sessions(&state, move |map| {
+        let record = map.get(&id)?;
+        if record.is_some() {
+            map.touch(&id)?;
+        }
+        Ok(record.map(|rec| rec.messages))
+    })
+    .await?;
 
     if let Some(messages) = messages {
         tracing::info!(
@@ -3518,13 +3625,16 @@ fn encode_messages_jsonl(messages: &[ChatMessage]) -> Result<String, serde_json:
 }
 
 /// 只读取出会话消息：过期先按 TTL 清理；不 touch、不摘要、不因导出而改写消息。
-fn load_session_messages_for_export(
+async fn load_session_messages_for_export(
     state: &AppState,
     session_id: &str,
-) -> Option<Vec<ChatMessage>> {
-    purge_expired_sessions(state);
-    let sessions = state.sessions.lock().unwrap();
-    sessions.get(session_id).map(|rec| rec.messages.clone())
+) -> Result<Option<Vec<ChatMessage>>, AppError> {
+    purge_expired_sessions(state).await;
+    let id = session_id.to_string();
+    with_sessions(state, move |store| {
+        Ok(store.get(&id)?.map(|rec| rec.messages))
+    })
+    .await
 }
 
 /// 导出会话历史；不存在或已过期返回 404。只读，不触发摘要、不刷新 TTL。
@@ -3542,7 +3652,7 @@ async fn export_session_handler(
         return Err(AppError::Unauthorized);
     }
 
-    let Some(messages) = load_session_messages_for_export(&state, &session_id) else {
+    let Some(messages) = load_session_messages_for_export(&state, &session_id).await? else {
         tracing::info!(
             request_id = request_id_log_value(&headers),
             "导出 session 不存在: {}",
@@ -3683,7 +3793,7 @@ async fn import_session_handler(
     let session_id = resolve_import_session_id(query.id.as_deref(), body_id.as_deref());
     let request_id = request_id_log_value(&headers).to_string();
 
-    purge_expired_sessions(&state);
+    purge_expired_sessions(&state).await;
 
     let compacted = compact_imported_session_messages(
         messages,
@@ -3696,25 +3806,22 @@ async fn import_session_handler(
     )
     .await;
 
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        if sessions.contains_key(&session_id) && !query.overwrite {
-            tracing::info!(
-                request_id = %request_id,
-                "导入 session 冲突: {}",
-                session_id
-            );
-            return Err(AppError::Conflict);
+    let _turn_guard = session_turn_lock(&state, &session_id).await;
+    let id = session_id.clone();
+    let messages = compacted.clone();
+    let state_copy = state.clone();
+    let imported = with_sessions(&state, move |sessions| {
+        let imported = sessions.import(&id, SessionRecord::new(messages), query.overwrite)?;
+        if imported {
+            persist_session_map(&state_copy, sessions)?;
         }
-        let message_count = compacted.len();
-        sessions.insert(session_id.clone(), SessionRecord::new(compacted.clone()));
-        tracing::info!(
-            request_id = %request_id,
-            overwrite = query.overwrite,
-            "导入 session {session_id}，消息数: {message_count}"
-        );
-        persist_session_map(&state, &sessions);
+        Ok(imported)
+    })
+    .await?;
+    if !imported {
+        return Err(AppError::Conflict);
     }
+    tracing::info!(request_id, session_id, "导入会话成功");
 
     Ok(Json(GetSessionResponse {
         id: session_id,
@@ -3734,11 +3841,15 @@ async fn create_session_handler(
     }
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    purge_expired_sessions(&state);
+    purge_expired_sessions(&state).await;
 
-    // 立即在 sessions map 中创建空的 Vec，这样后续 DELETE 能正确返回 success=true
-    let mut sessions = state.sessions.lock().unwrap();
-    sessions.insert(session_id.clone(), SessionRecord::new(Vec::new()));
+    let id = session_id.clone();
+    let state_copy = state.clone();
+    with_sessions(&state, move |sessions| {
+        sessions.insert(id, SessionRecord::new(Vec::new()))?;
+        persist_session_map(&state_copy, sessions)
+    })
+    .await?;
 
     tracing::info!("创建新 session: {}", session_id);
     Ok(Json(CreateSessionResponse { session_id }))
@@ -3807,15 +3918,22 @@ async fn delete_session_handler(
         tracing::warn!("API 鉴权失败: token 不匹配或缺失");
         return Err(AppError::Unauthorized);
     }
-    purge_expired_sessions(&state);
+    purge_expired_sessions(&state).await;
 
-    let mut sessions = state.sessions.lock().unwrap();
-    let existed = sessions.remove(&session_id).is_some();
+    let _turn_guard = session_turn_lock(&state, &session_id).await;
+    let id = session_id.clone();
+    let state_copy = state.clone();
+    let existed = with_sessions(&state, move |sessions| {
+        let existed = sessions.remove(&id)?;
+        if existed {
+            persist_session_map(&state_copy, sessions)?;
+        }
+        Ok(existed)
+    })
+    .await?;
 
     if existed {
         tracing::info!("删除 session: {}", session_id);
-
-        persist_session_map(&state, &sessions);
 
         Ok(Json(DeleteSessionResponse {
             success: true,
@@ -3917,7 +4035,8 @@ async fn run_session_user_chat(
         "使用 {channel_label} session_id: {session_id}"
     );
 
-    purge_expired_sessions(state);
+    let _turn_guard = session_turn_lock(state, session_id).await;
+    purge_expired_sessions(state).await;
 
     let incoming = vec![ChatMessage {
         role: MessageRole::User,
@@ -3931,7 +4050,7 @@ async fn run_session_user_chat(
             request_id,
             channel_label,
         )
-        .await,
+        .await?,
         enabled_tools: vec![],
         enabled_skills: vec![],
         auto_skills: true,
@@ -3947,7 +4066,7 @@ async fn run_session_user_chat(
     {
         let mut messages = request.messages.clone();
         messages.push(response.message.clone());
-        commit_session_messages(state, session_id, messages, request_id, channel_label);
+        commit_session_messages(state, session_id, messages, request_id, channel_label).await?;
     }
 
     tracing::info!(
@@ -4338,14 +4457,60 @@ fn spawn_skill_reload_on_sighup(agent: Arc<JiaClawAgent>) -> Option<tokio::task:
 }
 
 fn persist_path_from_config(config: &AgentConfig) -> PathBuf {
-    if config.http.persist_path.starts_with('/') {
-        PathBuf::from(&config.http.persist_path)
+    let configured = PathBuf::from(&config.http.persist_path);
+    // Legacy defaults migrate to a sibling state directory, outside model tools.
+    if config.http.persist_path == ".jiaclaw/sessions.json"
+        || config.http.persist_path == ".jiaclaw/sessions.sqlite3"
+    {
+        return config.workspace_path.join("../state/sessions.sqlite3");
+    }
+    let path = if configured.is_absolute() {
+        configured
     } else {
-        config.workspace_path.join(&config.http.persist_path)
+        config.workspace_path.join(configured)
+    };
+    if path.extension().is_some_and(|ext| ext == "json") {
+        path.with_extension("sqlite3")
+    } else {
+        path
     }
 }
 
+fn open_configured_session_store(config: &AgentConfig) -> Result<SessionStore> {
+    let path = persist_path_from_config(config);
+    let workspace = config.workspace_path.canonicalize()?;
+    let parent = path
+        .parent()
+        .context("session database requires a parent directory")?;
+    std::fs::create_dir_all(parent)?;
+    let db = if path.exists() {
+        path.canonicalize()?
+    } else {
+        parent.canonicalize()?.join(
+            path.file_name()
+                .context("session database requires a filename")?,
+        )
+    };
+    if db.starts_with(&workspace) {
+        anyhow::bail!("session SQLite 数据库必须放在 Agent 工作区之外，建议 persist_path = '../state/sessions.sqlite3'");
+    }
+    let mut store = SessionStore::open(&db)?;
+    let legacy = if config.http.persist_path.ends_with(".json") {
+        PathBuf::from(&config.http.persist_path)
+    } else {
+        PathBuf::from(".jiaclaw/sessions.json")
+    };
+    let legacy = if legacy.is_absolute() {
+        legacy
+    } else {
+        config.workspace_path.join(legacy)
+    };
+    store.migrate_json(&legacy)?;
+    Ok(store)
+}
+
 /// 从磁盘加载 sessions
+#[cfg(test)]
 fn load_sessions(path: &std::path::Path) -> HashMap<String, Vec<ChatMessage>> {
     if !path.exists() {
         tracing::info!("Session 文件不存在，从空 map 开始");
@@ -4423,6 +4588,7 @@ async fn chat_command(
     }
 
     // 创建并使用 agent
+    validate_host_provider(&config)?;
     let agent = JiaClawAgent::new(config).context("创建 JiaClawAgent 失败")?;
 
     // 如果提供了消息，执行单次聊天
@@ -4446,11 +4612,21 @@ async fn single_chat(
     session_id: Option<String>,
     no_auto_skill: bool,
 ) -> Result<()> {
+    let mut store = if session_id.is_some() && agent.config().http.persist {
+        Some(open_configured_session_store(agent.config())?)
+    } else {
+        None
+    };
+    let mut messages = match (&store, &session_id) {
+        (Some(store), Some(id)) => store.get(id)?.map_or_else(Vec::new, |rec| rec.messages),
+        _ => Vec::new(),
+    };
+    messages.push(ChatMessage {
+        role: MessageRole::User,
+        content: message.to_string(),
+    });
     let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: MessageRole::User,
-            content: message.to_string(),
-        }],
+        messages: agent.compact_session_messages(messages).await,
         enabled_tools: vec![],
         enabled_skills: skills.to_vec(),
         auto_skills: !no_auto_skill,
@@ -4460,6 +4636,12 @@ async fn single_chat(
     tracing::info!("用户消息: {}", message);
 
     let response = agent.chat(&request).await.context("聊天请求失败")?;
+
+    if let (Some(store), Some(id)) = (&mut store, &session_id) {
+        let mut history = request.messages.clone();
+        history.push(response.message.clone());
+        store.insert(id.clone(), SessionRecord::new(history))?;
+    }
 
     // 显示工具调用（如果有）
     if !response.tool_calls.is_empty() {
@@ -4527,7 +4709,15 @@ async fn repl_chat(
     println!();
 
     // 维护会话历史
-    let mut history: Vec<ChatMessage> = Vec::new();
+    let mut store = if session_id.is_some() && agent.config().http.persist {
+        Some(open_configured_session_store(agent.config())?)
+    } else {
+        None
+    };
+    let mut history: Vec<ChatMessage> = match (&store, &session_id) {
+        (Some(store), Some(id)) => store.get(id)?.map_or_else(Vec::new, |rec| rec.messages),
+        _ => Vec::new(),
+    };
     let enabled_skills = skills.to_vec();
 
     loop {
@@ -4562,6 +4752,8 @@ async fn repl_chat(
                 };
                 history.push(user_message);
 
+                history = agent.compact_session_messages(history).await;
+
                 // 构建请求
                 let request = ChatRequest {
                     messages: history.clone(),
@@ -4574,6 +4766,10 @@ async fn repl_chat(
                 // 调用 agent
                 match agent.chat(&request).await {
                     Ok(response) => {
+                        history.push(response.message.clone());
+                        if let (Some(store), Some(id)) = (&mut store, &session_id) {
+                            store.insert(id.clone(), SessionRecord::new(history.clone()))?;
+                        }
                         // 显示工具调用（如果有）
                         if !response.tool_calls.is_empty() {
                             println!("\n🔧 工具调用:");
@@ -4587,7 +4783,6 @@ async fn repl_chat(
                         println!("🤖 {}\n", response.message.content);
 
                         // 添加助手消息到历史
-                        history.push(response.message);
                     }
                     Err(e) => {
                         eprintln!("❌ 错误: {e}\n");
@@ -4765,10 +4960,15 @@ fn session_export_command(
     output: Option<&std::path::Path>,
 ) -> Result<()> {
     let config = load_agent_config(config_path)?;
-    let persist_path = persist_path_from_config(&config);
-    export_session_from_persist_file(&persist_path, session_id, output)
+    let store = open_configured_session_store(&config)?;
+    let messages = store
+        .get(session_id)?
+        .ok_or_else(|| anyhow::anyhow!("session_not_found"))?
+        .messages;
+    write_session_jsonl(&messages, output)
 }
 
+#[cfg(test)]
 fn export_session_from_persist_file(
     persist_path: &std::path::Path,
     session_id: &str,
@@ -4805,20 +5005,24 @@ async fn session_import_command(
     overwrite: bool,
 ) -> Result<()> {
     let config = load_agent_config(config_path)?;
-    let persist_path = persist_path_from_config(&config);
-    let session_id = import_session_into_persist_file(
-        &persist_path,
-        file,
-        id,
-        overwrite,
+    let body = std::fs::read_to_string(file)?;
+    let (body_id, messages) = parse_session_import_file(&body).map_err(anyhow::Error::msg)?;
+    let session_id = resolve_import_session_id(id, body_id.as_deref());
+    let messages = compact_imported_session_messages(
+        messages,
         config.session.effective_summarize_on_overflow(),
         config.session.effective_keep_recent(),
     )
-    .await?;
+    .await;
+    let mut store = open_configured_session_store(&config)?;
+    if !store.import(&session_id, SessionRecord::new(messages), overwrite)? {
+        anyhow::bail!("session_already_exists");
+    }
     println!("✅ 已导入 session {session_id}");
     Ok(())
 }
 
+#[cfg(test)]
 async fn import_session_into_persist_file(
     persist_path: &std::path::Path,
     file: &std::path::Path,
@@ -5299,7 +5503,8 @@ fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
     // 检查 webhook secret（环境变量优先）
     let webhook_secret = std::env::var("JIACLAW_WEBHOOK_SECRET")
         .ok()
-        .or(config.http.webhook_secret.clone());
+        .or(config.http.webhook_secret.clone())
+        .filter(|value| !value.trim().is_empty());
 
     if webhook_secret.is_some() {
         println!(
@@ -5318,7 +5523,8 @@ fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
     // 检查 Telegram secret token（环境变量优先）
     let telegram_secret = std::env::var("JIACLAW_TELEGRAM_SECRET")
         .ok()
-        .or(config.http.telegram_secret.clone());
+        .or(config.http.telegram_secret.clone())
+        .filter(|value| !value.trim().is_empty());
 
     if telegram_secret.is_some() {
         println!(
@@ -5712,7 +5918,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret: None,
             telegram_secret: None,
@@ -5741,7 +5948,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret,
@@ -5829,7 +6037,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -5873,7 +6082,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -5902,7 +6112,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -5996,7 +6207,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -6124,7 +6336,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret,
             telegram_secret: None,
@@ -6165,7 +6378,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret: None,
             telegram_secret: None,
@@ -6215,7 +6429,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -6944,7 +7159,9 @@ mod tests {
         let original_len = history.len();
         {
             let mut sessions = state.sessions.lock().unwrap();
-            sessions.insert(session_id.clone(), SessionRecord::new(history));
+            sessions
+                .insert(session_id.clone(), SessionRecord::new(history))
+                .unwrap();
         }
         let app = build_router(state.clone());
 
@@ -6957,6 +7174,7 @@ mod tests {
             let sessions = state.sessions.lock().unwrap();
             sessions
                 .get(&session_id)
+                .unwrap()
                 .expect("export 不应删除 session")
                 .messages
                 .len()
@@ -7268,7 +7486,8 @@ mod tests {
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -7475,7 +7694,8 @@ mod tests {
         let agent = JiaClawAgent::new(config).expect("创建测试 agent 失败");
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -7497,13 +7717,14 @@ mod tests {
 
         {
             let mut map = state.sessions.lock().unwrap();
-            map.insert(session_id.clone(), SessionRecord::new(messages));
-            persist_session_map(&state, &map);
+            map.insert(session_id.clone(), SessionRecord::new(messages))
+                .unwrap();
+            persist_session_map(&state, &map).unwrap();
         }
         assert_eq!(load_sessions(&persist_path).len(), 1);
 
         tokio::time::advance(Duration::from_secs(1)).await;
-        assert_eq!(purge_expired_sessions(&state), 1);
+        assert_eq!(purge_expired_sessions(&state).await, 1);
         assert!(
             load_sessions(&persist_path).is_empty(),
             "过期清理后落盘应同步删除"
@@ -7528,7 +7749,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -7663,7 +7885,10 @@ mod tests {
         latch.wait().await;
 
         let sessions = state.sessions.lock().unwrap();
-        let rec = sessions.get("heartbeat").expect("心跳应写入固定 session");
+        let rec = sessions
+            .get("heartbeat")
+            .unwrap()
+            .expect("心跳应写入固定 session");
         assert!(rec
             .messages
             .iter()
@@ -7714,7 +7939,7 @@ mod tests {
         let mut state = test_state_for_workspace(unique_workspace("jiaclaw-shutdown"));
         state.persist_enabled = true;
         state.persist_path = Arc::new(persist_path.clone());
-        state.sessions = Arc::new(Mutex::new(sessions));
+        state.sessions = Arc::new(Mutex::new(SessionStore::from_memory(sessions)));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -7770,7 +7995,7 @@ mod tests {
         let mut state = test_state_for_workspace(unique_workspace("jiaclaw-shutdown-off"));
         state.persist_enabled = false;
         state.persist_path = Arc::new(persist_path.clone());
-        state.sessions = Arc::new(Mutex::new(sessions));
+        state.sessions = Arc::new(Mutex::new(SessionStore::from_memory(sessions)));
 
         assert!(flush_sessions_on_shutdown(&state));
         assert!(!persist_path.exists(), "persist=false 时 shutdown 不得写盘");
@@ -7823,7 +8048,7 @@ mod tests {
             other => panic!("expected completed tick, got {other:?}"),
         }
         let sessions = state.sessions.lock().unwrap();
-        let rec = sessions.get("heartbeat").expect("session");
+        let rec = sessions.get("heartbeat").unwrap().expect("session");
         assert_eq!(rec.messages[0].role, MessageRole::User);
         assert!(rec.messages[0].content.contains("drink water"));
         assert!(rec
@@ -7858,7 +8083,8 @@ mod tests {
         mem_map.insert(session_id.clone(), SessionRecord::new(mem_messages));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(mem_map)),
+            sessions: Arc::new(Mutex::new(SessionStore::from_memory(mem_map))),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -7906,7 +8132,9 @@ mod tests {
 
         {
             let mut sessions = state.sessions.lock().unwrap();
-            sessions.insert(session_id.clone(), SessionRecord::new(overflow_history(60)));
+            sessions
+                .insert(session_id.clone(), SessionRecord::new(overflow_history(60)))
+                .unwrap();
         }
 
         let request = ChatRequest {
@@ -7950,6 +8178,7 @@ mod tests {
             let sessions = state.sessions.lock().unwrap();
             sessions
                 .get(&session_id)
+                .unwrap()
                 .expect("session 应存在")
                 .messages
                 .clone()
@@ -7987,7 +8216,9 @@ mod tests {
 
         {
             let mut sessions = state.sessions.lock().unwrap();
-            sessions.insert(session_id.clone(), SessionRecord::new(overflow_history(60)));
+            sessions
+                .insert(session_id.clone(), SessionRecord::new(overflow_history(60)))
+                .unwrap();
         }
 
         let request = ChatRequest {
@@ -8021,6 +8252,7 @@ mod tests {
             let sessions = state.sessions.lock().unwrap();
             sessions
                 .get(&session_id)
+                .unwrap()
                 .expect("session 应存在")
                 .messages
                 .clone()
@@ -8062,7 +8294,9 @@ mod tests {
         let session_id = "webhook:overflow-chat".to_string();
         {
             let mut sessions = state.sessions.lock().unwrap();
-            sessions.insert(session_id.clone(), SessionRecord::new(overflow_history(60)));
+            sessions
+                .insert(session_id.clone(), SessionRecord::new(overflow_history(60)))
+                .unwrap();
         }
 
         let app = build_router(state.clone());
@@ -8089,6 +8323,7 @@ mod tests {
             let sessions = state.sessions.lock().unwrap();
             sessions
                 .get(&session_id)
+                .unwrap()
                 .expect("webhook session 应存在")
                 .messages
                 .clone()
@@ -8214,7 +8449,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8273,7 +8509,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8333,7 +8570,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8407,7 +8645,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8480,7 +8719,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8540,7 +8780,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8600,7 +8841,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8664,7 +8906,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8728,7 +8971,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8796,7 +9040,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8868,7 +9113,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -8940,7 +9186,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -9008,7 +9255,8 @@ mod tests {
             std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -10989,7 +11237,8 @@ mod tests {
 
         let state = AppState {
             agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(SessionStore::memory())),
+            turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
             telegram_secret: None,
@@ -11017,7 +11266,9 @@ mod tests {
 
         {
             let mut sessions = state.sessions.lock().unwrap();
-            sessions.insert(session_id.clone(), SessionRecord::new(messages.clone()));
+            sessions
+                .insert(session_id.clone(), SessionRecord::new(messages.clone()))
+                .unwrap();
         }
 
         assert!(!persist_path.exists(), "persist=false 时不应该创建文件");
@@ -13164,5 +13415,126 @@ mod tests {
             }
             _ => panic!("应为 skills reload 子命令"),
         }
+    }
+    #[tokio::test]
+    async fn sqlite_http_empty_chat_delete_and_restart() {
+        let root = unique_workspace("jiaclaw-http-db");
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database = root.join("state.sqlite3");
+        let mut state = test_state_for_workspace(workspace.clone());
+        state.persist_enabled = true;
+        state.persist_path = Arc::new(database.clone());
+        state.sessions = Arc::new(Mutex::new(SessionStore::open(&database).unwrap()));
+        let app = build_router(state.clone());
+        let id = http_create_session(&app).await;
+        // The empty session is committed immediately, without waiting for a chat.
+        assert!(state.sessions.lock().unwrap().get(&id).unwrap().is_some());
+        http_chat_with_session(&app, &id).await;
+        assert_eq!(
+            state
+                .sessions
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+        drop(app);
+        drop(state);
+        let mut restored = test_state_for_workspace(workspace.clone());
+        restored.persist_enabled = true;
+        restored.persist_path = Arc::new(database.clone());
+        restored.sessions = Arc::new(Mutex::new(SessionStore::open(&database).unwrap()));
+        let app = build_router(restored.clone());
+        assert_eq!(http_get_session_status(&app, &id).await, StatusCode::OK);
+        assert!(http_delete_session(&app, &id).await.success);
+        drop(app);
+        drop(restored);
+        assert!(SessionStore::open(&database)
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_turns_preserve_both_histories() {
+        let state = test_state_for_workspace(unique_workspace("jiaclaw-concurrent"));
+        let app = build_router(state.clone());
+        let id = http_create_session(&app).await;
+        tokio::join!(
+            http_chat_with_session(&app, &id),
+            http_chat_with_session(&app, &id)
+        );
+        let record = state.sessions.lock().unwrap().get(&id).unwrap().unwrap();
+        assert_eq!(
+            record.messages.len(),
+            4,
+            "concurrent messages must not overwrite an earlier turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_write_failure_returns_error_before_success() {
+        let mut state = test_state_for_workspace(unique_workspace("jiaclaw-readonly"));
+        let mut store = SessionStore::open(std::path::Path::new(":memory:")).unwrap();
+        if let SessionStore::Sqlite { conn, .. } = &mut store {
+            conn.execute_batch("PRAGMA query_only=ON").unwrap();
+        }
+        state.sessions = Arc::new(Mutex::new(store));
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .method("POST")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body_text(response).await).unwrap()["error"],
+            "session_storage_error"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_headers_and_api_auth_are_enforced() {
+        let mut state = test_state_for_workspace(unique_workspace("jiaclaw-ui"));
+        state.api_token = Some("test-token".into());
+        let app = build_router(state);
+        let page = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        assert!(page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'"));
+        assert_eq!(page.headers()["x-content-type-options"], "nosniff");
+        assert!(body_text(page).await.contains("JiaClaw"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

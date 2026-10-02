@@ -1,0 +1,30 @@
+services:
+  jiaclaw:
+    build: .
+    image: jiaclaw:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      JIACLAW_API_KEY: ${JIACLAW_API_KEY:?Set a Brokerrouter virtual key}
+      JIACLAW_API_TOKEN: ${JIACLAW_API_TOKEN:?Set a random JiaClaw API token}
+    volumes:
+      - jiaclaw-data:/data
+      - ./deploy/container.toml:/etc/jiaclaw/config.toml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  jiaclaw-data:

@@ -22,7 +22,11 @@ pub use jiaclaw_core::{
     MEMORY_PROMPT_MAX_BYTES, MIN_MAX_TOOL_ITERATIONS,
 };
 
+mod copy;
+mod exec;
 mod files;
+pub use copy::{copy_workspace, CopyOutput, WorkspaceCopyTool, COPY_MAX_BYTES};
+pub use exec::{validate_exec_config, ControlledExecTool};
 mod heartbeat;
 mod identity;
 mod memory;
@@ -81,7 +85,7 @@ pub use tools::{
 };
 pub use workspace::Workspace;
 
-// StateKnot imports - commented out until edition 2024 support
+// StateKnot runtime is not linked; see docs/stateknot-gaps.md.
 // use stateknot_core::{AgentExecutionConfig, AgentInstructions, BudgetLimits};
 // use stateknot_runtime::AgentBuilder;
 
@@ -118,6 +122,10 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
     if config.tools.r#move.enabled {
         tools.register(Box::new(WorkspaceMoveTool::new(workspace)));
     }
+    if config.tools.copy.enabled {
+        tools.register(Box::new(WorkspaceCopyTool::new(workspace)));
+        tools.register(Box::new(WorkspaceCopyTool::legacy(workspace)));
+    }
 }
 
 /// `JiaClaw` Agent 包装器
@@ -143,17 +151,12 @@ impl JiaClawAgent {
     ///
     /// # Errors
     ///
-    /// 当前实现始终返回 `Ok`，但未来可能在以下情况返回错误：
-    /// - 配置验证失败
-    /// - `StateKnot` 初始化失败
+    /// 工作区加载失败或沙箱策略无效时返回错误。
     ///
     /// # 当前限制
     ///
-    /// `StateKnot` 当前处于 pre-alpha 阶段，其核心类型尚未发布。
-    /// 本方法创建配置，但完整的 `StateKnot` 集成需要等待：
-    /// - 稳定的 `AgentBuilder` API
-    /// - 发布的 `TypedAgent` 类型
-    /// - `DurableAgentAdmission` 边界
+    /// 当前对话循环不使用 `StateKnot` 的持久化运行时。
+    /// 已发布的 alpha 版本仍待生产认证；SQLite 仅持久化会话历史。
     ///
     /// 参见 `docs/stateknot-gaps.md` 了解详情。
     pub fn new(config: AgentConfig) -> Result<Self, JiaClawError> {
@@ -213,7 +216,6 @@ impl JiaClawAgent {
         tools.register(Box::new(FileWriteTool::new(&config.workspace_path)));
         tools.register(Box::new(FileListTool::new(&config.workspace_path)));
         tools.register(Box::new(FileDeleteTool::new(&config.workspace_path)));
-        tools.register(Box::new(FileCopyTool::new(&config.workspace_path)));
 
         // 网络和数据工具
         tools.register(Box::new(HttpGetTool::new()));
@@ -231,7 +233,16 @@ impl JiaClawAgent {
 
         // 系统工具
         tools.register(Box::new(DateTimeTool::new()));
-        tools.register(Box::new(ShellExecTool::new(&config.workspace_path)));
+        if config.tools.exec.enabled {
+            tools.register(Box::new(ControlledExecTool::new(
+                &config.workspace_path,
+                config.tools.exec.clone(),
+            )?));
+            tools.register(Box::new(ControlledExecTool::legacy(
+                &config.workspace_path,
+                config.tools.exec.clone(),
+            )?));
+        }
 
         tracing::info!("注册了 {} 个本地工具", tools.list().len());
 
@@ -370,12 +381,9 @@ impl JiaClawAgent {
 
         // 从配置或环境变量获取 API key
         let env_key = std::env::var("JIACLAW_API_KEY").ok();
-        let api_key = self
-            .config
-            .provider
-            .api_key
+        let api_key = env_key
             .as_deref()
-            .or(env_key.as_deref());
+            .or(self.config.provider.api_key.as_deref());
 
         // 根据提供商类型执行工具循环
         let provider_type = self.config.provider.provider_type.as_str();
@@ -453,12 +461,9 @@ impl JiaClawAgent {
 
         let transcript = format_messages_for_summary(messages);
         let env_key = std::env::var("JIACLAW_API_KEY").ok();
-        let api_key = self
-            .config
-            .provider
-            .api_key
+        let api_key = env_key
             .as_deref()
-            .or(env_key.as_deref());
+            .or(self.config.provider.api_key.as_deref());
 
         let Some(key) = api_key else {
             return Ok(local_conversation_digest(messages));

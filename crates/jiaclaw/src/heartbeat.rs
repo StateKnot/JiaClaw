@@ -102,7 +102,7 @@ mod tests {
     fn resolve_default_path() {
         let ws = unique_temp("jiaclaw_hb_resolve");
         let path = resolve_heartbeat_path(&ws, DEFAULT_HEARTBEAT_PATH).unwrap();
-        assert_eq!(path, ws.join("HEARTBEAT.md"));
+        assert_eq!(path, ws.canonicalize().unwrap().join("HEARTBEAT.md"));
         let _ = fs::remove_dir_all(&ws);
     }
 

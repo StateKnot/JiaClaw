@@ -1,0 +1,70 @@
+name: Release draft
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.target }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.85.0 --profile minimal --component rustfmt
+      - name: Validate tag against package version
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,os,sys; packages=json.load(sys.stdin)["packages"]; v=next(p["version"] for p in packages if p["name"] == "jiaclaw-host"); assert os.environ["RELEASE_TAG"] == "v"+v'
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked --target "$TARGET" -p jiaclaw-host
+      - name: Verify binary and package
+        run: |
+          "target/$TARGET/release/jiaclaw" version
+          python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
+          mkdir dist
+          cp "target/$TARGET/release/jiaclaw" dist/jiaclaw
+          tar -czf "dist/jiaclaw-$RELEASE_TAG-$TARGET.tar.gz" -C dist jiaclaw
+          rm dist/jiaclaw
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create checksummed draft for maintainer review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$RELEASE_TAG" *.tar.gz SHA256SUMS --draft --verify-tag --title "JiaClaw $RELEASE_TAG" --notes 'Native Linux/macOS binaries. Verify SHA256SUMS before installing. Production gateway and StateKnot qualification remain separate release gates; see repository documentation.'
