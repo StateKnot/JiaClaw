@@ -2707,6 +2707,17 @@
           "result": {}
         }
       },
+      "ModelSelection": {
+        "type": "object",
+        "description": "Administrator-selected logical model and limits for a trusted server task purpose. This records the requested logical model, not the gateway's physical provider or certification status. Present only when model routing is configured.",
+        "required": ["purpose", "model", "temperature", "max_tokens"],
+        "properties": {
+          "purpose": { "type": "string", "enum": ["chat", "channel", "scheduled", "heartbeat", "summary"] },
+          "model": { "type": "string", "description": "Exact logical model ID sent to Brokerrouter." },
+          "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+          "max_tokens": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+        }
+      },
       "ChatResponse": {
         "type": "object",
         "properties": {
@@ -2717,14 +2728,15 @@
           },
           "status": {
             "type": "string",
-            "enum": ["running", "completed", "failed", "requires_human_input"]
+            "enum": ["running", "completed", "failed", "requireshumaninput"]
           },
-          "session_id": { "type": "string", "nullable": true }
+          "session_id": { "type": "string", "nullable": true },
+          "routing": { "$ref": "#/components/schemas/ModelSelection" }
         }
       },
       "ChatSseStream": {
         "type": "string",
-        "description": "Server-Sent Events。每条事件为 `event: <name>` + `data: <json>`。\n\n- `meta`: `{ session_id, request_id }`\n- `token`（或后续 `delta`）: `{ text }` assistant 文本增量。**当前为整轮 tool loop 完成后的按句/按块推送；Brokerrouter 真流式后续。**\n- `tool`: `{ name, ok }` 工具摘要；失败时带 `error`\n- `done`: `{ reply, status, session_id }` 最终回复后关闭流\n- `error`: `{ error }` 错误后关闭流\n\n鉴权失败不走 SSE，仍返回 JSON 401。"
+        "description": "Server-Sent Events。每条事件为 `event: <name>` + `data: <json>`。\n\n- `meta`: `{ session_id, request_id }`\n- `token`（或后续 `delta`）: `{ text }` assistant 文本增量。**当前为整轮 tool loop 完成后的按句/按块推送；Brokerrouter 真流式后续。**\n- `tool`: `{ name, ok }` 工具摘要；失败时带 `error`\n- `done`: `{ reply, status, session_id }` 最终回复后关闭流；配置模型路由时另含可选 `routing`（ModelSelection）\n- `error`: `{ error }` 错误后关闭流\n\n鉴权失败不走 SSE，仍返回 JSON 401。"
       },
       "CreateSessionResponse": {
         "type": "object",

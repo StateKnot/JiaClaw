@@ -31,8 +31,8 @@ use jiaclaw::{
 };
 use jiaclaw_core::{
     parse_log_format, AgentConfig, ChatMessage, ChatRequest, ChatResponse, HttpCorsConfig,
-    LogFormat, LoggingConfig, MessageRole, ToolCall, DEFAULT_LOG_LEVEL, MAX_MAX_TOOL_ITERATIONS,
-    MAX_SESSION_MESSAGES, MIN_MAX_TOOL_ITERATIONS,
+    LogFormat, LoggingConfig, MessageRole, ModelPurpose, ToolCall, DEFAULT_LOG_LEVEL,
+    MAX_MAX_TOOL_ITERATIONS, MAX_SESSION_MESSAGES, MIN_MAX_TOOL_ITERATIONS,
 };
 
 #[cfg(test)]
@@ -1426,7 +1426,16 @@ async fn run_heartbeat_tick(
     };
 
     let user_chars = content.chars().count();
-    match run_session_user_chat(state, session_id, &content, "heartbeat", "heartbeat").await {
+    match run_session_user_chat(
+        state,
+        session_id,
+        &content,
+        "heartbeat",
+        "heartbeat",
+        ModelPurpose::Heartbeat,
+    )
+    .await
+    {
         Ok(reply) => {
             let reply_chars = reply.chars().count();
             tracing::info!(session_id, user_chars, reply_chars, "Heartbeat 完成一轮");
@@ -2615,7 +2624,7 @@ fn tool_sse_payload(call: &ToolCall) -> serde_json::Value {
 
 /// 将助手文本按句/按块切开，供 SSE `token` 事件使用。
 ///
-/// TODO(true-streaming): `Brokerrouter` / `StateKnot` 提供 token stream API 后改为真流式。
+/// TODO(true-streaming): Brokerrouter 已有 SSE 合同；应用逐事件接线与资源边界验收仍待完成。
 fn chunk_assistant_text(text: &str) -> Vec<String> {
     const MAX_CHARS: usize = 80;
     if text.is_empty() {
@@ -2663,14 +2672,15 @@ fn build_chat_sse_events(
             }
             let status =
                 serde_json::to_value(&response.status).unwrap_or_else(|_| json!("unknown"));
-            events.push(sse_json_event(
-                "done",
-                &json!({
-                    "reply": response.message.content,
-                    "status": status,
-                    "session_id": response.session_id,
-                }),
-            ));
+            let mut done = json!({
+                "reply": response.message.content,
+                "status": status,
+                "session_id": response.session_id,
+            });
+            if let Some(selection) = &response.routing {
+                done["routing"] = json!(selection);
+            }
+            events.push(sse_json_event("done", &done));
         }
         Err(message) => {
             events.push(sse_json_event("error", &json!({ "error": message })));
@@ -2728,7 +2738,7 @@ async fn chat_handler(
         .await?;
     }
 
-    let response = match state.agent.chat(&request).await {
+    let response = match state.agent.chat_for(&request, ModelPurpose::Chat).await {
         Ok(response) => response,
         Err(e) => {
             let message = e.to_string();
@@ -3310,6 +3320,7 @@ async fn run_session_user_chat(
     user_text: &str,
     request_id: &str,
     channel_label: &str,
+    purpose: ModelPurpose,
 ) -> Result<String, AppError> {
     tracing::info!(
         request_id = %request_id,
@@ -3340,7 +3351,7 @@ async fn run_session_user_chat(
 
     let response = state
         .agent
-        .chat(&request)
+        .chat_for(&request, purpose)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -3387,8 +3398,15 @@ async fn hooks_inbound_handler(
     }
 
     let session_id = format!("webhook:{}", body.chat_id);
-    let reply =
-        run_session_user_chat(&state, &session_id, &body.text, &request_id, "webhook").await?;
+    let reply = run_session_user_chat(
+        &state,
+        &session_id,
+        &body.text,
+        &request_id,
+        "webhook",
+        ModelPurpose::Channel,
+    )
+    .await?;
 
     let webhook_response = InboundWebhookResponse {
         ok: true,
@@ -3689,7 +3707,10 @@ async fn single_chat(
 
     tracing::info!("用户消息: {}", message);
 
-    let response = agent.chat(&request).await.context("聊天请求失败")?;
+    let response = agent
+        .chat_for(&request, ModelPurpose::Chat)
+        .await
+        .context("聊天请求失败")?;
 
     if let (Some(store), Some(id)) = (&mut store, &session_id) {
         let mut history = request.messages.clone();
@@ -3818,7 +3839,7 @@ async fn repl_chat(
                 };
 
                 // 调用 agent
-                match agent.chat(&request).await {
+                match agent.chat_for(&request, ModelPurpose::Chat).await {
                     Ok(response) => {
                         history.push(response.message.clone());
                         if let (Some(store), Some(id)) = (&mut store, &session_id) {
@@ -10301,6 +10322,68 @@ mod tests {
                 .get("text/event-stream")
                 .is_some(),
             "OpenAPI 应描述可选 SSE"
+        );
+    }
+
+    #[tokio::test]
+    async fn routing_metadata_is_response_only_and_preserved_in_sse_done() {
+        let selection = jiaclaw_core::ModelSelection {
+            purpose: ModelPurpose::Chat,
+            model: "fixture/Exact-Chat.Model".into(),
+            temperature: 0.25,
+            max_tokens: 123,
+        };
+        let mut response = ChatResponse {
+            message: ChatMessage {
+                role: MessageRole::Assistant,
+                content: "routed reply".into(),
+            },
+            tool_calls: vec![],
+            status: jiaclaw_core::RunStatus::Completed,
+            session_id: Some("routing-session".into()),
+            routing: Some(selection.clone()),
+        };
+        for enabled in [true, false] {
+            response.routing = enabled.then(|| selection.clone());
+            let reply = chat_sse_response(build_chat_sse_events(
+                "route-test",
+                Some("routing-session"),
+                Ok(&response),
+            ))
+            .into_response();
+            let bytes = axum::body::to_bytes(reply.into_body(), 16 * 1024)
+                .await
+                .unwrap();
+            let events = parse_event_stream(std::str::from_utf8(&bytes).unwrap());
+            let (_, done) = events.iter().find(|(name, _)| name == "done").unwrap();
+            assert_eq!(done["reply"], "routed reply");
+            if enabled {
+                assert_eq!(done["routing"], json!(selection));
+            } else {
+                assert!(done.get("routing").is_none());
+            }
+        }
+        let spec: serde_json::Value = serde_json::from_str(OPENAPI_JSON).unwrap();
+        assert_eq!(
+            spec["components"]["schemas"]["ChatResponse"]["properties"]["status"]["enum"],
+            json!([
+                jiaclaw_core::RunStatus::Running,
+                jiaclaw_core::RunStatus::Completed,
+                jiaclaw_core::RunStatus::Failed,
+                jiaclaw_core::RunStatus::RequiresHumanInput,
+            ])
+        );
+        let input = &spec["components"]["schemas"]["ChatRequest"]["properties"];
+        for forbidden in ["model", "route", "routing", "purpose"] {
+            assert!(input.get(forbidden).is_none());
+        }
+        assert_eq!(
+            spec["components"]["schemas"]["ChatResponse"]["properties"]["routing"]["$ref"],
+            "#/components/schemas/ModelSelection"
+        );
+        assert_eq!(
+            spec["components"]["schemas"]["ModelSelection"]["properties"]["purpose"]["enum"],
+            json!(["chat", "channel", "scheduled", "heartbeat", "summary"])
         );
     }
 

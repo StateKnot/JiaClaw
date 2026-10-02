@@ -9,7 +9,7 @@
 | embeddings | 已有网关契约 | 尚未实现 embedding 适配与向量索引 |
 | 个人配置 `init-personal` | 已实现事务化初始化 | 可按上游消费者指南接入自己的网关 |
 | 工具调用 | 端点能力控制；fixture 已认证 | 已接原生 tools/tool_calls/role:tool 和调用 ID 关联，见[合同与验收](native-tools.md)；缺真实供应商生产默认 |
-| 多端点路由/降级 | 最多 3 个候选；仅已证明 not_sent 可换端点 | 不另做盲目供应商重试 |
+| 多端点路由/降级 | 最多 3 个候选；仅已证明 not_sent 可换端点 | 已接管理员任务来源→逻辑模型策略，整轮固定；端点降级归网关，真实联合认证待完成，见[模型路由](model-routing.md) |
 | 多模态 chat content | 明确拒绝 | JiaClaw 当前文本契约 |
 | 媒体任务 | 已有独立子系统，认证仍待完成 | 图片/语音尚未接线 |
 
@@ -37,3 +37,5 @@
 工具生产默认需要在固定供应商/地域/模型版本/网关提交上，完成原样 assistant.tool_calls → tool message → 最终回答两轮调用，并核对 usage、人民币账本、预留归零、幂等重放。矩阵见 [上游认证证据](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/tool-roundtrip-certification.md)。没有真实供应商凭证与该证据时，不能以 mock 测试关闭 #31。
 
 真正流式、语义记忆现在属于 JiaClaw 的待实现适配任务。遇到具体上游契约缺陷时，提交含固定版本、脱敏重现与验收要求的新 issue；不要重复提交已经完成的能力。
+
+任务路由仅改变提交前选定的逻辑 `model` 与允许的采样/输出上限，不增加 `route`、`provider`、`endpoint` 或 `fallback` 请求字段。网关内部 attempt 的 `not_sent` 和消费方返回的 `not_submitted` 不是同一个状态；后者的允许重试仍要求原正文和原幂等键，换模型改变正文。JiaClaw 当前不自动重发任何模型请求，不能将 fixture 中的错误停止解释为网关端点降级或真实供应商认证。

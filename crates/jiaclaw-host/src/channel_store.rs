@@ -1066,6 +1066,7 @@ mod tests {
             tool_calls: vec![],
             status: jiaclaw_core::RunStatus::Completed,
             session_id: None,
+            routing: None,
         }
     }
 

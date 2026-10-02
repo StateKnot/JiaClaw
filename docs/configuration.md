@@ -20,6 +20,12 @@ TOML 与 JSON 使用同一契约，顶层必须有 `agent`，其他段覆盖 `ag
 
 CLI 对话与 `serve` 对缺失 Key 或未知 provider 启动失败，不隐式切到 stub。Brokerrouter 收费请求带独立 Idempotency-Key，应用没有自动供应商重试或静默降级直连。当前请求操作 ID 尚未持久化；断电或未知提交状态不能自动重跑工具轮次。
 
+## 按用途选择模型
+
+顶层 `[routing]` 默认空，仅非空时要求 Brokerrouter。可分别配置 `chat`、`channel`、`scheduled`、`heartbeat`、`summary`；每项必填 `model`，可选 `temperature` / `max_tokens`。未知用途或字段启动失败；model 为 1–200 UTF-8 字节、无首尾空白和控制字符，温度为有限的 0–2，输出上限为正整数且不超过 `provider.max_tokens`。启用路由时 provider 输出上限为 1–1,000,000。未配置用途继承 provider。
+
+摘要默认温度 0.2，始终限制为 `min(512, provider.max_tokens, summary 的有效 max_tokens)`，不携带工具。输出上限按每次补全计算，不是整个轮次的 token/人民币预算。用途由可信入口决定，HTTP/job 正文、提示词和工具结果不能改路由；一次工具循环固定选择，错误不会触发应用自动换模型。配置修改后重启。启用路由时 ChatResponse 可返回有效参数；持久审计范围和网关降级边界见[模型路由指南](model-routing.md)。
+
 ## HTTP、安全与存储
 
 | 字段 | 默认 / 行为 |

@@ -22,6 +22,7 @@ struct Fixture {
     state: AppState,
     workspace: PathBuf,
     model_calls: Arc<AtomicUsize>,
+    model_requests: Arc<Mutex<Vec<Value>>>,
     model_server: tokio::task::JoinHandle<()>,
 }
 
@@ -29,10 +30,13 @@ impl Fixture {
     async fn new() -> Self {
         let model_calls = Arc::new(AtomicUsize::new(0));
         let observed = model_calls.clone();
+        let model_requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = model_requests.clone();
         let app = axum::Router::new().route(
             "/v1/chat/completions",
-            axum::routing::post(move || {
+            axum::routing::post(move |Json(body): Json<Value>| {
                 observed.fetch_add(1, Ordering::SeqCst);
+                recorded.lock().unwrap().push(body);
                 async {
                     Json(json!({
                         "choices": [{
@@ -67,6 +71,7 @@ impl Fixture {
             state,
             workspace,
             model_calls,
+            model_requests,
             model_server,
         }
     }
@@ -197,7 +202,19 @@ async fn wrong_state_key_stops_before_model_and_restoring_key_does_not_replay() 
 async fn valid_key_and_budget_reach_model_and_atomically_create_reply() {
     // Positive control: the probe really observes this production model path,
     // and all authorization/tool prerequisites in the negative tests are valid.
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
+    let mut config = fixture.state.agent.config().clone();
+    config.routing.chat = Some(jiaclaw_core::ModelRoute {
+        model: "fixture/chat-must-not-be-selected".into(),
+        temperature: None,
+        max_tokens: None,
+    });
+    config.routing.channel = Some(jiaclaw_core::ModelRoute {
+        model: "fixture/Exact-Channel.Route".into(),
+        temperature: Some(0.25),
+        max_tokens: Some(123),
+    });
+    fixture.state.agent = Arc::new(jiaclaw::JiaClawAgent::new(config).unwrap());
     let event = fixture.admit_and_claim(spec(
         fixture.state.channel_runtime.as_ref().unwrap(),
         "456789012345678902",
@@ -223,6 +240,14 @@ async fn valid_key_and_budget_reach_model_and_atomically_create_reply() {
     assert_eq!(replies[0].state, "pending");
     assert_eq!(replies[0].text, "verified model response");
     assert_eq!(fixture.model_calls.load(Ordering::SeqCst), 1);
+    let requests = fixture.model_requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "fixture/Exact-Channel.Route");
+    assert_eq!(requests[0]["temperature"], 0.25);
+    assert_eq!(requests[0]["max_tokens"], 123);
+    assert_eq!(requests[0]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(requests[0]["tools"][0]["function"]["name"], "datetime_now");
+    assert_eq!(requests[0]["parallel_tool_calls"], false);
 }
 
 #[tokio::test]

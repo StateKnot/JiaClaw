@@ -20,6 +20,19 @@ temperature = 0.7
 max_tokens = 4096
 # For offline verification only: provider_type = "stub"
 
+# Optional trusted-purpose routing. Empty keeps the default provider for all uses.
+# Only Brokerrouter supports nonempty routing. See docs/model-routing.md.
+[routing]
+# [routing.chat]
+# model = "YOUR_CERTIFIED_CHAT_MODEL"
+# temperature = 0.7
+# max_tokens = 4096  # Per-completion ceiling, never above provider.max_tokens.
+# [routing.scheduled]
+# model = "YOUR_CERTIFIED_SCHEDULED_MODEL"
+# max_tokens = 1024
+# Also supported: routing.channel, routing.heartbeat, routing.summary.
+# Summary is capped at min(512, provider.max_tokens, routing.summary.max_tokens).
+
 [http]
 bind = "127.0.0.1:8080"
 # Set JIACLAW_API_TOKEN to an independent random API token.

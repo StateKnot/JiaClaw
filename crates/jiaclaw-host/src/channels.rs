@@ -1393,7 +1393,7 @@ async fn process_event(
     state: AppState,
     event: super::channel_store::ChannelEvent,
 ) -> Result<(), AppError> {
-    use jiaclaw_core::{ChatMessage, ChatRequest, MessageRole, RunStatus};
+    use jiaclaw_core::{ChatMessage, ChatRequest, MessageRole, ModelPurpose, RunStatus};
     if !still_authorized(&state, &event.spec) {
         return finish_event(
             &state,
@@ -1518,7 +1518,12 @@ async fn process_event(
         auto_skills: false,
         session_id: Some(event.spec.session_id.clone()),
     };
-    match tokio::time::timeout_at(deadline, state.agent.chat(&request)).await {
+    match tokio::time::timeout_at(
+        deadline,
+        state.agent.chat_for(&request, ModelPurpose::Channel),
+    )
+    .await
+    {
         Ok(Ok(response)) => {
             let failed = response.status != RunStatus::Completed
                 || response

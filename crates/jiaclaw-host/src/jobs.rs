@@ -1219,6 +1219,7 @@ mod tests {
             tool_calls: vec![],
             status: RunStatus::Completed,
             session_id: None,
+            routing: None,
         }
     }
 

@@ -13,7 +13,7 @@
 | 6 | cron 多任务 | 实现；含 Telegram/Slack/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
 | 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；Discord 主动发送及 WhatsApp 仍待交付；进程 fixture 不能替代真实安装认证 |
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
-| 9 | 模型路由与降级 | 上游有支持；应用待策略接线 | 由 Brokerrouter 按能力/模型策略路由，仅明确未提交可安全重试；预算/审批不绕过 |
+| 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 10 | 多用户与 Key 管理 | 待实现 | 鉴权主体、授权检查、workspace/记忆/会话隔离、Key 哈希/轮换/撤销、渠道身份绑定与越权测试 |
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 上游已有 embeddings；应用待实现 | 模型/维度版本、SQLite 元数据与索引一致性、去重、隔离、删除/重建与检索质量验收 |
@@ -25,4 +25,4 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 本批修改改善单机应用的可运行性与安全边界；完整个人 Agent 生产认证仍未完成。最新固定版本、检查证据和障碍见 [StateKnot](stateknot-gaps.md) 和 [Brokerrouter](brokerrouter-gaps.md)。
 
-下一批先复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定版本变化；durable 合同未满足期间，继续独立可交付的渠道与应用接线。钉钉本批只覆盖 HTTP 模式内部机器人私聊及定时文本通知；回调重投与字段稳定性、真实安装、平台限额和终端收发需独立认证。WhatsApp 接入须先核实 Cloud API 的身份、客户服务窗口、模板授权与未知投递语义，不能通过非官方个人账号自动化绕过平台合同。
+下一批先复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定版本变化；durable 合同未满足期间，继续独立可交付的渠道与应用接线。钉钉本批只覆盖 HTTP 模式内部机器人私聊及定时文本通知；回调重投与字段稳定性、真实安装、平台限额和终端收发需独立认证。WhatsApp 接入须先核实当前 Cloud API 通用 AI 服务资格、部署主体/地区、身份、客户服务窗口、模板授权与未知投递语义，不能将独立 3P Agents 条款外推为 Cloud API 许可。模型路由已完成应用策略接线，后续保持网关治理边界，继续推进多用户隔离、语义记忆或满足合同后的 durable 接入。
