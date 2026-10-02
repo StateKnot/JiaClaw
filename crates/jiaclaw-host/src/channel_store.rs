@@ -19,6 +19,9 @@ const MAX_TOMBSTONES: usize = 10_000;
 const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_ATTEMPTS: u32 = 5;
+const WECOM_BUDGET_WINDOW_MS: i64 = 86_400_000;
+const WECOM_DAILY_LIMIT: i64 = 200;
+const MAX_WECOM_RESERVATIONS: i64 = 10_000;
 
 #[derive(Debug)]
 pub(super) struct ChannelConflict(pub &'static str);
@@ -133,6 +136,42 @@ CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,in
 PRAGMA user_version=5;
 ";
 
+// The send budget outlives deletable message audit records. It has no outbox FK.
+pub(super) const SCHEMA_V6: &str = "
+CREATE TABLE channel_outbox_v6 (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ event_id TEXT REFERENCES channel_events(id),
+ job_run_id TEXT REFERENCES job_runs(id) ON DELETE RESTRICT,
+ channel TEXT NOT NULL, installation_id TEXT NOT NULL, destination_key TEXT NOT NULL,
+ destination TEXT NOT NULL CHECK(json_valid(destination)), sealed_token TEXT, expires_ms INTEGER,
+ ordinal INTEGER NOT NULL CHECK(ordinal>=0), text TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitting','retry_wait','delivered','unknown','permanent_failed','expired','cancelled')),
+ receipt TEXT, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 5), error TEXT,
+ created_ms INTEGER NOT NULL, started_ms INTEGER, finished_ms INTEGER, next_attempt_ms INTEGER NOT NULL,
+ CHECK((event_id IS NOT NULL)+(job_run_id IS NOT NULL)=1),
+ CHECK(job_run_id IS NULL OR (channel IN ('telegram','slack','feishu','wecom') AND sealed_token IS NULL AND expires_ms IS NULL)),
+ UNIQUE(event_id,ordinal), UNIQUE(job_run_id,ordinal)
+);
+INSERT INTO channel_outbox_v6(seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms)
+ SELECT seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms FROM channel_outbox;
+INSERT INTO sqlite_sequence(name,seq) SELECT 'channel_outbox_v6',seq FROM sqlite_sequence WHERE name='channel_outbox' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='channel_outbox_v6');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'),0)) WHERE name='channel_outbox_v6';
+DROP TABLE channel_outbox;
+ALTER TABLE channel_outbox_v6 RENAME TO channel_outbox;
+CREATE INDEX channel_outbox_ready ON channel_outbox(state,next_attempt_ms,seq);
+CREATE INDEX channel_outbox_destination ON channel_outbox(channel,installation_id,destination_key,seq);
+CREATE INDEX channel_outbox_job_run ON channel_outbox(job_run_id);
+CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,installation_id) WHERE state='submitting';
+CREATE TABLE wecom_send_reservations (
+ installation_id TEXT NOT NULL, delivery_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+ reserved_ms INTEGER NOT NULL, settled_ms INTEGER CHECK(settled_ms>=reserved_ms),
+ PRIMARY KEY(installation_id,delivery_id,attempt)
+);
+CREATE INDEX wecom_send_reservations_window ON wecom_send_reservations(installation_id,settled_ms);
+CREATE INDEX wecom_send_reservations_expiry ON wecom_send_reservations(settled_ms);
+PRAGMA user_version=6;
+";
+
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelEvent {
     pub id: String,
@@ -209,8 +248,36 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Slack => "slack",
         Channel::Discord => "discord",
         Channel::Feishu => "feishu",
+        Channel::Wecom => "wecom",
     }
 }
+// An ambiguous request holds its credit and installation until an operator has
+// reconciled the external effect. Completion/review, never claim time, starts
+// the rolling window. This evidence survives deletion of message audit records.
+pub(super) fn settle_wecom_delivery_budget(conn: &Connection, id: &str, now: i64) -> Result<()> {
+    let reservation: Option<(String, i64)> = conn.query_row(
+        "SELECT installation_id,MAX(reserved_ms) FROM wecom_send_reservations WHERE delivery_id=?1 AND settled_ms IS NULL GROUP BY installation_id",
+        [id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    if let Some((installation, reserved)) = reservation {
+        let settled = now.max(reserved);
+        settled
+            .checked_add(WECOM_BUDGET_WINDOW_MS)
+            .ok_or_else(|| anyhow::anyhow!("WeCom budget timestamp overflow"))?;
+        conn.execute("UPDATE wecom_send_reservations SET settled_ms=?2 WHERE delivery_id=?1 AND settled_ms IS NULL", params![id, settled])?;
+        pace_wecom_installation(conn, &installation, settled)?;
+    }
+    Ok(())
+}
+
+fn pace_wecom_installation(conn: &Connection, installation: &str, now: i64) -> Result<()> {
+    let until = now
+        .checked_add(4000)
+        .ok_or_else(|| anyhow::anyhow!("delivery pacing timestamp overflow"))?;
+    conn.execute("INSERT INTO channel_cooldowns(channel,installation_id,until_ms) VALUES('wecom',?1,?2) ON CONFLICT(channel,installation_id) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)", params![installation, until])?;
+    Ok(())
+}
+
 fn bounded_id(value: &str, maximum: usize) -> bool {
     !value.is_empty()
         && value.len() <= maximum
@@ -301,9 +368,16 @@ fn validate_chunks(channel: Channel, chunks: &[String]) -> Result<()> {
         Channel::Slack => 40000,
         Channel::Discord => 2000,
         Channel::Feishu => 2000,
+        Channel::Wecom => 2048,
     };
     let mut bytes = 0usize;
     for chunk in chunks {
+        if channel == Channel::Wecom {
+            ensure!(
+                super::outbound::valid_wecom_text(chunk),
+                "WeCom text exceeds 2048 rendered UTF-8 bytes"
+            );
+        }
         bytes = bytes
             .checked_add(chunk.len())
             .ok_or_else(|| anyhow::anyhow!("channel reply size overflow"))?;
@@ -639,25 +713,44 @@ impl SessionStore {
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         expire_tokens(&tx, now)?;
-        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.job_run_id=d.job_run_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),[now],delivery_row).optional()?;
+        // In-flight/unknown requests retain credit indefinitely. A receipt or
+        // explicit operator reconciliation starts a fresh rolling-day window;
+        // claim time cannot bound when the provider actually accepted a message.
+        tx.execute(
+            "DELETE FROM wecom_send_reservations WHERE settled_ms<=?1",
+            [now.saturating_sub(WECOM_BUDGET_WINDOW_MS)],
+        )?;
+        tx.execute("UPDATE channel_outbox SET next_attempt_ms=MAX(next_attempt_ms,COALESCE((SELECT MIN(r.settled_ms) FROM wecom_send_reservations r WHERE r.installation_id=channel_outbox.installation_id)+?1,next_attempt_ms)),error='wecom_daily_budget' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND (SELECT COUNT(*) FROM wecom_send_reservations r WHERE r.installation_id=channel_outbox.installation_id)>=?2", params![WECOM_BUDGET_WINDOW_MS,WECOM_DAILY_LIMIT])?;
+        tx.execute("UPDATE channel_outbox SET next_attempt_ms=MAX(next_attempt_ms,COALESCE((SELECT MIN(settled_ms) FROM wecom_send_reservations)+?1,next_attempt_ms)),error='wecom_budget_capacity' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND (SELECT COUNT(*) FROM wecom_send_reservations)>=?2", params![WECOM_BUDGET_WINDOW_MS,MAX_WECOM_RESERVATIONS])?;
+        tx.execute("UPDATE channel_outbox SET error='wecom_delivery_review_required' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND EXISTS(SELECT 1 FROM channel_outbox u JOIN wecom_send_reservations r ON r.delivery_id=u.id WHERE u.channel='wecom' AND u.installation_id=channel_outbox.installation_id AND u.state='unknown' AND r.settled_ms IS NULL)", [])?;
+        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND (d.channel<>'wecom' OR ((SELECT COUNT(*) FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id)<?2 AND (SELECT COUNT(*) FROM wecom_send_reservations)<?3 AND NOT EXISTS(SELECT 1 FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id AND r.settled_ms IS NULL))) AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.job_run_id=d.job_run_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),params![now,WECOM_DAILY_LIMIT,MAX_WECOM_RESERVATIONS],delivery_row).optional()?;
         let Some(mut record) = record else {
             tx.commit()?;
             return Ok(None);
         };
-        tx.execute("UPDATE channel_outbox SET state='submitting',attempts=attempts+1,started_ms=?2 WHERE id=?1 AND state IN ('pending','retry_wait')",params![record.id,now])?;
+        tx.execute("UPDATE channel_outbox SET state='submitting',attempts=attempts+1,started_ms=?2,error=CASE WHEN channel='wecom' THEN NULL ELSE error END WHERE id=?1 AND state IN ('pending','retry_wait')",params![record.id,now])?;
         let spacing_ms = match record.destination.channel {
             Channel::Telegram => 3100,
             Channel::Slack => 1100,
             Channel::Discord => 300,
             Channel::Feishu => 1100,
+            Channel::Wecom => 4000,
         };
         let until = now
             .checked_add(spacing_ms)
             .ok_or_else(|| anyhow::anyhow!("delivery pacing timestamp overflow"))?;
         tx.execute("INSERT INTO channel_cooldowns(channel,installation_id,until_ms) VALUES(?1,?2,?3) ON CONFLICT(channel,installation_id) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)",params![channel_name(record.destination.channel),record.destination.installation_id,until])?;
+        if record.destination.channel == Channel::Wecom {
+            now.checked_add(WECOM_BUDGET_WINDOW_MS)
+                .ok_or_else(|| anyhow::anyhow!("WeCom budget timestamp overflow"))?;
+            tx.execute("INSERT INTO wecom_send_reservations(installation_id,delivery_id,attempt,reserved_ms) VALUES(?1,?2,?3,?4)", params![record.destination.installation_id,record.id,record.attempts+1,now])?;
+        }
         record.state = "submitting".into();
         record.attempts += 1;
         record.started_ms = Some(now);
+        if record.destination.channel == Channel::Wecom {
+            record.error = None;
+        }
         tx.commit()?;
         Ok(Some(record))
     }
@@ -716,6 +809,13 @@ impl SessionStore {
             Some("rate-limit retry budget exhausted; review before further action".into())
         };
         tx.execute("UPDATE channel_outbox SET state=?3,receipt=?4,error=?5,next_attempt_ms=?6,finished_ms=?7,sealed_token=CASE WHEN ?3='retry_wait' THEN sealed_token ELSE NULL END WHERE id=?1 AND state='submitting' AND attempts=?2",params![id,expected_attempt,terminal,receipt,error,retry_after_ms.unwrap_or(now),if terminal=="retry_wait"{None}else{Some(now)}])?;
+        if channel == "wecom" {
+            if terminal == "unknown" {
+                pace_wecom_installation(&tx, &installation, now)?;
+            } else {
+                settle_wecom_delivery_budget(&tx, id, now)?;
+            }
+        }
         if matches!(terminal, "unknown" | "permanent_failed" | "expired") {
             tx.execute("UPDATE jobs SET enabled=0 WHERE id IN (SELECT job_id FROM job_runs WHERE id IN (SELECT job_run_id FROM channel_outbox WHERE id=?1))",[id])?;
         }
@@ -729,6 +829,12 @@ impl SessionStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let events=tx.execute("UPDATE channel_events SET status='needs_review',finished_ms=?1,error='process stopped during agent execution; effects may have occurred; no automatic replay' WHERE status='processing'",[now])?;
         tx.execute("UPDATE jobs SET enabled=0 WHERE id IN (SELECT r.job_id FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE d.state='submitting')", [])?;
+        // Recovery preserves every unsettled reservation; no wall-clock timeout
+        // proves that the provider stopped processing the interrupted request.
+        let wecom_installations = tx.prepare("SELECT DISTINCT installation_id FROM channel_outbox WHERE channel='wecom' AND state='submitting'")?.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for installation in wecom_installations {
+            pace_wecom_installation(&tx, &installation, now)?;
+        }
         let deliveries=tx.execute("UPDATE channel_outbox SET state='unknown',finished_ms=?1,sealed_token=NULL,error='process stopped during delivery; provider may have accepted it; reconcile before continuing' WHERE state='submitting'",[now])?;
         expire_tokens(&tx, now)?;
         tx.commit()?;
@@ -757,6 +863,7 @@ impl SessionStore {
             );
         }
         tx.execute("UPDATE channel_outbox SET state='delivered',receipt=?2,error=COALESCE(error,'previous delivery outcome was unknown; administrator supplied receipt'),finished_ms=?3,sealed_token=NULL WHERE id=?1 AND state='unknown'",params![id,receipt,now])?;
+        settle_wecom_delivery_budget(&tx, id, now)?;
         tx.commit()?;
         Ok(true)
     }
@@ -777,6 +884,13 @@ impl SessionStore {
                 "cannot cancel an event while agent execution or delivery is in flight",
             )
             .into());
+        }
+        let cancelled = tx
+            .prepare("SELECT id FROM channel_outbox WHERE event_id=?1 AND state='unknown'")?
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for delivery in cancelled {
+            settle_wecom_delivery_budget(&tx, &delivery, now)?;
         }
         tx.execute("UPDATE channel_outbox SET state='cancelled',finished_ms=?2,sealed_token=NULL,error=COALESCE(error,'remaining delivery explicitly cancelled after review') WHERE event_id=?1 AND state<>'delivered'",params![id,now])?;
         tx.execute("UPDATE channel_events SET status=CASE WHEN status='received' THEN 'needs_review' ELSE status END,reviewed_ms=?2,finished_ms=COALESCE(finished_ms,?2),sealed_token=NULL WHERE id=?1",params![id,now])?;
@@ -916,8 +1030,15 @@ mod tests {
     }
 
     #[test]
-    fn migration_preserves_v3_and_v4_delivery_evidence_and_sequence_even_when_empty() {
-        for (version, empty) in [(3, false), (3, true), (4, false), (4, true)] {
+    fn migration_preserves_v3_to_v5_delivery_evidence_and_sequence_even_when_empty() {
+        for (version, empty) in [
+            (3, false),
+            (3, true),
+            (4, false),
+            (4, true),
+            (5, false),
+            (5, true),
+        ] {
             let directory =
                 std::env::temp_dir().join(format!("jiaclaw-v4-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
@@ -927,8 +1048,11 @@ mod tests {
                 conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
                 conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
                 conn.execute_batch(SCHEMA_V3).unwrap();
-                if version == 4 {
+                if version >= 4 {
                     conn.execute_batch(SCHEMA_V4).unwrap();
+                }
+                if version >= 5 {
+                    conn.execute_batch(SCHEMA_V5).unwrap();
                 }
                 let mut old = SessionStore::Sqlite {
                     conn,
@@ -960,7 +1084,7 @@ mod tests {
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                5
+                6
             );
             assert_eq!(
                 db.channel_conn()
@@ -1040,92 +1164,506 @@ mod tests {
     }
 
     #[test]
-    fn v5_preserves_scheduled_sources_and_enables_feishu_without_weakening_constraints() {
-        let directory = std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("state.sqlite3");
-        let (job_id, run_id, delivery_id, before) = {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
-            conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
-            conn.execute_batch(SCHEMA_V3).unwrap();
-            conn.execute_batch(SCHEMA_V4).unwrap();
-            let mut old = SessionStore::Sqlite {
-                conn,
-                _ownership: None,
+    fn v5_and_v6_migrate_scheduled_sources_without_weakening_constraints() {
+        for old_version in [4, 5] {
+            let directory =
+                std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("state.sqlite3");
+            let (job_id, run_id, delivery_id, before) = {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
+                conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
+                conn.execute_batch(SCHEMA_V3).unwrap();
+                conn.execute_batch(SCHEMA_V4).unwrap();
+                if old_version == 5 {
+                    conn.execute_batch(SCHEMA_V5).unwrap();
+                }
+                let mut old = SessionStore::Sqlite {
+                    conn,
+                    _ownership: None,
+                };
+                let mut prior = scheduled_spec();
+                if old_version == 5 {
+                    prior.delivery = Some(super::super::channel_types::ScheduledDestination {
+                        channel: Channel::Feishu,
+                        installation_id: "cli_fixture:tenant_fixture".into(),
+                        conversation_id: "oc_prior".into(),
+                        thread_id: Some("om_root".into()),
+                    });
+                }
+                let job = old.create_job(prior, 0).unwrap();
+                let run = old.claim_due_jobs(60_000, 1).unwrap().remove(0);
+                old.finish_job_run(
+                    &run.id,
+                    None,
+                    "completed",
+                    Some(scheduled_reply()),
+                    None,
+                    60_001,
+                )
+                .unwrap();
+                let row = old
+                    .list_job_deliveries(&job.id, &run.id, 100, 0)
+                    .unwrap()
+                    .remove(0);
+                old.channel_conn().unwrap().execute("UPDATE channel_outbox SET state='unknown',attempts=2,receipt='evidence',error='ambiguous',started_ms=60002,finished_ms=60003 WHERE id=?1", [&row.id]).unwrap();
+                let before =
+                    serde_json::to_value(old.get_channel_delivery(&row.id).unwrap().unwrap())
+                        .unwrap();
+                (job.id, run.id, row.id, before)
             };
-            let job = old.create_job(scheduled_spec(), 0).unwrap();
-            let run = old.claim_due_jobs(60_000, 1).unwrap().remove(0);
-            old.finish_job_run(
+            let mut db = SessionStore::open(&path).unwrap();
+            let after = db.get_channel_delivery(&delivery_id).unwrap().unwrap();
+            assert_eq!(serde_json::to_value(&after).unwrap(), before);
+            assert_eq!(after.job_id.as_deref(), Some(job_id.as_str()));
+            assert_eq!(after.job_run_id.as_deref(), Some(run_id.as_str()));
+            assert!(db
+                .channel_conn()
+                .unwrap()
+                .execute("DELETE FROM job_runs WHERE id=?1", [&run_id])
+                .is_err());
+            let mut next = scheduled_spec();
+            next.delivery = Some(super::super::channel_types::ScheduledDestination {
+                channel: if old_version == 5 {
+                    Channel::Wecom
+                } else {
+                    Channel::Feishu
+                },
+                installation_id: if old_version == 5 {
+                    "wwfixture:1"
+                } else {
+                    "cli_fixture:tenant_fixture"
+                }
+                .into(),
+                conversation_id: if old_version == 5 {
+                    "alice"
+                } else {
+                    "oc_fixture"
+                }
+                .into(),
+                thread_id: None,
+            });
+            let job = db.create_job(next, 70_000).unwrap();
+            let run = db.claim_due_jobs(130_000, 1).unwrap().remove(0);
+            assert_eq!(run.job_id, job.id);
+            db.finish_job_run(
                 &run.id,
                 None,
                 "completed",
                 Some(scheduled_reply()),
                 None,
-                60_001,
+                130_001,
             )
             .unwrap();
-            let row = old
+            let row = db
                 .list_job_deliveries(&job.id, &run.id, 100, 0)
                 .unwrap()
                 .remove(0);
-            old.channel_conn().unwrap().execute("UPDATE channel_outbox SET state='unknown',attempts=2,receipt='evidence',error='ambiguous',started_ms=60002,finished_ms=60003 WHERE id=?1", [&row.id]).unwrap();
-            let before =
-                serde_json::to_value(old.get_channel_delivery(&row.id).unwrap().unwrap()).unwrap();
-            (job.id, run.id, row.id, before)
-        };
-        let mut db = SessionStore::open(&path).unwrap();
-        let after = db.get_channel_delivery(&delivery_id).unwrap().unwrap();
-        assert_eq!(serde_json::to_value(&after).unwrap(), before);
-        assert_eq!(after.job_id.as_deref(), Some(job_id.as_str()));
-        assert_eq!(after.job_run_id.as_deref(), Some(run_id.as_str()));
-        assert!(db
-            .channel_conn()
+            assert_eq!(
+                row.destination.channel,
+                if old_version == 5 {
+                    Channel::Wecom
+                } else {
+                    Channel::Feishu
+                }
+            );
+            assert!(db
+                .channel_conn()
+                .unwrap()
+                .execute(
+                    "UPDATE channel_outbox SET sealed_token='forbidden' WHERE id=?1",
+                    [&row.id]
+                )
+                .is_err());
+            assert!(db
+                .channel_conn()
+                .unwrap()
+                .execute(
+                    "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
+                    [&row.id]
+                )
+                .is_err());
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    fn wecom_spec(event: &str, user: &str) -> EventSpec {
+        let mut event = spec(event);
+        event.sender_id = user.into();
+        event.destination.channel = Channel::Wecom;
+        event.destination.installation_id = "wwfixture:1".into();
+        event.destination.conversation_id = user.into();
+        event
+    }
+
+    fn wecom_settlement(db: &SessionStore, delivery: &str) -> Option<i64> {
+        db.channel_conn()
             .unwrap()
-            .execute("DELETE FROM job_runs WHERE id=?1", [&run_id])
+            .query_row(
+                "SELECT settled_ms FROM wecom_send_reservations WHERE delivery_id=?1",
+                [delivery],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn wecom_completion_anchors_budget_and_pacing_and_stale_finish_cannot_release() {
+        let mut db = database();
+        let first_event = complete(&mut db, wecom_spec("late", "alice"), &["first"]);
+        let first = db.claim_channel_delivery(0).unwrap().unwrap();
+        complete(&mut db, wecom_spec("next", "bob"), &["second"]);
+        let completion = WECOM_BUDGET_WINDOW_MS * 2 + 100;
+        // A network call lasting past the window must retain its reservation.
+        assert!(db.claim_channel_delivery(completion).unwrap().is_none());
+        assert_eq!(wecom_settlement(&db, &first.id), None);
+        assert!(!db
+            .finish_channel_delivery(
+                &first.id,
+                2,
+                "delivered",
+                Some("stale".into()),
+                None,
+                None,
+                completion
+            )
+            .unwrap());
+        assert_eq!(wecom_settlement(&db, &first.id), None);
+        // The outbox result, credit settlement and pacing change are atomic.
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER refuse_settlement BEFORE UPDATE OF settled_ms ON wecom_send_reservations BEGIN SELECT RAISE(ABORT,'fixture settlement failure'); END;").unwrap();
+        assert!(db
+            .finish_channel_delivery(
+                &first.id,
+                1,
+                "delivered",
+                Some("valid".into()),
+                None,
+                None,
+                completion
+            )
             .is_err());
-        let mut next = scheduled_spec();
-        next.delivery = Some(super::super::channel_types::ScheduledDestination {
-            channel: Channel::Feishu,
-            installation_id: "cli_fixture:tenant_fixture".into(),
-            conversation_id: "oc_fixture".into(),
-            thread_id: Some("om_root".into()),
-        });
-        let job = db.create_job(next, 70_000).unwrap();
-        let run = db.claim_due_jobs(130_000, 1).unwrap().remove(0);
-        assert_eq!(run.job_id, job.id);
-        db.finish_job_run(
-            &run.id,
+        assert_eq!(
+            db.get_channel_delivery(&first.id).unwrap().unwrap().state,
+            "submitting"
+        );
+        assert_eq!(wecom_settlement(&db, &first.id), None);
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER refuse_settlement;")
+            .unwrap();
+        delivered(&mut db, &first, completion);
+        assert_eq!(wecom_settlement(&db, &first.id), Some(completion));
+        assert!(db.purge_channel_event(&first_event, completion).unwrap());
+        assert!(db
+            .claim_channel_delivery(completion + 3999)
+            .unwrap()
+            .is_none());
+        let second = db
+            .claim_channel_delivery(completion + 4000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.destination.conversation_id, "bob");
+        db.finish_channel_delivery(
+            &second.id,
+            1,
+            "permanent_failed",
             None,
-            "completed",
-            Some(scheduled_reply()),
+            Some("rejected".into()),
             None,
-            130_001,
+            completion + 4001,
         )
         .unwrap();
-        let row = db
-            .list_job_deliveries(&job.id, &run.id, 100, 0)
+        assert_eq!(wecom_settlement(&db, &second.id), Some(completion + 4001));
+        assert!(db
+            .claim_channel_delivery(completion + WECOM_BUDGET_WINDOW_MS - 1)
+            .unwrap()
+            .is_none());
+        assert_eq!(wecom_settlement(&db, &first.id), Some(completion));
+        assert!(db
+            .claim_channel_delivery(completion + WECOM_BUDGET_WINDOW_MS)
+            .unwrap()
+            .is_none());
+        let retained: i64 = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM wecom_send_reservations WHERE delivery_id=?1",
+                [&first.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 0);
+    }
+
+    #[test]
+    fn wecom_unknown_restart_blocks_installation_until_explicit_review() {
+        for resolve in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("jiaclaw-wecom-review-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("state.sqlite3");
+            let mut db = SessionStore::open(&path).unwrap();
+            let event = complete(
+                &mut db,
+                wecom_spec("ambiguous", "alice"),
+                &["first", "unsent"],
+            );
+            let first = db.claim_channel_delivery(0).unwrap().unwrap();
+            let next_event = complete(&mut db, wecom_spec("waiting", "bob"), &["second"]);
+            drop(db);
+            let mut db = SessionStore::open(&path).unwrap();
+            let recovery = WECOM_BUDGET_WINDOW_MS * 2;
+            assert_eq!(db.recover_channels(recovery).unwrap(), (0, 1));
+            assert!(db.claim_channel_delivery(recovery).unwrap().is_none());
+            assert_eq!(wecom_settlement(&db, &first.id), None);
+            let waiting = db
+                .list_channel_deliveries(Some(&next_event), 10, 0)
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                waiting.error.as_deref(),
+                Some("wecom_delivery_review_required")
+            );
+            assert_eq!(waiting.attempts, 0);
+            assert!(!db
+                .finish_channel_delivery(
+                    &first.id,
+                    1,
+                    "delivered",
+                    Some("late worker".into()),
+                    None,
+                    None,
+                    recovery
+                )
+                .unwrap());
+            assert_eq!(wecom_settlement(&db, &first.id), None);
+            complete(&mut db, spec("unrelated-installation"), &["ready"]);
+            let other = db.claim_channel_delivery(recovery + 1).unwrap().unwrap();
+            assert_eq!(other.destination.channel, Channel::Telegram);
+            delivered(&mut db, &other, recovery + 2);
+            let review = recovery + 100;
+            if resolve {
+                assert!(db
+                    .resolve_channel_delivery(&first.id, "operator checked receipt".into(), review)
+                    .unwrap());
+            }
+            assert!(db.cancel_channel_event(&event, review).unwrap());
+            assert!(db.purge_channel_event(&event, review).unwrap());
+            assert_eq!(wecom_settlement(&db, &first.id), Some(review));
+            let reservations: i64 = db
+                .channel_conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM wecom_send_reservations", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(reservations, 1, "unsent chunks must not consume credit");
+            assert!(db.claim_channel_delivery(review + 3999).unwrap().is_none());
+            let next = db.claim_channel_delivery(review + 4000).unwrap().unwrap();
+            assert_eq!(next.id, waiting.id);
+            assert_eq!(next.error, None);
+            delivered(&mut db, &next, review + 4001);
+            assert_eq!(wecom_settlement(&db, &first.id), Some(review));
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn wecom_scheduled_cancellation_settles_only_submitted_credit() {
+        let mut db = database();
+        let mut task = scheduled_spec();
+        task.delivery = Some(super::super::channel_types::ScheduledDestination {
+            channel: Channel::Wecom,
+            installation_id: "wwfixture:1".into(),
+            conversation_id: "alice".into(),
+            thread_id: None,
+        });
+        let job = db.create_job(task, 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        let mut response = scheduled_reply();
+        response.message.content = "hello".repeat(500);
+        db.finish_job_run(&run.id, None, "completed", Some(response), None, 60_001)
+            .unwrap();
+        let first = db.claim_channel_delivery(60_002).unwrap().unwrap();
+        assert!(db.cancel_job_delivery(&job.id, &run.id, 60_003).is_err());
+        db.finish_channel_delivery(&first.id, 1, "unknown", None, None, None, 60_004)
+            .unwrap();
+        let waiting_event = complete(&mut db, wecom_spec("waiting", "bob"), &["next"]);
+        let review = WECOM_BUDGET_WINDOW_MS * 2;
+        assert!(db.claim_channel_delivery(review).unwrap().is_none());
+        assert_eq!(wecom_settlement(&db, &first.id), None);
+        assert!(db.cancel_job_delivery(&job.id, &run.id, review).unwrap());
+        assert!(db.purge_job_delivery(&job.id, &run.id).unwrap());
+        assert_eq!(wecom_settlement(&db, &first.id), Some(review));
+        let reservations: i64 = db
+            .channel_conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM wecom_send_reservations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(reservations, 1);
+        assert!(db.claim_channel_delivery(review + 3999).unwrap().is_none());
+        let next = db.claim_channel_delivery(review + 4000).unwrap().unwrap();
+        assert_eq!(next.event_id.as_deref(), Some(waiting_event.as_str()));
+    }
+
+    #[test]
+    fn wecom_global_budget_holds_unsettled_reservations_without_nullable_deadline_bypass() {
+        let mut db = database();
+        db.channel_conn().unwrap().execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO wecom_send_reservations(installation_id,delivery_id,attempt,reserved_ms) SELECT 'old:'||x,'delivery:'||x,1,0 FROM n;").unwrap();
+        let event = complete(&mut db, wecom_spec("waiting", "bob"), &["next"]);
+        assert!(db
+            .claim_channel_delivery(WECOM_BUDGET_WINDOW_MS * 2)
+            .unwrap()
+            .is_none());
+        let waiting = db
+            .list_channel_deliveries(Some(&event), 10, 0)
             .unwrap()
             .remove(0);
-        assert_eq!(row.destination.channel, Channel::Feishu);
-        assert!(db
+        assert_eq!(waiting.error.as_deref(), Some("wecom_budget_capacity"));
+        assert_eq!(waiting.attempts, 0);
+        let reservations: i64 = db
             .channel_conn()
             .unwrap()
-            .execute(
-                "UPDATE channel_outbox SET sealed_token='forbidden' WHERE id=?1",
-                [&row.id]
-            )
-            .is_err());
-        assert!(db
-            .channel_conn()
+            .query_row("SELECT COUNT(*) FROM wecom_send_reservations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(reservations, MAX_WECOM_RESERVATIONS);
+    }
+
+    #[test]
+    fn wecom_rolling_budget_survives_audit_deletion_and_restart() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-wecom-budget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let mut db = SessionStore::open(&path).unwrap();
+        let mut first_event = String::new();
+        for index in 0..200 {
+            let mut event = spec(&format!("wecom-{index}"));
+            event.sender_id = "alice".into();
+            event.destination.channel = Channel::Wecom;
+            event.destination.installation_id = "wwfixture:1".into();
+            event.destination.conversation_id = "alice".into();
+            let id = complete(&mut db, event, &["hello"]);
+            if index == 0 {
+                first_event = id;
+            }
+            let now = index * 4100;
+            let delivery = db.claim_channel_delivery(now).unwrap().unwrap();
+            assert_eq!(delivery.destination.channel, Channel::Wecom);
+            delivered(&mut db, &delivery, now + 1);
+        }
+        assert!(db.purge_channel_event(&first_event, 820_000).unwrap());
+        let mut next = spec("waiting-wecom");
+        next.sender_id = "bob".into();
+        next.destination.channel = Channel::Wecom;
+        next.destination.installation_id = "wwfixture:1".into();
+        next.destination.conversation_id = "bob".into();
+        let queued = complete(&mut db, next, &["waiting"]);
+        assert!(db.claim_channel_delivery(820_000).unwrap().is_none());
+        let waiting = db
+            .list_channel_deliveries(Some(&queued), 10, 0)
             .unwrap()
-            .execute(
-                "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
-                [&row.id]
-            )
-            .is_err());
+            .remove(0);
+        assert_eq!(waiting.state, "pending");
+        assert_eq!(waiting.attempts, 0);
+        assert_eq!(waiting.error.as_deref(), Some("wecom_daily_budget"));
+        assert_eq!(waiting.next_attempt_ms, WECOM_BUDGET_WINDOW_MS + 1);
+        // Exhausting one platform must not block another installation.
+        complete(&mut db, spec("telegram-still-ready"), &["other"]);
+        let other = db.claim_channel_delivery(820_001).unwrap().unwrap();
+        assert_eq!(other.destination.channel, Channel::Telegram);
+        delivered(&mut db, &other, 820_002);
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        db.recover_channels(820_003).unwrap();
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM wecom_send_reservations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            200
+        );
+        assert!(db
+            .claim_channel_delivery(WECOM_BUDGET_WINDOW_MS)
+            .unwrap()
+            .is_none());
+        let ready = db
+            .claim_channel_delivery(WECOM_BUDGET_WINDOW_MS + 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready.id, waiting.id);
+        assert_eq!(ready.attempts, 1);
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM wecom_send_reservations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            200
+        );
         drop(db);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn wecom_budget_failure_rolls_back_claim_and_scheduled_text_respects_rendered_bytes() {
+        let mut db = database();
+        let mut task = scheduled_spec();
+        task.delivery = Some(super::super::channel_types::ScheduledDestination {
+            channel: Channel::Wecom,
+            installation_id: "wwfixture:1".into(),
+            conversation_id: "alice@example.com".into(),
+            thread_id: None,
+        });
+        let job = db.create_job(task, 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        let mut response = scheduled_reply();
+        response.message.content = "中<🙂>".repeat(500);
+        let original = response.message.content.clone();
+        db.finish_job_run(&run.id, None, "completed", Some(response), None, 60_001)
+            .unwrap();
+        let parts = db.list_job_deliveries(&job.id, &run.id, 100, 0).unwrap();
+        assert!(parts.len() > 1);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            original
+        );
+        assert!(parts
+            .iter()
+            .all(|part| super::super::outbound::valid_wecom_text(&part.text)));
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER refuse_budget BEFORE INSERT ON wecom_send_reservations BEGIN SELECT RAISE(ABORT,'fixture budget failure'); END;").unwrap();
+        assert!(db.claim_channel_delivery(60_002).is_err());
+        let first = db.get_channel_delivery(&parts[0].id).unwrap().unwrap();
+        assert_eq!((first.state.as_str(), first.attempts), ("pending", 0));
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM channel_cooldowns", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER refuse_budget;")
+            .unwrap();
+        let first = db.claim_channel_delivery(60_003).unwrap().unwrap();
+        delivered(&mut db, &first, 60_004);
+        assert!(db.claim_channel_delivery(64_003).unwrap().is_none());
+        assert!(db.claim_channel_delivery(64_004).unwrap().is_some());
     }
 
     #[test]
@@ -1286,7 +1824,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

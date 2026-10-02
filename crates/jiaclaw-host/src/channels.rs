@@ -10,7 +10,7 @@ use super::{
 use anyhow::{bail, Context, Result};
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -38,6 +38,8 @@ pub(super) struct Installation {
     pub api_base: String,
     pub feishu_sender: Option<Arc<super::feishu_outbound::FeishuSender>>,
     pub feishu_verification_token: Option<String>,
+    pub wecom_sender: Option<Arc<super::wecom_outbound::WeComSender>>,
+    pub wecom_callback: Option<Arc<super::wecom::Callback>>,
 }
 
 pub(super) struct ChannelRuntime {
@@ -53,6 +55,7 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Slack => "slack",
         Channel::Discord => "discord",
         Channel::Feishu => "feishu",
+        Channel::Wecom => "wecom",
     }
 }
 
@@ -82,6 +85,9 @@ impl ChannelRuntime {
             || http.effective_feishu_app_secret().is_some()
             || http.effective_feishu_encrypt_key().is_some()
             || http.effective_feishu_verification_token().is_some()
+            || http.effective_wecom_app_secret().is_some()
+            || http.effective_wecom_callback_token().is_some()
+            || http.effective_wecom_encoding_aes_key().is_some()
             || http.effective_discord_bot_token().is_some();
         if http.channels.is_empty() {
             if credentials_present {
@@ -98,7 +104,7 @@ impl ChannelRuntime {
         ) {
             bail!("channels require brokerrouter or explicit stub provider");
         }
-        if http.channels.len() > 4 {
+        if http.channels.len() > 5 {
             bail!("at most one installation per channel is supported");
         }
         let mut seen = HashSet::new();
@@ -111,6 +117,7 @@ impl ChannelRuntime {
                 "slack" => Channel::Slack,
                 "discord" => Channel::Discord,
                 "feishu" => Channel::Feishu,
+                "wecom" => Channel::Wecom,
                 _ => bail!("unsupported channel"),
             };
             if !seen.insert(channel) {
@@ -119,20 +126,32 @@ impl ChannelRuntime {
             let valid_installation = if channel == Channel::Feishu {
                 super::feishu::validate_installation(&policy.installation_id).is_ok()
                     && policy.app_id.is_none()
+            } else if channel == Channel::Wecom {
+                super::wecom::validate_installation(&policy.installation_id).is_ok()
+                    && policy.app_id.is_none()
             } else {
                 valid_id(&policy.installation_id)
             };
             if !valid_installation || !(1..=600).contains(&policy.timeout_secs) {
                 bail!("invalid channel installation or timeout");
             }
-            for list in [
+            for (index, list) in [
                 &policy.allowed_senders,
                 &policy.allowed_conversations,
                 &policy.enabled_tools,
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 if list.is_empty()
                     || list.len() > 100
-                    || list.iter().any(|v| !valid_id(v))
+                    || list.iter().any(|v| {
+                        if channel == Channel::Wecom && index < 2 {
+                            !super::wecom::user_id(v)
+                        } else {
+                            !valid_id(v)
+                        }
+                    })
                     || list.iter().collect::<HashSet<_>>().len() != list.len()
                 {
                     bail!("channel identity and tool allowlists must explicitly contain 1..100 unique IDs");
@@ -161,6 +180,11 @@ impl ChannelRuntime {
                 .validate()?;
             }
             let (credential, inbound_secret, default_base) = match channel {
+                Channel::Wecom => (
+                    String::new(),
+                    String::new(),
+                    "https://qyapi.weixin.qq.com/cgi-bin",
+                ),
                 Channel::Feishu => (
                     String::new(),
                     http.effective_feishu_encrypt_key()
@@ -252,6 +276,26 @@ impl ChannelRuntime {
             } else {
                 (None, None)
             };
+            let (wecom_sender, wecom_callback) = if channel == Channel::Wecom {
+                let callback = super::wecom::Callback::new(
+                    &policy.installation_id,
+                    http.effective_wecom_callback_token()
+                        .context("WeCom callback token is required")?,
+                    &http
+                        .effective_wecom_encoding_aes_key()
+                        .context("WeCom EncodingAESKey is required")?,
+                )?;
+                let sender = super::wecom_outbound::WeComSender::new(
+                    &policy.installation_id,
+                    http.effective_wecom_app_secret()
+                        .context("WeCom App Secret is required")?,
+                    api_base.clone(),
+                    policy.local_test_api_base.is_some(),
+                )?;
+                (Some(Arc::new(sender)), Some(Arc::new(callback)))
+            } else {
+                (None, None)
+            };
             installations.push(Installation {
                 channel,
                 policy: policy.clone(),
@@ -260,6 +304,8 @@ impl ChannelRuntime {
                 api_base,
                 feishu_sender,
                 feishu_verification_token,
+                wecom_sender,
+                wecom_callback,
             });
         }
         Ok(Some(Arc::new(Self {
@@ -594,6 +640,61 @@ pub(super) async fn feishu(
             .await
         }
     }
+}
+
+pub(super) async fn wecom_verify(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let callback = runtime(&state)?
+        .installation(Channel::Wecom)
+        .and_then(|b| b.wecom_callback.as_ref())
+        .ok_or(AppError::NotFound)?;
+    let echo = callback
+        .challenge(query.as_deref().unwrap_or_default(), super::unix_now_secs())
+        .map_err(|_| AppError::Unauthorized)?;
+    Ok((StatusCode::OK, echo).into_response())
+}
+
+pub(super) async fn wecom(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let binding = runtime(&state)?
+        .installation(Channel::Wecom)
+        .ok_or(AppError::NotFound)?;
+    let callback = binding.wecom_callback.as_ref().ok_or(AppError::NotFound)?;
+    let inbound = callback
+        .parse_event(
+            query.as_deref().unwrap_or_default(),
+            &body,
+            super::unix_now_secs(),
+        )
+        .map_err(|_| AppError::Unauthorized)?;
+    if let super::wecom::Inbound::Message {
+        event_id,
+        sender_id,
+        text,
+    } = inbound
+    {
+        let destination = Destination {
+            channel: Channel::Wecom,
+            installation_id: binding.policy.installation_id.clone(),
+            conversation_id: sender_id.clone(),
+            thread_id: None,
+            interaction_id: None,
+            expires_ms: None,
+        };
+        accept(
+            &state,
+            event_spec(binding, event_id, sender_id, text, destination, None)?,
+            false,
+        )
+        .await?;
+    }
+    // The application callback protocol expects an empty HTTP 200 after durable admission.
+    Ok(StatusCode::OK.into_response())
 }
 
 pub(super) async fn discord(
@@ -1068,7 +1169,7 @@ pub(super) async fn start(state: AppState) -> Result<Option<ChannelWorkers>> {
                 result=active.join_next(),if !active.is_empty()=>{
                     if !matches!(result,Some(Ok(Ok(())))) {fault=true;break;}
                 },
-                _=tick.tick(),if active.len()<8=>{
+                _=tick.tick(),if active.len()<9=>{
                     match claim_event(&state).await {
                         Ok(Some(event))=>{let worker=state.clone();active.spawn(async move {process_event(worker,event).await});},
                         Ok(None)=>{},Err(_)=>{fault=true;break;},
@@ -1348,13 +1449,16 @@ async fn process_event(
                     .tool_calls
                     .iter()
                     .any(|c| c.result.as_ref().is_some_and(|v| v.get("error").is_some()));
-            let chunks =
-                super::outbound::split_text(&response.message.content).and_then(|chunks| {
-                    if event.spec.destination.channel == Channel::Discord && chunks.len() > 6 {
-                        anyhow::bail!("Discord reply exceeds original plus five follow-ups");
-                    }
-                    Ok(chunks)
-                });
+            let chunks = super::outbound::split_text_for(
+                event.spec.destination.channel,
+                &response.message.content,
+            )
+            .and_then(|chunks| {
+                if event.spec.destination.channel == Channel::Discord && chunks.len() > 6 {
+                    anyhow::bail!("Discord reply exceeds original plus five follow-ups");
+                }
+                Ok(chunks)
+            });
             if failed || chunks.is_err() {
                 messages.push(ChatMessage {
                     role: MessageRole::Assistant,
@@ -1442,7 +1546,15 @@ async fn deliver(
                 code: "interaction_expired",
             };
         } else if let Some(b) = binding {
-            if b.channel == Channel::Feishu {
+            if b.channel == Channel::Wecom {
+                outcome = if let Some(sender) = &b.wecom_sender {
+                    sender.send(&delivery.destination, &delivery.text).await
+                } else {
+                    DeliveryOutcome::Rejected {
+                        code: "credential_unavailable",
+                    }
+                };
+            } else if b.channel == Channel::Feishu {
                 outcome = if let Some(sender) = &b.feishu_sender {
                     sender
                         .send(&delivery.destination, &delivery.id, &delivery.text)
@@ -1555,6 +1667,8 @@ mod tests {
             api_base: "https://api.telegram.org".into(),
             feishu_sender: None,
             feishu_verification_token: None,
+            wecom_sender: None,
+            wecom_callback: None,
         }
     }
 
@@ -1591,6 +1705,43 @@ mod tests {
         assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
         config.http.channels[0].scheduled_destinations[0].thread_id = None;
         config.http.channels[0].installation_id = "tenant_fixture".into();
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+    }
+
+    #[test]
+    fn wecom_configuration_requires_canonical_single_member_targets_and_callback_secrets() {
+        let mut config = AgentConfig::default();
+        config.provider.provider_type = "stub".into();
+        config.http.wecom_app_secret = Some("fixture-secret".into());
+        config.http.wecom_callback_token = Some("FixtureToken123".into());
+        config.http.wecom_encoding_aes_key =
+            Some("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".into());
+        let mut policy = installation(Channel::Wecom).policy;
+        policy.app_id = None;
+        policy.installation_id = "wwfixture:1000001".into();
+        policy.allowed_senders = vec!["alice@example.com".into()];
+        policy.allowed_conversations = vec!["alice@example.com".into()];
+        policy.scheduled_destinations = vec![jiaclaw_core::ScheduledChannelDestination {
+            conversation_id: "bob".into(),
+            thread_id: None,
+        }];
+        config.http.channels = vec![policy];
+        let runtime = ChannelRuntime::configure(&config, Some("owner"))
+            .unwrap()
+            .unwrap();
+        let binding = runtime.installation(Channel::Wecom).unwrap();
+        assert!(binding.wecom_sender.is_some() && binding.wecom_callback.is_some());
+        assert!(binding.credential.is_empty() && binding.inbound_secret.is_empty());
+        config.http.channels[0].allowed_senders = vec!["Alice@example.com".into()];
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].allowed_senders = vec!["alice@example.com".into()];
+        config.http.channels[0].scheduled_destinations[0].conversation_id = "@all".into();
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].scheduled_destinations[0].conversation_id = "bob".into();
+        config.http.channels[0].app_id = Some("1000002".into());
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].app_id = None;
+        config.http.wecom_encoding_aes_key = Some("invalid".into());
         assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
     }
     fn state() -> (AppState, std::path::PathBuf) {

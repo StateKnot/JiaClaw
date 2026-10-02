@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu/WeCom destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
   },
   "servers": [
     {
@@ -34,7 +34,7 @@
     },
     {
       "name": "hooks",
-      "description": "Webhook / Telegram / Slack / Discord 入站（可选出站）"
+      "description": "Webhook / Telegram / Slack / Discord / Feishu / WeCom 入站与异步回复"
     },
     {
       "name": "discovery",
@@ -1954,6 +1954,237 @@
           }
         ]
       }
+    },
+    "/hooks/wecom": {
+      "get": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "企业微信加密回调 URL 验证",
+        "operationId": "verifyWecomCallback",
+        "description": "Verify query signature, timestamp and encrypted receiving CorpID, then return the exact decrypted echostr. Platform verification requires a response within 1 second; no model or outbound message is invoked. Query values are URL-decoded once. See docs/wecom.md.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "msg_signature",
+            "in": "query",
+            "required": true,
+            "description": "SHA1 of the lexically sorted callback Token, timestamp, nonce and encrypted payload concatenated together. This is not Bearer authentication.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": true,
+            "description": "Unix seconds, within ±300 seconds of the server clock.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "maxLength": 20
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": true,
+            "description": "Nonempty callback nonce. Duplicate or unknown query parameters are rejected.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[!-~]+$"
+            }
+          },
+          {
+            "name": "echostr",
+            "in": "query",
+            "required": true,
+            "description": "URL-encoded Base64 encrypted challenge (decoded ciphertext string <=2048 bytes; plaintext <=1024 bytes).",
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact decrypted UTF-8 echostr, without JSON quoting, newline or BOM.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid query, signature, timestamp, encrypted challenge or receiving CorpID.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "404": {
+            "description": "Channel not configured"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "企业微信自建应用加密文本回调",
+        "operationId": "inboundWecom",
+        "description": "China WeCom self-built enterprise app; private member text only. Requires configured callback Token, 43-character EncodingAESKey and CorpID:AgentID installation. Validate query signature and ±5-minute timestamp before AES-256-CBC decryption (key-prefix IV, 32-byte PKCS#7 padding); validate encrypted ToUserName, AgentID and receiving CorpID suffix independently of outer fields. MsgId is the deduplication identity. Sender and destination use lowercase member UserID; no threads, group bots or smart-bot protocol. Raw XML <=128 KiB, decrypted XML <=64 KiB, text <=32 KiB; DTD and entity expansion forbidden. Authenticated accepted text is persisted before empty ACK; execution and replies run asynchronously. See docs/wecom.md.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "msg_signature",
+            "in": "query",
+            "required": true,
+            "description": "SHA1 of the lexically sorted callback Token, timestamp, nonce and encrypted payload concatenated together. This is not Bearer authentication.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": true,
+            "description": "Unix seconds, within ±300 seconds of the server clock.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "maxLength": 20
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": true,
+            "description": "Nonempty callback nonce. Duplicate or unknown query parameters are rejected.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[!-~]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/xml": {
+              "schema": {
+                "type": "string",
+                "description": "Encrypted XML envelope with ToUserName, AgentID and Encrypt fields. Plaintext callback bodies are rejected."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Empty HTTP 200 after durable admission or authenticated ignored non-text event. No JSON body and no model output.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid callback query, signature, timestamp, ciphertext, XML, CorpID/AgentID binding or member authorization.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Configured background tools unavailable or invalid event metadata."
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2798,29 +3029,33 @@
               "telegram",
               "slack",
               "discord",
-              "feishu"
+              "feishu",
+              "wecom"
             ]
           },
           "installation_id": {
             "type": "string",
-            "description": "Feishu: app_id:tenant_key. Other platforms: configured installation ID."
+            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID."
           },
           "conversation_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets."
           },
           "thread_id": {
             "type": "string",
             "nullable": true,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission."
           },
           "interaction_id": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Discord interaction metadata; null for WeCom."
           },
           "expires_ms": {
             "type": "integer",
             "format": "int64",
-            "nullable": true
+            "nullable": true,
+            "description": "Discord interaction metadata; null for WeCom."
           }
         },
         "required": [
@@ -3074,21 +3309,23 @@
             "enum": [
               "telegram",
               "slack",
-              "feishu"
+              "feishu",
+              "wecom"
             ]
           },
           "installation_id": {
             "type": "string",
-            "description": "Feishu: app_id:tenant_key. Other platforms: configured installation ID."
+            "description": "Feishu: app_id:tenant_key. WeCom: CorpID:positive AgentID. Other platforms: configured installation ID."
           },
           "conversation_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Exact conversation ID; WeCom requires a single lowercase member UserID (1–64 ASCII bytes; first character alphanumeric, remaining characters alphanumeric or _-.@). No broadcast, department or tag targets."
           },
           "thread_id": {
             "type": "string",
             "nullable": true,
             "default": null,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission."
           }
         },
         "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted."
