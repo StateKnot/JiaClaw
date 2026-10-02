@@ -65,7 +65,7 @@ cron 固定为五字段“分钟 小时 日 月 星期”，时区必须是 IANA
 | 方法与路径 | 行为 |
 |---|---|
 | `GET /api/jobs/status` | 查看调度器运行状态和 `max_concurrent_runs: 4` |
-| `GET /api/jobs?limit=50&offset=0` | 分页列出任务，包括软删除记录；limit 为 1–100 |
+| `GET /api/jobs?limit=50&offset=0` | 分页列出未删除任务；`include_deleted=true` 时包含软删除记录；limit 为 1–100 |
 | `POST /api/jobs` | 创建 JobSpec，创建后启用 |
 | `GET /api/jobs/{id}` | 查看配置、启用状态、下一次时间及会话 ID |
 | `POST /api/jobs/{id}/pause` | 暂停后续调度 |
