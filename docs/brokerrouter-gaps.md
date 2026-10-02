@@ -4,11 +4,11 @@
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
-| 文本 Chat Completions | 已支持 | BrokerrouterProvider 接入非流式请求 |
-| SSE | 已支持，受端点能力与护栏限制 | 尚未接通逐事件读取；现有 API SSE 是完成后分块 |
+| 文本 Chat Completions | 已支持 | BrokerrouterProvider 接入有界异步非流式请求，无重定向/自动重试 |
+| SSE | 已有协议支持，受端点能力与护栏限制；资源修复在未合并 PR #40 | 尚未接通逐事件读取；现有 API SSE 是完成后分块 |
 | embeddings | 已有网关契约 | 尚未实现 embedding 适配与向量索引 |
 | 个人配置 `init-personal` | 已实现事务化初始化 | 可按上游消费者指南接入自己的网关 |
-| 工具调用 | 端点能力控制；fixture 已认证 | 本地协议测试通过，缺真实供应商生产默认 |
+| 工具调用 | 端点能力控制；fixture 已认证 | 已接原生 tools/tool_calls/role:tool 和调用 ID 关联，见[合同与验收](native-tools.md)；缺真实供应商生产默认 |
 | 多端点路由/降级 | 最多 3 个候选；仅已证明 not_sent 可换端点 | 不另做盲目供应商重试 |
 | 多模态 chat content | 明确拒绝 | JiaClaw 当前文本契约 |
 | 媒体任务 | 已有独立子系统，认证仍待完成 | 图片/语音尚未接线 |
@@ -20,6 +20,9 @@
 - [#30 个人配置](https://github.com/StateKnot/Brokerrouter/issues/30)：已关闭。
 - [#31 真实工具闭环认证](https://github.com/StateKnot/Brokerrouter/issues/31)：仍开放。当前没有上游能标记为 JiaClaw 生产默认的真实供应商工具路径；继续沿用该议题，不重复提交。
 - [#41 StateKnot durable 原生 JSON Schema 输出](https://github.com/StateKnot/Brokerrouter/issues/41)：本轮新增。现有 StateKnot `ProviderNativeAgentGraph` 要求模型原生 JSON Schema 最终输出，而网关消费者合同拒绝 `response_format` / Responses。需要有界、能力控制、保留治理/幂等/结算的原生 schema 路径；不能用提示词或工具模拟最终 JSON 冒充该合同。
+- [PR #40 MCP 治理恢复与 SSE 资源限制](https://github.com/StateKnot/Brokerrouter/pull/40)：draft、尚未合并，核对的 head 为 `7a7afea0244828851118ba32d1cf37d906a3f388`，base 为本文 main。修复完成的 MCP 结果重新授权、semantic worker、发现刷新后的恢复，以及 SSE 慢客户端缓冲和连接结束前提前释放容量。不能将修复描述为主线已交付，也不重复报已有 PR 覆盖的问题。
+
+2026-10-02 已通过 GitHub API 重新读取 main、issues、PR 和检查状态；main 仍为上述 SHA，#31/#41 仍 OPEN，#41 无回复。PR #40 的 6 个 CI 状态为 FAILURE；抽查 Rust 检查注释明确为 GitHub 账户付款/额度导致作业没有启动，不是测试执行后失败。当前不把 SSE 资源边界、MCP 治理恢复或真实供应商默认标记为生产验收完成。此次核对尚无 Brokerrouter GitHub release。
 
 ## 消费合同与下一步
 

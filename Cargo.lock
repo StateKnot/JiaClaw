@@ -1429,6 +1429,7 @@ dependencies = [
  "libc",
  "minreq",
  "mockito",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_yaml",

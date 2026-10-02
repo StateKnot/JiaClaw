@@ -29,6 +29,8 @@ secret_env = 'JIACLAW_MCP_FIXTURE_' + uuid.uuid4().hex.upper()
 calls = []
 gateway_messages = []
 fixture_errors = []
+native_call = {'id': 'mcp-fixture-call', 'type': 'function', 'function': {
+    'name': 'mcp_inventory_lookup', 'arguments': json.dumps({'query': 'abc'})}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,14 +46,23 @@ class Handler(BaseHTTPRequestHandler):
                 messages = request['messages']
                 gateway_messages.append(messages)
                 prompt = messages[0]['content']
-                assert 'mcp_inventory_lookup' in prompt
-                assert 'unapproved_write' not in prompt
+                advertised = {tool['function']['name']: tool for tool in request['tools']}
+                assert 'mcp_inventory_lookup' in advertised
+                assert advertised['mcp_inventory_lookup']['function']['parameters'] == descriptor['inputSchema']
+                assert 'mcp_inventory_unapproved_write' not in advertised
+                assert 'unapproved_write' not in json.dumps(request)
                 assert 'UNTRUSTED-SERVER-INSTRUCTIONS' not in prompt
-                if any('工具 mcp_inventory_lookup 执行成功' in m['content'] for m in messages):
-                    content = 'MCP roundtrip completed.'
+                if any(message['role'] == 'tool' for message in messages):
+                    assert messages[-2] == {'role': 'assistant', 'content': None, 'tool_calls': [native_call]}
+                    assert messages[-1]['role'] == 'tool'
+                    assert messages[-1]['tool_call_id'] == native_call['id']
+                    assert 'fixture record' in messages[-1]['content']
+                    message = {'role': 'assistant', 'content': 'MCP roundtrip completed.'}
+                    finish_reason = 'stop'
                 else:
-                    content = '```tool\n' + json.dumps({'tool_name': 'mcp_inventory_lookup', 'arguments': {'query': 'abc'}}) + '\n```'
-                response = {'choices': [{'message': {'role': 'assistant', 'content': content}}]}
+                    message = {'role': 'assistant', 'content': None, 'tool_calls': [native_call]}
+                    finish_reason = 'tool_calls'
+                response = {'choices': [{'message': message, 'finish_reason': finish_reason}]}
             elif self.path == '/mcp/':
                 assert self.headers['Authorization'] == 'Bearer ' + mcp_secret
                 method = request['method']

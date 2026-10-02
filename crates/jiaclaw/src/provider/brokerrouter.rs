@@ -1,83 +1,98 @@
 // Copyright 2026 JiaClaw contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Brokerrouter 提供商（推荐生产路径）
-//!
-//! 通过 [Brokerrouter](https://github.com/StateKnot/Brokerrouter) AI Gateway
-//! 路由模型调用到上游提供商（OpenAI, Anthropic, Ollama 等）。
-//!
-//! ## 特性
-//!
-//! - ✅ Bearer 虚拟密钥认证
-//! - ✅ 自动幂等性密钥生成（每次请求）
-//! - ✅ 非流式聊天补全（`stream: false`）
-//! - ✅ 请求追踪（捕获 `x-request-id` / `x-brokerrouter-request-id`）
-//! - ✅ 健壮的错误处理和映射
-//!
-//! ## API 契约
-//!
-//! ```http
-//! POST {base_url}/v1/chat/completions
-//! Authorization: Bearer <virtual-key>
-//! Idempotency-Key: <1-200 printable ASCII>
-//! Content-Type: application/json
-//!
-//! {
-//!   "model": "claude-3-5-sonnet-20241022",
-//!   "messages": [...],
-//!   "temperature": 0.7,
-//!   "max_tokens": 1000,
-//!   "stream": false
-//! }
-//! ```
-//!
-//! 响应头包含：
-//! - `x-request-id`: 请求标识符
-//! - `x-brokerrouter-request-id`: Brokerrouter 特定的请求 ID
-//!
-//! ## 已知限制
-//!
-//! 参见 `docs/brokerrouter-gaps.md` 了解当前限制和跟踪的议题：
-//! - [#28](https://github.com/StateKnot/Brokerrouter/issues/28) - 消费方接入指南
-//! - [#29](https://github.com/StateKnot/Brokerrouter/issues/29) - Chat SSE `stream:true`
-//! - [#30](https://github.com/StateKnot/Brokerrouter/issues/30) - 单人本地配置
-//! - [#31](https://github.com/StateKnot/Brokerrouter/issues/31) - Agent tool roundtrip
+//! Bounded, single-attempt Brokerrouter Chat Completions transport.
+//! Native tool messages retain provider IDs and arguments across the complete roundtrip.
 
 use jiaclaw_core::{ChatMessage, ChatResponse, JiaClawError, MessageRole, RunStatus};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use stateknot_integrations::ProviderEndpoint;
+use std::time::Duration;
 use uuid::Uuid;
 
-/// Brokerrouter Chat Completions API 请求
-#[derive(Debug, Serialize)]
-struct BrokerrouterChatRequest {
-    model: String,
-    messages: Vec<BrokerrouterMessage>,
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub(crate) fn failure(message: &str) -> JiaClawError {
+    JiaClawError::StateKnotIntegration(format!("Brokerrouter: {message}"))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct NativeFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct NativeToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: NativeFunction,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WireMessage {
+    pub role: String,
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<NativeToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl WireMessage {
+    pub fn text(role: &str, content: String) -> Self {
+        Self {
+            role: role.into(),
+            content: Some(content),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    pub fn history(system_prompt: &str, messages: &[ChatMessage]) -> Vec<Self> {
+        let mut wire = vec![Self::text("system", system_prompt.into())];
+        wire.extend(messages.iter().map(|message| {
+            Self::text(
+                match message.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => "system",
+                },
+                message.content.clone(),
+            )
+        }));
+        wire
+    }
+}
+
+#[derive(Serialize)]
+struct CompletionRequest<'a> {
+    model: &'a str,
+    messages: &'a [WireMessage],
     temperature: f32,
     max_tokens: u32,
-    /// 当前应用使用非流式；网关 SSE 已支持，应用逐事件接线尚待实现。
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [Value]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
-/// Brokerrouter 消息格式（OpenAI-compatible）
-#[derive(Debug, Serialize, Deserialize)]
-struct BrokerrouterMessage {
-    role: String,
-    content: String,
+#[derive(Deserialize)]
+struct CompletionResponse {
+    choices: Vec<Choice>,
 }
 
-/// Brokerrouter Chat Completions API 响应
-#[derive(Debug, Deserialize)]
-struct BrokerrouterChatResponse {
-    choices: Vec<BrokerrouterChoice>,
+#[derive(Deserialize)]
+struct Choice {
+    message: WireMessage,
+    finish_reason: String,
 }
 
-/// Brokerrouter 响应选项
-#[derive(Debug, Deserialize)]
-struct BrokerrouterChoice {
-    message: BrokerrouterMessage,
-}
-
-/// Brokerrouter 提供商（推荐生产路径）
+/// Brokerrouter gateway client. Requests have bounded time/size and are never replayed.
 #[allow(clippy::module_name_repetitions)]
 pub struct BrokerrouterProvider {
     base_url: String,
@@ -85,34 +100,154 @@ pub struct BrokerrouterProvider {
 }
 
 impl BrokerrouterProvider {
-    /// 创建新的 Brokerrouter 提供商实例
-    ///
-    /// # 参数
-    ///
-    /// - `base_url`: Brokerrouter Gateway 基础 URL (例如 `https://api.brokerrouter.dev`)
-    /// - `virtual_key`: Brokerrouter 虚拟密钥 (以 `brk_` 开头)
-    ///
-    /// # 注意
-    ///
-    /// 虚拟密钥应通过环境变量或安全配置提供，不要硬编码到代码中。
+    /// Construct a client. Endpoint/key validation occurs before any network access.
     pub fn new(base_url: &str, virtual_key: &str) -> Self {
         Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            virtual_key: virtual_key.to_string(),
+            base_url: base_url.trim_end_matches('/').into(),
+            virtual_key: virtual_key.into(),
         }
     }
 
-    /// 生成幂等性密钥
-    ///
-    /// 根据 Brokerrouter 契约要求：
-    /// - 1-200 个可打印 ASCII 字符
-    /// - 每次尝试都应该唯一
-    /// - 使用 UUID v4 作为基础（符合要求且保证唯一性）
     fn generate_idempotency_key() -> String {
         format!("jiaclaw-{}", Uuid::new_v4())
     }
 
-    /// 调用聊天补全 API
+    fn endpoint(&self) -> Result<String, JiaClawError> {
+        let valid = if self.base_url.starts_with("https://") {
+            ProviderEndpoint::https(&self.base_url)
+        } else {
+            ProviderEndpoint::loopback_http(&self.base_url)
+        };
+        if self.base_url.len() > 2048 || valid.is_err() {
+            return Err(JiaClawError::Configuration("Brokerrouter endpoint requires HTTPS or literal-loopback HTTP without credentials/query/fragment".into()));
+        }
+        if self.virtual_key.trim().is_empty()
+            || self.virtual_key.len() > 4096
+            || self.virtual_key.bytes().any(|b| !b.is_ascii_graphic())
+        {
+            return Err(JiaClawError::Configuration(
+                "invalid Brokerrouter API key".into(),
+            ));
+        }
+        Ok(format!("{}/v1/chat/completions", self.base_url))
+    }
+
+    /// Submit one model request; cancellation drops the async connection future.
+    pub(crate) async fn complete(
+        &self,
+        model: &str,
+        messages: &[WireMessage],
+        temperature: f32,
+        max_tokens: u32,
+        tools: &[Value],
+    ) -> Result<WireMessage, JiaClawError> {
+        self.complete_with_timeout(
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            tools,
+            REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_with_timeout(
+        &self,
+        model: &str,
+        messages: &[WireMessage],
+        temperature: f32,
+        max_tokens: u32,
+        tools: &[Value],
+        timeout: Duration,
+    ) -> Result<WireMessage, JiaClawError> {
+        let url = self.endpoint()?;
+        if messages.is_empty()
+            || messages.len() > 1024
+            || tools.len() > 128
+            || max_tokens == 0
+            || !temperature.is_finite()
+        {
+            return Err(failure("invalid request limits"));
+        }
+        let request = CompletionRequest {
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            stream: false,
+            tools: (!tools.is_empty()).then_some(tools),
+            parallel_tool_calls: (!tools.is_empty()).then_some(false),
+        };
+        let body =
+            serde_json::to_vec(&request).map_err(|_| failure("request serialization failed"))?;
+        if body.len() > MAX_BODY_BYTES {
+            return Err(failure("request exceeds 2 MiB"));
+        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(timeout)
+            .build()
+            .map_err(|_| failure("HTTP client initialization failed"))?;
+        // No retries: a transport failure may occur after the gateway accepted/billed a request.
+        let mut response = client
+            .post(url)
+            .bearer_auth(&self.virtual_key)
+            .header("Content-Type", "application/json")
+            .header("Idempotency-Key", Self::generate_idempotency_key())
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| {
+                failure("request failed or timed out; outcome may be unknown, not retried")
+            })?;
+        if response.status() != reqwest::StatusCode::OK {
+            // Never reflect remote error bodies, URLs, or credentials to clients/logs.
+            return Err(failure(&format!(
+                "HTTP status {}; request not retried",
+                response.status().as_u16()
+            )));
+        }
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_BODY_BYTES as u64)
+        {
+            return Err(failure("response exceeds 2 MiB"));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| failure("response interrupted or timed out; not retried"))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
+                return Err(failure("response exceeds 2 MiB"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let mut response: CompletionResponse =
+            serde_json::from_slice(&bytes).map_err(|_| failure("invalid completion response"))?;
+        if response.choices.len() != 1 {
+            return Err(failure("expected exactly one completion choice"));
+        }
+        let choice = response.choices.remove(0);
+        let message = choice.message;
+        if message.role != "assistant" || message.tool_call_id.is_some() {
+            return Err(failure("invalid assistant message"));
+        }
+        match choice.finish_reason.as_str() {
+            "stop" if message.tool_calls.is_empty() && message.content.is_some() => Ok(message),
+            "tool_calls" if !tools.is_empty() && !message.tool_calls.is_empty() => Ok(message),
+            _ => Err(failure(
+                "incomplete or inconsistent completion finish reason; no tools dispatched",
+            )),
+        }
+    }
+
+    /// Text-only model completion (for example, context summarization).
     pub async fn chat(
         &self,
         model: &str,
@@ -121,130 +256,19 @@ impl BrokerrouterProvider {
         temperature: f32,
         max_tokens: u32,
     ) -> Result<ChatResponse, JiaClawError> {
-        // 克隆参数以便在 spawn_blocking 中使用
-        let base_url = self.base_url.clone();
-        let virtual_key = self.virtual_key.clone();
-        let model = model.to_string();
-        let system_prompt = system_prompt.to_string();
-        let messages = messages.to_vec();
-
-        // 使用 spawn_blocking 在线程池中执行同步 HTTP 请求
-        tokio::task::spawn_blocking(move || {
-            Self::chat_sync(
-                &base_url,
-                &virtual_key,
-                &model,
-                &system_prompt,
-                &messages,
+        let message = self
+            .complete(
+                model,
+                &WireMessage::history(system_prompt, messages),
                 temperature,
                 max_tokens,
+                &[],
             )
-        })
-        .await
-        .map_err(|e| JiaClawError::StateKnotIntegration(format!("任务执行失败: {e}")))?
-    }
-
-    /// 同步的聊天补全实现
-    #[allow(clippy::too_many_arguments)]
-    fn chat_sync(
-        base_url: &str,
-        virtual_key: &str,
-        model: &str,
-        system_prompt: &str,
-        messages: &[ChatMessage],
-        temperature: f32,
-        max_tokens: u32,
-    ) -> Result<ChatResponse, JiaClawError> {
-        // 构建 Brokerrouter 格式的消息列表
-        let mut broker_messages = vec![BrokerrouterMessage {
-            role: "system".to_string(),
-            content: system_prompt.to_string(),
-        }];
-
-        for msg in messages {
-            broker_messages.push(BrokerrouterMessage {
-                role: match msg.role {
-                    MessageRole::User => "user".to_string(),
-                    MessageRole::Assistant => "assistant".to_string(),
-                    MessageRole::System => "system".to_string(),
-                },
-                content: msg.content.clone(),
-            });
-        }
-
-        // 构建请求
-        let request = BrokerrouterChatRequest {
-            model: model.to_string(),
-            messages: broker_messages,
-            temperature,
-            max_tokens,
-            stream: false, // Brokerrouter M2 仅支持非流式
-        };
-
-        // 生成幂等性密钥
-        let idempotency_key = Self::generate_idempotency_key();
-
-        // 发送请求
-        let url = format!("{base_url}/v1/chat/completions");
-        tracing::debug!("调用 Brokerrouter API: {}", url);
-        tracing::trace!("幂等性密钥: {}", idempotency_key);
-
-        let request_json = serde_json::to_string(&request)
-            .map_err(|e| JiaClawError::StateKnotIntegration(format!("序列化请求失败: {e}")))?;
-
-        let response = minreq::post(&url)
-            .with_header("Authorization", format!("Bearer {virtual_key}"))
-            .with_header("Content-Type", "application/json")
-            .with_header("Idempotency-Key", idempotency_key)
-            .with_body(request_json)
-            .send()
-            .map_err(|e| JiaClawError::StateKnotIntegration(format!("API 请求失败: {e}")))?;
-
-        // 捕获请求追踪 ID
-        let request_id = response
-            .headers
-            .get("x-request-id")
-            .map(std::string::ToString::to_string);
-        let broker_request_id = response
-            .headers
-            .get("x-brokerrouter-request-id")
-            .map(std::string::ToString::to_string);
-
-        if let Some(ref id) = request_id {
-            tracing::debug!("x-request-id: {}", id);
-        }
-        if let Some(ref id) = broker_request_id {
-            tracing::debug!("x-brokerrouter-request-id: {}", id);
-        }
-
-        // 检查响应状态
-        if response.status_code != 200 {
-            let status = response.status_code;
-            let body = response.as_str().unwrap_or_default();
-            return Err(JiaClawError::StateKnotIntegration(format!(
-                "Brokerrouter 返回错误状态 {status}: {body}"
-            )));
-        }
-
-        let broker_response: BrokerrouterChatResponse = response.json().map_err(|e| {
-            JiaClawError::StateKnotIntegration(format!("解析 Brokerrouter 响应失败: {e}"))
-        })?;
-
-        // 转换为 JiaClaw 响应格式
-        let assistant_message = broker_response
-            .choices
-            .first()
-            .ok_or_else(|| {
-                JiaClawError::StateKnotIntegration("Brokerrouter 响应中没有选项".to_string())
-            })?
-            .message
-            .content
-            .clone();
-
+            .await?;
         Ok(ChatResponse {
             message: ChatMessage {
                 role: MessageRole::Assistant,
-                content: assistant_message,
+                content: message.content.unwrap_or_default(),
             },
             tool_calls: vec![],
             status: RunStatus::Completed,
@@ -258,160 +282,138 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_provider_creation() {
-        let provider = BrokerrouterProvider::new("https://api.brokerrouter.dev", "brk_test_key");
-        assert_eq!(provider.base_url, "https://api.brokerrouter.dev");
-        assert_eq!(provider.virtual_key, "brk_test_key");
+    fn endpoint_policy_and_key_are_checked_without_echoing_secrets() {
+        for url in [
+            "http://example.com",
+            "https://user:secret@example.com",
+            "https://example.com?secret=value",
+            "https://example.com/#secret",
+        ] {
+            let error = BrokerrouterProvider::new(url, "key")
+                .endpoint()
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("secret"));
+        }
+        assert!(BrokerrouterProvider::new("http://127.0.0.1:1234/", "key")
+            .endpoint()
+            .is_ok());
+        assert!(BrokerrouterProvider::new("https://example.com", "\nsecret")
+            .endpoint()
+            .is_err());
+        assert_ne!(
+            BrokerrouterProvider::generate_idempotency_key(),
+            BrokerrouterProvider::generate_idempotency_key()
+        );
     }
 
-    #[test]
-    fn test_provider_trims_slash() {
-        let provider = BrokerrouterProvider::new("https://api.brokerrouter.dev/", "brk_test_key");
-        assert_eq!(provider.base_url, "https://api.brokerrouter.dev");
-    }
-
-    #[test]
-    fn test_idempotency_key_generation() {
-        let key1 = BrokerrouterProvider::generate_idempotency_key();
-        let key2 = BrokerrouterProvider::generate_idempotency_key();
-
-        // 验证格式
-        assert!(key1.starts_with("jiaclaw-"));
-        assert!(key2.starts_with("jiaclaw-"));
-
-        // 验证唯一性
-        assert_ne!(key1, key2);
-
-        // 验证长度（UUID 长度 + 前缀）
-        assert!(key1.len() > 10);
-        assert!(key1.len() <= 200); // Brokerrouter 限制
-
-        // 验证只包含可打印 ASCII
-        assert!(key1.chars().all(|c| c.is_ascii() && !c.is_ascii_control()));
+    async fn fixture(
+        status: &str,
+        headers: &str,
+        body: &str,
+        delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut data = [0; 8192];
+            let _ = socket.read(&mut data).await.unwrap();
+            tokio::time::sleep(delay).await;
+            let _ = socket.write_all(response.as_bytes()).await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "request replayed"
+            );
+        });
+        (url, task)
     }
 
     #[tokio::test]
-    async fn test_brokerrouter_chat_with_mock() {
-        // 设置 mock 响应
-        let response_body = serde_json::json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 1234567890,
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "测试响应"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15
-            }
-        });
-
-        let _mock = mockito::mock("POST", "/v1/chat/completions")
-            .match_header("Authorization", "Bearer brk_test_key")
-            .match_header("Content-Type", "application/json")
-            .match_header("Idempotency-Key", mockito::Matcher::Any)
-            .with_status(200)
-            .with_header("x-request-id", "req-123")
-            .with_header("x-brokerrouter-request-id", "brk-req-456")
-            .with_body(response_body.to_string())
-            .create();
-
-        // 创建提供商
-        let provider = BrokerrouterProvider::new(&mockito::server_url(), "brk_test_key");
-
-        // 调用聊天
-        let messages = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "测试消息".to_string(),
-        }];
-
-        let response = provider
-            .chat(
-                "claude-3-5-sonnet-20241022",
-                "你是一个有用的助手",
-                &messages,
+    async fn native_null_content_and_finish_reason_are_preserved() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"clock","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let (url, task) = fixture("200 OK", "", body, Duration::ZERO).await;
+        let result = BrokerrouterProvider::new(&url, "key")
+            .complete(
+                "fixture",
+                &[WireMessage::text("user", "hello".into())],
                 0.7,
-                1000,
+                100,
+                &[serde_json::json!({})],
             )
-            .await;
-
-        // 验证响应
-        assert!(response.is_ok());
-        let response = response.unwrap();
-        assert_eq!(response.message.content, "测试响应");
-        assert_eq!(response.status, RunStatus::Completed);
+            .await
+            .unwrap();
+        assert_eq!(result.tool_calls[0].id, "call_1");
+        assert!(result.content.is_none());
+        task.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_brokerrouter_error_handling() {
-        // 设置错误响应
-        let _mock = mockito::mock("POST", "/v1/chat/completions")
-            .with_status(401)
-            .with_body("Unauthorized: Invalid API key")
-            .create();
-
-        // 创建提供商
-        let provider = BrokerrouterProvider::new(&mockito::server_url(), "brk_invalid_key");
-
-        // 调用聊天
-        let messages = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "测试消息".to_string(),
-        }];
-
-        let response = provider
-            .chat("gpt-4", "你是一个有用的助手", &messages, 0.7, 1000)
-            .await;
-
-        // 验证错误
-        assert!(response.is_err());
-        let err = response.unwrap_err();
-        assert!(err.to_string().contains("Brokerrouter 返回错误状态 401"));
+    async fn errors_redirects_truncation_and_timeouts_fail_without_replay_or_body_leak() {
+        for (status, headers, body, delay, expected) in [
+            ("401 Unauthorized", "", "secret-key", Duration::ZERO, "401"),
+            (
+                "302 Found",
+                "Location: http://127.0.0.1:1/secret\r\n",
+                "secret-key",
+                Duration::ZERO,
+                "302",
+            ),
+            (
+                "200 OK",
+                "",
+                r#"{"choices":[{"message":{"role":"assistant","content":"secret-key"},"finish_reason":"length"}]}"#,
+                Duration::ZERO,
+                "finish reason",
+            ),
+            (
+                "200 OK",
+                "",
+                "secret-key",
+                Duration::from_millis(500),
+                "timed out",
+            ),
+        ] {
+            let (url, task) = fixture(status, headers, body, delay).await;
+            let error = BrokerrouterProvider::new(&url, "key")
+                .complete_with_timeout(
+                    "fixture",
+                    &[WireMessage::text("user", "hello".into())],
+                    0.7,
+                    100,
+                    &[],
+                    if expected == "timed out" {
+                        Duration::from_millis(200)
+                    } else {
+                        Duration::from_secs(5)
+                    },
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("secret-key"));
+            task.await.unwrap();
+        }
     }
 
     #[tokio::test]
-    async fn test_brokerrouter_stream_false() {
-        let response_body = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "ok"
-                }
-            }]
-        });
-
-        // 验证请求中包含 stream: false
-        let _mock = mockito::mock("POST", "/v1/chat/completions")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
-                "model": "gpt-4",
-                "messages": [
-                    {"role": "system", "content": "system"},
-                    {"role": "user", "content": "hello"}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 100,
-                "stream": false
-            })))
-            .with_status(200)
-            .with_body(response_body.to_string())
-            .create();
-
-        let provider = BrokerrouterProvider::new(&mockito::server_url(), "brk_test");
-
-        let messages = vec![ChatMessage {
-            role: MessageRole::User,
-            content: "hello".to_string(),
-        }];
-
-        let result = provider.chat("gpt-4", "system", &messages, 0.7, 100).await;
-
-        assert!(result.is_ok());
+    async fn response_body_limit_is_enforced() {
+        let body = "x".repeat(MAX_BODY_BYTES + 1);
+        let (url, task) = fixture("200 OK", "", &body, Duration::ZERO).await;
+        let error = BrokerrouterProvider::new(&url, "key")
+            .chat("fixture", "system", &[], 0.7, 100)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds 2 MiB"));
+        task.await.unwrap();
     }
 }

@@ -18,11 +18,11 @@
 //!
 //! 1. **生产路径**: `BrokerrouterProvider` (`provider_type` = `"brokerrouter"`)
 //! 2. **开发逃生舱**: `OpenAICompatibleProvider` (`provider_type` = `"openai_compatible"`)
-//! 3. **离线模式**: 无 API key 时自动回退到 stub
+//! 3. **离线模式**: 显式配置 `provider_type` = `"stub"`；缺少 API key 的真实提供商返回配置错误
 //!
 //! 参见 `docs/brokerrouter-gaps.md` 了解集成需求和议题跟踪。
 
-mod brokerrouter;
+pub(crate) mod brokerrouter;
 mod openai_compatible;
 
 #[allow(clippy::module_name_repetitions)]

@@ -60,6 +60,7 @@ docker compose up --build -d
 - 显式启用的 `exec` / `shell_exec`：白名单映射、固定镜像、无网络容器、非 root、时间与输出限制。默认关闭；没有宿主机 shell 回退。
 - SQLite WAL 会话存储、旧 JSON 一次性迁移、导入导出、TTL、同一会话并发串行提交。
 - StateKnot HTTP MCP：显式批准的只读工具、描述摘要固定、离线 schema 校验、有界 JSON/SSE 与取消；[配置与验收边界](docs/mcp.md)。
+- Brokerrouter 原生工具调用、请求级工具白名单、整批参数校验与部分完成故障说明；[契约与限制](docs/native-tools.md)。
 - 内置 Web 聊天、会话创建/选择/删除；同源 API，无前端构建依赖。
 - MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord 的入站签名和出站适配。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。

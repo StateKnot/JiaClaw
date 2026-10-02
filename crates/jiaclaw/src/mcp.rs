@@ -190,6 +190,7 @@ pub(crate) async fn initialize(
         return Err(configuration("at most eight servers are allowed"));
     }
     let mut names = HashSet::new();
+    let mut local_names = HashSet::new();
     // Validate the entire local policy before making the first network request.
     for server in &config.servers {
         validate_server(server)?;
@@ -198,10 +199,8 @@ pub(crate) async fn initialize(
             return Err(configuration("duplicate server name"));
         }
         for tool in &server.tools {
-            if registry
-                .get(&format!("mcp_{}_{}", server.name, tool.alias))
-                .is_some()
-            {
+            let local_name = format!("mcp_{}_{}", server.name, tool.alias);
+            if registry.get(&local_name).is_some() || !local_names.insert(local_name) {
                 return Err(configuration("local tool name collision"));
             }
         }
@@ -766,6 +765,24 @@ mod tests {
         assert!(initialize(&config, &mut registry).await.is_err());
         assert!(registry.list().is_empty());
         assert_eq!(fixture.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_names_across_servers_are_rejected_before_discovery() {
+        let fixture = Fixture::start(Mode::Json, false).await;
+        let mut config = fixture.config();
+        config.servers[0].name = "a_b".into();
+        config.servers[0].tools[0].alias = "c".into();
+        let mut second = config.servers[0].clone();
+        second.name = "a".into();
+        second.tools[0].alias = "b_c".into();
+        config.servers.push(second);
+
+        let mut registry = ToolRegistry::new();
+        let error = initialize(&config, &mut registry).await.unwrap_err();
+        assert!(error.to_string().contains("local tool name collision"));
+        assert!(registry.list().is_empty());
+        assert!(fixture.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
