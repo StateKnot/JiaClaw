@@ -389,7 +389,7 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
     }
 
     // 初始化工作空间
-    Workspace::init(&workspace_path).context("初始化工作空间失败")?;
+    Workspace::init_with_overwrite(&workspace_path, force).context("初始化工作空间失败")?;
 
     println!("\n✅ 工作空间已初始化: {}", workspace_path.display());
     println!("\n📁 已创建文件:");
@@ -4151,8 +4151,12 @@ fn memory_show_command(config_path: Option<PathBuf>) -> Result<()> {
 
     println!("   状态:     ✅ 存在 ({} bytes)", status.size_bytes);
 
-    let content = std::fs::read_to_string(&status.path)
-        .with_context(|| format!("无法读取 {}", status.path.display()))?;
+    let content = jiaclaw::load_prompt_file(&config.workspace_path, &config.memory.path, "MEMORY")
+        .context("无法读取 MEMORY 文件")?
+        .unwrap_or_default();
+    if status.size_bytes > jiaclaw_core::MEMORY_PROMPT_MAX_BYTES as u64 {
+        println!("   显示:     已截断至 32KiB UTF-8 边界");
+    }
 
     if content.trim().is_empty() {
         println!("\n（文件为空，不会注入系统提示）");
@@ -4204,8 +4208,12 @@ fn identity_show_command(config_path: Option<PathBuf>, kind: IdentityShowKind) -
 
     println!("   状态:     ✅ 存在 ({} bytes)", status.size_bytes);
 
-    let content = std::fs::read_to_string(&status.path)
-        .with_context(|| format!("无法读取 {}", status.path.display()))?;
+    let content = jiaclaw::load_prompt_file(&config.workspace_path, rel_path, title)
+        .context("无法读取身份文件")?
+        .unwrap_or_default();
+    if status.size_bytes > jiaclaw_core::MEMORY_PROMPT_MAX_BYTES as u64 {
+        println!("   显示:     已截断至 32KiB UTF-8 边界");
+    }
 
     if content.trim().is_empty() {
         println!("\n（文件为空，不会注入系统提示）");
@@ -7356,8 +7364,8 @@ mod tests {
             tools_response
                 .tools
                 .iter()
-                .any(|t| t.name == "memory_append"),
-            "关闭 memory_write 不应影响 memory_append"
+                .all(|t| t.name != "memory_append"),
+            "关闭 memory_write 必须同时关闭 memory_append 别名"
         );
     }
 

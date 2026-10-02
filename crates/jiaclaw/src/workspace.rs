@@ -3,7 +3,8 @@
 
 //! 工作空间管理
 
-use jiaclaw_core::JiaClawError;
+use crate::memory_io::{create_text_if_missing, read_text, write_text};
+use jiaclaw_core::{JiaClawError, MEMORY_PROMPT_MAX_BYTES};
 use std::path::{Path, PathBuf};
 
 /// 工作空间文件
@@ -26,16 +27,18 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// 加载工作空间文件
+    /// 加载工作空间文件，每个文件最多读取并保留 32 KiB 的 UTF-8 文本。
+    ///
+    /// 工作空间或文件缺失时，对应字段为 `None`；空文件保留 `Some("")`。
     ///
     /// # Errors
     ///
-    /// 当前实现总是返回 `Ok`，即使文件不存在（返回 None 字段）。
+    /// 拒绝符号链接、硬链接和特殊文件；读取失败或文本不是有效 UTF-8 时返回错误。
     pub fn load(path: &Path) -> Result<Self, JiaClawError> {
-        let agents = Self::load_file(path, "AGENTS.md").ok();
-        let soul = Self::load_file(path, "SOUL.md").ok();
-        let user = Self::load_file(path, "USER.md").ok();
-        let memory = Self::load_file(path, "MEMORY.md").ok();
+        let agents = Self::load_file(path, "AGENTS.md")?;
+        let soul = Self::load_file(path, "SOUL.md")?;
+        let user = Self::load_file(path, "USER.md")?;
+        let memory = Self::load_file(path, "MEMORY.md")?;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -46,78 +49,65 @@ impl Workspace {
         })
     }
 
-    /// 初始化工作空间（创建默认文件）
+    /// 初始化工作空间，只补齐缺失的默认文件，保留已有常规文件。
     ///
     /// # Errors
     ///
-    /// 如果无法创建目录或写入文件，返回错误。
+    /// 如果目录或文件不安全，或无法创建目录、读取或写入文件，返回错误。
     pub fn init(path: &Path) -> Result<Self, JiaClawError> {
-        // 创建工作空间目录
+        Self::init_with_overwrite(path, false)
+    }
+
+    /// 初始化工作空间；仅在 `overwrite = true` 时覆盖已有常规默认文件。
+    ///
+    /// 顶层默认文件与两个示例技能使用相同的受限路径和原子写入规则。
+    /// 初始化中断后可以重试，默认保留已经创建或用户编辑的文件。
+    ///
+    /// # Errors
+    ///
+    /// 符号链接、硬链接、特殊文件以及目录或文件 IO 错误均返回错误。
+    pub fn init_with_overwrite(path: &Path, overwrite: bool) -> Result<Self, JiaClawError> {
+        // 显式工作空间根目录是授权边界；所有子路径交给受限文件 helper。
         std::fs::create_dir_all(path)
             .map_err(|e| JiaClawError::Configuration(format!("无法创建工作空间目录: {e}")))?;
 
-        // 创建默认文件
-        Self::write_file(path, "AGENTS.md", Self::default_agents_content())?;
-        Self::write_file(path, "SOUL.md", Self::default_soul_content())?;
-        Self::write_file(path, "USER.md", Self::default_user_content())?;
-        Self::write_file(path, "MEMORY.md", Self::default_memory_content())?;
-
-        // 创建 skills 目录
-        let skills_path = path.join("skills");
-        std::fs::create_dir_all(&skills_path)
-            .map_err(|e| JiaClawError::Configuration(format!("无法创建 skills 目录: {e}")))?;
-
-        // 创建示例技能
-        Self::create_example_skill(&skills_path, "search")?;
-        Self::create_example_skill(&skills_path, "calculator")?;
+        let defaults = [
+            ("AGENTS.md", Self::default_agents_content()),
+            ("SOUL.md", Self::default_soul_content()),
+            ("USER.md", Self::default_user_content()),
+            ("MEMORY.md", Self::default_memory_content()),
+            ("skills/search/SKILL.md", Self::search_skill_content()),
+            (
+                "skills/calculator/SKILL.md",
+                Self::calculator_skill_content(),
+            ),
+        ];
+        for (relative_path, content) in defaults {
+            if overwrite {
+                write_text(path, relative_path, content, true, MEMORY_PROMPT_MAX_BYTES)?;
+            } else {
+                create_text_if_missing(path, relative_path, content)?;
+            }
+        }
 
         Self::load(path)
     }
 
-    /// 加载单个文件
-    fn load_file(workspace_path: &Path, filename: &str) -> Result<String, JiaClawError> {
-        let file_path = workspace_path.join(filename);
-        if !file_path.exists() {
-            return Err(JiaClawError::Configuration(format!(
-                "文件不存在: {}",
-                file_path.display()
-            )));
-        }
-
-        std::fs::read_to_string(&file_path)
-            .map_err(|e| JiaClawError::Configuration(format!("无法读取文件 {filename}: {e}")))
-    }
-
-    /// 写入文件
-    fn write_file(
-        workspace_path: &Path,
-        filename: &str,
-        content: &str,
-    ) -> Result<(), JiaClawError> {
-        let file_path = workspace_path.join(filename);
-        std::fs::write(&file_path, content)
-            .map_err(|e| JiaClawError::Configuration(format!("无法写入文件 {filename}: {e}")))
-    }
-
-    /// 创建示例技能
-    fn create_example_skill(skills_path: &Path, skill_name: &str) -> Result<(), JiaClawError> {
-        let skill_dir = skills_path.join(skill_name);
-        std::fs::create_dir_all(&skill_dir).map_err(|e| {
-            JiaClawError::Configuration(format!("无法创建技能目录 {skill_name}: {e}"))
-        })?;
-
-        let content = match skill_name {
-            "search" => Self::search_skill_content(),
-            "calculator" => Self::calculator_skill_content(),
-            _ => return Ok(()),
+    /// 加载一个可选文件，并明确记录截断。
+    fn load_file(workspace_path: &Path, filename: &str) -> Result<Option<String>, JiaClawError> {
+        let Some(file) = read_text(workspace_path, filename, MEMORY_PROMPT_MAX_BYTES, true)? else {
+            return Ok(None);
         };
-
-        let skill_file = skill_dir.join("SKILL.md");
-        std::fs::write(&skill_file, content).map_err(|e| {
-            JiaClawError::Configuration(format!("无法写入技能文件 {skill_name}: {e}"))
-        })?;
-
-        Ok(())
+        if file.truncated {
+            tracing::warn!(
+                workspace = %workspace_path.display(),
+                filename,
+                size_bytes = file.size_bytes,
+                limit_bytes = MEMORY_PROMPT_MAX_BYTES,
+                "工作空间文件过大，截断后加载"
+            );
+        }
+        Ok(Some(file.text))
     }
 
     // 默认内容模板
@@ -335,43 +325,238 @@ mod tests {
     use super::*;
     use std::fs;
 
+    const DEFAULT_FILES: [&str; 6] = [
+        "AGENTS.md",
+        "SOUL.md",
+        "USER.md",
+        "MEMORY.md",
+        "skills/search/SKILL.md",
+        "skills/calculator/SKILL.md",
+    ];
+
+    fn assert_missing(workspace: &Workspace) {
+        assert!(workspace.agents.is_none());
+        assert!(workspace.soul.is_none());
+        assert!(workspace.user.is_none());
+        assert!(workspace.memory.is_none());
+    }
+
     #[test]
     fn test_workspace_init() {
-        let temp_dir = std::env::temp_dir().join("jiaclaw_test_workspace");
-        let _ = fs::remove_dir_all(&temp_dir);
-
-        let workspace = Workspace::init(&temp_dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let workspace = Workspace::init(&root).unwrap();
 
         assert!(workspace.agents.is_some());
         assert!(workspace.soul.is_some());
         assert!(workspace.user.is_some());
         assert!(workspace.memory.is_some());
-
-        // 验证文件存在
-        assert!(temp_dir.join("AGENTS.md").exists());
-        assert!(temp_dir.join("SOUL.md").exists());
-        assert!(temp_dir.join("USER.md").exists());
-        assert!(temp_dir.join("MEMORY.md").exists());
-        assert!(temp_dir.join("skills").exists());
-
-        // 清理
-        let _ = fs::remove_dir_all(&temp_dir);
+        for relative in DEFAULT_FILES {
+            assert!(root.join(relative).is_file(), "missing {relative}");
+        }
     }
 
     #[test]
     fn test_workspace_load_missing() {
-        let temp_dir = std::env::temp_dir().join("jiaclaw_test_missing");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        assert_missing(&Workspace::load(temp.path()).unwrap());
+        assert_missing(&Workspace::load(&temp.path().join("missing")).unwrap());
+    }
 
-        let workspace = Workspace::load(&temp_dir).unwrap();
+    #[test]
+    fn workspace_load_preserves_empty_files() {
+        let temp = tempfile::tempdir().unwrap();
+        for relative in &DEFAULT_FILES[..4] {
+            fs::write(temp.path().join(relative), "").unwrap();
+        }
+        let workspace = Workspace::load(temp.path()).unwrap();
+        for text in [
+            workspace.agents,
+            workspace.soul,
+            workspace.user,
+            workspace.memory,
+        ] {
+            assert_eq!(text.as_deref(), Some(""));
+        }
+    }
 
-        assert!(workspace.agents.is_none());
-        assert!(workspace.soul.is_none());
-        assert!(workspace.user.is_none());
-        assert!(workspace.memory.is_none());
+    #[test]
+    fn workspace_load_bounds_each_file_at_utf8_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = "x".repeat(MEMORY_PROMPT_MAX_BYTES - 1);
+        let content = format!("{prefix}中{}", "文".repeat(MEMORY_PROMPT_MAX_BYTES));
+        for relative in &DEFAULT_FILES[..4] {
+            fs::write(temp.path().join(relative), &content).unwrap();
+        }
+        let workspace = Workspace::load(temp.path()).unwrap();
+        for text in [
+            workspace.agents,
+            workspace.soul,
+            workspace.user,
+            workspace.memory,
+        ] {
+            assert_eq!(text.as_deref(), Some(prefix.as_str()));
+        }
+    }
 
-        // 清理
-        let _ = fs::remove_dir_all(&temp_dir);
+    #[test]
+    fn workspace_load_propagates_invalid_utf8_and_non_file_errors() {
+        for relative in &DEFAULT_FILES[..4] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join(relative);
+            fs::write(&target, [b'a', 0xff, b'b']).unwrap();
+            assert!(Workspace::load(temp.path()).is_err(), "{relative}");
+            fs::remove_file(&target).unwrap();
+            fs::create_dir(&target).unwrap();
+            assert!(Workspace::load(temp.path()).is_err(), "{relative}");
+        }
+    }
+
+    #[test]
+    fn workspace_init_preserves_all_existing_files_and_fills_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        Workspace::init(root).unwrap();
+        for relative in DEFAULT_FILES {
+            fs::write(root.join(relative), format!("user-content:{relative}")).unwrap();
+        }
+        Workspace::init(root).unwrap();
+        for relative in DEFAULT_FILES {
+            assert_eq!(
+                fs::read_to_string(root.join(relative)).unwrap(),
+                format!("user-content:{relative}")
+            );
+        }
+        fs::remove_file(root.join(DEFAULT_FILES[5])).unwrap();
+        Workspace::init(root).unwrap();
+        for relative in &DEFAULT_FILES[..5] {
+            assert_eq!(
+                fs::read_to_string(root.join(relative)).unwrap(),
+                format!("user-content:{relative}")
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(root.join(DEFAULT_FILES[5])).unwrap(),
+            Workspace::calculator_skill_content()
+        );
+    }
+
+    #[test]
+    fn workspace_init_explicit_overwrite_replaces_all_regular_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        Workspace::init(temp.path()).unwrap();
+        let expected: Vec<_> = DEFAULT_FILES
+            .iter()
+            .map(|relative| fs::read(temp.path().join(relative)).unwrap())
+            .collect();
+        for relative in DEFAULT_FILES {
+            fs::write(temp.path().join(relative), "user-content").unwrap();
+        }
+        Workspace::init_with_overwrite(temp.path(), true).unwrap();
+        for (relative, contents) in DEFAULT_FILES.iter().zip(expected) {
+            assert_eq!(fs::read(temp.path().join(relative)).unwrap(), contents);
+        }
+    }
+
+    #[test]
+    fn workspace_init_rejects_wrong_directory_and_file_types() {
+        for overwrite in [false, true] {
+            for relative in DEFAULT_FILES {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join(relative);
+                fs::create_dir_all(&target).unwrap();
+                assert!(Workspace::init_with_overwrite(temp.path(), overwrite).is_err());
+                assert!(target.is_dir());
+            }
+            for relative in ["skills", "skills/search", "skills/calculator"] {
+                let temp = tempfile::tempdir().unwrap();
+                let target = temp.path().join(relative);
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                fs::write(&target, "keep").unwrap();
+                assert!(Workspace::init_with_overwrite(temp.path(), overwrite).is_err());
+                assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_load_rejects_links_and_special_files() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        for relative in &DEFAULT_FILES[..4] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("workspace");
+            fs::create_dir(&root).unwrap();
+            let outside = temp.path().join("outside");
+            fs::write(&outside, "private").unwrap();
+            let target = root.join(relative);
+            symlink(&outside, &target).unwrap();
+            assert!(Workspace::load(&root).is_err(), "symlink {relative}");
+            fs::remove_file(&target).unwrap();
+            symlink(temp.path().join("absent"), &target).unwrap();
+            assert!(Workspace::load(&root).is_err(), "dangling {relative}");
+            fs::remove_file(&target).unwrap();
+            fs::hard_link(&outside, &target).unwrap();
+            assert!(Workspace::load(&root).is_err(), "hard link {relative}");
+            fs::remove_file(&target).unwrap();
+            let _socket = UnixListener::bind(&target).unwrap();
+            assert!(Workspace::load(&root).is_err(), "socket {relative}");
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "private");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_init_rejects_linked_files_even_when_forced() {
+        use std::os::unix::fs::symlink;
+
+        for overwrite in [false, true] {
+            for relative in DEFAULT_FILES {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("workspace");
+                let target = root.join(relative);
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                let outside = temp.path().join("outside");
+                fs::write(&outside, "private").unwrap();
+                symlink(&outside, &target).unwrap();
+                assert!(Workspace::init_with_overwrite(&root, overwrite).is_err());
+                assert_eq!(fs::read_to_string(&outside).unwrap(), "private");
+                fs::remove_file(&target).unwrap();
+                fs::hard_link(&outside, &target).unwrap();
+                assert!(Workspace::init_with_overwrite(&root, overwrite).is_err());
+                assert_eq!(fs::read_to_string(&outside).unwrap(), "private");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_init_rejects_linked_skill_directories() {
+        use std::os::unix::fs::symlink;
+
+        for overwrite in [false, true] {
+            for relative in ["skills", "skills/search", "skills/calculator"] {
+                for dangling in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path().join("workspace");
+                    let target = root.join(relative);
+                    fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    let outside = temp.path().join("outside");
+                    if !dangling {
+                        fs::create_dir(&outside).unwrap();
+                        fs::write(outside.join("keep"), "private").unwrap();
+                    }
+                    symlink(&outside, &target).unwrap();
+                    assert!(Workspace::init_with_overwrite(&root, overwrite).is_err());
+                    if dangling {
+                        assert!(!outside.exists());
+                    } else {
+                        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "private");
+                        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+                    }
+                }
+            }
+        }
     }
 }

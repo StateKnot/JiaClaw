@@ -163,10 +163,10 @@ impl Tool for IdentityWriteTool {
     fn description(&self) -> &str {
         match self.kind {
             IdentityKind::Soul => {
-                "将内容写入工作区人格文件（默认 SOUL.md）。replace=true（默认）覆盖整个文件；replace=false 时追加。只能写约定路径。"
+                "将内容写入工作区人格文件（默认 SOUL.md）。replace=true（默认）覆盖整个文件；replace=false 时追加。只能写约定路径，结果最多32KiB。"
             }
             IdentityKind::User => {
-                "将内容写入工作区用户画像文件（默认 USER.md）。replace=true（默认）覆盖整个文件；replace=false 时追加。只能写约定路径。"
+                "将内容写入工作区用户画像文件（默认 USER.md）。replace=true（默认）覆盖整个文件；replace=false 时追加。只能写约定路径，结果最多32KiB。"
             }
         }
     }
@@ -195,12 +195,30 @@ impl Tool for IdentityWriteTool {
             .and_then(Value::as_str)
             .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'content'".to_string()))?;
 
-        let replace = args.get("replace").and_then(Value::as_bool).unwrap_or(true);
+        let replace = match args.get("replace") {
+            None => true,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return Err(JiaClawError::ToolExecution("replace 必须是布尔值".into())),
+        };
 
-        let path = write_identity(&self.workspace_path, &self.rel_path, content, replace)?;
-
-        let metadata = std::fs::metadata(&path).ok();
-        let size = metadata.map_or(0, |m| m.len());
+        if content.len() > jiaclaw_core::MEMORY_PROMPT_MAX_BYTES {
+            return Err(JiaClawError::ToolExecution(
+                "身份文件超过上限 32768 字节".into(),
+            ));
+        }
+        let content = content.to_owned();
+        let workspace = self.workspace_path.clone();
+        let configured = self.rel_path.clone();
+        let (path, size) = crate::memory_io::run_blocking(move || {
+            crate::memory_io::write_text(
+                &workspace,
+                &configured,
+                &content,
+                replace,
+                jiaclaw_core::MEMORY_PROMPT_MAX_BYTES,
+            )
+        })
+        .await?;
         let mode = if replace { "覆盖" } else { "追加" };
         let label = self.kind.file_label();
 

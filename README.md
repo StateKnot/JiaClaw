@@ -64,7 +64,7 @@ docker compose up --build -d
 - 按可信任务用途选择 Brokerrouter 逻辑模型：聊天、渠道、定时任务、HEARTBEAT、摘要；固定工具循环策略、输出上限及有效配置回执，见[模型路由](docs/model-routing.md)。
 - 内置 Web 聊天、会话创建/选择/删除；同源 API，无前端构建依赖。
 - 持久化 cron/interval 多任务：鉴权管理、独立会话、运行记录、超时/重启中断暂停与显式恢复；[定时任务指南](docs/scheduler.md)。
-- MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)、[企业微信自建应用](docs/wecom.md)和[钉钉企业内部机器人](docs/dingtalk.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
+- [MEMORY / SOUL / USER](docs/memory-files.md) 的受限文件读写、工作区技能与有界 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)、[企业微信自建应用](docs/wecom.md)和[钉钉企业内部机器人](docs/dingtalk.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
 - 多用户聊天入口：独立容器/卷/私有网络、哈希 Key 轮换撤销、有界代理与未知写入核对；[部署与验收边界](docs/gateway.md)。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。
 
@@ -78,6 +78,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
 cargo build --locked -p jiaclaw-host
 python3 tests/e2e.py target/debug/jiaclaw
+python3 tests/memory_io.py target/debug/jiaclaw
 python3 tests/installer.py
 ```
 

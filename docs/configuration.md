@@ -68,7 +68,7 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 容器无网络、只读根文件系统、移除 capabilities、no-new-privileges、非 root、限制内存/CPU/PID，只有 `/workspace` 与受限 `/tmp`。超时和 future 取消会请求删除整个容器；daemon 不可达时不能声称清理成功，需按日志检查。宿主服务被 SIGKILL/断电时无法执行取消清理，这是容器 exec 生命周期的已知边界。服务宿主接入 Docker daemon 是高权限操作，容器部署示例因此禁用 exec。
 
-其他 `tools.<name>.enabled` 默认 true：`read_file`, `list_dir`, `write_file`, `delete_file`, `str_replace`, `grep`, `glob`, `mkdir`, `move`, `memory_search`, `memory_write`, `web_search`, `web_fetch`。`web_search.brave_api_key` 可由 `JIACLAW_BRAVE_API_KEY` 覆盖；未配置调用报错。`web_fetch.allow_private` 默认 false。记忆检索目前按关键词，不是向量检索。
+其他 `tools.<name>.enabled` 默认 true：`read_file`, `list_dir`, `write_file`, `delete_file`, `str_replace`, `grep`, `glob`, `mkdir`, `move`, `memory_search`, `memory_write`, `web_search`, `web_fetch`。`web_search.brave_api_key` 可由 `JIACLAW_BRAVE_API_KEY` 覆盖；未配置调用报错。`web_fetch.allow_private` 默认 false。`tools.memory_write.enabled` 同时控制 `memory_write` 与 `memory_append`；通用文件写工具的权限需另外限制。记忆检索目前按关键词，不是向量检索，文件/查询/结果上限与提交边界见[记忆文件指南](memory-files.md)。
 
 ## MCP
 
@@ -90,9 +90,9 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 六个平台使用统一持久 inbox/outbox 与有界异步发送；fixture 测试覆盖协议，不等于真实渠道联调认证。会话按安装、会话、线程和发送者绑定；工作区仍是实例共享，没有多用户工作区隔离。
 
-`memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md；系统提示各文件最多注入 32 KiB。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。
+`memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md。`memory_read` 按逻辑文件名读取这些配置路径；提示注入、记忆读取和 CLI 展示最多读取 32 KiB，按 UTF-8 边界截断；`memory_write` / `memory_append` / `soul_write` / `user_write` 的最终文件均不得超过 32 KiB。父目录/目标链接与非常规文件被拒绝，提交与并发边界见[记忆文件指南](memory-files.md)。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。
 
-`heartbeat.enabled` 默认 false，`interval_secs` 默认 3600，`path` 默认 HEARTBEAT.md，`session_id` 默认 heartbeat。仅 serve 内运行；空或缺失文件跳过；它不是持久化 cron 多任务调度器。
+`heartbeat.enabled` 默认 false，`interval_secs` 默认 3600，`path` 默认 HEARTBEAT.md，`session_id` 默认 heartbeat。仅 serve 内运行；空或缺失文件跳过，超过 32 KiB 拒绝本轮且不调用模型；它不是持久化 cron 多任务调度器。
 
 `session.summarize_on_overflow` 默认 false，历史超过 50 条时硬截断；启用则摘要并保留 `keep_recent`（默认 10）。摘要失败退回截断。`logging.format` 为 text/json；`logging.level` 默认 info。
 

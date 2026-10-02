@@ -31,6 +31,7 @@ async-trait = "0.1"
 indexmap = { workspace = true }
 libc = "0.2"
 cap-std = "=3.4.5"
+fs2 = "=0.4.3"
 
 [dev-dependencies]
 tempfile = "=3.16.0"

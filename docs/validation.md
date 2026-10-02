@@ -154,3 +154,16 @@ Rust 镜像摘要取自 [Docker 官方 repo-info 历史](https://github.com/dock
 - 网关专用 Compose、Secret 入口、JSON/TOML、Python/Shell 语法已检查。`tests/gateway_container.py` 的真实 Linux 容器/限额/防火墙验证由本批 draft PR CI 执行；macOS 静态检查不冒充 loop device/宿主网络验收。
 
 仅交付独立后端的 HTTP/工作台聊天、会话与本地管理 Key。多用户渠道和后台任务绑定、逐 token 流式、模型操作身份恢复、真实供应商、TLS/egress 部署、StateKnot durable 均未据此认证。生产拓扑、管理员核对和备份回退边界见[网关指南](gateway.md)。
+
+
+## 记忆文件 I/O 批次
+
+2026-10-03，macOS arm64，Rust 1.88.0，锁定依赖。
+
+- 全量 Rust 回归：747 passed、0 failed（library 294、core 117、host 336）；1 项真实 Docker 专项保持独立 ignored，由 CI 执行。
+- fmt、Clippy correctness/suspicious 和锁定构建通过，保留已有 style/pedantic warnings。
+- 真实进程 e2e、native_tools 与新增 memory_io 均通过；memory_io 完成四组验收，已接入 Linux/macOS CI。跨平台/真实容器以本批 draft PR 最终 head CI 为准。
+
+已通过的真实进程行为：CLI init 默认保留与显式 force 安全覆盖（含示例技能）；MEMORY/SOUL/USER 配置路径读取及 CLI 展示；禁用 memory_write 同时阻止原生 memory_append；小参数追加验证最终文件的 32 KiB 上限（原生工具参数另受 16 KiB 预检约束）、UTF-8 读取与 HEARTBEAT 超限不调用模型；检索 512 KiB/16 路径/1024 字节查询和摘录边界；symlink 父目录与叶子、hardlink、FIFO 拒绝；旧固定临时文件不触碰外部目标；工作区目录锁竞争时立即失败，显式后续追加保留已有内容。
+
+只使用本机模型协议 fixture、一次性凭证和临时文件；没有真实供应商调用。该批不新增 embeddings、向量索引或语义检索，也不声称外部编辑器受锁约束、取消后写操作必然未发生，或已认证断电硬件持久性。操作和备份边界见[记忆文件指南](memory-files.md)。

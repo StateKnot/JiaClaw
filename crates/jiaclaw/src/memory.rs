@@ -11,7 +11,6 @@ use jiaclaw_core::{JiaClawError, MEMORY_PROMPT_MAX_BYTES};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// 工作区约定文件在磁盘上的状态（MEMORY / SOUL / USER，供 `doctor` / CLI 使用）
@@ -93,43 +92,19 @@ pub fn load_prompt_file(
     configured: &str,
     kind: &str,
 ) -> Result<Option<String>, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, configured)?;
-    if !path.exists() {
+    let Some(file) =
+        crate::memory_io::read_text(workspace, configured, MEMORY_PROMPT_MAX_BYTES, true)?
+    else {
         return Ok(None);
-    }
-    if !path.is_file() {
+    };
+    if file.truncated {
         tracing::warn!(
-            path = %path.display(),
             kind,
-            "{kind} 路径存在但不是文件，跳过注入"
-        );
-        return Ok(None);
-    }
-
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        JiaClawError::Configuration(format!("无法读取{kind}文件 {}: {e}", path.display()))
-    })?;
-
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-
-    if raw.len() > MEMORY_PROMPT_MAX_BYTES {
-        tracing::warn!(
-            path = %path.display(),
-            kind,
-            size_bytes = raw.len(),
             limit_bytes = MEMORY_PROMPT_MAX_BYTES,
-            "{kind} 文件过大，截断后注入系统提示"
+            "提示文件超过上限，已截断"
         );
-        Ok(Some(
-            truncate_utf8(&raw, MEMORY_PROMPT_MAX_BYTES).to_string(),
-        ))
-    } else {
-        Ok(Some(raw))
     }
+    Ok((!file.text.trim().is_empty()).then_some(file.text))
 }
 
 /// 读取记忆文件以注入系统提示。
@@ -157,20 +132,12 @@ pub fn inspect_workspace_file(
     configured: &str,
 ) -> Result<MemoryFileStatus, JiaClawError> {
     let path = resolve_workspace_relative_path(workspace, configured)?;
-    if path.is_file() {
-        let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        Ok(MemoryFileStatus {
-            path,
-            exists: true,
-            size_bytes,
-        })
-    } else {
-        Ok(MemoryFileStatus {
-            path,
-            exists: false,
-            size_bytes: 0,
-        })
-    }
+    let size = crate::memory_io::inspect(workspace, configured)?;
+    Ok(MemoryFileStatus {
+        path,
+        exists: size.is_some(),
+        size_bytes: size.unwrap_or(0),
+    })
 }
 
 /// 检查记忆文件是否存在及其大小。
@@ -201,7 +168,7 @@ pub fn write_workspace_file(
     write_workspace_file_with_limit(workspace, configured, content, replace, None)
 }
 
-/// 写入工作区约定文件；`max_bytes` 若设置，结果超过上限则报错且不落盘。
+/// 写入工作区约定文件；最多 32KiB，`max_bytes` 可降低上限，超限不落盘。
 ///
 /// # Errors
 ///
@@ -213,39 +180,14 @@ pub fn write_workspace_file_with_limit(
     replace: bool,
     max_bytes: Option<usize>,
 ) -> Result<PathBuf, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, configured)?;
-    ensure_path_within_workspace(workspace, &path)?;
-
-    if path.exists() {
-        ensure_existing_within_workspace(workspace, &path)?;
-        if !path.is_file() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径不是文件: {}",
-                path.display()
-            )));
-        }
-    }
-
-    let new_contents = if replace || !path.exists() {
-        content.to_string()
-    } else {
-        let existing = std::fs::read_to_string(&path).map_err(|e| {
-            JiaClawError::ToolExecution(format!("无法读取文件 {}: {e}", path.display()))
-        })?;
-        join_memory_append(&existing, content)
-    };
-
-    if let Some(limit) = max_bytes {
-        if new_contents.len() > limit {
-            return Err(JiaClawError::ToolExecution(format!(
-                "记忆文件超过上限 {limit} 字节（将写入 {} 字节）",
-                new_contents.len()
-            )));
-        }
-    }
-
-    atomic_write(&path, &new_contents)?;
-    Ok(path)
+    crate::memory_io::write_text(
+        workspace,
+        configured,
+        content,
+        replace,
+        max_bytes.unwrap_or(MEMORY_WRITE_MAX_BYTES),
+    )
+    .map(|(path, _)| path)
 }
 
 /// 写入记忆文件：默认追加一段 Markdown；`replace = true` 时覆盖。
@@ -264,7 +206,7 @@ pub fn write_memory(
     write_memory_with_limit(workspace, configured, content, replace, None)
 }
 
-/// 写入记忆文件；`max_bytes` 若设置，结果超过上限则报错且不落盘。
+/// 写入记忆文件；最多 32KiB，`max_bytes` 可降低上限，超限不落盘。
 ///
 /// # Errors
 ///
@@ -326,18 +268,20 @@ fn ensure_path_within_workspace(workspace: &Path, target: &Path) -> Result<(), J
         )));
     }
 
-    if target.starts_with(&ws) {
-        return Ok(());
-    }
-
-    if let Some(parent) = target.parent() {
-        let parent_check = if parent.exists() {
-            canonicalize_existing_or_clone(parent)
-        } else {
-            parent.to_path_buf()
-        };
-        if parent_check.starts_with(&ws) {
-            return Ok(());
+    let mut ancestor = target.parent();
+    while let Some(parent) = ancestor {
+        match std::fs::symlink_metadata(parent) {
+            Ok(_) => {
+                let checked = parent
+                    .canonicalize()
+                    .map_err(|e| JiaClawError::ToolExecution(format!("无法解析父目录: {e}")))?;
+                if checked.starts_with(&ws) && target.starts_with(&ws) {
+                    return Ok(());
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ancestor = parent.parent(),
+            Err(e) => return Err(JiaClawError::ToolExecution(format!("无法检查父目录: {e}"))),
         }
     }
 
@@ -365,37 +309,8 @@ pub(crate) fn ensure_existing_within_workspace(
     Ok(())
 }
 
-pub(crate) fn atomic_write(path: &Path, contents: &str) -> Result<(), JiaClawError> {
-    atomic_write_bytes(path, contents.as_bytes())
-}
-
 pub(crate) fn atomic_write_bytes(path: &Path, contents: &[u8]) -> Result<(), JiaClawError> {
-    let parent = path.parent().ok_or_else(|| {
-        JiaClawError::ToolExecution(format!("无效的文件路径: {}", path.display()))
-    })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        JiaClawError::ToolExecution(format!("无法创建文件目录 {}: {e}", parent.display()))
-    })?;
-
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的文件名: {}", path.display())))?;
-    let tmp = parent.join(format!("{}.tmp", file_name.to_string_lossy()));
-
-    std::fs::write(&tmp, contents).map_err(|e| {
-        JiaClawError::ToolExecution(format!("无法写入临时文件 {}: {e}", tmp.display()))
-    })?;
-
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        JiaClawError::ToolExecution(format!(
-            "无法提交文件 {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        ))
-    })?;
-
-    Ok(())
+    crate::memory_io::atomic_replace_ambient(path, contents)
 }
 
 /// `memory_append` 工具：向约定 MEMORY 路径追加或覆盖 Markdown。
@@ -423,7 +338,7 @@ impl Tool for MemoryAppendTool {
     }
 
     fn description(&self) -> &str {
-        "将一段 Markdown 写入工作区长期记忆文件（默认 MEMORY.md）。replace=false 时追加并换行分隔；replace=true 时覆盖整个文件。只能写约定路径。"
+        "将一段 Markdown 写入工作区长期记忆文件（默认 MEMORY.md）。replace=false 时追加并换行分隔；replace=true 时覆盖整个文件。只能写约定路径。结果最多 32KiB。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -450,20 +365,31 @@ impl Tool for MemoryAppendTool {
             .and_then(Value::as_str)
             .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'content'".to_string()))?;
 
-        let replace = args
-            .get("replace")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let replace = match args.get("replace") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return Err(JiaClawError::ToolExecution("replace 必须是布尔值".into())),
+        };
 
-        let path = write_memory(
-            &self.workspace_path,
-            &self.memory_rel_path,
-            content,
-            replace,
-        )?;
+        if content.len() > MEMORY_WRITE_MAX_BYTES {
+            return Err(JiaClawError::ToolExecution(
+                "记忆文件超过上限 32768 字节".into(),
+            ));
+        }
+        let content = content.to_owned();
+        let workspace = self.workspace_path.clone();
+        let configured = self.memory_rel_path.clone();
+        let (path, size) = crate::memory_io::run_blocking(move || {
+            crate::memory_io::write_text(
+                &workspace,
+                &configured,
+                &content,
+                replace,
+                MEMORY_WRITE_MAX_BYTES,
+            )
+        })
+        .await?;
 
-        let metadata = std::fs::metadata(&path).ok();
-        let size = metadata.map_or(0, |m| m.len());
         let mode = if replace { "覆盖" } else { "追加" };
 
         Ok(format!(
@@ -531,6 +457,12 @@ pub fn parse_memory_write_args(args: &Value) -> Result<(String, MemoryWriteMode)
         .get("content")
         .and_then(Value::as_str)
         .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'content'".to_string()))?;
+
+    if content.len() > MEMORY_WRITE_MAX_BYTES {
+        return Err(JiaClawError::ToolExecution(
+            "记忆文件超过上限 32768 字节".into(),
+        ));
+    }
 
     let mode = match args.get("mode") {
         None | Some(Value::Null) => MemoryWriteMode::Append,
@@ -601,18 +533,18 @@ impl Tool for MemoryWriteTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let (content, mode) = parse_memory_write_args(&args)?;
-        let path = write_memory_with_limit(
-            &self.workspace_path,
-            &self.memory_rel_path,
-            &content,
-            mode.is_overwrite(),
-            Some(MEMORY_WRITE_MAX_BYTES),
-        )?;
-
-        let bytes_written = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| usize::try_from(m.len()).ok())
-            .unwrap_or(0);
+        let workspace = self.workspace_path.clone();
+        let configured = self.memory_rel_path.clone();
+        let (_, bytes_written) = crate::memory_io::run_blocking(move || {
+            crate::memory_io::write_text(
+                &workspace,
+                &configured,
+                &content,
+                mode.is_overwrite(),
+                MEMORY_WRITE_MAX_BYTES,
+            )
+        })
+        .await?;
         let output = MemoryWriteOutput {
             path: self.memory_rel_path.clone(),
             mode,
@@ -631,6 +563,12 @@ pub const MEMORY_SEARCH_MAX_RESULTS: usize = 20;
 
 /// 单文件读取上限（字节）；超过则截断并 warn
 pub const MEMORY_SEARCH_FILE_MAX_BYTES: usize = 512 * 1024;
+/// Aggregate input and output bounds in addition to the per-file byte limit.
+pub const MEMORY_SEARCH_MAX_PATHS: usize = 16;
+/// Query byte limit.
+pub const MEMORY_SEARCH_QUERY_MAX_BYTES: usize = 1024;
+/// Each returned excerpt is bounded independently of line length.
+pub const MEMORY_SEARCH_EXCERPT_MAX_BYTES: usize = 1024;
 
 /// 命中行前后各保留的上下文行数
 pub const MEMORY_SEARCH_LINE_RADIUS: usize = 2;
@@ -660,6 +598,11 @@ pub fn parse_memory_search_args(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'query'（非空字符串）".to_string()))?;
 
+    if query.len() > MEMORY_SEARCH_QUERY_MAX_BYTES {
+        return Err(JiaClawError::ToolExecution(
+            "query 超过 1024 字节上限".into(),
+        ));
+    }
     let max_results = match args.get("max_results") {
         None => MEMORY_SEARCH_DEFAULT_MAX_RESULTS,
         Some(value) => {
@@ -680,6 +623,9 @@ pub fn parse_memory_search_args(
     let paths = match args.get("paths") {
         None | Some(Value::Null) => None,
         Some(Value::Array(items)) => {
+            if items.len() > MEMORY_SEARCH_MAX_PATHS {
+                return Err(JiaClawError::ToolExecution("paths 最多 16 个".into()));
+            }
             let mut out = Vec::with_capacity(items.len());
             for item in items {
                 let raw = item.as_str().ok_or_else(|| {
@@ -688,9 +634,9 @@ pub fn parse_memory_search_args(
                     )
                 })?;
                 let trimmed = raw.trim();
-                if trimmed.is_empty() {
+                if trimmed.is_empty() || trimmed.len() > crate::memory_io::MAX_PATH_BYTES {
                     return Err(JiaClawError::ToolExecution(
-                        "参数 'paths' 中的路径不能为空".to_string(),
+                        "参数 'paths' 中的路径须为 1..1024 字节".to_string(),
                     ));
                 }
                 out.push(trimmed.to_string());
@@ -730,9 +676,11 @@ pub fn search_memory_windows(
     query: &str,
     max_results: usize,
 ) -> Vec<MemorySearchHit> {
-    if query.is_empty() || max_results == 0 {
+    if query.is_empty() || query.len() > MEMORY_SEARCH_QUERY_MAX_BYTES || max_results == 0 {
         return Vec::new();
     }
+    let max_results = max_results.min(MEMORY_SEARCH_MAX_RESULTS);
+    let content = truncate_utf8(content, MEMORY_SEARCH_FILE_MAX_BYTES);
     let needle = query.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let mut hits = Vec::new();
@@ -742,7 +690,31 @@ pub fn search_memory_windows(
         }
         let start = idx.saturating_sub(MEMORY_SEARCH_LINE_RADIUS);
         let end = (idx + MEMORY_SEARCH_LINE_RADIUS).min(lines.len().saturating_sub(1));
-        let excerpt = lines[start..=end].join("\n");
+        let window_bytes = lines[start..=end].iter().map(|s| s.len()).sum::<usize>() + end - start;
+        let excerpt = if window_bytes <= MEMORY_SEARCH_EXCERPT_MAX_BYTES {
+            lines[start..=end].join("\n")
+        } else {
+            // Long context must not hide the actual matching line. Map the
+            // lowercase match offset back to the original UTF-8 text before
+            // selecting a bounded excerpt around the match.
+            let folded_at = line.to_lowercase().find(&needle).unwrap_or(0);
+            let mut folded_bytes = 0;
+            let mut at = 0;
+            for (offset, ch) in line.char_indices() {
+                if folded_bytes >= folded_at {
+                    at = offset;
+                    break;
+                }
+                folded_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                at = offset + ch.len_utf8();
+            }
+            let padding = 256.min(MEMORY_SEARCH_EXCERPT_MAX_BYTES.saturating_sub(query.len()) / 2);
+            let mut begin = at.saturating_sub(padding);
+            while !line.is_char_boundary(begin) {
+                begin += 1;
+            }
+            truncate_utf8(&line[begin..], MEMORY_SEARCH_EXCERPT_MAX_BYTES).to_owned()
+        };
         hits.push(MemorySearchHit {
             path: rel_path.to_string(),
             line: idx + 1,
@@ -766,61 +738,6 @@ fn unique_relative_paths(paths: impl IntoIterator<Item = String>) -> Vec<String>
     out
 }
 
-fn read_search_file_limited(path: &Path) -> Result<(String, bool), JiaClawError> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        JiaClawError::ToolExecution(format!("无法读取文件 {}: {e}", path.display()))
-    })?;
-    let mut buf = Vec::new();
-    let limit = u64::try_from(MEMORY_SEARCH_FILE_MAX_BYTES).unwrap_or(u64::MAX);
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut buf)
-        .map_err(|e| {
-            JiaClawError::ToolExecution(format!("无法读取文件 {}: {e}", path.display()))
-        })?;
-
-    let truncated = buf.len() > MEMORY_SEARCH_FILE_MAX_BYTES;
-    if truncated {
-        buf.truncate(MEMORY_SEARCH_FILE_MAX_BYTES);
-        tracing::warn!(
-            path = %path.display(),
-            size_limit_bytes = MEMORY_SEARCH_FILE_MAX_BYTES,
-            "memory_search 单文件过大，截断后检索"
-        );
-    }
-
-    let text = match String::from_utf8(buf) {
-        Ok(s) => s,
-        Err(err) => String::from_utf8_lossy(&err.into_bytes()).into_owned(),
-    };
-    if truncated {
-        Ok((
-            truncate_utf8(&text, MEMORY_SEARCH_FILE_MAX_BYTES).to_string(),
-            true,
-        ))
-    } else {
-        Ok((text, false))
-    }
-}
-
-enum SearchTarget {
-    Missing,
-    NotFile,
-    File(PathBuf),
-}
-
-fn open_search_target(workspace: &Path, configured: &str) -> Result<SearchTarget, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, configured)?;
-    if !path.exists() {
-        return Ok(SearchTarget::Missing);
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-    if path.is_file() {
-        Ok(SearchTarget::File(path))
-    } else {
-        Ok(SearchTarget::NotFile)
-    }
-}
-
 #[derive(Serialize)]
 struct MemorySearchOutput {
     query: String,
@@ -830,6 +747,7 @@ struct MemorySearchOutput {
 }
 
 /// `memory_search` 工具：在工作区记忆类文件中按关键词检索片段。
+#[derive(Clone)]
 pub struct MemorySearchTool {
     workspace_path: PathBuf,
     default_paths: Vec<String>,
@@ -870,7 +788,7 @@ impl Tool for MemorySearchTool {
     }
 
     fn description(&self) -> &str {
-        "在工作区记忆类文件中按关键词检索相关片段（大小写不敏感子串 + 行窗）。默认扫描配置的 MEMORY / SOUL / USER；可选 paths 指定工作区相对路径。返回 {path, line, excerpt}。单文件超过 512KiB 截断。禁止路径穿越。"
+        "在工作区记忆类文件中按关键词检索相关片段（大小写不敏感子串 + 行窗）。默认扫描配置的 MEMORY / SOUL / USER；可选 paths 指定工作区相对路径。返回 {path, line, excerpt}。单文件超过 512KiB 截断；最多16个路径、query最多1024字节、每条摘录最多1024字节。禁止链接、特殊文件和路径穿越。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -879,7 +797,8 @@ impl Tool for MemorySearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "检索关键词或子串（必填）"
+                    "maxLength": 1024,
+                    "description": "检索关键词或子串（必填，最多1024 UTF-8字节）"
                 },
                 "max_results": {
                     "type": "integer",
@@ -891,7 +810,8 @@ impl Tool for MemorySearchTool {
                 "paths": {
                     "type": "array",
                     "description": "要扫描的工作区相对路径（可选；缺省为配置的 MEMORY / SOUL / USER）",
-                    "items": { "type": "string" }
+                    "maxItems": 16,
+                    "items": { "type": "string", "maxLength": 1024 }
                 }
             },
             "required": ["query"]
@@ -899,12 +819,25 @@ impl Tool for MemorySearchTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        // Validate bounded user inputs before queuing any blocking work.
+        parse_memory_search_args(&args)?;
+        let tool = self.clone();
+        crate::memory_io::run_blocking(move || tool.execute_sync(args)).await
+    }
+}
+
+impl MemorySearchTool {
+    fn execute_sync(&self, args: Value) -> Result<String, JiaClawError> {
         let (query, max_results, override_paths) = parse_memory_search_args(&args)?;
         let targets = self.search_targets(override_paths);
-        if targets.is_empty() {
+        if targets.is_empty() || targets.len() > MEMORY_SEARCH_MAX_PATHS {
             return Err(JiaClawError::ToolExecution(
                 "没有可扫描的记忆文件路径".to_string(),
             ));
+        }
+
+        for rel in &targets {
+            crate::memory_io::relative(rel)?;
         }
 
         let mut matches = Vec::new();
@@ -914,22 +847,26 @@ impl Tool for MemorySearchTool {
             if matches.len() >= max_results {
                 break;
             }
-            match open_search_target(&self.workspace_path, &rel)? {
-                SearchTarget::Missing => {
-                    warnings.push(format!("{rel}: 文件不存在，已跳过"));
-                }
-                SearchTarget::NotFile => {
-                    warnings.push(format!("{rel}: 不是文件，已跳过"));
-                }
-                SearchTarget::File(path) => {
-                    let (content, truncated) = read_search_file_limited(&path)?;
-                    if truncated {
+            if rel.len() > crate::memory_io::MAX_PATH_BYTES {
+                return Err(JiaClawError::ToolExecution(
+                    "paths 超过 1024 字节上限".into(),
+                ));
+            }
+            match crate::memory_io::read_text(
+                &self.workspace_path,
+                &rel,
+                MEMORY_SEARCH_FILE_MAX_BYTES,
+                true,
+            )? {
+                None => warnings.push(format!("{rel}: 文件不存在，已跳过")),
+                Some(file) => {
+                    if file.truncated {
                         warnings.push(format!(
                             "{rel}: 超过 {MEMORY_SEARCH_FILE_MAX_BYTES} 字节，已截断后检索"
                         ));
                     }
                     let remaining = max_results.saturating_sub(matches.len());
-                    matches.extend(search_memory_windows(&rel, &content, &query, remaining));
+                    matches.extend(search_memory_windows(&rel, &file.text, &query, remaining));
                 }
             }
         }
@@ -939,8 +876,14 @@ impl Tool for MemorySearchTool {
             matches,
             warnings,
         };
-        serde_json::to_string_pretty(&output)
-            .map_err(|e| JiaClawError::ToolExecution(format!("序列化检索结果失败: {e}")))
+        let json = serde_json::to_string_pretty(&output)
+            .map_err(|e| JiaClawError::ToolExecution(format!("序列化检索结果失败: {e}")))?;
+        if json.len() > 64 * 1024 {
+            return Err(JiaClawError::ToolExecution(
+                "memory_search JSON 结果超过 64KiB，请减少 max_results 或 paths".into(),
+            ));
+        }
+        Ok(json)
     }
 }
 
@@ -960,6 +903,52 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn search_checks_trailing_paths_before_reading_and_append_rejects_bad_mode() {
+        let ws = tempfile::tempdir().unwrap();
+        fs::write(ws.path().join("MEMORY.md"), "needle").unwrap();
+        let search = MemorySearchTool::new(ws.path(), ["MEMORY.md"]);
+        assert!(search
+            .execute(serde_json::json!({"query":"needle", "max_results":1,
+            "paths":["MEMORY.md", "../outside"]}))
+            .await
+            .is_err());
+        let append = MemoryAppendTool::new(ws.path(), "MEMORY.md");
+        assert!(append
+            .execute(serde_json::json!({"content":"bad", "replace":"false"}))
+            .await
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(ws.path().join("MEMORY.md")).unwrap(),
+            "needle"
+        );
+    }
+
+    #[test]
+    fn search_resource_limits_and_long_context_keep_the_match() {
+        assert!(parse_memory_search_args(&serde_json::json!({"query":"x".repeat(1025)})).is_err());
+        assert!(
+            parse_memory_search_args(&serde_json::json!({"query":"x","paths":vec!["a";17]}))
+                .is_err()
+        );
+        assert!(parse_memory_search_args(
+            &serde_json::json!({"query":"x","paths":["x".repeat(1025)]})
+        )
+        .is_err());
+        let text = format!(
+            "{}\n{}ÄBC目标{}",
+            "context".repeat(1000),
+            "前".repeat(2000),
+            "后".repeat(2000)
+        );
+        let hits = search_memory_windows("a", &text, "äbc目标", 999);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].excerpt.contains("ÄBC目标"));
+        assert!(hits[0].excerpt.len() <= MEMORY_SEARCH_EXCERPT_MAX_BYTES);
+        let hits = search_memory_windows("a", &"match\n".repeat(50), "match", 999);
+        assert_eq!(hits.len(), MEMORY_SEARCH_MAX_RESULTS);
     }
 
     #[test]
