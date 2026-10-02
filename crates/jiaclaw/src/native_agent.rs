@@ -6,7 +6,8 @@
 use crate::provider::brokerrouter::{failure, BrokerrouterProvider, WireMessage};
 use crate::JiaClawAgent;
 use jiaclaw_core::{
-    ChatMessage, ChatRequest, ChatResponse, JiaClawError, MessageRole, RunStatus, ToolCall,
+    ChatMessage, ChatRequest, ChatResponse, JiaClawError, MessageRole, ModelSelection, RunStatus,
+    ToolCall,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -44,6 +45,7 @@ impl JiaClawAgent {
         request: &ChatRequest,
         system_prompt: &str,
         key: &str,
+        selection: &ModelSelection,
     ) -> Result<ChatResponse, JiaClawError> {
         let allowed = self.allowed_tool_names(request)?;
         if allowed.len() > 128 {
@@ -98,10 +100,10 @@ impl JiaClawAgent {
         for iteration in 0..maximum {
             let message = provider
                 .complete(
-                    &self.config.provider.model,
+                    &selection.model,
                     &messages,
-                    self.config.provider.temperature,
-                    self.config.provider.max_tokens,
+                    selection.temperature,
+                    selection.max_tokens,
                     &definitions,
                 )
                 .await?;
@@ -182,6 +184,7 @@ impl JiaClawAgent {
             tool_calls: records,
             status,
             session_id: None,
+            routing: None,
         })
     }
 }

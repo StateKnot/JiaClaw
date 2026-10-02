@@ -86,6 +86,12 @@ Telegram、Slack 和飞书成功接收返回：
 
 上述 JSON ACK 渠道的重复投递返回相同本地 UUID 和 `duplicate:true`。同一平台事件 ID 对应的发送者、会话或文本发生变化时返回冲突，不把修改后的内容再次执行。Slack 要求快速确认 Events API 请求；将入库与后台执行分离可以在模型慢请求时仍及时 ACK。[Slack 官方 Events API 文档](https://docs.slack.dev/apis/events-api/)
 
+## 模型选择
+
+通用 webhook 和六个平台的入站 Agent 调用使用管理员配置的 `[routing.channel]`；省略时继承 provider。通用 webhook 的 channel 标签、入站正文、平台用户名及工具结果不能选择模型。带渠道通知的定时任务使用 scheduled，摘要使用 summary。每个工具循环固定有效参数；配置与失败边界见[模型路由](model-routing.md)。
+
+渠道事件、outbox 与简化 webhook 回复没有新增持久路由回执。已保存的发送者/目的地/工具授权快照不包含模型选择；尚未执行的事件在重启后使用当前路由。改配置不会恢复 processing/unknown 工作，也不会触发模型重发。
+
 ## 执行、发送和中断
 
 全局最多处理 4 个 Agent 事件，每个会话同一时刻只处理一个。完成一次 Agent 调用时，会话消息、事件终态和所有待发送片段在一个 SQLite 事务中提交；提交失败不会留下只有会话或只有发件箱的半个结果。

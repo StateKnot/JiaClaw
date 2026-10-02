@@ -168,6 +168,7 @@ impl Fixture {
             tool_calls: vec![],
             status: RunStatus::Completed,
             session_id: Some(run.session_id.clone()),
+            routing: None,
         };
         assert!(store
             .finish_job_run(&run.id, None, "completed", Some(response), None, now_ms())

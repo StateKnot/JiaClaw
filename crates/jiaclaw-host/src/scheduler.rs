@@ -13,7 +13,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use jiaclaw_core::{ChatMessage, ChatRequest, ChatResponse, MessageRole, RunStatus};
+use jiaclaw_core::{ChatMessage, ChatRequest, ChatResponse, MessageRole, ModelPurpose, RunStatus};
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -369,6 +369,7 @@ fn notice(message: String) -> ChatResponse {
         tool_calls: vec![],
         status: RunStatus::RequiresHumanInput,
         session_id: None,
+        routing: None,
     }
 }
 
@@ -460,7 +461,11 @@ async fn execute(state: AppState, run: JobRun) -> Result<(), AppError> {
         auto_skills: false,
         session_id: Some(run.session_id.clone()),
     };
-    let outcome = tokio::time::timeout_at(deadline, state.agent.chat(&request)).await;
+    let outcome = tokio::time::timeout_at(
+        deadline,
+        state.agent.chat_for(&request, ModelPurpose::Scheduled),
+    )
+    .await;
     let (mut response, mut status, mut error) = match outcome {
         Ok(Ok(response)) => {
             let status = if response.status == RunStatus::Completed { "completed" } else { "needs_review" };
@@ -580,6 +585,7 @@ mod tests {
             tool_calls: vec![],
             status: RunStatus::Completed,
             session_id: Some(run.session_id.clone()),
+            routing: None,
         };
         let messages = vec![original.clone(), response.message.clone()];
         let finishing_state = state.clone();

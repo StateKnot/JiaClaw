@@ -13,13 +13,13 @@ pub use jiaclaw_core::{
     AgentConfig, ChatMessage, ChatRequest, ChatResponse, DeleteFileToolConfig, GlobToolConfig,
     GrepToolConfig, HeartbeatConfig, HttpConfig, IdentityConfig, JiaClawError, ListDirToolConfig,
     MemoryConfig, MemorySearchToolConfig, MemoryWriteToolConfig, MessageRole, MkdirToolConfig,
-    MoveToolConfig, ProviderConfig, ReadFileToolConfig, RunStatus, SessionConfig,
-    StrReplaceToolConfig, ToolCall, ToolsConfig, WebFetchToolConfig, WebSearchToolConfig,
-    WriteFileToolConfig, DEFAULT_HEARTBEAT_INTERVAL_SECS, DEFAULT_HEARTBEAT_PATH,
-    DEFAULT_HEARTBEAT_SESSION_ID, DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_HTTP_SHUTDOWN_TIMEOUT_SECS,
-    DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_MEMORY_PATH, DEFAULT_SESSION_KEEP_RECENT,
-    DEFAULT_SOUL_PATH, DEFAULT_USER_PATH, MAX_MAX_TOOL_ITERATIONS, MAX_SESSION_MESSAGES,
-    MEMORY_PROMPT_MAX_BYTES, MIN_MAX_TOOL_ITERATIONS,
+    ModelPurpose, ModelRoute, ModelRoutingConfig, ModelSelection, MoveToolConfig, ProviderConfig,
+    ReadFileToolConfig, RunStatus, SessionConfig, StrReplaceToolConfig, ToolCall, ToolsConfig,
+    WebFetchToolConfig, WebSearchToolConfig, WriteFileToolConfig, DEFAULT_HEARTBEAT_INTERVAL_SECS,
+    DEFAULT_HEARTBEAT_PATH, DEFAULT_HEARTBEAT_SESSION_ID, DEFAULT_HTTP_MAX_BODY_BYTES,
+    DEFAULT_HTTP_SHUTDOWN_TIMEOUT_SECS, DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_MEMORY_PATH,
+    DEFAULT_SESSION_KEEP_RECENT, DEFAULT_SOUL_PATH, DEFAULT_USER_PATH, MAX_MAX_TOOL_ITERATIONS,
+    MAX_SESSION_MESSAGES, MEMORY_PROMPT_MAX_BYTES, MIN_MAX_TOOL_ITERATIONS,
 };
 
 mod copy;
@@ -181,6 +181,7 @@ impl JiaClawAgent {
     }
 
     fn new_local(config: AgentConfig) -> Result<Self, JiaClawError> {
+        config.routing.validate(&config.provider)?;
         // 加载工作空间文件
         let workspace = Workspace::load(&config.workspace_path)?;
 
@@ -363,9 +364,36 @@ impl JiaClawAgent {
     ///
     /// 本方法会自动处理工具调用循环（上限见 [`AgentConfig::effective_max_tool_iterations`]）。
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, JiaClawError> {
+        self.chat_for(request, ModelPurpose::Chat).await
+    }
+
+    /// Execute a turn using an administrator-configured model for its trusted origin.
+    ///
+    /// The host assigns the purpose; clients, prompts and tools cannot override it.
+    /// The selected logical model and limits stay fixed for the complete tool loop.
+    /// Endpoint fallback remains owned by Brokerrouter; no model call is replayed here.
+    ///
+    /// # Errors
+    /// Invalid policy, unsupported purpose, authorization or provider failure.
+    pub async fn chat_for(
+        &self,
+        request: &ChatRequest,
+        purpose: ModelPurpose,
+    ) -> Result<ChatResponse, JiaClawError> {
+        if purpose == ModelPurpose::Summary {
+            return Err(JiaClawError::InvalidRequest(
+                "summary purpose requires the no-tools summarization path".into(),
+            ));
+        }
         let allowed_tools = self.allowed_tool_names(request)?;
         let env_key = std::env::var("JIACLAW_API_KEY").ok();
         let api_key = Self::resolve_provider_api_key(&self.config.provider, env_key.as_deref())?;
+        let selection = self.config.routing.select(&self.config.provider, purpose);
+        let routing_enabled = !self.config.routing.is_empty();
+        if routing_enabled {
+            tracing::info!(purpose = ?selection.purpose, requested_model = %selection.model,
+                max_tokens = selection.max_tokens, "selected model policy for turn");
+        }
         // 短锁快照：reload 期间进行中的 chat 继续使用本轮技能表，不持锁。
         let skills = self.skills.snapshot();
         // 检查是否有技能应该被自动触发（仅在 auto_skills 为 true 时）
@@ -405,10 +433,15 @@ impl JiaClawAgent {
 
         // 根据提供商类型执行工具循环
         let provider_type = self.config.provider.provider_type.as_str();
-        match (api_key, provider_type) {
+        let mut response = match (api_key, provider_type) {
             (Some(key), "brokerrouter") => {
-                self.execute_brokerrouter_loop(&request_with_skills, &system_prompt, &key)
-                    .await
+                self.execute_brokerrouter_loop(
+                    &request_with_skills,
+                    &system_prompt,
+                    &key,
+                    &selection,
+                )
+                .await
             }
             (Some(key), "openai_compatible") => {
                 // 使用工具执行循环
@@ -434,7 +467,11 @@ impl JiaClawAgent {
             _ => Err(JiaClawError::Configuration(format!(
                 "无效的模型提供商配置: {provider_type}"
             ))),
+        }?;
+        if routing_enabled {
+            response.routing = Some(selection);
         }
+        Ok(response)
     }
 
     /// A request may narrow the configured registry, never expand it. The empty
@@ -524,14 +561,21 @@ impl JiaClawAgent {
             content: transcript,
         }];
 
+        let selection = self
+            .config
+            .routing
+            .select(&self.config.provider, ModelPurpose::Summary);
+        if !self.config.routing.is_empty() {
+            tracing::info!(purpose = ?selection.purpose, requested_model = %selection.model,
+                max_tokens = selection.max_tokens, "selected model policy for summary");
+        }
         let response = self
             .complete_without_tools(
                 SESSION_SUMMARY_PROMPT,
                 &prompt_messages,
                 self.config.provider.provider_type.as_str(),
                 &key,
-                SESSION_SUMMARY_TEMPERATURE,
-                SESSION_SUMMARY_MAX_TOKENS,
+                &selection,
             )
             .await?;
 
@@ -549,19 +593,18 @@ impl JiaClawAgent {
         messages: &[ChatMessage],
         provider_type: &str,
         api_key: &str,
-        temperature: f32,
-        max_tokens: u32,
+        selection: &ModelSelection,
     ) -> Result<ChatResponse, JiaClawError> {
         match provider_type {
             "brokerrouter" => {
                 let provider = BrokerrouterProvider::new(&self.config.provider.base_url, api_key);
                 provider
                     .chat(
-                        &self.config.provider.model,
+                        &selection.model,
                         system_prompt,
                         messages,
-                        temperature,
-                        max_tokens,
+                        selection.temperature,
+                        selection.max_tokens,
                     )
                     .await
             }
@@ -570,11 +613,11 @@ impl JiaClawAgent {
                     OpenAICompatibleProvider::new(&self.config.provider.base_url, api_key);
                 provider
                     .chat(
-                        &self.config.provider.model,
+                        &selection.model,
                         system_prompt,
                         messages,
-                        temperature,
-                        max_tokens,
+                        selection.temperature,
+                        selection.max_tokens,
                     )
                     .await
             }
@@ -839,6 +882,7 @@ impl JiaClawAgent {
             tool_calls: all_tool_calls,
             status: response.status,
             session_id: None,
+            routing: response.routing,
         }
     }
 
@@ -869,6 +913,7 @@ impl JiaClawAgent {
                     tool_calls: all_tool_calls,
                     status: response.status,
                     session_id: None,
+                    routing: response.routing,
                 });
             }
 
@@ -945,6 +990,7 @@ impl JiaClawAgent {
             tool_calls: vec![],
             status: RunStatus::Completed,
             session_id: None,
+            routing: None,
         }
     }
 
@@ -1233,6 +1279,16 @@ mod tests {
             },
             ..AgentConfig::default()
         }
+    }
+
+    #[tokio::test]
+    async fn summary_purpose_cannot_enter_the_tool_execution_path() {
+        let agent = JiaClawAgent::new(stub_config()).unwrap();
+        let error = agent
+            .chat_for(&sample_request(), ModelPurpose::Summary)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, JiaClawError::InvalidRequest(_)));
     }
 
     #[test]

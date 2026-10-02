@@ -21,6 +21,12 @@ Brokerrouter 使用原生 `tools` / `assistant.tool_calls` / `role:tool`；请�
 
 模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。MCP 使用 StateKnot 的发布版 HTTP client，启动时完成固定 endpoint、白名单、descriptor pin 和 schema 校验，再一次性注册到 ToolRegistry。未批准的工具和 server instructions 不进入模型提示。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
 
+## 模型用途边界
+
+可信 CLI/HTTP、渠道 worker、调度 worker 和 HEARTBEAT 入口分别选择 chat、channel、scheduled、heartbeat；摘要单独使用 summary。管理员的顶层 routing 配置映射到同一 Brokerrouter 的授权逻辑 model 和有限参数，在工具循环前固定。入口内容不能指定用途，渠道通知不改变 scheduled 选择；具体继承与上限见[模型路由](model-routing.md)。
+
+路由启用时 ChatResponse 包含有效用途/逻辑模型/温度/输出上限，定时运行保存的 response JSON 保留这份回执。渠道 inbox/outbox 和普通会话没有新增持久路由记录。它不提供持久模型操作身份或未知提交恢复；网关仅对已证明未发送的端点调用降级，应用不增加失败自动重试。
+
 ## 会话边界
 
 SQLite 是服务/CLI 的权威会话存储，支持 WAL/FULL 同步与独占进程锁。数据库放在 Agent 工作区外，工具不能把数据库当工作文件操作。同一会话的读取-模型调用-工具循环-提交通过异步锁串行化，跨会话可并发。SQLite 操作在线程池执行；TTL 清理不删除活跃轮次。状态写入失败对外返回错误，不继续声称成功。

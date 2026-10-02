@@ -33,6 +33,12 @@ curl -fsS http://127.0.0.1:8080/api/jobs \
 
 创建响应是一个 Job 对象，其中 `id` 是任务 ID，`session_id` 为 `job:<任务 UUID>`，`next_due_ms` 为下一次计划执行的 UTC Unix 毫秒时间。任务配置的 `enabled_tools` 必填、非空，表示这项后台任务允许使用的工具，不能继承前台请求“空数组允许全部工具”的语义。
 
+## 模型选择
+
+管理员可用 `[routing.scheduled]` 为所有 cron/interval 任务指定授权逻辑模型和每次补全的参数，省略时继承 provider；有渠道通知的任务也使用 scheduled。JobSpec 不接受 model 或 routing 字段，提示词无法改变路由。摘要另用 summary；配置变更须重启，未来运行按当前配置选择。详见[模型路由](model-routing.md)。
+
+启用任意路由后，有 ChatResponse 的已完成/需核对运行在 `response.routing` 保存有效用途、逻辑模型、温度和输出上限；重启仍可读取。没有响应的失败/中断运行不具备此证据。该记录不是供应商实际端点或账务证明，也不能恢复模型操作。每次输出上限不代替工具迭代限制或虚拟 Key 预算，失败不自动换模型重跑。
+
 ## 时间语义
 
 支持两种 `schedule`：

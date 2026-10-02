@@ -12,6 +12,9 @@ use thiserror::Error;
 mod mcp;
 pub use mcp::{McpConfig, McpServerConfig, McpToolConfig, McpToolEffect};
 
+mod routing;
+pub use routing::{ModelPurpose, ModelRoute, ModelRoutingConfig, ModelSelection};
+
 /// 外部依赖
 extern crate dirs;
 
@@ -102,6 +105,10 @@ pub struct ChatResponse {
     /// 会话 ID（如果请求中提供）
     #[serde(default)]
     pub session_id: Option<String>,
+
+    /// Operator-selected model and generation limits, without credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<ModelSelection>,
 }
 
 /// 工具调用记录
@@ -156,6 +163,10 @@ pub struct AgentConfig {
     /// 模型提供商配置
     #[serde(default)]
     pub provider: ProviderConfig,
+
+    /// Optional operator-owned model selection by trusted execution purpose.
+    #[serde(default)]
+    pub routing: ModelRoutingConfig,
 
     /// HTTP 服务配置
     #[serde(default)]
@@ -1904,6 +1915,7 @@ impl Default for AgentConfig {
             max_turns: 10,
             workspace_path: default_workspace_path(),
             provider: ProviderConfig::default(),
+            routing: ModelRoutingConfig::default(),
             http: HttpConfig::default(),
             memory: MemoryConfig::default(),
             identity: IdentityConfig::default(),
@@ -1968,6 +1980,8 @@ impl AgentConfig {
             #[serde(default)]
             provider: Option<ProviderConfig>,
             #[serde(default)]
+            routing: Option<ModelRoutingConfig>,
+            #[serde(default)]
             http: Option<HttpConfig>,
             #[serde(default)]
             memory: Option<MemoryConfig>,
@@ -1993,6 +2007,9 @@ impl AgentConfig {
         // 顶层配置覆盖 agent 中的对应配置。
         if let Some(provider) = config_file.provider {
             config_file.agent.provider = provider;
+        }
+        if let Some(routing) = config_file.routing {
+            config_file.agent.routing = routing;
         }
         if let Some(http) = config_file.http {
             config_file.agent.http = http;
@@ -2048,6 +2065,8 @@ impl AgentConfig {
             #[serde(default)]
             provider: Option<ProviderConfig>,
             #[serde(default)]
+            routing: Option<ModelRoutingConfig>,
+            #[serde(default)]
             http: Option<HttpConfig>,
             #[serde(default)]
             memory: Option<MemoryConfig>,
@@ -2073,6 +2092,9 @@ impl AgentConfig {
         // 顶层配置覆盖 agent 中的对应配置。
         if let Some(provider) = config_file.provider {
             config_file.agent.provider = provider;
+        }
+        if let Some(routing) = config_file.routing {
+            config_file.agent.routing = routing;
         }
         if let Some(http) = config_file.http {
             config_file.agent.http = http;

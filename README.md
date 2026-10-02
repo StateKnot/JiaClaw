@@ -61,6 +61,7 @@ docker compose up --build -d
 - SQLite WAL 会话存储、旧 JSON 一次性迁移、导入导出、TTL、同一会话并发串行提交。
 - StateKnot HTTP MCP：显式批准的只读工具、描述摘要固定、离线 schema 校验、有界 JSON/SSE 与取消；[配置与验收边界](docs/mcp.md)。
 - Brokerrouter 原生工具调用、请求级工具白名单、整批参数校验与部分完成故障说明；[契约与限制](docs/native-tools.md)。
+- 按可信任务用途选择 Brokerrouter 逻辑模型：聊天、渠道、定时任务、HEARTBEAT、摘要；固定工具循环策略、输出上限及有效配置回执，见[模型路由](docs/model-routing.md)。
 - 内置 Web 聊天、会话创建/选择/删除；同源 API，无前端构建依赖。
 - 持久化 cron/interval 多任务：鉴权管理、独立会话、运行记录、超时/重启中断暂停与显式恢复；[定时任务指南](docs/scheduler.md)。
 - MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)、[企业微信自建应用](docs/wecom.md)和[钉钉企业内部机器人](docs/dingtalk.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
