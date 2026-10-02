@@ -123,6 +123,10 @@ pub fn copy_workspace(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let parent_dir = root.open_dir(parent).map_err(failure)?;
+    // cap-std's Linux Dir uses O_PATH, which cannot be fsync'ed. Reopen the
+    // same directory read-only through its capability before publication.
+    #[cfg(unix)]
+    let parent_sync = parent_dir.open(".").map_err(failure)?;
     let name = destination.file_name().ok_or_else(|| failure("无效目标"))?;
     let overwritten = match parent_dir.symlink_metadata(name) {
         Ok(meta) if meta.is_file() => true,
@@ -164,14 +168,10 @@ pub fn copy_workspace(
             .hard_link(&staged.name, &parent_dir, name)
             .map_err(failure)?;
     }
+    drop(staged);
     // Sync the parent after publication on Unix for crash durability.
     #[cfg(unix)]
-    parent_dir
-        .try_clone()
-        .map_err(failure)?
-        .into_std_file()
-        .sync_all()
-        .map_err(failure)?;
+    parent_sync.sync_all().map_err(failure)?;
     Ok(CopyOutput {
         from: from.into(),
         to: to.into(),
