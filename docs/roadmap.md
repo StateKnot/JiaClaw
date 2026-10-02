@@ -7,7 +7,7 @@
 | 1 | copy | 实现并本地验收 | 二进制文件、64 MiB 上限、越界/链接拒绝、原子覆盖与并发不覆盖 |
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
-| 4 | MCP 客户端 | 尚未交付 | 优先接 StateKnot HTTP client；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140)；需命名/策略/生命周期与真实服务器验收 |
+| 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
 | 5 | Web 工作台 | 实现 | 内置同源静态资源，鉴权后创建/选择/聊天/删除会话，无模型 HTML 执行、无浏览器持久密钥 |
 | 6 | cron 多任务 | 待实现 | 持久化任务表、增删查、时区/DST、误触发/漏触发政策、单次领取、重启与取消测试；不能直接堆 interval |
 | 7 | 渠道统一出站 | 待实现 | Telegram/Slack/Discord 统一消息与错误合同，持久 outbox/幂等、重试和速率限制，再接飞书/企微/钉钉/WhatsApp |

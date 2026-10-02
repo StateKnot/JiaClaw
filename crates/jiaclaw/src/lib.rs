@@ -29,7 +29,9 @@ pub use copy::{copy_workspace, CopyOutput, WorkspaceCopyTool, COPY_MAX_BYTES};
 pub use exec::{validate_exec_config, ControlledExecTool};
 mod heartbeat;
 mod identity;
+mod mcp;
 mod memory;
+pub use mcp::inspect_mcp_server;
 mod provider;
 mod session;
 mod skills;
@@ -130,8 +132,7 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
 
 /// `JiaClaw` Agent 包装器
 ///
-/// 当前实现状态：正在等待 `StateKnot` 稳定的公共 API。
-/// 本结构体为未来集成预留了接口。
+/// 使用 `StateKnot` HTTP MCP 协议适配器；durable runtime 尚待独立接入和认证。
 pub struct JiaClawAgent {
     config: AgentConfig,
     workspace: Workspace,
@@ -160,6 +161,25 @@ impl JiaClawAgent {
     ///
     /// 参见 `docs/stateknot-gaps.md` 了解详情。
     pub fn new(config: AgentConfig) -> Result<Self, JiaClawError> {
+        if !config.mcp.servers.is_empty() {
+            return Err(JiaClawError::Configuration(
+                "MCP requires JiaClawAgent::connect(...).await; synchronous construction does not omit configured tools".into(),
+            ));
+        }
+        Self::new_local(config)
+    }
+
+    /// Construct an agent and validate all reviewed MCP bindings before use.
+    ///
+    /// # Errors
+    /// Local initialization, policy, discovery, pin or schema validation failures.
+    pub async fn connect(config: AgentConfig) -> Result<Self, JiaClawError> {
+        let mut agent = Self::new_local(config)?;
+        mcp::initialize(&agent.config.mcp, &mut agent.tools).await?;
+        Ok(agent)
+    }
+
+    fn new_local(config: AgentConfig) -> Result<Self, JiaClawError> {
         // 加载工作空间文件
         let workspace = Workspace::load(&config.workspace_path)?;
 

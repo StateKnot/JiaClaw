@@ -37,7 +37,7 @@ CLI 对话与 `serve` 对缺失 Key 或未知 provider 启动失败，不隐式�
 | `http.cors.allowed_origins` | []；跨源使用精确来源；`*` 仅显式配置时生效 |
 | `http.cors.allowed_methods`, `allowed_headers`, `expose_headers`, `max_age_secs` | 参见示例；允许的来源不会替代 API 鉴权 |
 
-非 loopback 监听以及启用 exec 均必须配置 API Token。公网部署仍需 TLS 反向代理。`/health` 公开，`/metrics` 可鉴权，工作台静态资源公开但不包含密钥或历史。API Token 是个人实例的一把共享钥匙，目前没有多用户权限隔离。
+非 loopback 监听以及启用 exec/MCP 均必须配置 API Token。公网部署仍需 TLS 反向代理。`/health` 公开，`/metrics` 可鉴权，工作台静态资源公开但不包含密钥或历史。API Token 是个人实例的一把共享钥匙，目前没有多用户权限隔离。
 
 SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提交历史；数据库写入失败返回 `session_storage_error`。同一会话的 chat/delete/import 通过同一锁串行执行。旧 `.jiaclaw/sessions.json` 默认自动迁移到工作区相邻的 state；指定其他 `.json` 路径时迁移到同名 `.sqlite3`。迁移在事务内完成、源文件保留、坏 JSON 中止启动；已导入源不会在重启后恢复已删除会话。
 
@@ -63,6 +63,10 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 容器无网络、只读根文件系统、移除 capabilities、no-new-privileges、非 root、限制内存/CPU/PID，只有 `/workspace` 与受限 `/tmp`。超时和 future 取消会请求删除整个容器；daemon 不可达时不能声称清理成功，需按日志检查。宿主服务被 SIGKILL/断电时无法执行取消清理，这是容器 exec 生命周期的已知边界。服务宿主接入 Docker daemon 是高权限操作，容器部署示例因此禁用 exec。
 
 其他 `tools.<name>.enabled` 默认 true：`read_file`, `list_dir`, `write_file`, `delete_file`, `str_replace`, `grep`, `glob`, `mkdir`, `move`, `memory_search`, `memory_write`, `web_search`, `web_fetch`。`web_search.brave_api_key` 可由 `JIACLAW_BRAVE_API_KEY` 覆盖；未配置调用报错。`web_fetch.allow_private` 默认 false。记忆检索目前按关键词，不是向量检索。
+
+## MCP
+
+`mcp.servers` 默认空，不访问任何远程服务器。使用 StateKnot `0.1.0-alpha.1` 的 HTTP client；完整字段、审查与指纹生成流程见 [MCP 配置](mcp.md)。每个工具必须显式分类 `effect = "read_only"` 并固定完整描述的 SHA-256。服务启动前验证本地策略；任何已批准工具缺失、描述变更或 schema 无效都会中止启动，避免静默丢失能力。更新配置/凭证/工具描述后重启；没有自动接受新版描述。
 
 ## 渠道、记忆、技能与心跳
 

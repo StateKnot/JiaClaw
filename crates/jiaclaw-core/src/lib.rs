@@ -9,6 +9,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod mcp;
+pub use mcp::{McpConfig, McpServerConfig, McpToolConfig, McpToolEffect};
+
 /// 外部依赖
 extern crate dirs;
 
@@ -190,6 +193,10 @@ pub struct AgentConfig {
     /// 本地工具配置（缺省本段不影响现有配置；`web_search` / `web_fetch` / `memory_search` / `memory_write` / `read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move` 默认启用）
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    /// Explicitly reviewed remote MCP bindings (empty by default).
+    #[serde(default)]
+    pub mcp: McpConfig,
 
     /// 进程日志配置（缺省 `format = "text"`，与当前 tracing fmt 一致）
     #[serde(default)]
@@ -1751,6 +1758,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: None,
             max_tool_iterations: default_max_tool_iterations(),
             tools: ToolsConfig::default(),
+            mcp: McpConfig::default(),
             logging: LoggingConfig::default(),
         }
     }
@@ -1817,13 +1825,15 @@ impl AgentConfig {
             #[serde(default)]
             tools: Option<ToolsConfig>,
             #[serde(default)]
+            mcp: Option<McpConfig>,
+            #[serde(default)]
             logging: Option<LoggingConfig>,
         }
 
         let mut config_file: ConfigFile = toml::from_str(content)
             .map_err(|e| JiaClawError::Configuration(format!("无法解析 TOML 配置: {e}")))?;
 
-        // 如果顶层有 provider / http / memory / identity / heartbeat / session / tools / logging 配置，覆盖 agent 中的配置
+        // 顶层配置覆盖 agent 中的对应配置。
         if let Some(provider) = config_file.provider {
             config_file.agent.provider = provider;
         }
@@ -1844,6 +1854,9 @@ impl AgentConfig {
         }
         if let Some(tools) = config_file.tools {
             config_file.agent.tools = tools;
+        }
+        if let Some(mcp) = config_file.mcp {
+            config_file.agent.mcp = mcp;
         }
         if let Some(logging) = config_file.logging {
             config_file.agent.logging = logging;
@@ -1887,13 +1900,15 @@ impl AgentConfig {
             #[serde(default)]
             tools: Option<ToolsConfig>,
             #[serde(default)]
+            mcp: Option<McpConfig>,
+            #[serde(default)]
             logging: Option<LoggingConfig>,
         }
 
         let mut config_file: ConfigFile = serde_json::from_str(content)
             .map_err(|e| JiaClawError::Configuration(format!("无法解析 JSON 配置: {e}")))?;
 
-        // 如果顶层有 provider / http / memory / identity / heartbeat / session / tools / logging 配置，覆盖 agent 中的配置
+        // 顶层配置覆盖 agent 中的对应配置。
         if let Some(provider) = config_file.provider {
             config_file.agent.provider = provider;
         }
@@ -1914,6 +1929,9 @@ impl AgentConfig {
         }
         if let Some(tools) = config_file.tools {
             config_file.agent.tools = tools;
+        }
+        if let Some(mcp) = config_file.mcp {
+            config_file.agent.mcp = mcp;
         }
         if let Some(logging) = config_file.logging {
             config_file.agent.logging = logging;

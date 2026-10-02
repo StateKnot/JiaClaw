@@ -1,4 +1,4 @@
-# 本批验收记录
+# 基础能力验收记录
 
 2026-10-02，本机 macOS arm64，Rust 1.85.0，锁定 Cargo.lock。
 
@@ -15,4 +15,19 @@
 
 沙箱镜像：`alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507`。验收使用一次性容器/卷，没有真实渠道消息、真实供应商请求或费用。
 
-本机结果不代替 Linux/macOS CI、四平台 Release 构建，以及真实模型/网关账本/渠道服务认证。MCP/StateKnot durable 尚未接入；上游工具认证仍跟踪 Brokerrouter #31。StateKnot stdio MCP 需求已提交 #140。当前尚未发布 tag、公开 Release 或推送镜像。
+基础批次的 Linux/macOS 与容器 CI 已通过，见 [PR #58](https://github.com/jiawenyao401/JiaClaw/pull/58)。StateKnot durable 尚未接入；上游工具认证仍跟踪 Brokerrouter #31。StateKnot stdio MCP 需求已提交 #140。当前尚未发布 tag、公开 Release 或推送镜像。
+
+## StateKnot HTTP MCP 批次
+
+同日，本机 macOS arm64，Rust 1.88.0，精确发布版 `stateknot-integrations = 0.1.0-alpha.1` 和锁文件。
+
+| 验收 | 结果 / 证据 |
+|---|---|
+| 全量 Rust 回归 | 572 passed；1 个 Docker 测试仍为独立 ignored acceptance |
+| MCP HTTP/SSE | 10 个实际 StateKnot 客户端网络/资源测试，包含 MRTR、401/redirect、不重放、取消与正则边界 |
+| TOML/JSON | 顶层 MCP 解析、显式 effect、未知字段/写 effect 拒绝 |
+| `tests/mcp.py` | 二进制 inspect/CLI/HTTP、真实 HTTP fixture、独立 Bearer、鉴权前置、descriptor pin、工具 loop 与 SQLite 历史 |
+| `tests/e2e.py` / installer | 原有进程级与安装验收通过 |
+| Docker | Rust 1.88 fixed-digest locked release image 构建、非 root/只读 rootfs/命名卷恢复通过 |
+
+Rust 镜像摘要取自 [Docker 官方 repo-info 历史](https://github.com/docker-library/repo-info/blob/18449209c1668dd35029f25f3525a63e11cd6508/repos/rust/remote/1.88.0-bookworm.md)，实际构建按内容摘要验证。HTTP MCP 使用的是网络协议 fixture，不能代替具体外部服务器、真实模型供应商或 StateKnot durable 资格认证；边界见 [MCP](mcp.md)。本批新增独立 PR 的 Linux/macOS CI 与容器 CI 会核对最终提交。

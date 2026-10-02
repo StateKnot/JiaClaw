@@ -4,7 +4,7 @@
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
-JiaClaw 当前 Cargo 没有 StateKnot 依赖。对话循环是已有的应用实现，不能声称由 StateKnot Graph Driver、TypedAgent 或 durable admission 驱动。新 SQLite 仅保存聊天历史，不等于运行检查点或可恢复工具执行。
+JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HTTP MCP 客户端，工具链固定为 Rust 1.88.0。对话循环仍是已有的应用实现，不能声称由 StateKnot Graph Driver、TypedAgent 或 durable admission 驱动。SQLite 仅保存聊天历史，不等于运行检查点或可恢复工具执行。
 
 ## MCP 现状与新议题
 
@@ -12,7 +12,7 @@ JiaClaw 当前 Cargo 没有 StateKnot 依赖。对话循环是已有的应用实
 
 已提交 [#140：bounded stdio MCP client](https://github.com/StateKnot/StateKnot/issues/140)，需求正文保存在 [本地副本](upstream-issues/stateknot-stdio-mcp.md)。要求明确的可执行文件/参数、有限环境、进程组终止、超时和输出边界、生命周期与发现/调用测试。不能为了补齐 JiaClaw 的勾选项绕过框架另造一套不受治理的 stdio 进程。
 
-HTTP MCP 的存在不自动完成 JiaClaw 接线；还需要工具名字空间与冲突检查、schema 校验、返回值边界、工具策略、服务端鉴权与失败传播，以及真实服务器验收。stdio 要等 #140 的有界客户端契约。
+HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具白名单与描述 pin、离线 input/output schema、Bearer 环境变量、有限并发/截止时间/JSON/SSE、单次调用无重放与 MRTR 拒绝。网络 fixture 与真实二进制的 CLI/HTTP/SQLite 链路验收见 [MCP](mcp.md)。具体外部服务器的生产资格须分别审查；本批只开放管理员审查为只读的工具，未开放外部写入/OAuth 交互/multimodal/stdio。stdio 要等 #140 的有界客户端契约。
 
 ## 生产集成门槛
 
