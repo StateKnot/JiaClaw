@@ -416,7 +416,7 @@ mod docker_tests {
                 .into(),
             image: std::env::var("JIACLAW_TEST_EXEC_IMAGE")
                 .expect("set JIACLAW_TEST_EXEC_IMAGE to a pre-pulled image@sha256:digest"),
-            timeout_secs: 2,
+            timeout_secs: 30,
             max_output_bytes: 128,
             ..ExecToolConfig::default()
         };
@@ -477,7 +477,12 @@ mod docker_tests {
         .unwrap();
         assert_eq!(output["stdout"].as_str().unwrap().len(), 128);
         assert_eq!(output["stdout_truncated"], true);
-        let error = tool
+        // Normal assertions use the production budget; test expiry separately
+        // so cold daemon/container startup doesn't make simple commands flaky.
+        let mut timeout_config = config();
+        timeout_config.timeout_secs = 5;
+        let short_deadline = ControlledExecTool::new(ws.path(), timeout_config).unwrap();
+        let error = short_deadline
             .execute(json!({"command":"sleep","args":["30"]}))
             .await
             .unwrap_err();
@@ -523,7 +528,7 @@ mod docker_tests {
             assert!(output.status.success());
             !output.stdout.is_empty()
         };
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !containers().await {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -532,7 +537,7 @@ mod docker_tests {
         .unwrap();
         pending.abort();
         assert!(pending.await.unwrap_err().is_cancelled());
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while containers().await {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
