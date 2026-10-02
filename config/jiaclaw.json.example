@@ -41,6 +41,7 @@
         "X-Request-Id"
       ]
     },
+    "dingtalk_app_secret": null,
     "wecom_app_secret": null,
     "wecom_callback_token": null,
     "wecom_encoding_aes_key": null,

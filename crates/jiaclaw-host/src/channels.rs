@@ -40,6 +40,8 @@ pub(super) struct Installation {
     pub feishu_verification_token: Option<String>,
     pub wecom_sender: Option<Arc<super::wecom_outbound::WeComSender>>,
     pub wecom_callback: Option<Arc<super::wecom::Callback>>,
+    pub dingtalk_sender: Option<Arc<super::dingtalk_outbound::DingTalkSender>>,
+    pub dingtalk_callback: Option<Arc<super::dingtalk::Callback>>,
 }
 
 pub(super) struct ChannelRuntime {
@@ -56,6 +58,7 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Discord => "discord",
         Channel::Feishu => "feishu",
         Channel::Wecom => "wecom",
+        Channel::Dingtalk => "dingtalk",
     }
 }
 
@@ -86,6 +89,7 @@ impl ChannelRuntime {
             || http.effective_feishu_encrypt_key().is_some()
             || http.effective_feishu_verification_token().is_some()
             || http.effective_wecom_app_secret().is_some()
+            || http.effective_dingtalk_app_secret().is_some()
             || http.effective_wecom_callback_token().is_some()
             || http.effective_wecom_encoding_aes_key().is_some()
             || http.effective_discord_bot_token().is_some();
@@ -104,7 +108,7 @@ impl ChannelRuntime {
         ) {
             bail!("channels require brokerrouter or explicit stub provider");
         }
-        if http.channels.len() > 5 {
+        if http.channels.len() > 6 {
             bail!("at most one installation per channel is supported");
         }
         let mut seen = HashSet::new();
@@ -118,6 +122,7 @@ impl ChannelRuntime {
                 "discord" => Channel::Discord,
                 "feishu" => Channel::Feishu,
                 "wecom" => Channel::Wecom,
+                "dingtalk" => Channel::Dingtalk,
                 _ => bail!("unsupported channel"),
             };
             if !seen.insert(channel) {
@@ -126,6 +131,12 @@ impl ChannelRuntime {
             let valid_installation = if channel == Channel::Feishu {
                 super::feishu::validate_installation(&policy.installation_id).is_ok()
                     && policy.app_id.is_none()
+            } else if channel == Channel::Dingtalk {
+                super::dingtalk::validate_installation(&policy.installation_id).is_ok()
+                    && policy
+                        .app_id
+                        .as_ref()
+                        .is_some_and(|id| super::dingtalk::identity(id))
             } else if channel == Channel::Wecom {
                 super::wecom::validate_installation(&policy.installation_id).is_ok()
                     && policy.app_id.is_none()
@@ -148,6 +159,8 @@ impl ChannelRuntime {
                     || list.iter().any(|v| {
                         if channel == Channel::Wecom && index < 2 {
                             !super::wecom::user_id(v)
+                        } else if channel == Channel::Dingtalk && index < 2 {
+                            !super::dingtalk::user_id(v)
                         } else {
                             !valid_id(v)
                         }
@@ -180,6 +193,7 @@ impl ChannelRuntime {
                 .validate()?;
             }
             let (credential, inbound_secret, default_base) = match channel {
+                Channel::Dingtalk => (String::new(), String::new(), "https://api.dingtalk.com"),
                 Channel::Wecom => (
                     String::new(),
                     String::new(),
@@ -296,6 +310,26 @@ impl ChannelRuntime {
             } else {
                 (None, None)
             };
+            let (dingtalk_sender, dingtalk_callback) = if channel == Channel::Dingtalk {
+                let secret = http
+                    .effective_dingtalk_app_secret()
+                    .context("DingTalk Client Secret is required")?;
+                let callback =
+                    super::dingtalk::Callback::new(&policy.installation_id, secret.clone())?;
+                let sender = super::dingtalk_outbound::DingTalkSender::new(
+                    &policy.installation_id,
+                    policy
+                        .app_id
+                        .clone()
+                        .context("DingTalk Client ID is required")?,
+                    secret,
+                    api_base.clone(),
+                    policy.local_test_api_base.is_some(),
+                )?;
+                (Some(Arc::new(sender)), Some(Arc::new(callback)))
+            } else {
+                (None, None)
+            };
             installations.push(Installation {
                 channel,
                 policy: policy.clone(),
@@ -306,6 +340,8 @@ impl ChannelRuntime {
                 feishu_verification_token,
                 wecom_sender,
                 wecom_callback,
+                dingtalk_sender,
+                dingtalk_callback,
             });
         }
         Ok(Some(Arc::new(Self {
@@ -640,6 +676,46 @@ pub(super) async fn feishu(
             .await
         }
     }
+}
+
+pub(super) async fn dingtalk(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let binding = runtime(&state)?
+        .installation(Channel::Dingtalk)
+        .ok_or(AppError::NotFound)?;
+    let callback = binding
+        .dingtalk_callback
+        .as_ref()
+        .ok_or(AppError::NotFound)?;
+    let inbound = callback
+        .parse_event(&headers, &body, now_ms())
+        .map_err(|_| AppError::Unauthorized)?;
+    if let super::dingtalk::Inbound::Message {
+        event_id,
+        sender_id,
+        text,
+    } = inbound
+    {
+        let destination = Destination {
+            channel: Channel::Dingtalk,
+            installation_id: binding.policy.installation_id.clone(),
+            conversation_id: sender_id.clone(),
+            thread_id: None,
+            interaction_id: None,
+            expires_ms: None,
+        };
+        accept(
+            &state,
+            event_spec(binding, event_id, sender_id, text, destination, None)?,
+            false,
+        )
+        .await?;
+    }
+    // Official HTTP robot example permits an empty 200. ACK only after durable admission.
+    Ok(StatusCode::OK.into_response())
 }
 
 pub(super) async fn wecom_verify(
@@ -1169,7 +1245,7 @@ pub(super) async fn start(state: AppState) -> Result<Option<ChannelWorkers>> {
                 result=active.join_next(),if !active.is_empty()=>{
                     if !matches!(result,Some(Ok(Ok(())))) {fault=true;break;}
                 },
-                _=tick.tick(),if active.len()<9=>{
+                _=tick.tick(),if active.len()<10=>{
                     match claim_event(&state).await {
                         Ok(Some(event))=>{let worker=state.clone();active.spawn(async move {process_event(worker,event).await});},
                         Ok(None)=>{},Err(_)=>{fault=true;break;},
@@ -1546,7 +1622,15 @@ async fn deliver(
                 code: "interaction_expired",
             };
         } else if let Some(b) = binding {
-            if b.channel == Channel::Wecom {
+            if b.channel == Channel::Dingtalk {
+                outcome = if let Some(sender) = &b.dingtalk_sender {
+                    sender.send(&delivery.destination, &delivery.text).await
+                } else {
+                    DeliveryOutcome::Rejected {
+                        code: "credential_unavailable",
+                    }
+                };
+            } else if b.channel == Channel::Wecom {
                 outcome = if let Some(sender) = &b.wecom_sender {
                     sender.send(&delivery.destination, &delivery.text).await
                 } else {
@@ -1669,6 +1753,8 @@ mod tests {
             feishu_verification_token: None,
             wecom_sender: None,
             wecom_callback: None,
+            dingtalk_sender: None,
+            dingtalk_callback: None,
         }
     }
 
@@ -1744,6 +1830,40 @@ mod tests {
         config.http.wecom_encoding_aes_key = Some("invalid".into());
         assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
     }
+    #[test]
+    fn dingtalk_configuration_binds_client_separately_and_preserves_member_case() {
+        let mut config = AgentConfig::default();
+        config.provider.provider_type = "stub".into();
+        config.http.dingtalk_app_secret = Some("fixture-secret".into());
+        let mut policy = installation(Channel::Dingtalk).policy;
+        policy.installation_id = "dingRobot:dingCorp".into();
+        policy.app_id = Some("dingDistinctClient".into());
+        policy.allowed_senders = vec!["Alice@example.com".into()];
+        policy.allowed_conversations = vec!["Alice@example.com".into()];
+        policy.scheduled_destinations = vec![jiaclaw_core::ScheduledChannelDestination {
+            conversation_id: "Bob".into(),
+            thread_id: None,
+        }];
+        config.http.channels = vec![policy];
+        let runtime = ChannelRuntime::configure(&config, Some("owner"))
+            .unwrap()
+            .unwrap();
+        let binding = runtime.installation(Channel::Dingtalk).unwrap();
+        assert!(binding.dingtalk_sender.is_some() && binding.dingtalk_callback.is_some());
+        assert!(binding.credential.is_empty() && binding.inbound_secret.is_empty());
+        config.http.channels[0].app_id = None;
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].app_id = Some("dingDistinctClient".into());
+        config.http.channels[0].allowed_senders = vec!["@all".into()];
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].allowed_senders = vec!["Alice@example.com".into()];
+        config.http.channels[0].scheduled_destinations[0].thread_id = Some("thread".into());
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].scheduled_destinations[0].thread_id = None;
+        config.http.channels[0].local_test_api_base = Some("https://attacker.invalid".into());
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+    }
+
     fn state() -> (AppState, std::path::PathBuf) {
         let workspace =
             std::env::temp_dir().join(format!("jiaclaw-channel-auth-{}", uuid::Uuid::new_v4()));

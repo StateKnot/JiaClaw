@@ -63,10 +63,10 @@ docker compose up --build -d
 - Brokerrouter 原生工具调用、请求级工具白名单、整批参数校验与部分完成故障说明；[契约与限制](docs/native-tools.md)。
 - 内置 Web 聊天、会话创建/选择/删除；同源 API，无前端构建依赖。
 - 持久化 cron/interval 多任务：鉴权管理、独立会话、运行记录、超时/重启中断暂停与显式恢复；[定时任务指南](docs/scheduler.md)。
-- MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)和[企业微信自建应用](docs/wecom.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
+- MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)、[企业微信自建应用](docs/wecom.md)和[钉钉企业内部机器人](docs/dingtalk.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。
 
-MCP stdio、外部写工具的 durable admission、真正逐 token 流式、子 Agent、多用户隔离、钉钉/WhatsApp 渠道、语义记忆和多模态尚未完成。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。
+MCP stdio、外部写工具的 durable admission、真正逐 token 流式、子 Agent、多用户隔离、WhatsApp 渠道、语义记忆和多模态尚未完成。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。
 
 ## 验证
 

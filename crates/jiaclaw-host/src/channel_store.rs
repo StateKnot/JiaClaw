@@ -172,6 +172,35 @@ CREATE INDEX wecom_send_reservations_expiry ON wecom_send_reservations(settled_m
 PRAGMA user_version=6;
 ";
 
+// Preserve delivery evidence and the independent WeCom ledger while adding DingTalk jobs.
+pub(super) const SCHEMA_V7: &str = "
+CREATE TABLE channel_outbox_v7 (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ event_id TEXT REFERENCES channel_events(id),
+ job_run_id TEXT REFERENCES job_runs(id) ON DELETE RESTRICT,
+ channel TEXT NOT NULL, installation_id TEXT NOT NULL, destination_key TEXT NOT NULL,
+ destination TEXT NOT NULL CHECK(json_valid(destination)), sealed_token TEXT, expires_ms INTEGER,
+ ordinal INTEGER NOT NULL CHECK(ordinal>=0), text TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitting','retry_wait','delivered','unknown','permanent_failed','expired','cancelled')),
+ receipt TEXT, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 5), error TEXT,
+ created_ms INTEGER NOT NULL, started_ms INTEGER, finished_ms INTEGER, next_attempt_ms INTEGER NOT NULL,
+ CHECK((event_id IS NOT NULL)+(job_run_id IS NOT NULL)=1),
+ CHECK(job_run_id IS NULL OR (channel IN ('telegram','slack','feishu','wecom','dingtalk') AND sealed_token IS NULL AND expires_ms IS NULL)),
+ UNIQUE(event_id,ordinal), UNIQUE(job_run_id,ordinal)
+);
+INSERT INTO channel_outbox_v7(seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms)
+ SELECT seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms FROM channel_outbox;
+INSERT INTO sqlite_sequence(name,seq) SELECT 'channel_outbox_v7',seq FROM sqlite_sequence WHERE name='channel_outbox' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='channel_outbox_v7');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'),0)) WHERE name='channel_outbox_v7';
+DROP TABLE channel_outbox;
+ALTER TABLE channel_outbox_v7 RENAME TO channel_outbox;
+CREATE INDEX channel_outbox_ready ON channel_outbox(state,next_attempt_ms,seq);
+CREATE INDEX channel_outbox_destination ON channel_outbox(channel,installation_id,destination_key,seq);
+CREATE INDEX channel_outbox_job_run ON channel_outbox(job_run_id);
+CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,installation_id) WHERE state='submitting';
+PRAGMA user_version=7;
+";
+
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelEvent {
     pub id: String,
@@ -249,6 +278,7 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Discord => "discord",
         Channel::Feishu => "feishu",
         Channel::Wecom => "wecom",
+        Channel::Dingtalk => "dingtalk",
     }
 }
 // An ambiguous request holds its credit and installation until an operator has
@@ -367,7 +397,7 @@ fn validate_chunks(channel: Channel, chunks: &[String]) -> Result<()> {
         Channel::Telegram => 4096,
         Channel::Slack => 40000,
         Channel::Discord => 2000,
-        Channel::Feishu => 2000,
+        Channel::Feishu | Channel::Dingtalk => 2000,
         Channel::Wecom => 2048,
     };
     let mut bytes = 0usize;
@@ -734,7 +764,7 @@ impl SessionStore {
             Channel::Slack => 1100,
             Channel::Discord => 300,
             Channel::Feishu => 1100,
-            Channel::Wecom => 4000,
+            Channel::Wecom | Channel::Dingtalk => 4000,
         };
         let until = now
             .checked_add(spacing_ms)
@@ -809,6 +839,12 @@ impl SessionStore {
             Some("rate-limit retry budget exhausted; review before further action".into())
         };
         tx.execute("UPDATE channel_outbox SET state=?3,receipt=?4,error=?5,next_attempt_ms=?6,finished_ms=?7,sealed_token=CASE WHEN ?3='retry_wait' THEN sealed_token ELSE NULL END WHERE id=?1 AND state='submitting' AND attempts=?2",params![id,expected_attempt,terminal,receipt,error,retry_after_ms.unwrap_or(now),if terminal=="retry_wait"{None}else{Some(now)}])?;
+        if channel == "dingtalk" {
+            let until = now
+                .checked_add(4000)
+                .ok_or_else(|| anyhow::anyhow!("delivery pacing timestamp overflow"))?;
+            tx.execute("INSERT INTO channel_cooldowns(channel,installation_id,until_ms) VALUES('dingtalk',?1,?2) ON CONFLICT(channel,installation_id) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)", params![installation, until])?;
+        }
         if channel == "wecom" {
             if terminal == "unknown" {
                 pace_wecom_installation(&tx, &installation, now)?;
@@ -835,6 +871,10 @@ impl SessionStore {
         for installation in wecom_installations {
             pace_wecom_installation(&tx, &installation, now)?;
         }
+        let until = now
+            .checked_add(4000)
+            .ok_or_else(|| anyhow::anyhow!("delivery pacing timestamp overflow"))?;
+        tx.execute("INSERT INTO channel_cooldowns(channel,installation_id,until_ms) SELECT DISTINCT 'dingtalk',installation_id,?1 FROM channel_outbox WHERE channel='dingtalk' AND state='submitting' ON CONFLICT(channel,installation_id) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)", [until])?;
         let deliveries=tx.execute("UPDATE channel_outbox SET state='unknown',finished_ms=?1,sealed_token=NULL,error='process stopped during delivery; provider may have accepted it; reconcile before continuing' WHERE state='submitting'",[now])?;
         expire_tokens(&tx, now)?;
         tx.commit()?;
@@ -1030,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_preserves_v3_to_v5_delivery_evidence_and_sequence_even_when_empty() {
+    fn migration_preserves_v3_to_v6_delivery_evidence_and_sequence_even_when_empty() {
         for (version, empty) in [
             (3, false),
             (3, true),
@@ -1038,6 +1078,8 @@ mod tests {
             (4, true),
             (5, false),
             (5, true),
+            (6, false),
+            (6, true),
         ] {
             let directory =
                 std::env::temp_dir().join(format!("jiaclaw-v4-{}", uuid::Uuid::new_v4()));
@@ -1053,6 +1095,10 @@ mod tests {
                 }
                 if version >= 5 {
                     conn.execute_batch(SCHEMA_V5).unwrap();
+                }
+                if version >= 6 {
+                    conn.execute_batch(SCHEMA_V6).unwrap();
+                    conn.execute_batch("INSERT INTO wecom_send_reservations VALUES('wwold:1','pending-evidence',1,500,NULL),('wwold:1','settled-evidence',1,501,999);").unwrap();
                 }
                 let mut old = SessionStore::Sqlite {
                     conn,
@@ -1079,12 +1125,22 @@ mod tests {
                 (id, outbox_id)
             };
             let mut db = SessionStore::open(&path).unwrap();
+            if version == 6 {
+                let ledger = db.channel_conn().unwrap().prepare("SELECT delivery_id,reserved_ms,settled_ms FROM wecom_send_reservations ORDER BY delivery_id").unwrap().query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+                assert_eq!(
+                    ledger,
+                    vec![
+                        ("pending-evidence".into(), 500, None),
+                        ("settled-evidence".into(), 501, Some(999))
+                    ]
+                );
+            }
             assert_eq!(
                 db.channel_conn()
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                6
+                7
             );
             assert_eq!(
                 db.channel_conn()
@@ -1164,8 +1220,8 @@ mod tests {
     }
 
     #[test]
-    fn v5_and_v6_migrate_scheduled_sources_without_weakening_constraints() {
-        for old_version in [4, 5] {
+    fn v5_to_v7_migrate_scheduled_sources_without_weakening_constraints() {
+        for old_version in [4, 5, 6] {
             let directory =
                 std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
@@ -1176,15 +1232,18 @@ mod tests {
                 conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
                 conn.execute_batch(SCHEMA_V3).unwrap();
                 conn.execute_batch(SCHEMA_V4).unwrap();
-                if old_version == 5 {
+                if old_version >= 5 {
                     conn.execute_batch(SCHEMA_V5).unwrap();
+                }
+                if old_version >= 6 {
+                    conn.execute_batch(SCHEMA_V6).unwrap();
                 }
                 let mut old = SessionStore::Sqlite {
                     conn,
                     _ownership: None,
                 };
                 let mut prior = scheduled_spec();
-                if old_version == 5 {
+                if old_version >= 5 {
                     prior.delivery = Some(super::super::channel_types::ScheduledDestination {
                         channel: Channel::Feishu,
                         installation_id: "cli_fixture:tenant_fixture".into(),
@@ -1225,18 +1284,22 @@ mod tests {
                 .is_err());
             let mut next = scheduled_spec();
             next.delivery = Some(super::super::channel_types::ScheduledDestination {
-                channel: if old_version == 5 {
+                channel: if old_version == 6 {
+                    Channel::Dingtalk
+                } else if old_version == 5 {
                     Channel::Wecom
                 } else {
                     Channel::Feishu
                 },
-                installation_id: if old_version == 5 {
+                installation_id: if old_version == 6 {
+                    "dingrobot:dingcorp"
+                } else if old_version == 5 {
                     "wwfixture:1"
                 } else {
                     "cli_fixture:tenant_fixture"
                 }
                 .into(),
-                conversation_id: if old_version == 5 {
+                conversation_id: if old_version >= 5 {
                     "alice"
                 } else {
                     "oc_fixture"
@@ -1262,7 +1325,9 @@ mod tests {
                 .remove(0);
             assert_eq!(
                 row.destination.channel,
-                if old_version == 5 {
+                if old_version == 6 {
+                    Channel::Dingtalk
+                } else if old_version == 5 {
                     Channel::Wecom
                 } else {
                     Channel::Feishu
@@ -1287,6 +1352,86 @@ mod tests {
             drop(db);
             std::fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn dingtalk_completion_and_recovery_pacing_persist_with_destination_fifo() {
+        let mut db = database();
+        let event = |name: &str, member: &str| {
+            let mut value = spec(name);
+            value.sender_id = member.into();
+            value.destination.channel = Channel::Dingtalk;
+            value.destination.installation_id = "dingRobot:dingCorp".into();
+            value.destination.conversation_id = member.into();
+            value
+        };
+        let first_event = complete(&mut db, event("first", "Alice"), &["first"]);
+        let first = db.claim_channel_delivery(0).unwrap().unwrap();
+        let second_event = complete(&mut db, event("second", "Alice"), &["second"]);
+        assert!(!db
+            .finish_channel_delivery(
+                &first.id,
+                2,
+                "delivered",
+                Some("stale".into()),
+                None,
+                None,
+                99999
+            )
+            .unwrap());
+        db.finish_channel_delivery(
+            &first.id,
+            1,
+            "delivered",
+            Some("accepted".into()),
+            None,
+            None,
+            10000,
+        )
+        .unwrap();
+        assert!(db.claim_channel_delivery(13999).unwrap().is_none());
+        let second = db.claim_channel_delivery(14000).unwrap().unwrap();
+        assert_eq!(second.event_id.as_deref(), Some(second_event.as_str()));
+        let third_event = complete(&mut db, event("third", "Alice"), &["third"]);
+        let other_event = complete(&mut db, event("other", "Bob"), &["other"]);
+        assert_eq!(db.recover_channels(20000).unwrap().1, 1);
+        assert_eq!(
+            db.get_channel_delivery(&second.id).unwrap().unwrap().state,
+            "unknown"
+        );
+        assert!(db.claim_channel_delivery(23999).unwrap().is_none());
+        let other = db.claim_channel_delivery(24000).unwrap().unwrap();
+        assert_eq!(other.event_id.as_deref(), Some(other_event.as_str()));
+        assert_eq!(
+            db.get_channel_event(&first_event).unwrap().unwrap().status,
+            "completed"
+        );
+        assert!(db
+            .list_channel_deliveries(Some(&third_event), 100, 0)
+            .unwrap()
+            .iter()
+            .all(|row| row.attempts == 0));
+        db.finish_channel_delivery(
+            &other.id,
+            1,
+            "delivered",
+            Some("accepted-other".into()),
+            None,
+            None,
+            24001,
+        )
+        .unwrap();
+        db.resolve_channel_delivery(&second.id, "operator receipt".into(), 25000)
+            .unwrap();
+        assert!(db.claim_channel_delivery(28000).unwrap().is_none());
+        assert_eq!(
+            db.claim_channel_delivery(28001)
+                .unwrap()
+                .unwrap()
+                .event_id
+                .as_deref(),
+            Some(third_event.as_str())
+        );
     }
 
     fn wecom_spec(event: &str, user: &str) -> EventSpec {
@@ -1824,7 +1969,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

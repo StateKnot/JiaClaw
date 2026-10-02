@@ -1279,12 +1279,12 @@ pub struct ScheduledChannelDestination {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelBinding {
-    /// Supported platform: telegram, slack, discord, feishu or wecom.
+    /// Supported platform: telegram, slack, discord, feishu, wecom or dingtalk.
     pub channel: String,
-    /// Telegram bot ID, Slack team ID, Discord app ID, Feishu app_id:tenant_key or WeCom corp_id:agent_id.
+    /// Telegram bot ID, Slack team ID, Discord app ID, Feishu app_id:tenant_key WeCom corp_id:agent_id or DingTalk robotCode:corpId.
     pub installation_id: String,
     #[serde(default)]
-    /// Slack application ID, matched independently from the team.
+    /// Slack application ID, or DingTalk Client ID (separate from robotCode).
     pub app_id: Option<String>,
     /// Exact platform user IDs authorized to invoke this agent.
     pub allowed_senders: Vec<String>,
@@ -1363,6 +1363,8 @@ pub struct HttpConfig {
     /// WeCom application secret (JIACLAW_WECOM_APP_SECRET overrides).
     #[serde(default)]
     pub wecom_app_secret: Option<String>,
+    /// DingTalk internal-app Client Secret; JIACLAW_DINGTALK_APP_SECRET overrides it.
+    pub dingtalk_app_secret: Option<String>,
     /// WeCom callback token (JIACLAW_WECOM_CALLBACK_TOKEN overrides).
     #[serde(default)]
     pub wecom_callback_token: Option<String>,
@@ -1468,6 +1470,7 @@ impl Default for HttpConfig {
             feishu_encrypt_key: None,
             feishu_verification_token: None,
             wecom_app_secret: None,
+            dingtalk_app_secret: None,
             wecom_callback_token: None,
             wecom_encoding_aes_key: None,
             discord_public_key: None,
@@ -1765,6 +1768,15 @@ impl HttpConfig {
             std::env::var("JIACLAW_FEISHU_VERIFICATION_TOKEN")
                 .ok()
                 .as_deref(),
+        )
+    }
+
+    /// Resolve the DingTalk Client Secret, preferring the environment.
+    #[must_use]
+    pub fn effective_dingtalk_app_secret(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.dingtalk_app_secret.clone(),
+            std::env::var("JIACLAW_DINGTALK_APP_SECRET").ok().as_deref(),
         )
     }
 

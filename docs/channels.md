@@ -1,10 +1,10 @@
 # 可靠渠道接入与消息恢复
 
-Telegram、Slack、Discord、飞书和企业微信共用 SQLite 收件箱、受监督的 Agent worker 及持久化发件箱。合法事件先入库再返回 webhook ACK；模型调用、会话提交和向平台发送消息在后台执行。在去重保留期内，平台重投同一事件不会再次运行 Agent。现有安装必须补齐下面的安装身份、发送者、会话和工具白名单；只配置旧平台密钥的服务会启动失败，需要先迁移配置。
+Telegram、Slack、Discord、飞书、企业微信和钉钉共用 SQLite 收件箱、受监督的 Agent worker 及持久化发件箱。合法事件先入库再返回 webhook ACK；模型调用、会话提交和向平台发送消息在后台执行。在去重保留期内，平台重投同一事件不会再次运行 Agent。现有安装必须补齐下面的安装身份、发送者、会话和工具白名单；只配置旧平台密钥的服务会启动失败，需要先迁移配置。
 
 ## 部署与身份
 
-渠道要求 `http.persist = true`、非空 API Token 和工作空间之外的 SQLite 路径。模型提供商必须是 `brokerrouter`，离线验收可显式使用 `stub`。一个进程每个平台最多配置一个安装，最多五个安装；SQLite 沿用独占进程锁，不支持多实例共享同一个文件。
+渠道要求 `http.persist = true`、非空 API Token 和工作空间之外的 SQLite 路径。模型提供商必须是 `brokerrouter`，离线验收可显式使用 `stub`。一个进程每个平台最多配置一个安装，最多六个安装；SQLite 沿用独占进程锁，不支持多实例共享同一个文件。
 
 下面是同时配置三个平台的结构。ID 必须替换为实际安装及获准使用人的平台 ID；只启用所需的 `[[http.channels]]` 项。
 
@@ -70,6 +70,7 @@ enabled_tools = ["datetime_now", "json_query"]
 | Discord | `POST /hooks/discord`；interaction id、application_id、channel_id、member.user.id 或 user.id；应用命令带一个字符串 prompt option | 首片编辑交互原始回复，后片发送 follow-up |
 | 飞书 | `POST /hooks/feishu`；schema 2.0、app_id、tenant_key、message_id、open_id、chat_id | 原会话；群组回复使用 `om_` 根消息 ID |
 | 企业微信 | `GET/POST /hooks/wecom`；查询签名、加密 XML 内 CorpID、AgentID、FromUserName、MsgId | 同一成员的应用私聊，无线程 |
+| 钉钉 | `POST /hooks/dingtalk`；timestamp/sign、robotCode、chatbotCorpId、senderCorpId、senderStaffId、msgId；仅 conversationType=1 的 text.content | 精确成员 UserID 的机器人单聊，无线程 |
 
 Telegram 使用 webhook secret 校验，并忽略 bot 消息和无文本事件。Slack 校验原始 body 的签名及 ±5 分钟时间窗，同时将 team_id、api_app_id 与配置绑定；bot、subtype 和非 message 事件不进入 Agent。URL verification 的 challenge 也必须通过签名校验。
 
@@ -81,7 +82,7 @@ Telegram、Slack 和飞书成功接收返回：
 {"ok":true,"event_id":"本地事件 UUID","duplicate":false}
 ```
 
-企业微信合法文本在持久入库后返回 HTTP 200 空响应体；GET 验证请求返回解密后的原始 challenge。企业微信不会把内部事件 UUID 或模型结果写入回调 ACK，详细合同见[企业微信指南](wecom.md)。
+企业微信合法文本在持久入库后返回 HTTP 200 空响应体；GET 验证请求返回解密后的原始 challenge。企业微信不会把内部事件 UUID 或模型结果写入回调 ACK，详细合同见[企业微信指南](wecom.md)。钉钉也在持久入库后返回 HTTP 200 空响应体；数据库操作的 2 秒期限是本地保护，不代表已获证实的平台 ACK 时限或重试承诺。
 
 上述 JSON ACK 渠道的重复投递返回相同本地 UUID 和 `duplicate:true`。同一平台事件 ID 对应的发送者、会话或文本发生变化时返回冲突，不把修改后的内容再次执行。Slack 要求快速确认 Events API 请求；将入库与后台执行分离可以在模型慢请求时仍及时 ACK。[Slack 官方 Events API 文档](https://docs.slack.dev/apis/events-api/)
 
@@ -89,11 +90,11 @@ Telegram、Slack 和飞书成功接收返回：
 
 全局最多处理 4 个 Agent 事件，每个会话同一时刻只处理一个。完成一次 Agent 调用时，会话消息、事件终态和所有待发送片段在一个 SQLite 事务中提交；提交失败不会留下只有会话或只有发件箱的半个结果。
 
-发送器按目的地顺序领取片段，同一安装最多一条发送请求在途。为限制突发，安装级最短发送间隔分别为 Telegram 3.1 秒、Slack 1.1 秒、Discord 0.3 秒、飞书 1.1 秒，并持久化到数据库。企业微信使用更保守的 4 秒安装间隔与持久发送预算，详见[企业微信指南](wecom.md)。这是保守基础节流，平台返回的有效 429 冷却期会进一步延长它。SDK 不隐式重试或跟随重定向；每次 HTTP 发送连接超时 2 秒、总超时 10 秒，响应体上限 64 KiB。
+发送器按目的地顺序领取片段，同一安装最多一条发送请求在途。为限制突发，安装级最短发送间隔分别为 Telegram 3.1 秒、Slack 1.1 秒、Discord 0.3 秒、飞书 1.1 秒，并持久化到数据库。企业微信使用更保守的 4 秒安装间隔与持久发送预算，详见[企业微信指南](wecom.md)。钉钉同样使用本地 4 秒安装间隔，并在请求完成后延长间隔；这不是平台配额保证。对于有已核实限流合同的渠道，平台返回的有效 429 冷却期会进一步延长基础间隔。SDK 不隐式重试或跟随重定向；每次 HTTP 发送连接超时 2 秒、总超时 10 秒，响应体上限 64 KiB。
 
-回复总量最多 16 KiB UTF-8、总共最多 16 片。Telegram、Slack、Discord 和飞书每片最多 2,000 个 UTF-16 单位；企业微信按渲染后的 UTF-8 字节拆分，每片最多 2,048 字节，并将 ASCII `<`、`>` 转为全角字符。Discord 进一步限定最多 6 片，即编辑原始回复加 5 条 follow-up，兼容 user-installed 应用的 follow-up 上限。拆分保留原始 Unicode 文本，不静默截断；超出总量或片数时整批不入发件箱，事件转为 needs_review。Telegram 关闭链接预览且不设置 parse_mode；Slack 关闭 mrkdwn、名称展开和链接/媒体预览，并转义 `&<>` 控制字符；Discord 明确禁止自动 mentions。
+回复总量最多 16 KiB UTF-8、总共最多 16 片。Telegram、Slack、Discord、飞书和钉钉每片最多 2,000 个 UTF-16 单位；企业微信按渲染后的 UTF-8 字节拆分，每片最多 2,048 字节，并将 ASCII `<`、`>` 转为全角字符。Discord 进一步限定最多 6 片，即编辑原始回复加 5 条 follow-up，兼容 user-installed 应用的 follow-up 上限。拆分保留原始 Unicode 文本，不静默截断；超出总量或片数时整批不入发件箱，事件转为 needs_review。Telegram 关闭链接预览且不设置 parse_mode；Slack 关闭 mrkdwn、名称展开和链接/媒体预览，并转义 `&<>` 控制字符；Discord 明确禁止自动 mentions。
 
-平台返回 HTTP 2xx 还不够：Telegram 必须提供正确 chat 的正整数 message_id，Slack 必须提供对应 channel 和合法 ts，Discord 必须提供对应 channel_id 和合法消息 id；飞书核对成功码、消息 ID 与 chat_id，企业微信核对成功码、msgid 和空的失败成员列表。有效回执落库后才记录 delivered，表示平台接受而非终端已读。相应平台协议见 [Telegram Bot API](https://core.telegram.org/bots/api) 和 [Slack chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/)。
+平台返回 HTTP 2xx 还不够：Telegram 必须提供正确 chat 的正整数 message_id，Slack 必须提供对应 channel 和合法 ts，Discord 必须提供对应 channel_id 和合法消息 id；飞书核对成功码、消息 ID 与 chat_id，企业微信核对成功码、msgid 和空的失败成员列表；钉钉要求非空 processQueryKey，且失败、过滤和限流成员列表均为空。有效回执落库后才记录 delivered，表示平台接受而非终端已读。相应平台协议见 [Telegram Bot API](https://core.telegram.org/bots/api) 和 [Slack chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/)。
 
 | 记录 | 状态 | 含义及操作 |
 |---|---|---|
@@ -110,7 +111,7 @@ Telegram、Slack 和飞书成功接收返回：
 | 投递 | expired | Discord 凭证过期，停止未发送片段 |
 | 投递 | cancelled | 管理员核对后取消余下投递；并不撤回平台已经收到的消息 |
 
-只有可验证的平台限流响应会自动重试，每片最多 5 次尝试；重启不会清除 attempts 或安装冷却期。Slack 使用 Retry-After，Telegram 使用 parameters.retry_after，Discord 使用 retry_after；飞书需要匹配限流码及有效 x-ogw-ratelimit-reset；企业微信的 429 当前不自动重试。无效或缺失的可信冷却期归入 unknown。平台 429 的限流范围不同，当前采取安装范围的保守冷却。[Slack 限流文档](https://docs.slack.dev/apis/web-api/rate-limits/)、[Discord 限流文档](https://docs.discord.com/developers/topics/rate-limits)
+只有可验证的平台限流响应会自动重试，每片最多 5 次尝试；重启不会清除 attempts 或安装冷却期。Slack 使用 Retry-After，Telegram 使用 parameters.retry_after，Discord 使用 retry_after；飞书需要匹配限流码及有效 x-ogw-ratelimit-reset；企业微信和钉钉的 429 当前不自动重试；钉钉的配额/发送频率错误也进入 unknown，不能将错误码猜测为安全重试窗口。无效或缺失的可信冷却期归入 unknown。平台 429 的限流范围不同，当前采取安装范围的保守冷却。[Slack 限流文档](https://docs.slack.dev/apis/web-api/rate-limits/)、[Discord 限流文档](https://docs.discord.com/developers/topics/rate-limits)
 
 断线、发送超时、5xx、重定向、损坏/错目标回执以及重启发现的 submitting 都进入 unknown。同一目的地后续片段不会越过未解决的发送结果。进程被强杀后，processing 进入 needs_review，submitting 进入 unknown；正常关闭先停止领取、等待配置的退出宽限期，然后记录未完成工作。管理员不能把“JiaClaw 没有收到成功响应”解释成“平台没有发送”。本地去重和回执日志不提供跨系统 exactly-once；unknown 没有自动“重试发送”按钮。
 
@@ -152,3 +153,9 @@ python3 tests/channels.py target/debug/jiaclaw
 ## 企业微信企业自建应用
 
 `GET/POST /hooks/wecom` 使用企业与应用复合身份、查询签名和 AES-CBC 加密 XML，MsgId 去重后持久入库，再异步主动回复同一成员。白名单和定时目的地使用规范小写 UserID，thread_id 必须为空。token 仅在内存缓存；2048 字节分片按发送渲染结果计数；未知结果保留人工核查边界。部署必须使用 JiaClaw 独占发送权的专用应用，持久发送预算与平台接收额度、配置和真实安装验收见[企业微信指南](wecom.md)。
+
+## 钉钉企业内部应用机器人
+
+`POST /hooks/dingtalk` 接入同一持久收件箱、发件箱与管理接口。安装身份为 `robotCode:corpId`，Client ID 单独配置到 `app_id`，Client Secret 通过 `JIACLAW_DINGTALK_APP_SECRET` 或受保护配置提供。白名单和定时目的地使用保留大小写的精确成员 UserID，thread_id 为空；后台主动文本使用固定 OpenAPI 端点，忽略且不保存回调中的 sessionWebhook。
+
+钉钉的 HMAC-SHA256 签名只涵盖毫秒 timestamp 与 Client Secret，不涵盖 JSON 正文；时间窗为 ±1 小时。因此 HTTPS、可信反向代理和回调头保密属于认证边界；不要在代理日志记录 timestamp/sign。仅允许已发布的内部应用、匹配 robotCode 和企业身份、提供成员 UserID 的私聊文本。群消息和其它消息类型不运行 Agent。完整配置、平台额度及需使用真实安装核对的行为见[钉钉指南](dingtalk.md)。

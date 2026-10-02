@@ -55,6 +55,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 mod channel_store;
 mod channel_types;
 mod channels;
+mod dingtalk;
+mod dingtalk_outbound;
 mod feishu;
 mod feishu_outbound;
 mod jobs;
@@ -665,6 +667,7 @@ fn is_rate_limited_path(path: &str) -> bool {
         || path == "/hooks/discord"
         || path == "/hooks/feishu"
         || path == "/hooks/wecom"
+        || path == "/hooks/dingtalk"
 }
 
 /// 限流响应头快照。`retry_after_secs` 仅 429 设置。
@@ -960,6 +963,10 @@ fn build_router_with_body_limit(
         .route("/hooks/telegram", post(channels::telegram))
         .route("/hooks/slack", post(channels::slack))
         .route("/hooks/feishu", post(channels::feishu))
+        .route(
+            "/hooks/dingtalk",
+            post(channels::dingtalk).layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
+        )
         .route(
             "/hooks/wecom",
             get(channels::wecom_verify).post(channels::wecom),
@@ -1956,6 +1963,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     tracing::info!("   • POST   /hooks/telegram      - Telegram Bot 入站端点");
     tracing::info!("   • POST   /hooks/slack         - Slack Events API 入站端点");
     tracing::info!("   • POST   /hooks/feishu        - 飞书企业自建应用回调");
+    tracing::info!("   • POST   /hooks/dingtalk      - 钉钉企业机器人回调");
     tracing::info!("   • GET/POST /hooks/wecom       - 企业微信自建应用回调");
     tracing::info!("   • POST   /hooks/discord       - Discord Interactions 入站端点");
     if telegram_bot_token.is_some() {
@@ -2199,7 +2207,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         );
     } else {
         println!(
-            "   • HTTP 限流: ⚠️  未启用（/api/* 与 /hooks/inbound、/hooks/telegram、/hooks/slack、/hooks/discord、/hooks/feishu、/hooks/wecom 不限流）"
+            "   • HTTP 限流: ⚠️  未启用（/api/* 与 /hooks/inbound、/hooks/telegram、/hooks/slack、/hooks/discord、/hooks/feishu、/hooks/wecom、/hooks/dingtalk 不限流）"
         );
     }
 
@@ -2430,6 +2438,10 @@ async fn configured_hooks_only(
             .channel_runtime
             .as_ref()
             .is_some_and(|r| r.installation(channel_types::Channel::Slack).is_some()),
+        "/hooks/dingtalk" => state
+            .channel_runtime
+            .as_ref()
+            .is_some_and(|r| r.installation(channel_types::Channel::Dingtalk).is_some()),
         "/hooks/wecom" => state
             .channel_runtime
             .as_ref()
@@ -9343,6 +9355,7 @@ mod tests {
             "/hooks/discord",
             "/hooks/feishu",
             "/hooks/wecom",
+            "/hooks/dingtalk",
         ] {
             let app = create_test_app_with_rate_limit(1);
             for expected in [StatusCode::NOT_FOUND, StatusCode::TOO_MANY_REQUESTS] {
@@ -9378,6 +9391,7 @@ mod tests {
         assert!(is_rate_limited_path("/hooks/slack"));
         assert!(is_rate_limited_path("/hooks/feishu"));
         assert!(is_rate_limited_path("/hooks/wecom"));
+        assert!(is_rate_limited_path("/hooks/dingtalk"));
         assert!(is_rate_limited_path("/hooks/discord"));
         assert!(!is_rate_limited_path("/health"));
         assert!(!is_rate_limited_path("/metrics"));
@@ -10186,6 +10200,7 @@ mod tests {
             "/hooks/discord",
             "/hooks/feishu",
             "/hooks/wecom",
+            "/hooks/dingtalk",
         ] {
             assert!(
                 paths.contains_key(required),

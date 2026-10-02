@@ -1,6 +1,6 @@
 # 定时任务结果投递
 
-定时任务可以把成功结果发送到已配置的 Telegram、Slack、飞书或企业微信安装。每次执行的会话、运行结果和待发送消息在一个 SQLite 事务中提交，随后由统一渠道发送器处理。没有 `delivery` 的任务继续只保存运行结果和会话。
+定时任务可以把成功结果发送到已配置的 Telegram、Slack、飞书、企业微信或钉钉安装。每次执行的会话、运行结果和待发送消息在一个 SQLite 事务中提交，随后由统一渠道发送器处理。没有 `delivery` 的任务继续只保存运行结果和会话。
 
 ## 配置目的地授权
 
@@ -42,7 +42,7 @@ scheduled_destinations = [
 
 任务的 `enabled_tools` 还必须是该渠道安装 `enabled_tools` 的子集，并满足后台工具注册和取消要求。创建、恢复、执行和实际发送时都会检查安装、目的地和工具授权；重启后撤销授权会阻止旧队列继续使用它。入站发送者白名单仍用于平台 webhook，这些主动任务由管理 API Token 授权创建。
 
-当前允许 Telegram、Slack、飞书和企业微信。Discord 交互 token 有短期生命周期，不能作为持久定时任务的发送凭证；Discord、任意 URL、请求自带 token 或未声明字段都会被拒绝。
+当前允许 Telegram、Slack、飞书、企业微信和钉钉。Discord 交互 token 有短期生命周期，不能作为持久定时任务的发送凭证；Discord、任意 URL、请求自带 token 或未声明字段都会被拒绝。
 
 ## 创建任务
 
@@ -69,7 +69,7 @@ curl -fsS http://127.0.0.1:8080/api/jobs \
 
 Slack 的 delivery 使用 `channel:"slack"`、对应的 team ID、channel ID 和 thread ts。Telegram installation_id 必须与 Bot Token 数字前缀一致。请求里只保存授权目标，不保存发送密钥；运行时由对应安装解析平台凭证。
 
-只有完整成功且回复满足发送大小限制的运行才产生发件箱记录。回复最多 16 KiB UTF-8；Telegram、Slack、飞书每片最多 2,000 个 UTF-16 单位，企业微信按渲染后的 UTF-8 字节拆分且每片最多 2,048 字节。超过总量或片数限制时整体转人工核对，不静默截断。消息复用各渠道的文字转义、回执校验、超时及已核实的限流政策。企业微信 429 没有已核实的安全重试等待合同，进入 unknown 并暂停任务；本地发送预算不足时消息保持待发送，详见[企业微信指南](wecom.md)。
+只有完整成功且回复满足发送大小限制的运行才产生发件箱记录。回复最多 16 KiB UTF-8；Telegram、Slack、飞书、钉钉每片最多 2,000 个 UTF-16 单位，企业微信按渲染后的 UTF-8 字节拆分且每片最多 2,048 字节。超过总量或片数限制时整体转人工核对，不静默截断。消息复用各渠道的文字转义、回执校验、超时及已核实的限流政策。企业微信和钉钉的 429 没有已核实的安全重试等待合同，进入 unknown 并暂停任务；企业微信本地发送预算不足时消息保持待发送，详见[企业微信指南](wecom.md)与[钉钉指南](dingtalk.md)。
 
 ## 运行状态与发送状态
 
@@ -103,7 +103,7 @@ resolve、cancel 和投递审计 DELETE 成功返回 204。delivered 的人工�
 
 ## 存储故障与验收
 
-SQLite schema v4 为统一发件箱增加任务运行来源，当前 v6 保留所有来源、回执和序列高水位，允许飞书/企业微信通知并保存企业微信独立发送额度账本。升级前按现有部署流程停止服务并备份 SQLite；升级使用数据库事务，延续同一文件的独占进程锁。不要用多个 JiaClaw 进程共享同一个数据库。
+SQLite schema v4 为统一发件箱增加任务运行来源，当前 v7 保留所有来源、回执和序列高水位，允许飞书/企业微信/钉钉通知并保存企业微信独立发送额度账本。升级前按现有部署流程停止服务并备份 SQLite；升级使用数据库事务，延续同一文件的独占进程锁。不要用多个 JiaClaw 进程共享同一个数据库。
 
 如果会话、运行终态或发件箱写入失败，整个完成事务回滚。调度器报告 failed，拒绝创建和恢复任务；原 running 由恢复流程记为 interrupted 并暂停，避免重放可能已发生的工具副作用。修复存储后需要重启；仅删除故障条件不会自动重新启用调度器。发送结果提交失败也保留不确定性，由恢复流程核对，不能通过再次调用平台补偿。
 
@@ -119,3 +119,5 @@ python3 tests/scheduled_delivery.py target/debug/jiaclaw
 飞书使用同一任务 API 和恢复流程，`delivery.channel = "feishu"`，installation_id 为应用和租户复合身份。conversation_id 是 `oc_` chat ID；thread_id 为 `om_` 根消息 ID，省略时向会话顶层发送。配置和独立进程验收见[飞书指南](feishu.md)。
 
 企业微信同样使用该任务 API，`delivery.channel = "wecom"`，installation_id 为 `CorpID:AgentID`，conversation_id 为单个小写成员 UserID，thread_id 必须为空。入站成员白名单不会授予定时发送权限。配置、额度与真实安装验收见[企业微信指南](wecom.md)。
+
+钉钉使用 `delivery.channel = "dingtalk"`、`installation_id = "robotCode:corpId"` 和单个成员 UserID 作为 conversation_id，保留大小写且 thread_id 必须为空。Client ID 从该安装的 `app_id` 取得，Client Secret 从服务器配置取得；请求中不能指定它们。使用独立的 scheduled_destinations 白名单，既不继承入站成员权限，也不依赖临时 sessionWebhook。每片最多 2,000 个 UTF-16 单位，平台接收回执并不等于已读；详见[钉钉指南](dingtalk.md)。

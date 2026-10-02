@@ -74,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-e2e-') as directory:
             raise AssertionError('unauthenticated session access succeeded')
         except urllib.error.HTTPError as error:
             assert error.code == 401
-        for path in ['/hooks/inbound', '/hooks/telegram', '/hooks/slack', '/hooks/discord', '/hooks/feishu', '/hooks/wecom']:
+        for path in ['/hooks/inbound', '/hooks/telegram', '/hooks/slack', '/hooks/discord', '/hooks/feishu', '/hooks/wecom', '/hooks/dingtalk']:
             try:
                 request(path, 'POST', {}, authenticated=False)
                 raise AssertionError('unconfigured webhook was reachable: ' + path)

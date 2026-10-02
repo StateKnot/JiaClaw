@@ -125,6 +125,8 @@ fn runtime_with_key(key: &[u8; 32]) -> Arc<ChannelRuntime> {
             feishu_verification_token: None,
             wecom_sender: None,
             wecom_callback: None,
+            dingtalk_sender: None,
+            dingtalk_callback: None,
         }],
         client: OutboundClient::new().unwrap(),
         cipher: Some(aead::LessSafeKey::new(
