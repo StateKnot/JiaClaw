@@ -7,10 +7,7 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use crate::memory::{
-    ensure_existing_within_workspace, inspect_workspace_file, resolve_workspace_relative_path,
-    MemoryFileStatus,
-};
+use crate::memory::{inspect_workspace_file, resolve_workspace_relative_path, MemoryFileStatus};
 use jiaclaw_core::JiaClawError;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +35,7 @@ pub fn inspect_heartbeat_file(
 /// 读取心跳文件全文，作为一轮 chat 的 user 消息。
 ///
 /// 文件不存在或（trim 后）为空时返回 `Ok(None)`，不报错。
-/// 不截断；超过 32KiB 时仅 `warn` 仍返回全文。
+/// 不截断；超过 32KiB 时拒绝本轮，避免执行不完整的检查指令。
 ///
 /// # Errors
 ///
@@ -47,37 +44,16 @@ pub fn load_heartbeat_message(
     workspace: &Path,
     configured: &str,
 ) -> Result<Option<String>, JiaClawError> {
-    let path = resolve_heartbeat_path(workspace, configured)?;
-    if !path.exists() {
+    let Some(file) = crate::memory_io::read_text(
+        workspace,
+        configured,
+        jiaclaw_core::MEMORY_PROMPT_MAX_BYTES,
+        false,
+    )?
+    else {
         return Ok(None);
-    }
-    if !path.is_file() {
-        tracing::debug!(
-            path = %path.display(),
-            "HEARTBEAT 路径存在但不是文件，跳过本轮"
-        );
-        return Ok(None);
-    }
-
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        JiaClawError::Configuration(format!("无法读取HEARTBEAT文件 {}: {e}", path.display()))
-    })?;
-
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-
-    if raw.len() > jiaclaw_core::MEMORY_PROMPT_MAX_BYTES {
-        tracing::warn!(
-            path = %path.display(),
-            size_bytes = raw.len(),
-            "HEARTBEAT 文件较大，仍将全文作为 user 消息"
-        );
-    }
-
-    Ok(Some(raw))
+    };
+    Ok((!file.text.trim().is_empty()).then_some(file.text))
 }
 
 #[cfg(test)]
@@ -96,6 +72,25 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn oversized_heartbeat_is_rejected_without_truncation() {
+        let ws = unique_temp("jiaclaw_hb_limit");
+        fs::write(
+            ws.join("HEARTBEAT.md"),
+            "x".repeat(jiaclaw_core::MEMORY_PROMPT_MAX_BYTES + 1),
+        )
+        .unwrap();
+        assert!(load_heartbeat_message(&ws, "HEARTBEAT.md").is_err());
+        fs::write(ws.join("HEARTBEAT.md"), "ok").unwrap();
+        assert_eq!(
+            load_heartbeat_message(&ws, "HEARTBEAT.md")
+                .unwrap()
+                .as_deref(),
+            Some("ok")
+        );
+        fs::remove_dir_all(ws).unwrap();
     }
 
     #[test]

@@ -203,17 +203,39 @@ impl Tool for WorkspaceListTool {
     }
 }
 
-/// Memory Read 工具（读取记忆文件）
+/// Memory Read 工具（通过逻辑名称读取配置的记忆文件）
 pub struct MemoryReadTool {
     workspace_path: PathBuf,
+    memory_rel_path: String,
+    soul_rel_path: String,
+    user_rel_path: String,
 }
 
 impl MemoryReadTool {
-    /// 创建新的记忆读取工具
+    /// 使用默认 MEMORY / SOUL / USER 路径。
     #[must_use]
     pub fn new(workspace_path: &Path) -> Self {
+        Self::with_paths(
+            workspace_path,
+            jiaclaw_core::DEFAULT_MEMORY_PATH,
+            jiaclaw_core::DEFAULT_SOUL_PATH,
+            jiaclaw_core::DEFAULT_USER_PATH,
+        )
+    }
+
+    /// 工具参数仍使用逻辑文件名；实际读取管理员配置的相对路径。
+    #[must_use]
+    pub fn with_paths(
+        workspace_path: &Path,
+        memory_rel_path: impl Into<String>,
+        soul_rel_path: impl Into<String>,
+        user_rel_path: impl Into<String>,
+    ) -> Self {
         Self {
             workspace_path: workspace_path.to_path_buf(),
+            memory_rel_path: memory_rel_path.into(),
+            soul_rel_path: soul_rel_path.into(),
+            user_rel_path: user_rel_path.into(),
         }
     }
 }
@@ -225,7 +247,7 @@ impl Tool for MemoryReadTool {
     }
 
     fn description(&self) -> &str {
-        "读取长期记忆文件的内容"
+        "按逻辑文件名读取配置的 MEMORY / USER / SOUL 或固定 AGENTS.md；最多返回32KiB，超限明确标记截断。禁止链接和特殊文件。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -235,44 +257,56 @@ impl Tool for MemoryReadTool {
                 "file": {
                     "type": "string",
                     "enum": ["MEMORY.md", "USER.md", "SOUL.md", "AGENTS.md"],
-                    "description": "要读取的文件名"
+                    "description": "逻辑文件名；MEMORY / USER / SOUL 使用配置中的路径"
                 }
             },
-            "required": ["file"]
+            "required": ["file"],
+            "additionalProperties": false
         })
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let file_name = args
             .get("file")
-            .and_then(|v| v.as_str())
+            .and_then(Value::as_str)
             .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'file'".to_string()))?;
-
-        // 验证文件名
-        let allowed_files = ["MEMORY.md", "USER.md", "SOUL.md", "AGENTS.md"];
-        if !allowed_files.contains(&file_name) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "不允许读取的文件: {file_name}. 仅允许: {allowed_files:?}"
-            )));
-        }
-
-        let file_path = self.workspace_path.join(file_name);
-
-        if !file_path.exists() {
+        let configured = match file_name {
+            "MEMORY.md" => self.memory_rel_path.clone(),
+            "SOUL.md" => self.soul_rel_path.clone(),
+            "USER.md" => self.user_rel_path.clone(),
+            "AGENTS.md" => "AGENTS.md".to_string(),
+            _ => {
+                return Err(JiaClawError::ToolExecution(
+                    "不允许的逻辑文件名；仅允许 MEMORY.md、USER.md、SOUL.md、AGENTS.md".into(),
+                ));
+            }
+        };
+        let workspace = self.workspace_path.clone();
+        let relative = configured.clone();
+        let file = crate::memory_io::run_blocking(move || {
+            crate::memory_io::read_text(
+                &workspace,
+                &relative,
+                jiaclaw_core::MEMORY_PROMPT_MAX_BYTES,
+                true,
+            )
+        })
+        .await?;
+        let Some(file) = file else {
             return Ok(format!(
-                "文件不存在: {}\n提示: 运行 'jiaclaw init' 创建工作空间",
-                file_path.display()
+                "文件不存在: {configured}\n提示: 运行 'jiaclaw init' 创建工作空间"
             ));
-        }
-
-        let content = std::fs::read_to_string(&file_path)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件: {e}")))?;
-
+        };
+        let truncation = if file.truncated {
+            "\n已截断：仅返回前32KiB内完整UTF-8字符。"
+        } else {
+            ""
+        };
         Ok(format!(
-            "文件: {}\n长度: {} 字节\n\n{}",
-            file_name,
-            content.len(),
-            content
+            "文件: {file_name}\n约定路径: {configured}\n大小: {} 字节；返回: {} 字节{truncation}\n\n{}",
+            file.size_bytes,
+            file.text.len(),
+            file.text
         ))
     }
 }
@@ -1982,6 +2016,125 @@ mod tests {
         assert!(result.is_err());
 
         let _ = fs::remove_dir_all(&temp_workspace);
+    }
+
+    #[tokio::test]
+    async fn memory_read_resolves_configured_names_without_root_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("notes")).unwrap();
+        for name in ["MEMORY.md", "SOUL.md", "USER.md"] {
+            fs::write(root.join(name), "root-decoy").unwrap();
+        }
+        for (path, content) in [
+            ("notes/memory.txt", "configured-memory"),
+            ("notes/soul.txt", "configured-soul"),
+            ("notes/user.txt", "configured-user"),
+            ("AGENTS.md", "fixed-agents"),
+        ] {
+            fs::write(root.join(path), content).unwrap();
+        }
+        let tool = MemoryReadTool::with_paths(
+            root,
+            "notes/memory.txt",
+            "notes/soul.txt",
+            "notes/user.txt",
+        );
+        for (name, path, expected) in [
+            ("MEMORY.md", "notes/memory.txt", "configured-memory"),
+            ("SOUL.md", "notes/soul.txt", "configured-soul"),
+            ("USER.md", "notes/user.txt", "configured-user"),
+            ("AGENTS.md", "AGENTS.md", "fixed-agents"),
+        ] {
+            let result = tool
+                .execute(serde_json::json!({"file": name}))
+                .await
+                .unwrap();
+            assert!(result.contains(expected), "{name}: {result}");
+            assert!(result.contains(path), "{name}: {result}");
+            assert!(!result.contains("root-decoy"));
+        }
+        fs::remove_file(root.join("notes/memory.txt")).unwrap();
+        let missing = tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .unwrap();
+        assert!(missing.contains("文件不存在"));
+        assert!(!missing.contains("root-decoy"));
+        for file in ["../MEMORY.md", "/MEMORY.md", "notes/memory.txt"] {
+            assert!(tool
+                .execute(serde_json::json!({"file": file}))
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_read_bounds_unicode_and_reports_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let limit = jiaclaw_core::MEMORY_PROMPT_MAX_BYTES;
+        let body = format!("{}中tail-must-be-omitted", "x".repeat(limit - 1));
+        fs::write(temp.path().join("MEMORY.md"), body).unwrap();
+        let tool = MemoryReadTool::new(temp.path());
+        let result = tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .unwrap();
+        assert!(result.contains("已截断"));
+        let (_, returned) = result.split_once("\n\n").unwrap();
+        assert_eq!(returned.len(), limit - 1);
+        assert!(!result.contains("tail-must-be-omitted"));
+        fs::write(temp.path().join("MEMORY.md"), "").unwrap();
+        let empty = tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .unwrap();
+        assert!(empty.contains("返回: 0 字节"));
+        assert!(!empty.contains("文件不存在"));
+        fs::write(temp.path().join("MEMORY.md"), [b'x', 0xff, b'y']).unwrap();
+        assert!(tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn memory_read_rejects_symlink_hardlink_and_directory() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let outside = temp.path().join("private.txt");
+        fs::write(&outside, "private-outside").unwrap();
+        let target = root.join("MEMORY.md");
+        let tool = MemoryReadTool::new(&root);
+        symlink(&outside, &target).unwrap();
+        assert!(tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .is_err());
+        fs::remove_file(&target).unwrap();
+        fs::hard_link(&outside, &target).unwrap();
+        assert!(tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .is_err());
+        fs::remove_file(&target).unwrap();
+        fs::create_dir(&target).unwrap();
+        assert!(tool
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .is_err());
+        fs::remove_dir(&target).unwrap();
+        let linked_parent = root.join("notes");
+        symlink(temp.path(), &linked_parent).unwrap();
+        let configured =
+            MemoryReadTool::with_paths(&root, "notes/private.txt", "SOUL.md", "USER.md");
+        assert!(configured
+            .execute(serde_json::json!({"file": "MEMORY.md"}))
+            .await
+            .is_err());
     }
 
     #[test]

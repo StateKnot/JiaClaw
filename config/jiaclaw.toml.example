@@ -121,6 +121,7 @@ enabled = true
 allow_private = false
 [tools.memory_search]
 enabled = true
+# 同时控制 memory_write 与 memory_append；最终文件最多 32 KiB。
 [tools.memory_write]
 enabled = true
 [tools.read_file]
@@ -142,11 +143,13 @@ enabled = true
 [tools.move]
 enabled = true
 
+# 受限工作区路径；读取最多 32 KiB，规则见 docs/memory-files.md。
 [memory]
 path = "MEMORY.md"
 [identity]
 soul_path = "SOUL.md"
 user_path = "USER.md"
+# 超过 32 KiB 拒绝整个轮次，不调用模型。
 [heartbeat]
 enabled = false
 interval_secs = 3600

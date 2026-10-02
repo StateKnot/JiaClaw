@@ -31,6 +31,7 @@ mod heartbeat;
 mod identity;
 mod mcp;
 mod memory;
+mod memory_io;
 mod native_agent;
 pub use mcp::inspect_mcp_server;
 mod provider;
@@ -202,10 +203,11 @@ impl JiaClawAgent {
 
         // 工作空间和记忆工具
         tools.register(Box::new(WorkspaceListTool::new(&config.workspace_path)));
-        tools.register(Box::new(MemoryReadTool::new(&config.workspace_path)));
-        tools.register(Box::new(MemoryAppendTool::new(
+        tools.register(Box::new(MemoryReadTool::with_paths(
             &config.workspace_path,
             config.memory.path.clone(),
+            config.identity.soul_path.clone(),
+            config.identity.user_path.clone(),
         )));
         if config.tools.memory_search.enabled {
             tools.register(Box::new(MemorySearchTool::new(
@@ -218,6 +220,10 @@ impl JiaClawAgent {
             )));
         }
         if config.tools.memory_write.enabled {
+            tools.register(Box::new(MemoryAppendTool::new(
+                &config.workspace_path,
+                config.memory.path.clone(),
+            )));
             tools.register(Box::new(MemoryWriteTool::new(
                 &config.workspace_path,
                 config.memory.path.clone(),
@@ -1642,6 +1648,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn memory_read_registration_uses_configured_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("notes")).unwrap();
+        std::fs::write(temp.path().join("MEMORY.md"), "default-decoy").unwrap();
+        std::fs::write(temp.path().join("notes/facts.md"), "configured-fact").unwrap();
+        let config = AgentConfig {
+            workspace_path: temp.path().to_path_buf(),
+            memory: MemoryConfig {
+                path: "notes/facts.md".into(),
+            },
+            ..AgentConfig::default()
+        };
+        let agent = JiaClawAgent::new(config).unwrap();
+        let result = agent
+            .tools()
+            .execute(&ToolCall {
+                tool_name: "memory_read".into(),
+                arguments: serde_json::json!({"file": "MEMORY.md"}),
+                result: None,
+            })
+            .await
+            .unwrap();
+        assert!(result.contains("configured-fact"));
+        assert!(!result.contains("default-decoy"));
+    }
+
     #[test]
     fn memory_search_is_registered_by_default() {
         let agent = JiaClawAgent::new(AgentConfig::default()).unwrap();
@@ -1747,7 +1780,7 @@ mod tests {
         let agent = JiaClawAgent::new(config).unwrap();
         assert!(agent.tools().get("memory_write").is_none());
         assert!(agent.tools().get("memory_search").is_some());
-        assert!(agent.tools().get("memory_append").is_some());
+        assert!(agent.tools().get("memory_append").is_none());
         let prompt = agent.build_system_prompt(&ChatRequest {
             messages: vec![],
             enabled_tools: vec![],
@@ -1756,8 +1789,8 @@ mod tests {
             session_id: None,
         });
         assert!(
-            !prompt.contains("### memory_write"),
-            "disabled memory_write must not appear in tool docs"
+            !prompt.contains("### memory_write") && !prompt.contains("### memory_append"),
+            "disabled memory writers must not appear in tool docs"
         );
     }
 
@@ -1771,19 +1804,21 @@ mod tests {
             ..AgentConfig::default()
         };
         let agent = JiaClawAgent::new(config).unwrap();
-        let err = agent
-            .tools()
-            .execute(&ToolCall {
-                tool_name: "memory_write".to_string(),
-                arguments: serde_json::json!({"content": "hello"}),
-                result: None,
-            })
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("工具不存在"),
-            "unexpected error: {err}"
-        );
+        for name in ["memory_write", "memory_append"] {
+            let err = agent
+                .tools()
+                .execute(&ToolCall {
+                    tool_name: name.to_string(),
+                    arguments: serde_json::json!({"content": "hello"}),
+                    result: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("工具不存在"),
+                "unexpected error for {name}: {err}"
+            );
+        }
     }
 
     #[test]
