@@ -3,7 +3,7 @@
 `jiaclaw-core` 保存配置与领域类型，`jiaclaw` 实现工作区/技能/工具/对话循环和 Provider，`jiaclaw-host` 承载 CLI、HTTP、渠道、SQLite 与内置 Web。
 
 ```text
-CLI / Web / channel webhook / HEARTBEAT
+CLI / Web / channel webhook / HEARTBEAT / scheduler
              |
      per-session turn lock
              |
@@ -49,3 +49,7 @@ exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上�
 单元与 HTTP fixture 测试覆盖本地工具、配置和渠道协议；`tests/e2e.py` 启动实际二进制，覆盖 API 鉴权、并发会话、关闭未配置渠道、SIGKILL 恢复与持久删除。`tests/browser.cjs` 在实际 Chromium 验收连接/聊天/删除、文本渲染、内存 Token 与移动布局；`tests/installer.py` 用本地 Release fixture 验证安装与失败保留旧版本；`tests/container.py` 使用实际镜像/命名卷验证非 root 与重启恢复。
 
 真实供应商计费、真实渠道出站和 StateKnot durable 故障恢复不在上述 fixture 证据内。依赖的认证门槛见上游状态文档。
+
+## 持久调度
+
+启用调度时，SQLite v2 的 jobs/runs 保存任务、UTC occurrence 和输入快照；领取事务后才调用 Agent。同一任务至多一个运行，全局上限 4。最终会话与 run 状态同事务提交，会话锁随 blocking 提交保留，即使调用 Future 被取消也不提前释放。进程中断、期限耗尽或未知结果会暂停任务，由管理员核查后恢复未来调度；没有自动重放工具。详细时间、权限和容量合同见[调度指南](scheduler.md)。

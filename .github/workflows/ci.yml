@@ -29,6 +29,7 @@ jobs:
       - run: python3 tests/e2e.py target/debug/jiaclaw
       - run: python3 tests/mcp.py target/debug/jiaclaw
       - run: python3 tests/native_tools.py target/debug/jiaclaw
+      - run: python3 tests/scheduler.py target/debug/jiaclaw
       - run: python3 tests/installer.py
       - name: Browser acceptance
         if: runner.os == 'Linux'

@@ -114,5 +114,8 @@
   "logging": {
     "format": "text",
     "level": "info"
+  },
+  "scheduler": {
+    "enabled": false
   }
 }

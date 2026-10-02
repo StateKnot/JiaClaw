@@ -173,6 +173,10 @@ pub struct AgentConfig {
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
 
+    /// Opt-in persistent background job scheduler (requires authenticated SQLite serve).
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+
     /// 会话历史溢出策略（缺省关闭摘要压缩，保持硬截断）
     #[serde(default)]
     pub session: SessionConfig,
@@ -201,6 +205,15 @@ pub struct AgentConfig {
     /// 进程日志配置（缺省 `format = "text"`，与当前 tracing fmt 一致）
     #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// Persistent background scheduling is disabled until explicitly configured.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulerConfig {
+    /// Enable authenticated job APIs and the bounded background worker.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 fn default_workspace_path() -> std::path::PathBuf {
@@ -1754,6 +1767,7 @@ impl Default for AgentConfig {
             memory: MemoryConfig::default(),
             identity: IdentityConfig::default(),
             heartbeat: HeartbeatConfig::default(),
+            scheduler: SchedulerConfig::default(),
             session: SessionConfig::default(),
             tool_timeout_secs: None,
             max_tool_iterations: default_max_tool_iterations(),
@@ -1821,6 +1835,8 @@ impl AgentConfig {
             #[serde(default)]
             heartbeat: Option<HeartbeatConfig>,
             #[serde(default)]
+            scheduler: Option<SchedulerConfig>,
+            #[serde(default)]
             session: Option<SessionConfig>,
             #[serde(default)]
             tools: Option<ToolsConfig>,
@@ -1848,6 +1864,9 @@ impl AgentConfig {
         }
         if let Some(heartbeat) = config_file.heartbeat {
             config_file.agent.heartbeat = heartbeat;
+        }
+        if let Some(scheduler) = config_file.scheduler {
+            config_file.agent.scheduler = scheduler;
         }
         if let Some(session) = config_file.session {
             config_file.agent.session = session;
@@ -1896,6 +1915,8 @@ impl AgentConfig {
             #[serde(default)]
             heartbeat: Option<HeartbeatConfig>,
             #[serde(default)]
+            scheduler: Option<SchedulerConfig>,
+            #[serde(default)]
             session: Option<SessionConfig>,
             #[serde(default)]
             tools: Option<ToolsConfig>,
@@ -1923,6 +1944,9 @@ impl AgentConfig {
         }
         if let Some(heartbeat) = config_file.heartbeat {
             config_file.agent.heartbeat = heartbeat;
+        }
+        if let Some(scheduler) = config_file.scheduler {
+            config_file.agent.scheduler = scheduler;
         }
         if let Some(session) = config_file.session {
             config_file.agent.session = session;
@@ -4021,5 +4045,33 @@ enabled = false
             resolve_optional_secret(Some("cfg-key".to_string()), None),
             Some("cfg-key".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod scheduler_configuration_tests {
+    use super::AgentConfig;
+
+    #[test]
+    fn scheduler_is_opt_in_and_top_level_json_overrides_nested_default() {
+        let config = AgentConfig::default();
+        assert!(!config.scheduler.enabled);
+        let value = serde_json::json!({"agent": config, "scheduler": {"enabled":true}});
+        assert!(
+            AgentConfig::from_json_str(&value.to_string())
+                .unwrap()
+                .scheduler
+                .enabled
+        );
+        let mut unknown = value;
+        unknown["scheduler"]["enable"] = serde_json::json!(true);
+        assert!(AgentConfig::from_json_str(&unknown.to_string()).is_err());
+    }
+
+    #[test]
+    fn scheduler_toml_enables_explicitly_and_rejects_misspelled_policy() {
+        let base = "[agent]\nname='test'\ndescription='test'\nsystem_instructions='test'\nmax_turns=1\n[scheduler]\nenabled=true\n";
+        assert!(AgentConfig::from_toml_str(base).unwrap().scheduler.enabled);
+        assert!(AgentConfig::from_toml_str(&format!("{base}enable=true\n")).is_err());
     }
 }
