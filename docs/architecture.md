@@ -17,7 +17,7 @@ SQLite history -> JiaClawAgent -> BrokerrouterProvider -> Brokerrouter -> model
    commit SQLite before completed response
 ```
 
-模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。没有伪装成框架调用的替代 MCP、A2A 或子 Agent。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
+模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。MCP 使用 StateKnot 的发布版 HTTP client，启动时完成固定 endpoint、白名单、descriptor pin 和 schema 校验，再一次性注册到 ToolRegistry。未批准的工具和 server instructions 不进入模型提示。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
 
 ## 会话边界
 

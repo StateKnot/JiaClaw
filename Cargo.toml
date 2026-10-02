@@ -12,16 +12,16 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["JiaClaw contributors"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/jiawenyao401/JiaClaw"
 homepage = "https://github.com/jiawenyao401/JiaClaw"
 
 [workspace.dependencies]
-# StateKnot 0.1.0-alpha.1 is published and requires Rust 1.88+.
-# Its production qualification is still pending. The current application does
-# not link the runtime; see docs/stateknot-gaps.md for the integration gates.
+# Exact protocol adapter pin; the durable runtime has separate integration gates.
+stateknot-integrations = "=0.1.0-alpha.1"
+jsonschema = { version = "=0.56.0", default-features = false }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

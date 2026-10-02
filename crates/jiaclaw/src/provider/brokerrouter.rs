@@ -54,7 +54,7 @@ struct BrokerrouterChatRequest {
     messages: Vec<BrokerrouterMessage>,
     temperature: f32,
     max_tokens: u32,
-    /// 强制非流式（Brokerrouter M2 仅支持 stream:false）
+    /// 当前应用使用非流式；网关 SSE 已支持，应用逐事件接线尚待实现。
     stream: bool,
 }
 

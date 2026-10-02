@@ -15,7 +15,8 @@ homepage.workspace = true
 [dependencies]
 jiaclaw-core = { version = "=0.1.0", path = "../jiaclaw-core" }
 
-# StateKnot integration gates: docs/stateknot-gaps.md
+stateknot-integrations = { workspace = true }
+jsonschema = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,7 +25,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 minreq = { workspace = true }
 tracing = { workspace = true }
-uuid = { version = "=1.7.0", features = ["v4"] }
+uuid = { version = "=1.26.1", features = ["v4"] }
 async-trait = "0.1"
 indexmap = { workspace = true }
 libc = "0.2"

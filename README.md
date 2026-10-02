@@ -1,12 +1,12 @@
 # JiaClaw
 
-JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记忆工具、渠道 webhook、SQLite 会话历史，以及内置聊天工作台。模型请求推荐统一经过 [Brokerrouter](https://github.com/StateKnot/Brokerrouter)。[StateKnot](https://github.com/StateKnot/StateKnot) 是计划采用的持久化执行框架，目前尚未接入应用运行路径。
+JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记忆工具、渠道 webhook、SQLite 会话历史，以及内置聊天工作台。模型请求推荐统一经过 [Brokerrouter](https://github.com/StateKnot/Brokerrouter)。[StateKnot](https://github.com/StateKnot/StateKnot) 的 HTTP MCP 已接入，持久化执行框架仍待接线与独立认证。
 
 **当前边界**：SQLite 保存会话，不提供工具调用的持久化执行、断点恢复或 exactly-once 保证。StateKnot alpha 与 Brokerrouter 的真实供应商工具闭环仍有生产认证门槛，详见[上游状态](docs/roadmap.md)。不能把本仓库的单机测试通过解释为完整个人 Agent 栈已经生产认证。
 
 ## 从源码安装
 
-需要 Rust 1.85.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。
+需要 Rust 1.88.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。
 
 ```sh
 git clone https://github.com/jiawenyao401/JiaClaw.git
@@ -59,11 +59,12 @@ docker compose up --build -d
 - 工作区文件读写、目录、grep/glob、mkdir/move，以及原子 `copy` / `file_copy`。
 - 显式启用的 `exec` / `shell_exec`：白名单映射、固定镜像、无网络容器、非 root、时间与输出限制。默认关闭；没有宿主机 shell 回退。
 - SQLite WAL 会话存储、旧 JSON 一次性迁移、导入导出、TTL、同一会话并发串行提交。
+- StateKnot HTTP MCP：显式批准的只读工具、描述摘要固定、离线 schema 校验、有界 JSON/SSE 与取消；[配置与验收边界](docs/mcp.md)。
 - 内置 Web 聊天、会话创建/选择/删除；同源 API，无前端构建依赖。
 - MEMORY / SOUL / USER、工作区技能与 HEARTBEAT；Telegram、Slack、Discord 的入站签名和出站适配。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。
 
-MCP、真正逐 token 流式、cron 多任务、子 Agent、多用户隔离、新渠道、语义记忆和多模态尚未完成。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。
+MCP stdio、外部写工具的 durable admission、真正逐 token 流式、cron 多任务、子 Agent、多用户隔离、新渠道、语义记忆和多模态尚未完成。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。
 
 ## 验证
 

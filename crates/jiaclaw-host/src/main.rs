@@ -211,6 +211,16 @@ enum Commands {
     /// 显示版本和构建信息
     Version,
 
+    /// Inspect MCP descriptors for review; does not approve or call tools
+    McpInspect {
+        /// Fixed HTTPS or literal-loopback HTTP endpoint
+        #[arg(long)]
+        endpoint: String,
+        /// Environment variable containing the bearer token
+        #[arg(long)]
+        bearer_token_env: Option<String>,
+    },
+
     /// 检查配置和连接状态
     Doctor {
         /// 配置文件路径
@@ -350,8 +360,15 @@ async fn main() -> Result<()> {
         Commands::Version => {
             version_command();
         }
+        Commands::McpInspect {
+            endpoint,
+            bearer_token_env,
+        } => {
+            let review = jiaclaw::inspect_mcp_server(&endpoint, bearer_token_env).await?;
+            println!("{}", serde_json::to_string_pretty(&review)?);
+        }
         Commands::Doctor { config } => {
-            doctor_command(config)?;
+            doctor_command(config).await?;
         }
         Commands::Skills {
             action,
@@ -2563,13 +2580,6 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         "日志格式"
     );
 
-    // 创建 agent 与进程内指标（工具钩子在 Arc 包装前挂上）
-    let metrics = Arc::new(Metrics::default());
-    let agent = attach_tool_metrics(
-        JiaClawAgent::new(config.clone()).context("创建 JiaClawAgent 失败")?,
-        &metrics,
-    );
-
     // 读取 API token（环境变量优先于配置文件）
     let api_token = std::env::var("JIACLAW_API_TOKEN")
         .ok()
@@ -2588,6 +2598,18 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     if config.tools.exec.enabled && api_token.is_none() {
         anyhow::bail!("启用 exec 必须设置 API Token");
     }
+    if !config.mcp.servers.is_empty() && api_token.is_none() {
+        anyhow::bail!("启用 MCP 必须设置 API Token");
+    }
+
+    // Local authorization is checked before outbound MCP discovery.
+    let metrics = Arc::new(Metrics::default());
+    let agent = attach_tool_metrics(
+        JiaClawAgent::connect(config.clone())
+            .await
+            .context("创建 JiaClawAgent 失败")?,
+        &metrics,
+    );
 
     // 读取 webhook secret（环境变量优先于配置文件）
     let webhook_secret = std::env::var("JIACLAW_WEBHOOK_SECRET")
@@ -4589,7 +4611,9 @@ async fn chat_command(
 
     // 创建并使用 agent
     validate_host_provider(&config)?;
-    let agent = JiaClawAgent::new(config).context("创建 JiaClawAgent 失败")?;
+    let agent = JiaClawAgent::connect(config)
+        .await
+        .context("创建 JiaClawAgent 失败")?;
 
     // 如果提供了消息，执行单次聊天
     if let Some(msg) = message {
@@ -5136,7 +5160,7 @@ fn identity_show_command(config_path: Option<PathBuf>, kind: IdentityShowKind) -
 }
 
 #[allow(clippy::too_many_lines)]
-fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
+async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
     println!("🔍 JiaClaw 配置检查\n");
 
     let config = if let Some(path) = config_path {
@@ -5304,7 +5328,7 @@ fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
 
     // 2. 检查工具系统
     println!("\n🔧 工具系统");
-    let tools_count = match JiaClawAgent::new(config.clone()) {
+    let tools_count = match JiaClawAgent::connect(config.clone()).await {
         Ok(agent) => {
             let tool_list = agent.tools().list();
             let count = tool_list.len();
