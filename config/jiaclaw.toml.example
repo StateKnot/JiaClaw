@@ -111,3 +111,7 @@ keep_recent = 10
 [logging]
 format = "text"
 level = "info"
+
+# 持久化 cron/interval 任务；启用要求 SQLite、API Token，并关闭 legacy heartbeat。
+[scheduler]
+enabled = false

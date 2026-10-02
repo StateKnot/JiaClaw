@@ -91,10 +91,15 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 1 {
+        if version > 2 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY NOT NULL, messages TEXT NOT NULL CHECK(json_valid(messages)), accessed_ms INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS sessions_accessed ON sessions(accessed_ms); CREATE TABLE IF NOT EXISTS migration_sources (path TEXT PRIMARY KEY NOT NULL); PRAGMA user_version=1;")?;
+        if version < 1 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY NOT NULL, messages TEXT NOT NULL CHECK(json_valid(messages)), accessed_ms INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS sessions_accessed ON sessions(accessed_ms); CREATE TABLE IF NOT EXISTS migration_sources (path TEXT PRIMARY KEY NOT NULL); PRAGMA user_version=1;")?;
+        }
+        if version < 2 {
+            tx.execute_batch(super::jobs::SCHEMA_V2)?;
+        }
         tx.commit()?;
         Ok(Self::Sqlite {
             conn,
@@ -367,14 +372,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=2;").unwrap();
+        conn.execute_batch("PRAGMA user_version=3;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();

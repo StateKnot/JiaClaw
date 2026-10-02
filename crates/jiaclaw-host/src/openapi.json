@@ -12,6 +12,7 @@
     }
   ],
   "tags": [
+    { "name": "scheduler", "description": "Authenticated SQLite cron/interval jobs; opt-in only" },
     { "name": "health", "description": "健康检查" },
     { "name": "metrics", "description": "Prometheus 进程内指标" },
     { "name": "chat", "description": "聊天与会话" },
@@ -20,6 +21,468 @@
     { "name": "discovery", "description": "API 发现" }
   ],
   "paths": {
+    "/api/jobs": {
+      "get": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "listJobs",
+        "summary": "List non-deleted scheduled jobs",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScheduledJob"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_deleted",
+            "description": "Include soft-deleted jobs for audit review and explicit purge",
+            "schema": { "type": "boolean", "default": false }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000,
+              "default": 0
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "createJob",
+        "summary": "Create and enable a bounded persistent job",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduledJobSpec"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/status": {
+      "get": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "schedulerStatus",
+        "summary": "Read scheduler admission health",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "running",
+                        "failed",
+                        "stopping",
+                        "disabled"
+                      ]
+                    },
+                    "max_concurrent_runs": {
+                      "type": "integer",
+                      "enum": [
+                        4
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        }
+      }
+    },
+    "/api/jobs/{id}": {
+      "get": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "getJob",
+        "summary": "Read a job, including soft-deleted audit entries",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "deleteJob",
+        "summary": "Stop future runs; explicit purge removes a deleted job audit",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "purge",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Destructive; requires prior soft deletion and no running attempt. Session history remains separately managed."
+          }
+        ]
+      }
+    },
+    "/api/jobs/{id}/runs": {
+      "get": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "listJobRuns",
+        "summary": "Read persisted attempts; uncertain runs are never automatically replayed",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScheduledJobRun"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000,
+              "default": 0
+            }
+          }
+        ]
+      }
+    },
+    "/api/jobs/{id}/pause": {
+      "post": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "pauseJob",
+        "summary": "Disable future claims; a running attempt may finish",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/jobs/{id}/resume": {
+      "post": {
+        "tags": [
+          "scheduler"
+        ],
+        "operationId": "resumeJob",
+        "summary": "Resume future occurrences after reviewing unknown effects",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or job absent"
+          },
+          "409": {
+            "description": "Job state or storage quota conflict"
+          },
+          "503": {
+            "description": "Scheduler unavailable; repair and restart"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
     "/health": {
       "get": {
         "tags": ["health"],
@@ -818,6 +1281,175 @@
       }
     },
     "schemas": {
+      "ScheduledJobSpec": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "prompt",
+          "schedule",
+          "enabled_tools"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1..128 UTF-8 bytes"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "1..32768 UTF-8 bytes"
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "expression",
+                  "timezone"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cron"
+                    ]
+                  },
+                  "expression": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "description": "Five fields, DOM/DOW OR; DST gaps skipped and folds use earliest instant once."
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "example": "Asia/Shanghai"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "seconds"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "interval"
+                    ]
+                  },
+                  "seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31536000
+                  }
+                }
+              }
+            ]
+          },
+          "enabled_tools": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Explicit registered background-qualified tools; empty is rejected."
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600,
+            "default": 120
+          }
+        }
+      },
+      "ScheduledJob": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ScheduledJobSpec"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "next_due_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ScheduledJobRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ScheduledJobSpec"
+          },
+          "scheduled_for_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "finished_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "needs_review",
+              "interrupted",
+              "skipped"
+            ]
+          },
+          "response": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponse"
+              }
+            ]
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "required": ["status", "agent_name", "version"],

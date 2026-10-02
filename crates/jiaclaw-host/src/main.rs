@@ -52,6 +52,9 @@ use std::{
 use tokio::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+mod jobs;
+mod schedule;
+mod scheduler;
 mod store;
 mod ui;
 use store::SessionStore;
@@ -512,6 +515,7 @@ struct AppState {
     session_ttl: Option<Duration>,
     metrics: Arc<Metrics>,
     metrics_require_auth: bool,
+    scheduler_health: Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// 健康检查响应
@@ -1757,6 +1761,15 @@ fn build_router_with_body_limit(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/jobs", get(scheduler::list).post(scheduler::create))
+        .route("/api/jobs/status", get(scheduler::status))
+        .route(
+            "/api/jobs/:id",
+            get(scheduler::get).delete(scheduler::delete),
+        )
+        .route("/api/jobs/:id/runs", get(scheduler::runs))
+        .route("/api/jobs/:id/pause", post(scheduler::pause))
+        .route("/api/jobs/:id/resume", post(scheduler::resume))
         .route(
             "/api/sessions",
             get(list_sessions_handler).post(create_session_handler),
@@ -2244,6 +2257,8 @@ async fn run_heartbeat_tick(
                 AppError::Unauthorized => "Unauthorized".to_string(),
                 AppError::NotFound => "NotFound".to_string(),
                 AppError::Conflict => "Conflict".to_string(),
+                AppError::ServiceUnavailable => "ServiceUnavailable".to_string(),
+                AppError::JobConflict(message) => message,
             };
             tracing::warn!(session_id, "Heartbeat 本轮 chat 失败: {message}");
             HeartbeatTickOutcome::Failed(message)
@@ -2410,6 +2425,7 @@ fn spawn_session_ttl_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
 
 /// serve 进程内后台任务，优雅退出时 abort，避免进程退出后仍跑。
 struct BackgroundTasks {
+    scheduler: Option<scheduler::Scheduler>,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
     ttl_sweeper: Option<tokio::task::JoinHandle<()>>,
     skill_reloader: Option<tokio::task::JoinHandle<()>>,
@@ -2489,10 +2505,14 @@ where
 
     shutdown.await;
     tracing::info!("收到关闭信号，停止接受新连接，等待进行中请求结束");
-    background.abort();
+    let shutdown_deadline = Instant::now() + shutdown_timeout;
     let _ = shutdown_tx.send(());
+    background.abort();
+    if let Some(scheduler) = background.scheduler {
+        scheduler.shutdown(&state, shutdown_timeout).await;
+    }
 
-    match tokio::time::timeout(shutdown_timeout, server_task).await {
+    match tokio::time::timeout_at(shutdown_deadline, server_task).await {
         Ok(Ok(Ok(()))) => {
             tracing::info!("进行中请求已完成");
         }
@@ -2602,6 +2622,21 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         anyhow::bail!("启用 MCP 必须设置 API Token");
     }
 
+    if config.scheduler.enabled {
+        if !config.http.persist || api_token.is_none() {
+            anyhow::bail!("scheduler requires SQLite persistence and an API Token");
+        }
+        if !matches!(
+            config.provider.provider_type.as_str(),
+            "brokerrouter" | "stub"
+        ) {
+            anyhow::bail!("scheduler requires brokerrouter or explicit stub provider");
+        }
+        if config.heartbeat.enabled {
+            anyhow::bail!("scheduler and legacy HEARTBEAT cannot both be enabled; register the heartbeat prompt as an explicit job");
+        }
+    }
+
     // Local authorization is checked before outbound MCP discovery.
     let metrics = Arc::new(Metrics::default());
     let agent = attach_tool_metrics(
@@ -2675,6 +2710,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         session_ttl,
         metrics,
         metrics_require_auth,
+        scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
     };
 
     let mut ttl_sweeper = None;
@@ -3167,6 +3203,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     println!("Unix 上可发送 SIGHUP 热加载技能；Windows 请用 POST /api/skills/reload");
     println!("按 Ctrl+C 或发送 SIGTERM 停止服务\n");
 
+    let scheduler = scheduler::start(shutdown_state.clone()).await?;
     let skill_reloader = spawn_skill_reload_on_sighup(shutdown_state.agent.clone());
     serve_with_graceful_shutdown(
         listener,
@@ -3175,6 +3212,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         shutdown_signal(),
         shutdown_timeout,
         BackgroundTasks {
+            scheduler,
             heartbeat: heartbeat_handle,
             ttl_sweeper,
             skill_reloader,
@@ -4388,6 +4426,8 @@ async fn hooks_discord_handler(
 /// 应用错误类型
 #[derive(Debug)]
 enum AppError {
+    ServiceUnavailable,
+    JobConflict(String),
     Internal(String),
     Unauthorized,
     NotFound,
@@ -4398,6 +4438,11 @@ enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
+            Self::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "scheduler_unavailable".to_string(),
+            ),
+            Self::JobConflict(message) => (StatusCode::CONFLICT, message),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Self::NotFound => (StatusCode::NOT_FOUND, "session_not_found".to_string()),
@@ -5973,6 +6018,7 @@ mod tests {
             session_ttl: None,
             metrics,
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router_with_body_limit(state, None, max_body_bytes)
     }
@@ -6003,6 +6049,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
         build_router(state)
@@ -6092,6 +6139,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router(state)
     }
@@ -6137,6 +6185,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router(state)
     }
@@ -6167,6 +6216,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router(state)
     }
@@ -6262,6 +6312,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router(state)
     }
@@ -6391,6 +6442,7 @@ mod tests {
             session_ttl: session_ttl_secs.map(Duration::from_secs),
             metrics,
             metrics_require_auth,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
         build_router(state)
@@ -6433,6 +6485,7 @@ mod tests {
             session_ttl: None,
             metrics,
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router_with_cors(state, build_cors_layer(cors))
     }
@@ -6484,6 +6537,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
 
@@ -7541,6 +7595,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
         let response = http_import_session(
@@ -7749,6 +7804,7 @@ mod tests {
             session_ttl: Some(Duration::from_secs(1)),
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
         {
@@ -7775,7 +7831,7 @@ mod tests {
         dir
     }
 
-    fn test_state_for_workspace(workspace: PathBuf) -> AppState {
+    pub(super) fn test_state_for_workspace(workspace: PathBuf) -> AppState {
         let config = AgentConfig {
             workspace_path: workspace,
             ..offline_test_config()
@@ -7804,6 +7860,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
 
@@ -7946,6 +8003,7 @@ mod tests {
         let handle = maybe_spawn_heartbeat(state, &config, None).expect("enabled=true 应启动任务");
         assert!(!handle.is_finished(), "未 abort 前心跳任务应仍在运行");
         let tasks = BackgroundTasks {
+            scheduler: None,
             heartbeat: Some(handle),
             ttl_sweeper: None,
             skill_reloader: None,
@@ -7993,6 +8051,7 @@ mod tests {
                 },
                 Duration::from_secs(1),
                 BackgroundTasks {
+                    scheduler: None,
                     heartbeat: None,
                     ttl_sweeper: None,
                     skill_reloader: None,
@@ -8138,6 +8197,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8504,6 +8564,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8564,6 +8625,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8625,6 +8687,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8700,6 +8763,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8774,6 +8838,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8835,6 +8900,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8896,6 +8962,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -8961,6 +9028,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -9026,6 +9094,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -9095,6 +9164,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -9168,6 +9238,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -9241,6 +9312,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -9310,6 +9382,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
 
@@ -11292,6 +11365,7 @@ mod tests {
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
         let session_id = "test-session".to_string();

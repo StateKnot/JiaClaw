@@ -98,3 +98,7 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 - `JIACLAW_LOG_FORMAT`；级别优先级 `JIACLAW_LOG_LEVEL` > `RUST_LOG` > `logging.level` > info
 
 旧示例中的 `[runtime]`, `[server]`, `[limits]`, `tools.enabled`, `tools.mcp_servers`, `skills.enabled` 不驱动运行时，已移除。请使用本文实际字段，不依赖被 serde 忽略的配置。
+
+## 持久调度
+
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v2，旧二进制拒绝降级；升级前应按部署指南停机备份。
