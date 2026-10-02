@@ -52,7 +52,11 @@ use std::{
 use tokio::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+mod channel_store;
+mod channel_types;
+mod channels;
 mod jobs;
+mod outbound;
 mod schedule;
 mod scheduler;
 mod store;
@@ -81,74 +85,8 @@ const X_RATELIMIT_RESET: &str = "x-ratelimit-reset";
 /// 会话 JSONL 导出的 `Content-Type`（NDJSON）。
 const SESSION_EXPORT_NDJSON: &str = "application/x-ndjson";
 
-/// Telegram Bot API webhook `secret_token` 请求头（官方名称，大小写不敏感）。
-const X_TELEGRAM_BOT_API_SECRET_TOKEN: &str = "X-Telegram-Bot-Api-Secret-Token";
-
-/// Telegram Bot API 默认根路径（不含 `/bot{token}`）。
-const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
-
-/// Telegram `sendMessage` 文本上限（字符）。
-const TELEGRAM_MAX_TEXT_LEN: usize = 4096;
-
-/// Telegram 出站 HTTP 超时（秒）。
-const TELEGRAM_SEND_TIMEOUT_SECS: u64 = 10;
-
-/// Slack Events API 签名头（官方名称，大小写不敏感）。
-const X_SLACK_SIGNATURE: &str = "X-Slack-Signature";
-
-/// Slack Events API 请求时间戳头（Unix 秒）。
-const X_SLACK_REQUEST_TIMESTAMP: &str = "X-Slack-Request-Timestamp";
-
-/// Slack Web API 默认根路径。
-const SLACK_API_BASE: &str = "https://slack.com/api";
-
-/// Slack `chat.postMessage` 文本上限（字符）。
-const SLACK_MAX_TEXT_LEN: usize = 40_000;
-
-/// Slack 出站 HTTP 超时（秒）。
-const SLACK_SEND_TIMEOUT_SECS: u64 = 10;
-
-/// Slack 签名时间窗（秒）：`|now - timestamp|` 超过则拒绝。
+/// Platform webhook timestamp freshness window.
 const SLACK_MAX_TIMESTAMP_SKEW_SECS: u64 = 300;
-
-/// Discord Interactions 签名头（官方名称，大小写不敏感）。
-const X_SIGNATURE_ED25519: &str = "X-Signature-Ed25519";
-
-/// Discord Interactions 请求时间戳头。
-const X_SIGNATURE_TIMESTAMP: &str = "X-Signature-Timestamp";
-
-/// Discord HTTP API 默认根路径（含 v10）。
-const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
-
-/// Discord 消息内容上限（字符）。
-const DISCORD_MAX_TEXT_LEN: usize = 2000;
-
-/// Discord 出站 HTTP 超时（秒）。
-const DISCORD_SEND_TIMEOUT_SECS: u64 = 10;
-
-/// Discord Interaction type: PING。
-const DISCORD_INTERACTION_PING: u64 = 1;
-
-/// Discord Interaction type: `APPLICATION_COMMAND`。
-const DISCORD_INTERACTION_APPLICATION_COMMAND: u64 = 2;
-
-/// Discord application command type: `CHAT_INPUT`。
-const DISCORD_COMMAND_CHAT_INPUT: u64 = 1;
-
-/// Discord command option type: STRING。
-const DISCORD_OPTION_STRING: u64 = 3;
-
-/// Discord callback type: PONG。
-const DISCORD_CALLBACK_PONG: u64 = 1;
-
-/// Discord callback type: `CHANNEL_MESSAGE_WITH_SOURCE`。
-const DISCORD_CALLBACK_CHANNEL_MESSAGE: u64 = 4;
-
-/// Discord callback type: `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE`。
-const DISCORD_CALLBACK_DEFERRED_CHANNEL_MESSAGE: u64 = 5;
-
-/// Discord message flag: EPHEMERAL。
-const DISCORD_FLAG_EPHEMERAL: u64 = 64;
 
 /// HMAC-SHA256 用于 Slack v0 签名。
 type HmacSha256 = Hmac<Sha256>;
@@ -495,20 +433,12 @@ impl SessionRecord {
 /// HTTP 服务的共享状态
 #[derive(Clone)]
 struct AppState {
+    channel_runtime: Option<Arc<channels::ChannelRuntime>>,
     agent: Arc<JiaClawAgent>,
     sessions: Arc<Mutex<SessionStore>>,
     turn_locks: Arc<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     api_token: Option<String>,
     webhook_secret: Option<String>,
-    telegram_secret: Option<String>,
-    telegram_bot_token: Option<String>,
-    telegram_api_base: String,
-    slack_signing_secret: Option<String>,
-    slack_bot_token: Option<String>,
-    slack_api_base: String,
-    discord_public_key: Option<String>,
-    discord_bot_token: Option<String>,
-    discord_api_base: String,
     persist_enabled: bool,
     persist_path: Arc<PathBuf>,
     rate_limiter: Option<Arc<GlobalRateLimiter>>,
@@ -539,165 +469,6 @@ struct InboundWebhookRequest {
 
 fn default_channel() -> String {
     "webhook".to_string()
-}
-
-/// Telegram Bot API `Update` 的最小子集（手写 serde，不引入 Bot SDK）。
-#[derive(Debug, Deserialize)]
-struct TelegramUpdate {
-    #[serde(default)]
-    message: Option<TelegramMessage>,
-    #[serde(default)]
-    edited_message: Option<TelegramMessage>,
-}
-
-/// Telegram `Message` 最小子集：只要 `chat.id` 与可选 `text`。
-#[derive(Debug, Deserialize)]
-struct TelegramMessage {
-    chat: TelegramChat,
-    #[serde(default)]
-    text: Option<String>,
-}
-
-/// Telegram `Chat` 最小子集。
-#[derive(Debug, Deserialize)]
-struct TelegramChat {
-    id: TelegramChatId,
-}
-
-/// Bot API 的 `chat.id` 一般为整数，测试/代理也可能给字符串。
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum TelegramChatId {
-    Int(i64),
-    Str(String),
-}
-
-impl std::fmt::Display for TelegramChatId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Int(id) => write!(f, "{id}"),
-            Self::Str(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// 从 Update 取出可入站的 `(chat.id, text)`；无文本则 `None`。
-fn telegram_inbound_text(update: &TelegramUpdate) -> Option<(String, String)> {
-    let msg = update.message.as_ref().or(update.edited_message.as_ref())?;
-    let text = msg
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?;
-    Some((msg.chat.id.to_string(), text.to_string()))
-}
-
-/// 按 Telegram 4096 字符上限截断 `sendMessage` 文本。
-fn truncate_telegram_text(text: &str) -> &str {
-    match text.char_indices().nth(TELEGRAM_MAX_TEXT_LEN) {
-        Some((idx, _)) => &text[..idx],
-        None => text,
-    }
-}
-
-/// 错误信息里可能含 Bot Token（minreq 会把 URL 写进 Display），打码后再记日志/回传。
-fn redact_secret(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        text.to_string()
-    } else {
-        text.replace(secret, "***")
-    }
-}
-
-/// Telegram `sendMessage` 出站结果。失败不得改变 webhook HTTP 状态。
-struct TelegramDelivery {
-    delivered: bool,
-    error: Option<String>,
-}
-
-fn send_telegram_message_sync(
-    api_base: &str,
-    token: &str,
-    chat_id: &str,
-    text: &str,
-) -> Result<(), String> {
-    let url = format!("{api_base}/bot{token}/sendMessage");
-    let payload = json!({
-        "chat_id": chat_id,
-        "text": text,
-    });
-    let response = minreq::post(&url)
-        .with_header("Content-Type", "application/json")
-        .with_timeout(TELEGRAM_SEND_TIMEOUT_SECS)
-        .with_body(payload.to_string())
-        .send()
-        .map_err(|e| redact_secret(&e.to_string(), token))?;
-
-    let status = response.status_code;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}"));
-    }
-
-    let body = response.as_str().unwrap_or_default();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
-            let description = value
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("ok=false");
-            return Err(redact_secret(description, token));
-        }
-    }
-    Ok(())
-}
-
-async fn send_telegram_reply(
-    api_base: &str,
-    token: &str,
-    chat_id: &str,
-    text: &str,
-    request_id: &str,
-) -> TelegramDelivery {
-    let api_base = api_base.trim_end_matches('/').to_string();
-    let token = token.to_string();
-    let chat_id = chat_id.to_string();
-    let text = truncate_telegram_text(text).to_string();
-    let request_id = request_id.to_string();
-
-    let result = tokio::task::spawn_blocking(move || {
-        send_telegram_message_sync(&api_base, &token, &chat_id, &text)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => TelegramDelivery {
-            delivered: true,
-            error: None,
-        },
-        Ok(Err(err)) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Telegram sendMessage 失败；仍返回同步 reply，避免 webhook 重试"
-            );
-            TelegramDelivery {
-                delivered: false,
-                error: Some(err),
-            }
-        }
-        Err(join_err) => {
-            let err = format!("task join failed: {join_err}");
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Telegram sendMessage 失败；仍返回同步 reply，避免 webhook 重试"
-            );
-            TelegramDelivery {
-                delivered: false,
-                error: Some(err),
-            }
-        }
-    }
 }
 
 fn telegram_token_config_source() -> &'static str {
@@ -732,311 +503,6 @@ fn discord_token_config_source() -> &'static str {
     match std::env::var("JIACLAW_DISCORD_BOT_TOKEN") {
         Ok(value) if !value.trim().is_empty() => "环境变量 JIACLAW_DISCORD_BOT_TOKEN",
         _ => "配置文件",
-    }
-}
-
-/// Slack Events API envelope 最小子集（手写 serde，不引入 Slack SDK）。
-#[derive(Debug, Deserialize)]
-struct SlackEnvelope {
-    #[serde(rename = "type")]
-    event_type: String,
-    #[serde(default)]
-    challenge: Option<String>,
-    #[serde(default)]
-    team_id: Option<String>,
-    #[serde(default)]
-    event: Option<SlackEvent>,
-}
-
-/// Slack `event` 最小子集：message 文本入站。
-#[derive(Debug, Deserialize)]
-struct SlackEvent {
-    #[serde(rename = "type")]
-    event_type: String,
-    #[serde(default)]
-    subtype: Option<String>,
-    #[serde(default)]
-    channel: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-}
-
-/// Slack 入站分类。
-#[derive(Debug, PartialEq, Eq)]
-enum SlackInboundKind {
-    UrlVerification {
-        challenge: String,
-    },
-    Message {
-        session_id: String,
-        channel: String,
-        text: String,
-    },
-    Skipped {
-        reason: String,
-    },
-}
-
-fn optional_nonempty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|s| !s.is_empty())
-}
-
-fn slack_session_id(team_id: Option<&str>, channel: &str) -> String {
-    match optional_nonempty(team_id) {
-        Some(team) => format!("slack:{team}:{channel}"),
-        None => format!("slack:{channel}"),
-    }
-}
-
-fn classify_slack_envelope(envelope: &SlackEnvelope) -> SlackInboundKind {
-    if envelope.event_type == "url_verification" {
-        return SlackInboundKind::UrlVerification {
-            challenge: envelope.challenge.clone().unwrap_or_default(),
-        };
-    }
-    if envelope.event_type != "event_callback" {
-        return SlackInboundKind::Skipped {
-            reason: "ignored event type".to_string(),
-        };
-    }
-    let Some(event) = envelope.event.as_ref() else {
-        return SlackInboundKind::Skipped {
-            reason: "ignored event type".to_string(),
-        };
-    };
-    if event.event_type != "message" {
-        return SlackInboundKind::Skipped {
-            reason: "ignored event type".to_string(),
-        };
-    }
-    if optional_nonempty(event.subtype.as_deref()).is_some() {
-        return SlackInboundKind::Skipped {
-            reason: "ignored message subtype".to_string(),
-        };
-    }
-    let Some(channel) = optional_nonempty(event.channel.as_deref()) else {
-        return SlackInboundKind::Skipped {
-            reason: "missing channel".to_string(),
-        };
-    };
-    let Some(text) = optional_nonempty(event.text.as_deref()) else {
-        return SlackInboundKind::Skipped {
-            reason: "no text in event".to_string(),
-        };
-    };
-    SlackInboundKind::Message {
-        session_id: slack_session_id(envelope.team_id.as_deref(), channel),
-        channel: channel.to_string(),
-        text: text.to_string(),
-    }
-}
-
-/// Discord snowflake：API 多为字符串，测试/代理也可能给数字。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum DiscordSnowflake {
-    String(String),
-    Number(u64),
-}
-
-impl DiscordSnowflake {
-    fn as_trimmed(&self) -> Option<String> {
-        match self {
-            Self::String(s) => optional_nonempty(Some(s)).map(ToString::to_string),
-            Self::Number(n) => Some(n.to_string()),
-        }
-    }
-}
-
-/// Discord Interactions 入站最小子集（手写 serde，不引入 serenity）。
-#[derive(Debug, Deserialize)]
-struct DiscordInteraction {
-    #[serde(rename = "type")]
-    interaction_type: u64,
-    #[serde(default)]
-    application_id: Option<DiscordSnowflake>,
-    #[serde(default)]
-    guild_id: Option<DiscordSnowflake>,
-    #[serde(default)]
-    channel_id: Option<DiscordSnowflake>,
-    #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
-    data: Option<DiscordInteractionData>,
-}
-
-/// Discord `data` 最小子集：Chat Input Command 名称与选项。
-#[derive(Debug, Deserialize)]
-struct DiscordInteractionData {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(rename = "type")]
-    #[serde(default)]
-    command_type: Option<u64>,
-    #[serde(default)]
-    options: Vec<DiscordCommandOption>,
-}
-
-/// Discord 命令选项（可嵌套 subcommand）。
-#[derive(Debug, Deserialize)]
-struct DiscordCommandOption {
-    #[serde(default)]
-    name: String,
-    #[serde(rename = "type")]
-    #[serde(default)]
-    option_type: Option<u64>,
-    #[serde(default)]
-    value: Option<serde_json::Value>,
-    #[serde(default)]
-    options: Vec<DiscordCommandOption>,
-}
-
-/// Discord 入站分类。
-#[derive(Debug, PartialEq, Eq)]
-enum DiscordInboundKind {
-    Ping,
-    ChatCommand {
-        session_id: String,
-        text: String,
-        application_id: String,
-        interaction_token: String,
-    },
-    Skipped {
-        reason: String,
-    },
-}
-
-fn discord_session_id(guild_id: Option<&str>, channel_id: &str) -> String {
-    match optional_nonempty(guild_id) {
-        Some(guild) => format!("discord:{guild}:{channel_id}"),
-        None => format!("discord:dm:{channel_id}"),
-    }
-}
-
-fn json_value_nonempty_string(value: Option<&serde_json::Value>) -> Option<String> {
-    value.and_then(|v| match v {
-        serde_json::Value::String(s) => optional_nonempty(Some(s)).map(ToString::to_string),
-        _ => None,
-    })
-}
-
-fn json_value_display(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::String(s) => optional_nonempty(Some(s)).map(ToString::to_string),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        other => Some(other.to_string()),
-    }
-}
-
-fn first_string_option(options: &[DiscordCommandOption]) -> Option<String> {
-    for option in options {
-        if option.option_type.unwrap_or(0) == DISCORD_OPTION_STRING || option.option_type.is_none()
-        {
-            if let Some(text) = json_value_nonempty_string(option.value.as_ref()) {
-                return Some(text);
-            }
-        }
-        if let Some(text) = first_string_option(&option.options) {
-            return Some(text);
-        }
-    }
-    None
-}
-
-fn flatten_option_parts(options: &[DiscordCommandOption]) -> Vec<String> {
-    let mut parts = Vec::new();
-    for option in options {
-        if option.options.is_empty() {
-            match option.value.as_ref().and_then(json_value_display) {
-                Some(value) => {
-                    if optional_nonempty(Some(&option.name)).is_some() {
-                        parts.push(format!("{}={value}", option.name.trim()));
-                    } else {
-                        parts.push(value);
-                    }
-                }
-                None => {
-                    if let Some(name) = optional_nonempty(Some(&option.name)) {
-                        parts.push(name.to_string());
-                    }
-                }
-            }
-        } else {
-            if let Some(name) = optional_nonempty(Some(&option.name)) {
-                parts.push(name.to_string());
-            }
-            parts.extend(flatten_option_parts(&option.options));
-        }
-    }
-    parts
-}
-
-fn discord_command_text(data: &DiscordInteractionData) -> Option<String> {
-    if let Some(text) = first_string_option(&data.options) {
-        return Some(text);
-    }
-    let mut parts = Vec::new();
-    if let Some(name) = optional_nonempty(data.name.as_deref()) {
-        parts.push(name.to_string());
-    }
-    parts.extend(flatten_option_parts(&data.options));
-    let text = parts.join(" ");
-    optional_nonempty(Some(&text)).map(ToString::to_string)
-}
-
-fn classify_discord_interaction(interaction: &DiscordInteraction) -> DiscordInboundKind {
-    if interaction.interaction_type == DISCORD_INTERACTION_PING {
-        return DiscordInboundKind::Ping;
-    }
-    if interaction.interaction_type != DISCORD_INTERACTION_APPLICATION_COMMAND {
-        return DiscordInboundKind::Skipped {
-            reason: "ignored interaction type".to_string(),
-        };
-    }
-    let Some(data) = interaction.data.as_ref() else {
-        return DiscordInboundKind::Skipped {
-            reason: "missing command data".to_string(),
-        };
-    };
-    if data
-        .command_type
-        .is_some_and(|command_type| command_type != DISCORD_COMMAND_CHAT_INPUT)
-    {
-        return DiscordInboundKind::Skipped {
-            reason: "ignored command type".to_string(),
-        };
-    }
-    let Some(channel_id) = interaction
-        .channel_id
-        .as_ref()
-        .and_then(DiscordSnowflake::as_trimmed)
-    else {
-        return DiscordInboundKind::Skipped {
-            reason: "missing channel".to_string(),
-        };
-    };
-    let Some(text) = discord_command_text(data) else {
-        return DiscordInboundKind::Skipped {
-            reason: "no text in command".to_string(),
-        };
-    };
-    let application_id = interaction
-        .application_id
-        .as_ref()
-        .and_then(DiscordSnowflake::as_trimmed)
-        .unwrap_or_default();
-    let interaction_token = interaction.token.clone().unwrap_or_default();
-    let guild_id = interaction
-        .guild_id
-        .as_ref()
-        .and_then(DiscordSnowflake::as_trimmed);
-    DiscordInboundKind::ChatCommand {
-        session_id: discord_session_id(guild_id.as_deref(), &channel_id),
-        text,
-        application_id,
-        interaction_token,
     }
 }
 
@@ -1079,184 +545,6 @@ fn verify_discord_request(
         return false;
     };
     verify_discord_signature(public_key_hex, timestamp, body, signature)
-}
-
-fn truncate_discord_text(text: &str) -> &str {
-    match text.char_indices().nth(DISCORD_MAX_TEXT_LEN) {
-        Some((idx, _)) => &text[..idx],
-        None => text,
-    }
-}
-
-fn discord_followup_content(text: &str) -> String {
-    let truncated = truncate_discord_text(text);
-    if truncated.trim().is_empty() {
-        "(empty reply)".to_string()
-    } else {
-        truncated.to_string()
-    }
-}
-
-fn discord_pong_response() -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({ "type": DISCORD_CALLBACK_PONG })),
-    )
-        .into_response()
-}
-
-fn discord_deferred_response() -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({ "type": DISCORD_CALLBACK_DEFERRED_CHANNEL_MESSAGE })),
-    )
-        .into_response()
-}
-
-fn discord_skipped_response(reason: &str) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "type": DISCORD_CALLBACK_CHANNEL_MESSAGE,
-            "data": {
-                "content": format!("skipped: {reason}"),
-                "flags": DISCORD_FLAG_EPHEMERAL,
-            }
-        })),
-    )
-        .into_response()
-}
-
-/// Discord deferred follow-up：失败只记日志，不影响已返回的 `type=5` ACK。
-fn edit_discord_original_sync(
-    api_base: &str,
-    token: &str,
-    application_id: &str,
-    interaction_token: &str,
-    text: &str,
-) -> Result<(), String> {
-    let url =
-        format!("{api_base}/webhooks/{application_id}/{interaction_token}/messages/@original");
-    let payload = json!({
-        "content": text,
-    });
-    let response = minreq::patch(&url)
-        .with_header("Content-Type", "application/json")
-        .with_header("Authorization", format!("Bot {token}"))
-        .with_timeout(DISCORD_SEND_TIMEOUT_SECS)
-        .with_body(payload.to_string())
-        .send()
-        .map_err(|e| redact_secret(&e.to_string(), token))?;
-
-    let status = response.status_code;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}"));
-    }
-
-    let body = response.as_str().unwrap_or_default();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
-            if value.get("code").is_some() {
-                return Err(redact_secret(message, token));
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn edit_discord_original_reply(
-    api_base: &str,
-    token: &str,
-    application_id: &str,
-    interaction_token: &str,
-    text: &str,
-    request_id: &str,
-) {
-    let api_base = api_base.trim_end_matches('/').to_string();
-    let token = token.to_string();
-    let application_id = application_id.to_string();
-    let interaction_token = interaction_token.to_string();
-    let text = discord_followup_content(text);
-    let request_id = request_id.to_string();
-
-    let result = tokio::task::spawn_blocking(move || {
-        edit_discord_original_sync(
-            &api_base,
-            &token,
-            &application_id,
-            &interaction_token,
-            &text,
-        )
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Discord 编辑原始 Interaction 失败；入站已 ACK deferred"
-            );
-        }
-        Err(join_err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %join_err,
-                "Discord 编辑原始 Interaction 失败；入站已 ACK deferred"
-            );
-        }
-    }
-}
-
-fn spawn_discord_deferred_chat(
-    state: AppState,
-    session_id: String,
-    text: String,
-    application_id: String,
-    interaction_token: String,
-    request_id: String,
-) {
-    tokio::spawn(async move {
-        let reply =
-            match run_session_user_chat(&state, &session_id, &text, &request_id, "discord").await {
-                Ok(reply) => reply,
-                Err(err) => {
-                    tracing::warn!(
-                        request_id = %request_id,
-                        error = ?err,
-                        "Discord deferred chat 失败"
-                    );
-                    "JiaClaw 处理失败".to_string()
-                }
-            };
-
-        let Some(token) = state.discord_bot_token.as_deref() else {
-            tracing::warn!(
-                request_id = %request_id,
-                session_id = %session_id,
-                "未配置 Discord Bot Token，无法编辑 deferred 回复；session 已记录"
-            );
-            return;
-        };
-        if application_id.is_empty() || interaction_token.is_empty() {
-            tracing::warn!(
-                request_id = %request_id,
-                session_id = %session_id,
-                "缺少 application_id 或 interaction token，无法编辑 deferred 回复"
-            );
-            return;
-        }
-        edit_discord_original_reply(
-            &state.discord_api_base,
-            token,
-            &application_id,
-            &interaction_token,
-            &reply,
-            &request_id,
-        )
-        .await;
-    });
 }
 
 #[cfg(test)]
@@ -1354,148 +642,6 @@ fn verify_slack_request(
         return false;
     };
     verify_slack_v0_signature(secret, timestamp, body, signature)
-}
-
-fn truncate_slack_text(text: &str) -> &str {
-    match text.char_indices().nth(SLACK_MAX_TEXT_LEN) {
-        Some((idx, _)) => &text[..idx],
-        None => text,
-    }
-}
-
-/// Slack `chat.postMessage` 出站结果。失败不得改变 webhook HTTP 状态。
-struct SlackDelivery {
-    delivered: bool,
-    error: Option<String>,
-}
-
-fn send_slack_message_sync(
-    api_base: &str,
-    token: &str,
-    channel: &str,
-    text: &str,
-) -> Result<(), String> {
-    let url = format!("{api_base}/chat.postMessage");
-    let payload = json!({
-        "channel": channel,
-        "text": text,
-    });
-    let response = minreq::post(&url)
-        .with_header("Content-Type", "application/json")
-        .with_header("Authorization", format!("Bearer {token}"))
-        .with_timeout(SLACK_SEND_TIMEOUT_SECS)
-        .with_body(payload.to_string())
-        .send()
-        .map_err(|e| redact_secret(&e.to_string(), token))?;
-
-    let status = response.status_code;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}"));
-    }
-
-    let body = response.as_str().unwrap_or_default();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
-            let description = value
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("ok=false");
-            return Err(redact_secret(description, token));
-        }
-    }
-    Ok(())
-}
-
-async fn send_slack_reply(
-    api_base: &str,
-    token: &str,
-    channel: &str,
-    text: &str,
-    request_id: &str,
-) -> SlackDelivery {
-    let api_base = api_base.trim_end_matches('/').to_string();
-    let token = token.to_string();
-    let channel = channel.to_string();
-    let text = truncate_slack_text(text).to_string();
-    let request_id = request_id.to_string();
-
-    let result = tokio::task::spawn_blocking(move || {
-        send_slack_message_sync(&api_base, &token, &channel, &text)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => SlackDelivery {
-            delivered: true,
-            error: None,
-        },
-        Ok(Err(err)) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Slack chat.postMessage 失败；仍返回同步 reply，避免 Events API 重试"
-            );
-            SlackDelivery {
-                delivered: false,
-                error: Some(err),
-            }
-        }
-        Err(join_err) => {
-            let err = format!("task join failed: {join_err}");
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Slack chat.postMessage 失败；仍返回同步 reply，避免 Events API 重试"
-            );
-            SlackDelivery {
-                delivered: false,
-                error: Some(err),
-            }
-        }
-    }
-}
-
-/// Slack 入站响应：URL 验证以外，有文本时同步回传 assistant 文本。
-#[derive(Debug, Serialize, Deserialize)]
-struct SlackInboundResponse {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reply: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    skipped: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    delivered: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    delivery_error: Option<String>,
-}
-
-/// Slack URL 验证响应：必须是 `{ challenge }`。
-#[derive(Debug, Serialize)]
-struct SlackChallengeResponse {
-    challenge: String,
-}
-
-/// Telegram 入站响应：有文本时同步回传 assistant 文本，便于长轮询调试。
-#[derive(Debug, Serialize, Deserialize)]
-struct TelegramInboundResponse {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reply: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    skipped: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    /// 是否已成功调用 Bot `sendMessage`；未配置 token 时省略，保持与仅入站切片兼容。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    delivered: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    delivery_error: Option<String>,
 }
 
 fn build_rate_limiter(per_minute: u32) -> Option<Arc<GlobalRateLimiter>> {
@@ -1761,6 +907,18 @@ fn build_router_with_body_limit(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/channels/status", get(channels::status))
+        .route("/api/channels/events", get(channels::events))
+        .route(
+            "/api/channels/events/:id",
+            get(channels::event).delete(channels::purge),
+        )
+        .route("/api/channels/events/:id/cancel", post(channels::cancel))
+        .route("/api/channels/deliveries", get(channels::deliveries))
+        .route(
+            "/api/channels/deliveries/:id/resolve",
+            post(channels::resolve),
+        )
         .route("/api/jobs", get(scheduler::list).post(scheduler::create))
         .route("/api/jobs/status", get(scheduler::status))
         .route(
@@ -1785,9 +943,9 @@ fn build_router_with_body_limit(
         .route("/api/skills/reload", post(reload_skills_handler))
         .route("/api/openapi.json", get(openapi_handler))
         .route("/hooks/inbound", post(hooks_inbound_handler))
-        .route("/hooks/telegram", post(hooks_telegram_handler))
-        .route("/hooks/slack", post(hooks_slack_handler))
-        .route("/hooks/discord", post(hooks_discord_handler))
+        .route("/hooks/telegram", post(channels::telegram))
+        .route("/hooks/slack", post(channels::slack))
+        .route("/hooks/discord", post(channels::discord))
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(middleware::from_fn_with_state(
             body_limit,
@@ -2253,6 +1411,8 @@ async fn run_heartbeat_tick(
         }
         Err(e) => {
             let message = match e {
+                AppError::ChannelConflict => "channel_state_conflict".to_string(),
+                AppError::ChannelUnavailable => "channel_unavailable".to_string(),
                 AppError::Internal(msg) | AppError::BadRequest(msg) => msg,
                 AppError::Unauthorized => "Unauthorized".to_string(),
                 AppError::NotFound => "NotFound".to_string(),
@@ -2425,6 +1585,7 @@ fn spawn_session_ttl_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
 
 /// serve 进程内后台任务，优雅退出时 abort，避免进程退出后仍跑。
 struct BackgroundTasks {
+    channels: Option<channels::ChannelWorkers>,
     scheduler: Option<scheduler::Scheduler>,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
     ttl_sweeper: Option<tokio::task::JoinHandle<()>>,
@@ -2508,9 +1669,21 @@ where
     let shutdown_deadline = Instant::now() + shutdown_timeout;
     let _ = shutdown_tx.send(());
     background.abort();
-    if let Some(scheduler) = background.scheduler {
-        scheduler.shutdown(&state, shutdown_timeout).await;
+    if let Some(channels) = &background.channels {
+        channels.stop(&state);
     }
+    tokio::join!(
+        async {
+            if let Some(scheduler) = background.scheduler {
+                scheduler.shutdown(&state, shutdown_timeout).await;
+            }
+        },
+        async {
+            if let Some(channels) = background.channels {
+                channels.shutdown(&state, shutdown_timeout).await;
+            }
+        }
+    );
 
     match tokio::time::timeout_at(shutdown_deadline, server_task).await {
         Ok(Ok(Ok(()))) => {
@@ -2637,6 +1810,8 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         }
     }
 
+    let channel_runtime = channels::ChannelRuntime::configure(&config, api_token.as_deref())?;
+
     // Local authorization is checked before outbound MCP discovery.
     let metrics = Arc::new(Metrics::default());
     let agent = attach_tool_metrics(
@@ -2695,21 +1870,13 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         turn_locks: Arc::new(Mutex::new(HashMap::new())),
         api_token: api_token.clone(),
         webhook_secret: webhook_secret.clone(),
-        telegram_secret: telegram_secret.clone(),
-        telegram_bot_token: telegram_bot_token.clone(),
-        telegram_api_base: TELEGRAM_API_BASE.to_string(),
-        slack_signing_secret: slack_signing_secret.clone(),
-        slack_bot_token: slack_bot_token.clone(),
-        slack_api_base: SLACK_API_BASE.to_string(),
-        discord_public_key: discord_public_key.clone(),
-        discord_bot_token: discord_bot_token.clone(),
-        discord_api_base: DISCORD_API_BASE.to_string(),
         persist_enabled: config.http.persist,
         persist_path: Arc::new(persist_path),
         rate_limiter,
         session_ttl,
         metrics,
         metrics_require_auth,
+        channel_runtime,
         scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
     };
 
@@ -2773,19 +1940,19 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     if telegram_bot_token.is_some() {
         tracing::info!("   • Telegram 出站: 已配置 Bot Token（成功回复后调用 sendMessage）");
     } else {
-        tracing::info!("   • Telegram 出站: 未配置 Bot Token（仅同步 JSON reply）");
+        tracing::info!("   • Telegram 出站: 未配置；启用渠道还需显式安装/身份/工具策略");
     }
     if slack_bot_token.is_some() {
         tracing::info!("   • Slack 出站: 已配置 Bot Token（成功回复后调用 chat.postMessage）");
     } else {
-        tracing::info!("   • Slack 出站: 未配置 Bot Token（仅同步 JSON reply）");
+        tracing::info!("   • Slack 出站: 未配置；启用渠道还需显式安装/身份/工具策略");
     }
     if discord_bot_token.is_some() {
         tracing::info!(
-            "   • Discord 出站: 已配置 Bot Token（deferred 后 PATCH 编辑原始 Interaction）"
+            "   • Discord 出站: interaction 回复通过持久 outbox 投递（不发送 Bot Authorization）"
         );
     } else {
-        tracing::info!("   • Discord 出站: 未配置 Bot Token（deferred ACK 后仅记 session）");
+        tracing::info!("   • Discord 出站: interaction 回复使用加密的短期令牌；无需 Bot Token");
     }
     tracing::info!("   • X-Request-Id                - 请求无该头则生成 UUID 并回写");
     tracing::info!(
@@ -2963,7 +2130,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             telegram_token_config_source()
         );
     } else {
-        println!("   • Telegram Bot Token: ⚠️  未配置（仅同步 JSON reply，不调用 sendMessage）");
+        println!("   • Telegram Bot Token: ⚠️  未配置；Telegram 渠道需要 Token 和授权策略");
     }
 
     if slack_signing_secret.is_some() {
@@ -2981,7 +2148,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             slack_token_config_source()
         );
     } else {
-        println!("   • Slack Bot Token: ⚠️  未配置（仅同步 JSON reply，不调用 chat.postMessage）");
+        println!("   • Slack Bot Token: ⚠️  未配置；Slack 渠道需要 Token 和授权策略");
     }
 
     if discord_public_key.is_some() {
@@ -2995,11 +2162,13 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
 
     if discord_bot_token.is_some() {
         println!(
-            "   • Discord Bot Token: ✅ 已配置（通过 {}，明文不打印；将 PATCH 编辑 deferred 回复）",
+            "   • Discord 旧 Bot Token: 已配置（通过 {}，回复不会发送 Bot Authorization）",
             discord_token_config_source()
         );
     } else {
-        println!("   • Discord Bot Token: ⚠️  未配置（deferred ACK 后仅记 session，不 follow-up）");
+        println!(
+            "   • Discord Bot Token: ⚠️  不需要 Bot Token；interaction 回复使用加密的短期令牌"
+        );
     }
 
     if let Some(limit) = rate_limit_per_minute {
@@ -3203,6 +2372,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     println!("Unix 上可发送 SIGHUP 热加载技能；Windows 请用 POST /api/skills/reload");
     println!("按 Ctrl+C 或发送 SIGTERM 停止服务\n");
 
+    let channels = channels::start(shutdown_state.clone()).await?;
     let scheduler = scheduler::start(shutdown_state.clone()).await?;
     let skill_reloader = spawn_skill_reload_on_sighup(shutdown_state.agent.clone());
     serve_with_graceful_shutdown(
@@ -3212,6 +2382,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         shutdown_signal(),
         shutdown_timeout,
         BackgroundTasks {
+            channels,
             scheduler,
             heartbeat: heartbeat_handle,
             ttl_sweeper,
@@ -3229,13 +2400,22 @@ async fn configured_hooks_only(
     next: middleware::Next,
 ) -> axum::response::Response {
     let configured = match request.uri().path() {
-        "/hooks/inbound" => state.webhook_secret.as_deref(),
-        "/hooks/telegram" => state.telegram_secret.as_deref(),
-        "/hooks/slack" => state.slack_signing_secret.as_deref(),
-        "/hooks/discord" => state.discord_public_key.as_deref(),
-        _ => return next.run(request).await,
+        "/hooks/inbound" => state.webhook_secret.is_some(),
+        "/hooks/telegram" => state
+            .channel_runtime
+            .as_ref()
+            .is_some_and(|r| r.installation(channel_types::Channel::Telegram).is_some()),
+        "/hooks/slack" => state
+            .channel_runtime
+            .as_ref()
+            .is_some_and(|r| r.installation(channel_types::Channel::Slack).is_some()),
+        "/hooks/discord" => state
+            .channel_runtime
+            .as_ref()
+            .is_some_and(|r| r.installation(channel_types::Channel::Discord).is_some()),
+        _ => true,
     };
-    if configured.is_none_or(|value| value.trim().is_empty()) {
+    if !configured {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error":"channel_disabled"})),
@@ -4082,7 +3262,7 @@ fn unauthorized_hook_response() -> Response {
         .into_response()
 }
 
-/// 将用户文本写入指定 session 并跑一轮 agent chat（`/hooks/inbound`、`/hooks/telegram`、`/hooks/slack` 与 `/hooks/discord` 共用）。
+/// 将用户文本写入指定 session 并跑一轮 agent chat（仅管理员配置的 `/hooks/inbound` 与旧 HEARTBEAT 使用）。
 async fn run_session_user_chat(
     state: &AppState,
     session_id: &str,
@@ -4180,252 +3360,11 @@ async fn hooks_inbound_handler(
     Ok((StatusCode::OK, Json(webhook_response)).into_response())
 }
 
-/// Telegram Bot 入站：把 Update 映射到现有 session/chat 路径。
-async fn hooks_telegram_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(update): Json<TelegramUpdate>,
-) -> Result<impl IntoResponse, AppError> {
-    let request_id = request_id_log_value(&headers).to_string();
-
-    tracing::info!(request_id = %request_id, "收到 Telegram 入站 Update");
-
-    if let Some(expected) = state.telegram_secret.as_deref() {
-        let provided = headers
-            .get(X_TELEGRAM_BOT_API_SECRET_TOKEN)
-            .and_then(|v| v.to_str().ok());
-        if provided != Some(expected) {
-            tracing::warn!(
-                request_id = %request_id,
-                "Telegram 鉴权失败: secret token 不匹配"
-            );
-            return Ok(unauthorized_hook_response());
-        }
-    }
-
-    let Some((chat_id, text)) = telegram_inbound_text(&update) else {
-        tracing::info!(request_id = %request_id, "跳过无文本的 Telegram update");
-        let skipped = TelegramInboundResponse {
-            ok: true,
-            reply: None,
-            session_id: None,
-            skipped: Some(true),
-            reason: Some("no text in update".to_string()),
-            delivered: None,
-            delivery_error: None,
-        };
-        return Ok((StatusCode::OK, Json(skipped)).into_response());
-    };
-
-    let session_id = format!("telegram:{chat_id}");
-    let reply = run_session_user_chat(&state, &session_id, &text, &request_id, "telegram").await?;
-
-    let (delivered, delivery_error) = if let Some(token) = state.telegram_bot_token.as_deref() {
-        let delivery = send_telegram_reply(
-            &state.telegram_api_base,
-            token,
-            &chat_id,
-            &reply,
-            &request_id,
-        )
-        .await;
-        (Some(delivery.delivered), delivery.error)
-    } else {
-        (None, None)
-    };
-
-    let body = TelegramInboundResponse {
-        ok: true,
-        reply: Some(reply),
-        session_id: Some(session_id),
-        skipped: None,
-        reason: None,
-        delivered,
-        delivery_error,
-    };
-
-    Ok((StatusCode::OK, Json(body)).into_response())
-}
-
-fn slack_skipped_response(reason: &str) -> Response {
-    let skipped = SlackInboundResponse {
-        ok: true,
-        reply: None,
-        session_id: None,
-        skipped: Some(true),
-        reason: Some(reason.to_string()),
-        delivered: None,
-        delivery_error: None,
-    };
-    (StatusCode::OK, Json(skipped)).into_response()
-}
-
-fn invalid_json_hook_response() -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({"ok": false, "error": "invalid json"})),
-    )
-        .into_response()
-}
-
-/// Slack Events API 入站：先取 raw body 再反序列化，以便校验官方 v0 签名。
-async fn hooks_slack_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<impl IntoResponse, AppError> {
-    let request_id = request_id_log_value(&headers).to_string();
-
-    tracing::info!(request_id = %request_id, "收到 Slack Events 入站");
-
-    if let Some(secret) = state.slack_signing_secret.as_deref() {
-        let timestamp = headers
-            .get(X_SLACK_REQUEST_TIMESTAMP)
-            .and_then(|v| v.to_str().ok());
-        let signature = headers.get(X_SLACK_SIGNATURE).and_then(|v| v.to_str().ok());
-        if !verify_slack_request(secret, timestamp, signature, &body, unix_now_secs()) {
-            tracing::warn!(
-                request_id = %request_id,
-                "Slack 鉴权失败: 签名或时间戳无效"
-            );
-            return Ok(unauthorized_hook_response());
-        }
-    }
-
-    let envelope = match serde_json::from_slice::<SlackEnvelope>(&body) {
-        Ok(envelope) => envelope,
-        Err(err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Slack 入站 JSON 无法解析"
-            );
-            return Ok(invalid_json_hook_response());
-        }
-    };
-
-    match classify_slack_envelope(&envelope) {
-        SlackInboundKind::UrlVerification { challenge } => {
-            tracing::info!(request_id = %request_id, "Slack URL 验证 challenge 回传");
-            Ok((StatusCode::OK, Json(SlackChallengeResponse { challenge })).into_response())
-        }
-        SlackInboundKind::Skipped { reason } => {
-            tracing::info!(request_id = %request_id, reason = %reason, "跳过 Slack 事件");
-            Ok(slack_skipped_response(&reason))
-        }
-        SlackInboundKind::Message {
-            session_id,
-            channel,
-            text,
-        } => {
-            let reply =
-                run_session_user_chat(&state, &session_id, &text, &request_id, "slack").await?;
-
-            let (delivered, delivery_error) = if let Some(token) = state.slack_bot_token.as_deref()
-            {
-                let delivery =
-                    send_slack_reply(&state.slack_api_base, token, &channel, &reply, &request_id)
-                        .await;
-                (Some(delivery.delivered), delivery.error)
-            } else {
-                (None, None)
-            };
-
-            let body = SlackInboundResponse {
-                ok: true,
-                reply: Some(reply),
-                session_id: Some(session_id),
-                skipped: None,
-                reason: None,
-                delivered,
-                delivery_error,
-            };
-            Ok((StatusCode::OK, Json(body)).into_response())
-        }
-    }
-}
-
-/// Discord Interactions 入站：先取 raw body 再反序列化，以便校验官方 Ed25519 签名。
-///
-/// 立即返回 `type=5` deferred ACK（PING 为 `type=1`），后台跑 chat 后再编辑原始消息。
-async fn hooks_discord_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<impl IntoResponse, AppError> {
-    let request_id = request_id_log_value(&headers).to_string();
-
-    tracing::info!(request_id = %request_id, "收到 Discord Interactions 入站");
-
-    if let Some(public_key) = state.discord_public_key.as_deref() {
-        let timestamp = headers
-            .get(X_SIGNATURE_TIMESTAMP)
-            .and_then(|v| v.to_str().ok());
-        let signature = headers
-            .get(X_SIGNATURE_ED25519)
-            .and_then(|v| v.to_str().ok());
-        if !verify_discord_request(public_key, timestamp, signature, &body) {
-            tracing::warn!(
-                request_id = %request_id,
-                "Discord 鉴权失败: Ed25519 签名无效"
-            );
-            return Ok(unauthorized_hook_response());
-        }
-    } else {
-        tracing::debug!(
-            request_id = %request_id,
-            "Discord 公钥未配置，跳过签名校验（开发模式）"
-        );
-    }
-
-    let interaction = match serde_json::from_slice::<DiscordInteraction>(&body) {
-        Ok(interaction) => interaction,
-        Err(err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %err,
-                "Discord 入站 JSON 无法解析"
-            );
-            return Ok(invalid_json_hook_response());
-        }
-    };
-
-    match classify_discord_interaction(&interaction) {
-        DiscordInboundKind::Ping => {
-            tracing::info!(request_id = %request_id, "Discord Interactions PING → PONG");
-            Ok(discord_pong_response())
-        }
-        DiscordInboundKind::Skipped { reason } => {
-            tracing::info!(request_id = %request_id, reason = %reason, "跳过 Discord Interaction");
-            Ok(discord_skipped_response(&reason))
-        }
-        DiscordInboundKind::ChatCommand {
-            session_id,
-            text,
-            application_id,
-            interaction_token,
-        } => {
-            tracing::info!(
-                request_id = %request_id,
-                session_id = %session_id,
-                "Discord Chat Input Command deferred ACK"
-            );
-            spawn_discord_deferred_chat(
-                state,
-                session_id,
-                text,
-                application_id,
-                interaction_token,
-                request_id,
-            );
-            Ok(discord_deferred_response())
-        }
-    }
-}
-
 /// 应用错误类型
 #[derive(Debug)]
 enum AppError {
+    ChannelConflict,
+    ChannelUnavailable,
     ServiceUnavailable,
     JobConflict(String),
     Internal(String),
@@ -4438,6 +3377,11 @@ enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
+            Self::ChannelConflict => (StatusCode::CONFLICT, "channel_state_conflict".to_string()),
+            Self::ChannelUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "channel_unavailable".to_string(),
+            ),
             Self::ServiceUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "scheduler_unavailable".to_string(),
@@ -5617,9 +4561,7 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
             telegram_token_config_source()
         );
     } else {
-        println!(
-            "   Telegram Bot Token: ⚠️  未配置（/hooks/telegram 仅同步 JSON，不 sendMessage）"
-        );
+        println!("   Telegram Bot Token: ⚠️  未配置（启用 Telegram 还需显式授权策略）");
         println!("   💡 设置环境变量: export JIACLAW_TELEGRAM_BOT_TOKEN=your-bot-token");
     }
 
@@ -5641,7 +4583,7 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
             slack_token_config_source()
         );
     } else {
-        println!("   Slack Bot Token: ⚠️  未配置（/hooks/slack 仅同步 JSON，不 chat.postMessage）");
+        println!("   Slack Bot Token: ⚠️  未配置（启用 Slack 还需显式授权策略）");
         println!("   💡 设置环境变量: export JIACLAW_SLACK_BOT_TOKEN=xoxb-your-bot-token");
     }
 
@@ -5663,9 +4605,7 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
             discord_token_config_source()
         );
     } else {
-        println!(
-            "   Discord Bot Token: ⚠️  未配置（/hooks/discord deferred 后仅记 session，不 follow-up）"
-        );
+        println!("   Discord Bot Token: 无需配置；interaction 回复使用加密短期令牌");
         println!("   💡 设置环境变量: export JIACLAW_DISCORD_BOT_TOKEN=your-bot-token");
     }
 
@@ -6003,385 +4943,16 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: rate_limit_per_minute.and_then(build_rate_limiter),
             session_ttl: None,
             metrics,
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router_with_body_limit(state, None, max_body_bytes)
-    }
-
-    fn create_test_app_with_telegram_secret(telegram_secret: Option<String>) -> Router {
-        let config = offline_test_config();
-        let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
-        let persist_path =
-            std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState {
-            agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(SessionStore::memory())),
-            turn_locks: Arc::new(Mutex::new(HashMap::new())),
-            api_token: None,
-            webhook_secret: None,
-            telegram_secret,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
-            persist_enabled: false,
-            persist_path: Arc::new(persist_path),
-            rate_limiter: None,
-            session_ttl: None,
-            metrics: Arc::new(Metrics::default()),
-            metrics_require_auth: false,
-            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        };
-
-        build_router(state)
-    }
-
-    #[derive(Clone)]
-    struct TelegramApiMockState {
-        status: StatusCode,
-        captured: Arc<Mutex<Vec<CapturedTelegramOutbound>>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct CapturedTelegramOutbound {
-        method: String,
-        path: String,
-        body: serde_json::Value,
-    }
-
-    async fn telegram_api_mock_fallback(
-        State(state): State<TelegramApiMockState>,
-        req: axum::extract::Request,
-    ) -> impl IntoResponse {
-        let method = req.method().to_string();
-        let path = req.uri().path().to_string();
-        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .unwrap_or_default();
-        let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-        state
-            .captured
-            .lock()
-            .unwrap()
-            .push(CapturedTelegramOutbound { method, path, body });
-        let ok = state.status.is_success();
-        (state.status, Json(json!({ "ok": ok })))
-    }
-
-    async fn spawn_telegram_api_mock(
-        status: StatusCode,
-    ) -> (String, Arc<Mutex<Vec<CapturedTelegramOutbound>>>) {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let state = TelegramApiMockState {
-            status,
-            captured: captured.clone(),
-        };
-        let app = Router::new()
-            .fallback(telegram_api_mock_fallback)
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind telegram mock");
-        let addr = listener.local_addr().expect("telegram mock local_addr");
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("telegram mock serve");
-        });
-        (format!("http://{addr}"), captured)
-    }
-
-    fn create_test_app_with_telegram_outbound(
-        bot_token: Option<String>,
-        api_base: String,
-    ) -> Router {
-        let config = offline_test_config();
-        let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
-        let persist_path =
-            std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState {
-            agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(SessionStore::memory())),
-            turn_locks: Arc::new(Mutex::new(HashMap::new())),
-            api_token: None,
-            webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: bot_token,
-            telegram_api_base: api_base,
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
-            persist_enabled: false,
-            persist_path: Arc::new(persist_path),
-            rate_limiter: None,
-            session_ttl: None,
-            metrics: Arc::new(Metrics::default()),
-            metrics_require_auth: false,
-            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        };
-        build_router(state)
-    }
-
-    fn json_chat_id(body: &serde_json::Value) -> Option<String> {
-        body.get("chat_id").and_then(|value| {
-            value
-                .as_str()
-                .map(ToString::to_string)
-                .or_else(|| value.as_i64().map(|n| n.to_string()))
-                .or_else(|| value.as_u64().map(|n| n.to_string()))
-        })
-    }
-
-    fn json_channel(body: &serde_json::Value) -> Option<String> {
-        body.get("channel")
-            .and_then(|value| value.as_str().map(ToString::to_string))
-    }
-
-    fn create_test_app_with_slack_signing_secret(signing_secret: Option<String>) -> Router {
-        let config = offline_test_config();
-        let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
-        let persist_path =
-            std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState {
-            agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(SessionStore::memory())),
-            turn_locks: Arc::new(Mutex::new(HashMap::new())),
-            api_token: None,
-            webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: signing_secret,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
-            persist_enabled: false,
-            persist_path: Arc::new(persist_path),
-            rate_limiter: None,
-            session_ttl: None,
-            metrics: Arc::new(Metrics::default()),
-            metrics_require_auth: false,
-            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        };
-        build_router(state)
-    }
-
-    fn create_test_app_with_slack_outbound(bot_token: Option<String>, api_base: String) -> Router {
-        let config = offline_test_config();
-        let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
-        let persist_path =
-            std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState {
-            agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(SessionStore::memory())),
-            turn_locks: Arc::new(Mutex::new(HashMap::new())),
-            api_token: None,
-            webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: bot_token,
-            slack_api_base: api_base,
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
-            persist_enabled: false,
-            persist_path: Arc::new(persist_path),
-            rate_limiter: None,
-            session_ttl: None,
-            metrics: Arc::new(Metrics::default()),
-            metrics_require_auth: false,
-            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        };
-        build_router(state)
-    }
-
-    #[derive(Clone)]
-    struct SlackApiMockState {
-        status: StatusCode,
-        captured: Arc<Mutex<Vec<CapturedSlackOutbound>>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct CapturedSlackOutbound {
-        method: String,
-        path: String,
-        authorization: String,
-        body: serde_json::Value,
-    }
-
-    async fn slack_api_mock_fallback(
-        State(state): State<SlackApiMockState>,
-        req: axum::extract::Request,
-    ) -> impl IntoResponse {
-        let method = req.method().to_string();
-        let path = req.uri().path().to_string();
-        let authorization = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .unwrap_or_default();
-        let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-        state.captured.lock().unwrap().push(CapturedSlackOutbound {
-            method,
-            path,
-            authorization,
-            body,
-        });
-        let ok = state.status.is_success();
-        (state.status, Json(json!({ "ok": ok })))
-    }
-
-    async fn spawn_slack_api_mock(
-        status: StatusCode,
-    ) -> (String, Arc<Mutex<Vec<CapturedSlackOutbound>>>) {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let state = SlackApiMockState {
-            status,
-            captured: captured.clone(),
-        };
-        let app = Router::new()
-            .fallback(slack_api_mock_fallback)
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind slack mock");
-        let addr = listener.local_addr().expect("slack mock local_addr");
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("slack mock serve");
-        });
-        (format!("http://{addr}"), captured)
-    }
-
-    fn create_test_app_with_discord(
-        public_key: Option<String>,
-        bot_token: Option<String>,
-        api_base: String,
-    ) -> Router {
-        let config = offline_test_config();
-        let agent = JiaClawAgent::new(config.clone()).expect("创建测试 agent 失败");
-        let persist_path =
-            std::env::temp_dir().join(format!("jiaclaw-test-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState {
-            agent: Arc::new(agent),
-            sessions: Arc::new(Mutex::new(SessionStore::memory())),
-            turn_locks: Arc::new(Mutex::new(HashMap::new())),
-            api_token: None,
-            webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: public_key,
-            discord_bot_token: bot_token,
-            discord_api_base: api_base,
-            persist_enabled: false,
-            persist_path: Arc::new(persist_path),
-            rate_limiter: None,
-            session_ttl: None,
-            metrics: Arc::new(Metrics::default()),
-            metrics_require_auth: false,
-            scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        };
-        build_router(state)
-    }
-
-    #[derive(Clone)]
-    struct DiscordApiMockState {
-        status: StatusCode,
-        captured: Arc<Mutex<Vec<CapturedDiscordOutbound>>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct CapturedDiscordOutbound {
-        method: String,
-        path: String,
-        authorization: String,
-        body: serde_json::Value,
-    }
-
-    async fn discord_api_mock_fallback(
-        State(state): State<DiscordApiMockState>,
-        req: axum::extract::Request,
-    ) -> impl IntoResponse {
-        let method = req.method().to_string();
-        let path = req.uri().path().to_string();
-        let authorization = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .unwrap_or_default();
-        let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-        state
-            .captured
-            .lock()
-            .unwrap()
-            .push(CapturedDiscordOutbound {
-                method,
-                path,
-                authorization,
-                body,
-            });
-        let ok = state.status.is_success();
-        (state.status, Json(json!({ "ok": ok })))
-    }
-
-    async fn spawn_discord_api_mock(
-        status: StatusCode,
-    ) -> (String, Arc<Mutex<Vec<CapturedDiscordOutbound>>>) {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let state = DiscordApiMockState {
-            status,
-            captured: captured.clone(),
-        };
-        let app = Router::new()
-            .fallback(discord_api_mock_fallback)
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind discord mock");
-        let addr = listener.local_addr().expect("discord mock local_addr");
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("discord mock serve");
-        });
-        (format!("http://{addr}"), captured)
     }
 
     fn create_test_app_with_full(
@@ -6427,21 +4998,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: rate_limit_per_minute.and_then(build_rate_limiter),
             session_ttl: session_ttl_secs.map(Duration::from_secs),
             metrics,
             metrics_require_auth,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
@@ -6470,21 +5033,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics,
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         build_router_with_cors(state, build_cors_layer(cors))
@@ -6522,21 +5077,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
@@ -7580,21 +6127,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: true,
             persist_path: Arc::new(persist_path.clone()),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -7789,21 +6328,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: true,
             persist_path: Arc::new(persist_path.clone()),
             rate_limiter: None,
             session_ttl: Some(Duration::from_secs(1)),
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
@@ -7845,21 +6376,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
@@ -8003,6 +6526,7 @@ mod tests {
         let handle = maybe_spawn_heartbeat(state, &config, None).expect("enabled=true 应启动任务");
         assert!(!handle.is_finished(), "未 abort 前心跳任务应仍在运行");
         let tasks = BackgroundTasks {
+            channels: None,
             scheduler: None,
             heartbeat: Some(handle),
             ttl_sweeper: None,
@@ -8051,6 +6575,7 @@ mod tests {
                 },
                 Duration::from_secs(1),
                 BackgroundTasks {
+                    channels: None,
                     scheduler: None,
                     heartbeat: None,
                     ttl_sweeper: None,
@@ -8182,21 +6707,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: true,
             persist_path: Arc::new(persist_path.clone()),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8549,21 +7066,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8610,21 +7119,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8672,21 +7173,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8748,21 +7241,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8823,21 +7308,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8885,21 +7362,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -8947,21 +7416,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9013,21 +7474,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9079,21 +7532,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9149,21 +7594,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9223,21 +7660,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9297,21 +7726,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -9367,21 +7788,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let app = build_router(state);
@@ -10098,1245 +8511,6 @@ mod tests {
         assert_eq!(webhook_response2.session_id, "webhook:persistent-chat");
     }
 
-    fn telegram_text_update(chat_id: i64, text: &str) -> String {
-        serde_json::json!({
-            "update_id": 1001,
-            "message": {
-                "message_id": 10,
-                "chat": { "id": chat_id, "type": "private" },
-                "text": text
-            }
-        })
-        .to_string()
-    }
-
-    async fn post_telegram(
-        app: &Router,
-        body: String,
-        secret: Option<&str>,
-    ) -> axum::http::Response<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/hooks/telegram")
-            .header("content-type", "application/json");
-        if let Some(token) = secret {
-            builder = builder.header(X_TELEGRAM_BOT_API_SECRET_TOKEN, token);
-        }
-        app.clone()
-            .oneshot(builder.body(Body::from(body)).unwrap())
-            .await
-            .unwrap()
-    }
-
-    #[test]
-    fn test_telegram_inbound_text_from_message_and_edited() {
-        let message_update: TelegramUpdate = serde_json::from_value(serde_json::json!({
-            "update_id": 1,
-            "message": {
-                "message_id": 1,
-                "chat": { "id": 4242 },
-                "text": "  hello  "
-            }
-        }))
-        .unwrap();
-        assert_eq!(
-            telegram_inbound_text(&message_update),
-            Some(("4242".to_string(), "hello".to_string()))
-        );
-
-        let edited: TelegramUpdate = serde_json::from_value(serde_json::json!({
-            "update_id": 2,
-            "edited_message": {
-                "message_id": 2,
-                "chat": { "id": -100_123 },
-                "text": "edited"
-            }
-        }))
-        .unwrap();
-        assert_eq!(
-            telegram_inbound_text(&edited),
-            Some(("-100123".to_string(), "edited".to_string()))
-        );
-
-        let no_text: TelegramUpdate = serde_json::from_value(serde_json::json!({
-            "update_id": 3,
-            "message": {
-                "message_id": 3,
-                "chat": { "id": 1 },
-                "photo": []
-            }
-        }))
-        .unwrap();
-        assert_eq!(telegram_inbound_text(&no_text), None);
-
-        let string_id: TelegramUpdate = serde_json::from_value(serde_json::json!({
-            "update_id": 4,
-            "message": {
-                "chat": { "id": "abc" },
-                "text": "hi"
-            }
-        }))
-        .unwrap();
-        assert_eq!(
-            telegram_inbound_text(&string_id),
-            Some(("abc".to_string(), "hi".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_telegram_inbound_creates_and_reuses_session() {
-        let app = create_test_app();
-        let client_id = "tg-req-create";
-
-        let first = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/hooks/telegram")
-                    .header("content-type", "application/json")
-                    .header("X-Request-Id", client_id)
-                    .body(Body::from(telegram_text_update(4242, "你好 Telegram")))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(request_id_header(&first), client_id);
-
-        let body = axum::body::to_bytes(first.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&body).unwrap();
-        assert!(tg.ok);
-        assert!(tg.skipped.is_none());
-        assert_eq!(tg.session_id.as_deref(), Some("telegram:4242"));
-        assert!(tg.reply.as_ref().is_some_and(|r| !r.is_empty()));
-
-        let got = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/sessions/telegram:4242")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(got.status(), StatusCode::OK);
-        let session_body = axum::body::to_bytes(got.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let session: GetSessionResponse = serde_json::from_slice(&session_body).unwrap();
-        let first_count = session.messages.len();
-        assert!(first_count >= 2, "应包含 user + assistant");
-
-        let second = post_telegram(&app, telegram_text_update(4242, "第二句"), None).await;
-        assert_eq!(second.status(), StatusCode::OK);
-        let body2 = axum::body::to_bytes(second.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg2: TelegramInboundResponse = serde_json::from_slice(&body2).unwrap();
-        assert_eq!(tg2.session_id.as_deref(), Some("telegram:4242"));
-
-        let got2 = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/sessions/telegram:4242")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let session_body2 = axum::body::to_bytes(got2.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let session2: GetSessionResponse = serde_json::from_slice(&session_body2).unwrap();
-        assert!(
-            session2.messages.len() > first_count,
-            "复用 session 时应追加消息"
-        );
-
-        let inbound_still_works = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/hooks/inbound")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({
-                            "channel": "webhook",
-                            "chat_id": "user123",
-                            "text": "inbound 仍可用"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(inbound_still_works.status(), StatusCode::OK);
-        let inbound_body = axum::body::to_bytes(inbound_still_works.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let inbound: InboundWebhookResponse = serde_json::from_slice(&inbound_body).unwrap();
-        assert!(inbound.ok);
-        assert_eq!(inbound.session_id, "webhook:user123");
-    }
-
-    #[tokio::test]
-    async fn test_telegram_skips_update_without_text() {
-        let app = create_test_app();
-        let body = serde_json::json!({
-            "update_id": 99,
-            "message": {
-                "message_id": 1,
-                "chat": { "id": 777, "type": "private" },
-                "photo": [{ "file_id": "aaa" }]
-            }
-        })
-        .to_string();
-
-        let response = post_telegram(&app, body, None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!request_id_header(&response).is_empty());
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        assert_eq!(tg.skipped, Some(true));
-        assert_eq!(tg.reason.as_deref(), Some("no text in update"));
-        assert!(tg.reply.is_none());
-
-        let missing = http_get_session_status(&app, "telegram:777").await;
-        assert_eq!(missing, StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_telegram_edited_message_text() {
-        let app = create_test_app();
-        let body = serde_json::json!({
-            "update_id": 12,
-            "edited_message": {
-                "message_id": 3,
-                "chat": { "id": 888 },
-                "text": "编辑后的文本"
-            }
-        })
-        .to_string();
-
-        let response = post_telegram(&app, body, None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        assert_eq!(tg.session_id.as_deref(), Some("telegram:888"));
-        assert!(tg.reply.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_telegram_secret_missing_header() {
-        let app = create_test_app_with_telegram_secret(Some("tg-secret".to_string()));
-        let response = post_telegram(&app, telegram_text_update(1, "hi"), None).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(err["ok"], false);
-        assert_eq!(err["error"], "unauthorized");
-    }
-
-    #[tokio::test]
-    async fn test_telegram_secret_wrong_token() {
-        let app = create_test_app_with_telegram_secret(Some("tg-secret".to_string()));
-        let response = post_telegram(&app, telegram_text_update(1, "hi"), Some("wrong")).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_telegram_secret_correct() {
-        let app = create_test_app_with_telegram_secret(Some("tg-secret".to_string()));
-        let response = post_telegram(&app, telegram_text_update(55, "ok"), Some("tg-secret")).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        assert_eq!(tg.session_id.as_deref(), Some("telegram:55"));
-    }
-
-    #[tokio::test]
-    async fn test_telegram_secret_does_not_affect_inbound() {
-        let app = create_test_app_with_telegram_secret(Some("tg-secret".to_string()));
-        let inbound = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/hooks/inbound")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({
-                            "chat_id": "still-open",
-                            "text": "webhook 不走 telegram secret"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(inbound.status(), StatusCode::OK);
-    }
-
-    #[test]
-    fn test_truncate_telegram_text_at_4096_chars() {
-        let exact = "a".repeat(TELEGRAM_MAX_TEXT_LEN);
-        assert_eq!(truncate_telegram_text(&exact), exact);
-        let over: String = "你".repeat(TELEGRAM_MAX_TEXT_LEN + 8);
-        let truncated = truncate_telegram_text(&over);
-        assert_eq!(truncated.chars().count(), TELEGRAM_MAX_TEXT_LEN);
-        assert!(truncated.chars().all(|c| c == '你'));
-    }
-
-    #[tokio::test]
-    async fn test_telegram_without_bot_token_does_not_call_send_message() {
-        let (base, captured) = spawn_telegram_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_telegram_outbound(None, base);
-        let response = post_telegram(&app, telegram_text_update(4242, "你好"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        assert!(tg.reply.as_ref().is_some_and(|r| !r.is_empty()));
-        assert!(tg.delivered.is_none());
-        assert!(tg.delivery_error.is_none());
-        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(raw.get("delivered").is_none());
-        assert!(raw.get("delivery_error").is_none());
-        assert!(captured.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_telegram_send_message_called_with_chat_id_and_text() {
-        let token = "123456:TEST-TOKEN";
-        let (base, captured) = spawn_telegram_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_telegram_outbound(Some(token.to_string()), base);
-        let response = post_telegram(&app, telegram_text_update(4242, "你好 Telegram"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        let reply = tg.reply.expect("reply");
-        assert!(!reply.is_empty());
-        assert_eq!(tg.delivered, Some(true));
-        assert!(tg.delivery_error.is_none());
-
-        let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].method, "POST");
-        assert_eq!(captured[0].path, format!("/bot{token}/sendMessage"));
-        assert_eq!(json_chat_id(&captured[0].body).as_deref(), Some("4242"));
-        assert_eq!(captured[0].body["text"].as_str(), Some(reply.as_str()));
-    }
-
-    #[tokio::test]
-    async fn test_telegram_send_message_5xx_still_returns_200_with_reply() {
-        let token = "123456:TEST-TOKEN";
-        let (base, captured) = spawn_telegram_api_mock(StatusCode::INTERNAL_SERVER_ERROR).await;
-        let app = create_test_app_with_telegram_outbound(Some(token.to_string()), base);
-        let response = post_telegram(&app, telegram_text_update(99, "hello"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let tg: TelegramInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(tg.ok);
-        assert!(tg.reply.as_ref().is_some_and(|r| !r.is_empty()));
-        assert_eq!(tg.delivered, Some(false));
-        assert!(
-            tg.delivery_error
-                .as_ref()
-                .is_some_and(|err| err.contains("500")),
-            "delivery_error={:?}",
-            tg.delivery_error
-        );
-        assert_eq!(captured.lock().unwrap().len(), 1);
-    }
-
-    fn slack_url_verification(challenge: &str) -> String {
-        json!({
-            "type": "url_verification",
-            "challenge": challenge
-        })
-        .to_string()
-    }
-
-    fn slack_message_event(team_id: Option<&str>, channel: &str, text: &str) -> String {
-        let mut value = json!({
-            "type": "event_callback",
-            "event": {
-                "type": "message",
-                "channel": channel,
-                "user": "U123",
-                "text": text
-            }
-        });
-        if let Some(team) = team_id {
-            value["team_id"] = json!(team);
-        }
-        value.to_string()
-    }
-
-    fn slack_subtype_event(subtype: &str) -> String {
-        json!({
-            "type": "event_callback",
-            "team_id": "TTEAM",
-            "event": {
-                "type": "message",
-                "subtype": subtype,
-                "channel": "CCHAN",
-                "text": "should skip",
-                "bot_id": "B123"
-            }
-        })
-        .to_string()
-    }
-
-    async fn post_slack(
-        app: &Router,
-        body: String,
-        signature: Option<(&str, &str)>,
-    ) -> axum::http::Response<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/hooks/slack")
-            .header("content-type", "application/json");
-        if let Some((timestamp, sig)) = signature {
-            builder = builder
-                .header(X_SLACK_REQUEST_TIMESTAMP, timestamp)
-                .header(X_SLACK_SIGNATURE, sig);
-        }
-        app.clone()
-            .oneshot(builder.body(Body::from(body)).unwrap())
-            .await
-            .unwrap()
-    }
-
-    async fn post_slack_signed(
-        app: &Router,
-        body: String,
-        secret: &str,
-    ) -> axum::http::Response<Body> {
-        let timestamp = unix_now_secs().to_string();
-        let signature = slack_v0_signature(secret, &timestamp, body.as_bytes()).expect("sign");
-        post_slack(app, body, Some((&timestamp, &signature))).await
-    }
-
-    #[test]
-    fn test_slack_known_hmac_vector() {
-        const SECRET: &str = "8f742231b10e8888abcd99yyyzzz85a5";
-        const TIMESTAMP: &str = "1531420618";
-        const BODY: &[u8] = br#"{"type":"url_verification","challenge":"3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"}"#;
-        const EXPECTED: &str =
-            "v0=2b617e8d1eba789c3e90a54b772adadfc772137987c87d3c1e4129005632e406";
-        assert_eq!(
-            slack_v0_signature(SECRET, TIMESTAMP, BODY).as_deref(),
-            Some(EXPECTED)
-        );
-        assert!(verify_slack_v0_signature(SECRET, TIMESTAMP, BODY, EXPECTED));
-        assert!(!verify_slack_v0_signature(
-            SECRET,
-            TIMESTAMP,
-            BODY,
-            "v0=0000000000000000000000000000000000000000000000000000000000000000"
-        ));
-        assert!(verify_slack_request(
-            SECRET,
-            Some(TIMESTAMP),
-            Some(EXPECTED),
-            BODY,
-            1_531_420_618
-        ));
-        assert!(!verify_slack_request(
-            SECRET,
-            Some(TIMESTAMP),
-            Some(EXPECTED),
-            BODY,
-            1_531_420_618 + 301
-        ));
-    }
-
-    #[test]
-    fn test_slack_timestamp_freshness_window() {
-        assert!(slack_timestamp_fresh("1000", 1000));
-        assert!(slack_timestamp_fresh("1300", 1000));
-        assert!(!slack_timestamp_fresh("1301", 1000));
-        assert!(slack_timestamp_fresh("700", 1000));
-        assert!(!slack_timestamp_fresh("699", 1000));
-        assert!(!slack_timestamp_fresh("nope", 1000));
-        assert!(!slack_timestamp_fresh("-1", 1000));
-    }
-
-    #[test]
-    fn test_classify_slack_envelope_message_and_skips() {
-        let verification: SlackEnvelope =
-            serde_json::from_str(&slack_url_verification("abc")).unwrap();
-        assert_eq!(
-            classify_slack_envelope(&verification),
-            SlackInboundKind::UrlVerification {
-                challenge: "abc".to_string()
-            }
-        );
-
-        let with_team: SlackEnvelope =
-            serde_json::from_str(&slack_message_event(Some("T1"), "C9", "hello")).unwrap();
-        assert_eq!(
-            classify_slack_envelope(&with_team),
-            SlackInboundKind::Message {
-                session_id: "slack:T1:C9".to_string(),
-                channel: "C9".to_string(),
-                text: "hello".to_string(),
-            }
-        );
-
-        let no_team: SlackEnvelope =
-            serde_json::from_str(&slack_message_event(None, "C9", "hello")).unwrap();
-        assert_eq!(
-            classify_slack_envelope(&no_team),
-            SlackInboundKind::Message {
-                session_id: "slack:C9".to_string(),
-                channel: "C9".to_string(),
-                text: "hello".to_string(),
-            }
-        );
-
-        let bot: SlackEnvelope = serde_json::from_str(&slack_subtype_event("bot_message")).unwrap();
-        assert_eq!(
-            classify_slack_envelope(&bot),
-            SlackInboundKind::Skipped {
-                reason: "ignored message subtype".to_string()
-            }
-        );
-
-        let changed: SlackEnvelope =
-            serde_json::from_str(&slack_subtype_event("message_changed")).unwrap();
-        assert_eq!(
-            classify_slack_envelope(&changed),
-            SlackInboundKind::Skipped {
-                reason: "ignored message subtype".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn test_slack_url_verification_returns_challenge() {
-        let app = create_test_app();
-        let response = post_slack(&app, slack_url_verification("challenge-xyz"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!request_id_header(&response).is_empty());
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["challenge"], "challenge-xyz");
-        assert!(value.get("ok").is_none());
-        assert!(value.get("reply").is_none());
-    }
-
-    #[tokio::test]
-    async fn test_slack_message_creates_and_reuses_session() {
-        let app = create_test_app();
-        let body = slack_message_event(Some("TTEAM"), "CCHAN", "你好 Slack");
-        let response = post_slack(&app, body, None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(slack.ok);
-        assert!(slack.reply.as_ref().is_some_and(|r| !r.is_empty()));
-        assert_eq!(slack.session_id.as_deref(), Some("slack:TTEAM:CCHAN"));
-        assert!(slack.skipped.is_none());
-
-        let history = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/sessions/slack:TTEAM:CCHAN")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(history.status(), StatusCode::OK);
-
-        let second = post_slack(
-            &app,
-            slack_message_event(Some("TTEAM"), "CCHAN", "第二句"),
-            None,
-        )
-        .await;
-        assert_eq!(second.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack2: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(slack2.session_id.as_deref(), Some("slack:TTEAM:CCHAN"));
-    }
-
-    #[tokio::test]
-    async fn test_slack_session_without_team_id() {
-        let app = create_test_app();
-        let response = post_slack(&app, slack_message_event(None, "CNOTEAM", "hi"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(slack.session_id.as_deref(), Some("slack:CNOTEAM"));
-    }
-
-    #[tokio::test]
-    async fn test_slack_skips_bot_message_and_message_changed() {
-        let app = create_test_app();
-        for subtype in ["bot_message", "message_changed"] {
-            let response = post_slack(&app, slack_subtype_event(subtype), None).await;
-            assert_eq!(response.status(), StatusCode::OK);
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-            assert!(slack.ok);
-            assert_eq!(slack.skipped, Some(true));
-            assert_eq!(slack.reason.as_deref(), Some("ignored message subtype"));
-            assert!(slack.reply.is_none());
-        }
-        let missing = http_get_session_status(&app, "slack:TTEAM:CCHAN").await;
-        assert_eq!(missing, StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_slack_skips_empty_text() {
-        let app = create_test_app();
-        let body = json!({
-            "type": "event_callback",
-            "team_id": "T1",
-            "event": { "type": "message", "channel": "C1", "text": "   " }
-        })
-        .to_string();
-        let response = post_slack(&app, body, None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(slack.skipped, Some(true));
-        assert_eq!(slack.reason.as_deref(), Some("no text in event"));
-    }
-
-    #[tokio::test]
-    async fn test_slack_signature_missing_when_configured() {
-        let app = create_test_app_with_slack_signing_secret(Some("signing-secret".to_string()));
-        let response = post_slack(&app, slack_message_event(Some("T1"), "C1", "hi"), None).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_slack_signature_wrong() {
-        let secret = "signing-secret";
-        let app = create_test_app_with_slack_signing_secret(Some(secret.to_string()));
-        let body = slack_message_event(Some("T1"), "C1", "hi");
-        let ts = unix_now_secs().to_string();
-        let response = post_slack(
-            &app,
-            body,
-            Some((
-                &ts,
-                "v0=0000000000000000000000000000000000000000000000000000000000000000",
-            )),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_slack_signature_correct() {
-        let secret = "signing-secret";
-        let app = create_test_app_with_slack_signing_secret(Some(secret.to_string()));
-        let body = slack_message_event(Some("T55"), "C55", "ok");
-        let response = post_slack_signed(&app, body, secret).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(slack.ok);
-        assert_eq!(slack.session_id.as_deref(), Some("slack:T55:C55"));
-    }
-
-    #[tokio::test]
-    async fn test_slack_signature_stale_timestamp() {
-        let secret = "signing-secret";
-        let app = create_test_app_with_slack_signing_secret(Some(secret.to_string()));
-        let body = slack_message_event(Some("T1"), "C1", "hi");
-        let ts = "1";
-        let sig = slack_v0_signature(secret, ts, body.as_bytes()).expect("sign");
-        let response = post_slack(&app, body, Some((ts, &sig))).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_slack_signed_url_verification() {
-        let secret = "signing-secret";
-        let app = create_test_app_with_slack_signing_secret(Some(secret.to_string()));
-        let response = post_slack_signed(&app, slack_url_verification("from-slack"), secret).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["challenge"], "from-slack");
-    }
-
-    #[tokio::test]
-    async fn test_slack_signing_secret_does_not_affect_inbound_or_telegram() {
-        let app = create_test_app_with_slack_signing_secret(Some("signing-secret".to_string()));
-        let inbound = InboundWebhookRequest {
-            channel: "webhook".to_string(),
-            chat_id: "no-slack".to_string(),
-            text: "webhook 不走 slack 签名".to_string(),
-            username: None,
-        };
-        let webhook = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/hooks/inbound")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&inbound).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(webhook.status(), StatusCode::OK);
-
-        let telegram = post_telegram(&app, telegram_text_update(7, "tg"), None).await;
-        assert_eq!(telegram.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_slack_without_bot_token_does_not_call_post_message() {
-        let (base, captured) = spawn_slack_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_slack_outbound(None, base);
-        let response = post_slack(&app, slack_message_event(Some("T1"), "C1", "你好"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(slack.ok);
-        assert!(slack.delivered.is_none());
-        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(raw.get("delivered").is_none());
-        assert!(captured.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_slack_chat_post_message_called_with_channel_and_text() {
-        let token = "xoxb-test-token";
-        let (base, captured) = spawn_slack_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_slack_outbound(Some(token.to_string()), base);
-        let response = post_slack(
-            &app,
-            slack_message_event(Some("T1"), "C42", "你好 Slack"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        let reply = slack.reply.expect("reply");
-        assert_eq!(slack.delivered, Some(true));
-
-        let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].method, "POST");
-        assert_eq!(captured[0].path, "/chat.postMessage");
-        assert_eq!(captured[0].authorization, format!("Bearer {token}"));
-        assert_eq!(json_channel(&captured[0].body).as_deref(), Some("C42"));
-        assert_eq!(captured[0].body["text"].as_str(), Some(reply.as_str()));
-    }
-
-    #[tokio::test]
-    async fn test_slack_chat_post_message_5xx_still_returns_200_with_reply() {
-        let token = "xoxb-test-token";
-        let (base, captured) = spawn_slack_api_mock(StatusCode::INTERNAL_SERVER_ERROR).await;
-        let app = create_test_app_with_slack_outbound(Some(token.to_string()), base);
-        let response = post_slack(&app, slack_message_event(Some("T1"), "C9", "hello"), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let slack: SlackInboundResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(slack.ok);
-        assert!(slack.reply.as_ref().is_some_and(|r| !r.is_empty()));
-        assert_eq!(slack.delivered, Some(false));
-        assert!(
-            slack
-                .delivery_error
-                .as_ref()
-                .is_some_and(|err| err.contains("500")),
-            "delivery_error={:?}",
-            slack.delivery_error
-        );
-        assert_eq!(captured.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_truncate_slack_text_at_40000_chars() {
-        let exact: String = "a".repeat(SLACK_MAX_TEXT_LEN);
-        assert_eq!(truncate_slack_text(&exact), exact);
-        let over: String = "你".repeat(SLACK_MAX_TEXT_LEN + 8);
-        let truncated = truncate_slack_text(&over);
-        assert_eq!(truncated.chars().count(), SLACK_MAX_TEXT_LEN);
-        assert!(truncated.chars().all(|c| c == '你'));
-    }
-
-    fn discord_test_keypair() -> (String, ring::signature::Ed25519KeyPair) {
-        use ring::signature::KeyPair;
-        let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)
-            .expect("generate discord test key");
-        let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
-            .expect("parse discord test key");
-        let public_hex = encode_hex_lower(pair.public_key().as_ref());
-        (public_hex, pair)
-    }
-
-    fn sign_discord_body(
-        signing_key: &ring::signature::Ed25519KeyPair,
-        timestamp: &str,
-        body: &[u8],
-    ) -> String {
-        let mut message = Vec::with_capacity(timestamp.len() + body.len());
-        message.extend_from_slice(timestamp.as_bytes());
-        message.extend_from_slice(body);
-        encode_hex_lower(signing_key.sign(&message).as_ref())
-    }
-
-    fn discord_ping() -> String {
-        json!({ "type": 1 }).to_string()
-    }
-
-    fn discord_chat_command(
-        guild_id: Option<&str>,
-        channel_id: &str,
-        prompt: &str,
-        application_id: &str,
-        token: &str,
-    ) -> String {
-        let mut value = json!({
-            "type": 2,
-            "application_id": application_id,
-            "channel_id": channel_id,
-            "token": token,
-            "data": {
-                "name": "ask",
-                "type": 1,
-                "options": [{
-                    "name": "prompt",
-                    "type": 3,
-                    "value": prompt
-                }]
-            }
-        });
-        if let Some(guild) = guild_id {
-            value["guild_id"] = json!(guild);
-        }
-        value.to_string()
-    }
-
-    async fn post_discord(
-        app: &Router,
-        body: String,
-        signature: Option<(&str, &str)>,
-    ) -> axum::http::Response<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/hooks/discord")
-            .header("content-type", "application/json");
-        if let Some((timestamp, sig)) = signature {
-            builder = builder
-                .header(X_SIGNATURE_TIMESTAMP, timestamp)
-                .header(X_SIGNATURE_ED25519, sig);
-        }
-        app.clone()
-            .oneshot(builder.body(Body::from(body)).unwrap())
-            .await
-            .unwrap()
-    }
-
-    async fn post_discord_signed(
-        app: &Router,
-        body: String,
-        signing_key: &ring::signature::Ed25519KeyPair,
-    ) -> axum::http::Response<Body> {
-        let timestamp = unix_now_secs().to_string();
-        let signature = sign_discord_body(signing_key, &timestamp, body.as_bytes());
-        post_discord(app, body, Some((&timestamp, &signature))).await
-    }
-
-    async fn wait_for_session(app: &Router, session_id: &str) {
-        for _ in 0..100 {
-            if http_get_session_status(app, session_id).await == StatusCode::OK {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("session {session_id} 未在超时内创建");
-    }
-
-    async fn wait_captured_discord(captured: &Arc<Mutex<Vec<CapturedDiscordOutbound>>>, n: usize) {
-        for _ in 0..100 {
-            if captured.lock().unwrap().len() >= n {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("Discord mock 未在超时内收到 {n} 次调用");
-    }
-
-    #[test]
-    fn test_classify_discord_ping_command_and_skips() {
-        let ping: DiscordInteraction = serde_json::from_str(&discord_ping()).unwrap();
-        assert_eq!(
-            classify_discord_interaction(&ping),
-            DiscordInboundKind::Ping
-        );
-
-        let with_guild: DiscordInteraction = serde_json::from_str(&discord_chat_command(
-            Some("G1"),
-            "C9",
-            "hello",
-            "APP",
-            "tok",
-        ))
-        .unwrap();
-        assert_eq!(
-            classify_discord_interaction(&with_guild),
-            DiscordInboundKind::ChatCommand {
-                session_id: "discord:G1:C9".to_string(),
-                text: "hello".to_string(),
-                application_id: "APP".to_string(),
-                interaction_token: "tok".to_string(),
-            }
-        );
-
-        let dm: DiscordInteraction =
-            serde_json::from_str(&discord_chat_command(None, "C9", "hello", "APP", "tok")).unwrap();
-        assert_eq!(
-            classify_discord_interaction(&dm),
-            DiscordInboundKind::ChatCommand {
-                session_id: "discord:dm:C9".to_string(),
-                text: "hello".to_string(),
-                application_id: "APP".to_string(),
-                interaction_token: "tok".to_string(),
-            }
-        );
-
-        let named: DiscordInteraction = serde_json::from_str(
-            &json!({
-                "type": 2,
-                "application_id": "APP",
-                "channel_id": "C1",
-                "token": "tok",
-                "data": { "name": "status", "type": 1 }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            classify_discord_interaction(&named),
-            DiscordInboundKind::ChatCommand {
-                session_id: "discord:dm:C1".to_string(),
-                text: "status".to_string(),
-                application_id: "APP".to_string(),
-                interaction_token: "tok".to_string(),
-            }
-        );
-
-        let component: DiscordInteraction =
-            serde_json::from_str(&json!({ "type": 3, "channel_id": "C1" }).to_string()).unwrap();
-        assert_eq!(
-            classify_discord_interaction(&component),
-            DiscordInboundKind::Skipped {
-                reason: "ignored interaction type".to_string()
-            }
-        );
-
-        let user_cmd: DiscordInteraction = serde_json::from_str(
-            &json!({
-                "type": 2,
-                "channel_id": "C1",
-                "data": { "name": "info", "type": 2 }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            classify_discord_interaction(&user_cmd),
-            DiscordInboundKind::Skipped {
-                reason: "ignored command type".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_discord_signature_roundtrip() {
-        let (public_hex, signing_key) = discord_test_keypair();
-        let body = br#"{"type":1}"#;
-        let timestamp = "1710000000";
-        let signature = sign_discord_body(&signing_key, timestamp, body);
-        assert!(verify_discord_signature(
-            &public_hex,
-            timestamp,
-            body,
-            &signature
-        ));
-        assert!(!verify_discord_signature(
-            &public_hex,
-            timestamp,
-            body,
-            "00"
-        ));
-        assert!(!verify_discord_request(
-            &public_hex,
-            None,
-            Some(&signature),
-            body
-        ));
-        assert!(!verify_discord_request(
-            &public_hex,
-            Some(timestamp),
-            None,
-            body
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_discord_ping_returns_pong() {
-        let app = create_test_app();
-        let response = post_discord(&app, discord_ping(), None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!request_id_header(&response).is_empty());
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["type"], 1);
-        assert!(value.get("data").is_none());
-    }
-
-    #[tokio::test]
-    async fn test_discord_command_creates_session_and_deferred_ack() {
-        let app = create_test_app();
-        let body = discord_chat_command(Some("GTEAM"), "CCHAN", "你好 Discord", "APP", "tok");
-        let response = post_discord(&app, body, None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["type"], 5);
-
-        wait_for_session(&app, "discord:GTEAM:CCHAN").await;
-        let history = http_get_session_status(&app, "discord:GTEAM:CCHAN").await;
-        assert_eq!(history, StatusCode::OK);
-
-        let second = post_discord(
-            &app,
-            discord_chat_command(Some("GTEAM"), "CCHAN", "第二句", "APP", "tok2"),
-            None,
-        )
-        .await;
-        assert_eq!(second.status(), StatusCode::OK);
-        wait_for_session(&app, "discord:GTEAM:CCHAN").await;
-    }
-
-    #[tokio::test]
-    async fn test_discord_dm_session_without_guild() {
-        let app = create_test_app();
-        let response = post_discord(
-            &app,
-            discord_chat_command(None, "CDM", "hi", "APP", "tok"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        wait_for_session(&app, "discord:dm:CDM").await;
-    }
-
-    #[tokio::test]
-    async fn test_discord_signature_missing_when_configured() {
-        let (public_hex, _signing_key) = discord_test_keypair();
-        let app =
-            create_test_app_with_discord(Some(public_hex), None, DISCORD_API_BASE.to_string());
-        let response = post_discord(&app, discord_ping(), None).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_discord_signature_wrong() {
-        let (public_hex, _signing_key) = discord_test_keypair();
-        let app =
-            create_test_app_with_discord(Some(public_hex), None, DISCORD_API_BASE.to_string());
-        let body = discord_ping();
-        let ts = unix_now_secs().to_string();
-        let response = post_discord(&app, body, Some((&ts, &"00".repeat(64)))).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_discord_signature_correct_ping_and_command() {
-        let (public_hex, signing_key) = discord_test_keypair();
-        let app =
-            create_test_app_with_discord(Some(public_hex), None, DISCORD_API_BASE.to_string());
-        let ping = post_discord_signed(&app, discord_ping(), &signing_key).await;
-        assert_eq!(ping.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(ping.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["type"], 1);
-
-        let command = post_discord_signed(
-            &app,
-            discord_chat_command(Some("G9"), "C9", "signed", "APP", "tok"),
-            &signing_key,
-        )
-        .await;
-        assert_eq!(command.status(), StatusCode::OK);
-        wait_for_session(&app, "discord:G9:C9").await;
-    }
-
-    #[tokio::test]
-    async fn test_discord_public_key_does_not_affect_other_hooks() {
-        let (public_hex, _signing_key) = discord_test_keypair();
-        let app =
-            create_test_app_with_discord(Some(public_hex), None, DISCORD_API_BASE.to_string());
-        let inbound = InboundWebhookRequest {
-            channel: "webhook".to_string(),
-            chat_id: "no-discord".to_string(),
-            text: "webhook 不走 discord 签名".to_string(),
-            username: None,
-        };
-        let webhook = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/hooks/inbound")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&inbound).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(webhook.status(), StatusCode::OK);
-
-        let telegram = post_telegram(&app, telegram_text_update(7, "tg"), None).await;
-        assert_eq!(telegram.status(), StatusCode::OK);
-
-        let slack = post_slack(
-            &app,
-            slack_message_event(Some("T1"), "C1", "slack still works"),
-            None,
-        )
-        .await;
-        assert_eq!(slack.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_discord_without_bot_token_records_session_no_followup() {
-        let (base, captured) = spawn_discord_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_discord(None, None, base);
-        let response = post_discord(
-            &app,
-            discord_chat_command(Some("G1"), "C1", "你好", "APPID", "tok"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        wait_for_session(&app, "discord:G1:C1").await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(captured.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_discord_deferred_followup_patches_original() {
-        let token = "discord-bot-token";
-        let (base, captured) = spawn_discord_api_mock(StatusCode::OK).await;
-        let app = create_test_app_with_discord(None, Some(token.to_string()), base);
-        let response = post_discord(
-            &app,
-            discord_chat_command(Some("G1"), "C42", "你好 Discord", "APPID", "inter-token"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["type"], 5);
-
-        wait_captured_discord(&captured, 1).await;
-        wait_for_session(&app, "discord:G1:C42").await;
-        let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].method, "PATCH");
-        assert_eq!(
-            captured[0].path,
-            "/webhooks/APPID/inter-token/messages/@original"
-        );
-        assert_eq!(captured[0].authorization, format!("Bot {token}"));
-        assert!(captured[0].body["content"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty()));
-    }
-
-    #[tokio::test]
-    async fn test_discord_followup_5xx_still_acks_and_keeps_session() {
-        let token = "discord-bot-token";
-        let (base, captured) = spawn_discord_api_mock(StatusCode::INTERNAL_SERVER_ERROR).await;
-        let app = create_test_app_with_discord(None, Some(token.to_string()), base);
-        let response = post_discord(
-            &app,
-            discord_chat_command(Some("G1"), "C9", "hello", "APPID", "tok"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        wait_captured_discord(&captured, 1).await;
-        wait_for_session(&app, "discord:G1:C9").await;
-        assert_eq!(captured.lock().unwrap().len(), 1);
-    }
-
     #[tokio::test]
     async fn test_session_persistence_disabled() {
         let config = offline_test_config();
@@ -11350,21 +8524,13 @@ mod tests {
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
             api_token: None,
             webhook_secret: None,
-            telegram_secret: None,
-            telegram_bot_token: None,
-            telegram_api_base: TELEGRAM_API_BASE.to_string(),
-            slack_signing_secret: None,
-            slack_bot_token: None,
-            slack_api_base: SLACK_API_BASE.to_string(),
-            discord_public_key: None,
-            discord_bot_token: None,
-            discord_api_base: DISCORD_API_BASE.to_string(),
             persist_enabled: false,
             persist_path: Arc::new(persist_path.clone()),
             rate_limiter: None,
             session_ttl: None,
             metrics: Arc::new(Metrics::default()),
             metrics_require_auth: false,
+            channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
 
@@ -12141,50 +9307,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hooks_telegram_is_rate_limited() {
-        let app = create_test_app_with_rate_limit(1);
-        let body = telegram_text_update(9, "限流");
-
-        let first = post_telegram(&app, body.clone(), None).await;
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_rate_limit_headers(&first, 1, Some(0));
-
-        let second = post_telegram(&app, body, None).await;
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(second.headers().get(header::RETRY_AFTER).is_some());
-        assert!(!request_id_header(&second).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_hooks_slack_is_rate_limited() {
-        let app = create_test_app_with_rate_limit(1);
-        let body = slack_message_event(Some("T9"), "C9", "限流");
-
-        let first = post_slack(&app, body.clone(), None).await;
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_rate_limit_headers(&first, 1, Some(0));
-
-        let second = post_slack(&app, body, None).await;
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(second.headers().get(header::RETRY_AFTER).is_some());
-        assert_rate_limit_headers(&second, 1, Some(0));
-        assert!(!request_id_header(&second).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_hooks_discord_is_rate_limited() {
-        let app = create_test_app_with_rate_limit(1);
-        let body = discord_chat_command(Some("G9"), "C9", "限流", "APP", "tok");
-
-        let first = post_discord(&app, body.clone(), None).await;
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_rate_limit_headers(&first, 1, Some(0));
-
-        let second = post_discord(&app, body, None).await;
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(second.headers().get(header::RETRY_AFTER).is_some());
-        assert_rate_limit_headers(&second, 1, Some(0));
-        assert!(!request_id_header(&second).is_empty());
+    async fn test_disabled_channels_remain_rate_limited() {
+        for path in ["/hooks/telegram", "/hooks/slack", "/hooks/discord"] {
+            let app = create_test_app_with_rate_limit(1);
+            for expected in [StatusCode::NOT_FOUND, StatusCode::TOO_MANY_REQUESTS] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(path)
+                            .header("content-type", "application/json")
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), expected);
+                assert_rate_limit_headers(&response, 1, Some(0));
+            }
+        }
     }
 
     #[test]

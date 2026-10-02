@@ -12,13 +12,38 @@
     }
   ],
   "tags": [
-    { "name": "scheduler", "description": "Authenticated SQLite cron/interval jobs; opt-in only" },
-    { "name": "health", "description": "健康检查" },
-    { "name": "metrics", "description": "Prometheus 进程内指标" },
-    { "name": "chat", "description": "聊天与会话" },
-    { "name": "catalog", "description": "工具与技能目录" },
-    { "name": "hooks", "description": "Webhook / Telegram / Slack / Discord 入站（可选出站）" },
-    { "name": "discovery", "description": "API 发现" }
+    {
+      "name": "scheduler",
+      "description": "Authenticated SQLite cron/interval jobs; opt-in only"
+    },
+    {
+      "name": "health",
+      "description": "健康检查"
+    },
+    {
+      "name": "metrics",
+      "description": "Prometheus 进程内指标"
+    },
+    {
+      "name": "chat",
+      "description": "聊天与会话"
+    },
+    {
+      "name": "catalog",
+      "description": "工具与技能目录"
+    },
+    {
+      "name": "hooks",
+      "description": "Webhook / Telegram / Slack / Discord 入站（可选出站）"
+    },
+    {
+      "name": "discovery",
+      "description": "API 发现"
+    },
+    {
+      "name": "channels",
+      "description": "Durable channel operations and delivery reconciliation"
+    }
   ],
   "paths": {
     "/api/jobs": {
@@ -974,16 +999,24 @@
     },
     "/hooks/telegram": {
       "post": {
-        "tags": ["hooks"],
+        "tags": [
+          "hooks"
+        ],
         "summary": "Telegram Bot 入站",
         "operationId": "inboundTelegram",
-        "description": "接收 Telegram Bot API Update JSON，将 `message.text` / `edited_message.text` 映射到 session `telegram:{chat.id}` 并走现有 agent chat 路径。无文本的 update 返回 200 并带跳过说明。配置了 `JIACLAW_TELEGRAM_BOT_TOKEN` / `[http].telegram_bot_token` 时，成功回复后会 POST `https://api.telegram.org/bot{token}/sendMessage`（`chat_id` + `text`，文本按 4096 截断）。出站失败仍 200 + 原 JSON `reply`，避免 Telegram 重试；可回传 `delivered` / `delivery_error`。未配置 token 时仅同步 JSON。用 Bot API `setWebhook` 将公网 HTTPS URL 指向本端点，并可设置 `secret_token`。",
-        "security": [{ "telegramSecret": [] }],
+        "description": "Authenticated durable ingress: require explicit installation, sender, conversation and tool policies. Persist the unique platform event before ACK; Agent execution and reply delivery are supervised background work. Duplicate events never rerun the Agent within documented retention. No synchronous model reply. See docs/channels.md.",
+        "security": [
+          {
+            "telegramSecret": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/TelegramUpdate" }
+              "schema": {
+                "$ref": "#/components/schemas/TelegramUpdate"
+              }
             }
           }
         },
@@ -991,48 +1024,93 @@
           "200": {
             "description": "入站处理结果（含跳过）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/TelegramInboundResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramInboundResponse"
+                }
               }
             }
           },
           "401": {
             "description": "Telegram secret token 不匹配",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WebhookUnauthorized" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Invalid platform payload or expired interaction"
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
         }
       }
     },
     "/hooks/slack": {
       "post": {
-        "tags": ["hooks"],
+        "tags": [
+          "hooks"
+        ],
         "summary": "Slack Events API 入站",
         "operationId": "inboundSlack",
-        "description": "接收 Slack Events API JSON。先读取原始 body 字节再反序列化，以便配置 signing secret 时做官方 v0 HMAC-SHA256 校验（`X-Slack-Signature` + `X-Slack-Request-Timestamp`，时间窗 ±5 分钟）。`type=url_verification` 返回 `{ challenge }`。`event_callback` 仅处理 `event.type=message` 且 `subtype` 为空（忽略 `bot_message`、`message_changed` 等，避免环）；文本取 `event.text`，会话键 `slack:{team_id}:{channel}`（无 team 则为 `slack:{channel}`）。无文本或忽略的事件返回 200 + skipped。成功回复同步 JSON `{ ok, reply, session_id }`。配置了 `JIACLAW_SLACK_BOT_TOKEN` / `[http].slack_bot_token` 时，成功回复后 POST `https://slack.com/api/chat.postMessage`；出站失败仍 200 + 原 `reply`。未配置 signing secret 时开放（开发友好）。",
-        "security": [{ "slackSignature": [], "slackTimestamp": [] }],
+        "description": "Authenticated durable ingress: require explicit installation, sender, conversation and tool policies. Persist the unique platform event before ACK; Agent execution and reply delivery are supervised background work. Duplicate events never rerun the Agent within documented retention. No synchronous model reply. See docs/channels.md.",
+        "security": [
+          {
+            "slackSignature": [],
+            "slackTimestamp": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SlackEnvelope" }
+              "schema": {
+                "$ref": "#/components/schemas/SlackEnvelope"
+              }
             }
           }
         },
@@ -1040,48 +1118,93 @@
           "200": {
             "description": "URL 验证 `{ challenge }`，或入站处理结果（含跳过）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SlackInboundResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SlackInboundResponse"
+                }
               }
             }
           },
           "401": {
             "description": "Slack 签名或时间戳无效",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WebhookUnauthorized" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Invalid platform payload or expired interaction"
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
         }
       }
     },
     "/hooks/discord": {
       "post": {
-        "tags": ["hooks"],
+        "tags": [
+          "hooks"
+        ],
         "summary": "Discord Interactions 入站",
         "operationId": "inboundDiscord",
-        "description": "接收 Discord Interactions HTTP JSON。先读取原始 body 字节再反序列化，以便配置公钥时做官方 Ed25519 校验（`X-Signature-Ed25519` + `X-Signature-Timestamp`，消息为 timestamp 与 raw body 拼接）。`type=1` PING 返回 `{ type: 1 }` PONG。`type=2` APPLICATION_COMMAND 仅处理 Chat Input（`data.type=1` 或省略）：文本取第一个 string option，否则用 `data.name` 加选项拼接；会话键 `discord:{guild_id}:{channel_id}`（无 guild 则为 `discord:dm:{channel_id}`）。立即返回 `{ type: 5 }` deferred ACK（满足 3s），后台跑 chat；配置了 `JIACLAW_DISCORD_BOT_TOKEN` / `[http].discord_bot_token` 时再 PATCH 编辑原始消息。未配置公钥时开放（开发友好）；未配置 bot token 时仍 ACK 并写 session，但无法 follow-up。不支持 Incoming Webhook 简化体。",
-        "security": [{ "discordSignature": [], "discordTimestamp": [] }],
+        "description": "Authenticated durable ingress: require explicit installation, sender, conversation and tool policies. Persist the unique platform event before ACK; Agent execution and reply delivery are supervised background work. Duplicate events never rerun the Agent within documented retention. No synchronous model reply. See docs/channels.md.",
+        "security": [
+          {
+            "discordSignature": [],
+            "discordTimestamp": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/DiscordInteraction" }
+              "schema": {
+                "$ref": "#/components/schemas/DiscordInteraction"
+              }
             }
           }
         },
@@ -1089,35 +1212,426 @@
           "200": {
             "description": "PING 为 `{ type: 1 }`；Chat Input Command 为 `{ type: 5 }` deferred；忽略的 interaction 为 type 4 短暂消息",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DiscordInteractionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/DiscordInteractionResponse"
+                }
               }
             }
           },
           "401": {
             "description": "Discord Ed25519 签名无效",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WebhookUnauthorized" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "Invalid platform payload or expired interaction"
+          },
+          "404": {
+            "description": "Channel not configured"
+          },
+          "409": {
+            "description": "Same platform event ID reused with different content"
+          },
+          "503": {
+            "description": "Worker unavailable, storage quota reached or durable admission deadline exceeded"
+          }
         }
       }
+    },
+    "/api/channels/status": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "channelStatus",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        }
+      }
+    },
+    "/api/channels/events": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "listChannelEvents",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelEvent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        ]
+      }
+    },
+    "/api/channels/events/{id}": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "getChannelEvent",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelEvent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "purgeChannelEvent",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "description": "Purge reviewed terminal history; retain a deduplication tombstone for seven days. Does not delete session history."
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/channels/events/{id}/cancel": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "cancelChannelEvent",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/channels/deliveries": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "listChannelDeliveries",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelDelivery"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/channels/deliveries/{id}/resolve": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "resolveChannelDelivery",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "409": {
+            "description": "Invalid state transition; active or unresolved record"
+          },
+          "503": {
+            "description": "Channel unavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelResolution"
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     }
   },
   "components": {
@@ -1655,109 +2169,130 @@
       },
       "TelegramMessage": {
         "type": "object",
-        "required": ["chat"],
+        "required": [
+          "chat"
+        ],
         "properties": {
-          "chat": { "$ref": "#/components/schemas/TelegramChat" },
-          "text": { "type": "string" }
+          "chat": {
+            "$ref": "#/components/schemas/TelegramChat"
+          },
+          "text": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "is_bot": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "message_thread_id": {
+            "type": "integer",
+            "format": "int64"
+          }
         }
       },
       "TelegramUpdate": {
         "type": "object",
-        "description": "Telegram Bot API Update 的最小子集；其余字段忽略。至少支持 message.text / edited_message.text。",
         "properties": {
-          "update_id": { "type": "integer" },
-          "message": { "$ref": "#/components/schemas/TelegramMessage" },
-          "edited_message": { "$ref": "#/components/schemas/TelegramMessage" }
-        }
+          "update_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "$ref": "#/components/schemas/TelegramMessage"
+          },
+          "edited_message": {
+            "$ref": "#/components/schemas/TelegramMessage"
+          }
+        },
+        "required": [
+          "update_id"
+        ]
       },
       "TelegramInboundResponse": {
-        "type": "object",
-        "required": ["ok"],
-        "properties": {
-          "ok": { "type": "boolean" },
-          "reply": {
-            "type": "string",
-            "description": "同步回传的 assistant 文本（有文本的 update）"
-          },
-          "session_id": {
-            "type": "string",
-            "description": "telegram:{chat.id}"
-          },
-          "skipped": {
-            "type": "boolean",
-            "description": "无文本 update 时为 true"
-          },
-          "reason": {
-            "type": "string",
-            "example": "no text in update"
-          },
-          "delivered": {
-            "type": "boolean",
-            "description": "是否已成功调用 Bot sendMessage。未配置 bot token 时省略该字段。"
-          },
-          "delivery_error": {
-            "type": "string",
-            "description": "sendMessage 失败时的错误摘要（不含 token 明文）。出站失败不改变 HTTP 200。"
-          }
-        }
+        "$ref": "#/components/schemas/ChannelAck"
       },
       "SlackEvent": {
         "type": "object",
         "properties": {
-          "type": { "type": "string", "example": "message" },
-          "subtype": { "type": "string", "description": "非空时忽略（如 bot_message、message_changed）" },
-          "channel": { "type": "string" },
-          "text": { "type": "string" }
+          "type": {
+            "type": "string",
+            "example": "message"
+          },
+          "subtype": {
+            "type": "string",
+            "description": "非空时忽略（如 bot_message、message_changed）"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string"
+          },
+          "thread_ts": {
+            "type": "string"
+          }
         }
       },
       "SlackEnvelope": {
         "type": "object",
-        "description": "Slack Events API 信封最小子集；其余字段忽略。",
-        "required": ["type"],
+        "required": [
+          "type"
+        ],
         "properties": {
           "type": {
             "type": "string",
             "description": "`url_verification` 或 `event_callback`"
           },
-          "challenge": { "type": "string" },
-          "team_id": { "type": "string" },
-          "event": { "$ref": "#/components/schemas/SlackEvent" }
+          "challenge": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "event": {
+            "$ref": "#/components/schemas/SlackEvent"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "api_app_id": {
+            "type": "string"
+          }
         }
       },
       "SlackInboundResponse": {
-        "type": "object",
-        "required": ["ok"],
-        "properties": {
-          "ok": { "type": "boolean" },
-          "challenge": {
-            "type": "string",
-            "description": "仅 `url_verification` 时返回该字段（响应体为 `{ challenge }`）"
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ChannelAck"
           },
-          "reply": {
-            "type": "string",
-            "description": "同步回传的 assistant 文本（普通 message）"
-          },
-          "session_id": {
-            "type": "string",
-            "description": "slack:{team_id}:{channel} 或 slack:{channel}"
-          },
-          "skipped": {
-            "type": "boolean",
-            "description": "忽略的事件或无文本时为 true"
-          },
-          "reason": {
-            "type": "string",
-            "example": "ignored message subtype"
-          },
-          "delivered": {
-            "type": "boolean",
-            "description": "是否已成功调用 chat.postMessage。未配置 bot token 时省略该字段。"
-          },
-          "delivery_error": {
-            "type": "string",
-            "description": "chat.postMessage 失败时的错误摘要（不含 token 明文）。出站失败不改变 HTTP 200。"
+          {
+            "type": "object",
+            "properties": {
+              "challenge": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "challenge"
+            ]
           }
-        }
+        ]
       },
       "DiscordCommandOption": {
         "type": "object",
@@ -1784,18 +2319,63 @@
       },
       "DiscordInteraction": {
         "type": "object",
-        "description": "Discord Interactions 最小子集；其余字段忽略。不接受 Incoming Webhook 简化体。",
-        "required": ["type"],
+        "description": "Signed interaction. Chat commands require data.type=1 and exactly one type=3 string option. IDs must be real snowflakes; creation time controls expiry.",
+        "required": [
+          "type"
+        ],
         "properties": {
           "type": {
             "type": "integer",
             "description": "1 = PING，2 = APPLICATION_COMMAND"
           },
-          "application_id": { "type": "string" },
-          "guild_id": { "type": "string" },
-          "channel_id": { "type": "string" },
-          "token": { "type": "string" },
-          "data": { "$ref": "#/components/schemas/DiscordInteractionData" }
+          "application_id": {
+            "type": "string"
+          },
+          "guild_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DiscordInteractionData"
+          },
+          "id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "member": {
+            "type": "object",
+            "properties": {
+              "user": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "user"
+            ]
+          }
         }
       },
       "DiscordInteractionResponse": {
@@ -1833,6 +2413,284 @@
         "properties": {
           "error": { "type": "string", "example": "rate_limit_exceeded" }
         }
+      },
+      "ChannelAck": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "skipped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "ChannelDestination": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "telegram",
+              "slack",
+              "discord"
+            ]
+          },
+          "installation_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "interaction_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "expires_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        },
+        "required": [
+          "channel",
+          "installation_id",
+          "conversation_id",
+          "thread_id",
+          "interaction_id",
+          "expires_ms"
+        ]
+      },
+      "ChannelEventSpec": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sender_id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "enabled_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/ChannelDestination"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "session_id",
+          "sender_id",
+          "prompt",
+          "enabled_tools",
+          "timeout_secs",
+          "destination",
+          "fingerprint"
+        ]
+      },
+      "ChannelEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ChannelEventSpec"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "received",
+              "processing",
+              "completed",
+              "needs_review"
+            ]
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "finished_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "reviewed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "spec",
+          "status",
+          "error",
+          "created_ms",
+          "started_ms",
+          "finished_ms",
+          "reviewed_ms"
+        ]
+      },
+      "ChannelDelivery": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/ChannelDestination"
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "text": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "submitting",
+              "delivered",
+              "retry_wait",
+              "unknown",
+              "permanent_failed",
+              "expired",
+              "cancelled"
+            ]
+          },
+          "receipt": {
+            "type": "string",
+            "nullable": true
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "finished_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "next_attempt_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "id",
+          "event_id",
+          "destination",
+          "ordinal",
+          "text",
+          "state",
+          "receipt",
+          "attempts",
+          "error",
+          "created_ms",
+          "started_ms",
+          "finished_ms",
+          "next_attempt_ms"
+        ]
+      },
+      "ChannelResolution": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "delivered",
+              "cancel"
+            ]
+          },
+          "receipt": {
+            "type": "string",
+            "maxLength": 4096,
+            "description": "Required nonempty manual receipt evidence for delivered."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "ChannelStatus": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "failed",
+              "stopping",
+              "disabled"
+            ]
+          },
+          "max_processing": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "state",
+          "max_processing"
+        ]
       }
     }
   }

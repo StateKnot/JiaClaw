@@ -11,7 +11,7 @@
 | 5 | Web 工作台 | 实现 | 内置同源静态资源，鉴权后创建/选择/聊天/删除会话，无模型 HTML 执行、无浏览器持久密钥 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
 | 6 | cron 多任务 | 实现；本批执行持久化与进程验收 | SQLite v2 jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。没有副作用自动重放或渠道通知 |
-| 7 | 渠道统一出站 | 待实现 | Telegram/Slack/Discord 统一消息与错误合同，持久 outbox/幂等、重试和速率限制，再接飞书/企微/钉钉/WhatsApp |
+| 7 | 渠道统一出站 | Telegram/Slack/Discord 已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。进程 fixture 不能替代真实安装认证；定时任务 destination 接线及飞书/企微/钉钉/WhatsApp 仍待交付 |
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 上游有支持；应用待策略接线 | 由 Brokerrouter 按能力/模型策略路由，仅明确未提交可安全重试；预算/审批不绕过 |
 | 10 | 多用户与 Key 管理 | 待实现 | 鉴权主体、授权检查、workspace/记忆/会话隔离、Key 哈希/轮换/撤销、渠道身份绑定与越权测试 |

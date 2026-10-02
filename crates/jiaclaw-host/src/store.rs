@@ -1,7 +1,7 @@
 // Copyright 2026 JiaClaw contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Authoritative SQLite session storage and an explicit ephemeral backend.
+//! Authoritative `SQLite` session storage and an explicit ephemeral backend.
 use super::SessionRecord;
 use anyhow::{Context, Result};
 use jiaclaw_core::ChatMessage;
@@ -91,7 +91,7 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 2 {
+        if version > 3 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
         if version < 1 {
@@ -99,6 +99,9 @@ impl SessionStore {
         }
         if version < 2 {
             tx.execute_batch(super::jobs::SCHEMA_V2)?;
+        }
+        if version < 3 {
+            tx.execute_batch(super::channel_store::SCHEMA_V3)?;
         }
         tx.commit()?;
         Ok(Self::Sqlite {
@@ -275,7 +278,7 @@ impl SessionStore {
                 for id in expired {
                     if !active.contains(&id) {
                         deleted += tx.execute(
-                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2",
+                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled'))))",
                             params![id, cutoff],
                         )?;
                     }
@@ -372,14 +375,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=3;").unwrap();
+        conn.execute_batch("PRAGMA user_version=4;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();

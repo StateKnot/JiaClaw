@@ -33,14 +33,23 @@ max_body_bytes = 1048576
 shutdown_timeout_secs = 30
 # Unset/0: no expiration. Expiration deletes history, including persisted history.
 # session_ttl_secs = 2592000
-# Each webhook is CLOSED until its own secret/public key is configured.
+# Channels require explicit installation/identity/tool policies below, SQLite and API Token.
+# See docs/channels.md before migrating older webhook configurations.
 # webhook_secret = "..."           # JIACLAW_WEBHOOK_SECRET
 # telegram_secret = "..."          # JIACLAW_TELEGRAM_SECRET
 # telegram_bot_token = "..."       # JIACLAW_TELEGRAM_BOT_TOKEN
 # slack_signing_secret = "..."     # JIACLAW_SLACK_SIGNING_SECRET
 # slack_bot_token = "..."          # JIACLAW_SLACK_BOT_TOKEN
 # discord_public_key = "..."       # JIACLAW_DISCORD_PUBLIC_KEY
-# discord_bot_token = "..."        # JIACLAW_DISCORD_BOT_TOKEN
+# Discord replies use interaction tokens; set JIACLAW_CHANNEL_STATE_KEY (64 hex).
+# No Discord Bot Authorization is sent for interaction replies.
+# [[http.channels]]
+# channel = "telegram"
+# installation_id = "123456"  # Numeric prefix of your Bot Token.
+# allowed_senders = ["YOUR_USER_ID"]
+# allowed_conversations = ["YOUR_CHAT_ID"]
+# enabled_tools = ["datetime_now"]
+# timeout_secs = 120
 
 [http.cors]
 enabled = false

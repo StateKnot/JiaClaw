@@ -8,7 +8,7 @@
 
 服务部署使用单进程、单 SQLite 数据库、本地可靠文件系统。不要把数据库放进网络共享盘、工作区或允许模型修改的目录。当前没有多用户隔离，也没有多副本写入协议；要扩容应先完成 StateKnot durable 与鉴权里程碑。
 
-公网接入通过 TLS 反向代理，仅公开需要的端点。保持精确 CORS 来源；内置工作台不需 CORS。渠道未配置专属鉴权时返回 404，配置后仍需在渠道侧登记正确 HTTPS webhook 和验证签名。API Token 不替代 Telegram/Slack/Discord 的鉴权。
+公网接入通过 TLS 反向代理，仅公开需要的端点。保持精确 CORS 来源；内置工作台不需 CORS。渠道必须同时配置专属鉴权及 `http.channels` 安装/身份/工具白名单；旧密钥配置缺少策略时启动失败，未启用的渠道返回 404。配置后仍需在渠道侧登记正确 HTTPS webhook 和验证签名。API Token 不替代 Telegram/Slack/Discord 的鉴权。
 
 ## Linux systemd
 
@@ -71,7 +71,7 @@ docker compose ps
 
 旧 JSON 迁移源保留不删除，导入和标记在同一事务内；坏 JSON 或不支持的未来 schema 导致启动失败。不要修改 user_version 来强制降级。恢复演练应使用独立实例和复制的目录，验证已提交历史、空会话和删除状态。
 
-升级时停止服务、备份、安装固定版本、启动并检查。同一数据库有排他锁，不允许旧/新进程同时打开。当前版本 schema=2，启动时从 schema=1 事务迁移并保留会话，新增 jobs/runs；schema=1 的旧二进制会拒绝新库。回滚必须恢复升级前的完整 state 备份，不能指望旧进程读取新库。已有 JSON 源也不是升级后的完整历史备份。
+升级时停止服务、备份、安装固定版本、启动并检查。同一数据库有排他锁，不允许旧/新进程同时打开。当前版本 schema=3，启动时从 schema=1/2 事务迁移并保留会话与 jobs/runs，新增持久 channel inbox/outbox；旧二进制会拒绝新库。Discord 的 JIACLAW_CHANNEL_STATE_KEY 必须与 state 分别保护并共同备份，移除或替换密钥前先排空待发送交互。回滚必须恢复升级前的完整 state 备份，不能指望旧进程读取新库。已有 JSON 源也不是升级后的完整历史备份。
 
 CLI `session export/import` 与 HTTP 导入导出提供会话级迁移。serve 正在运行时使用鉴权 HTTP API，避免第二个 CLI 进程竞争数据库。消息摘要/TTL 会删除或压缩历史，开启前确认保留策略。
 

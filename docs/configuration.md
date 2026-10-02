@@ -70,16 +70,16 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 ## 渠道、记忆、技能与心跳
 
-各渠道仅在自己的入站鉴权配置后开放；未配置返回 404 `channel_disabled`。API Token 不替代渠道鉴权。
+Telegram、Slack、Discord 必须配置 `http.channels` 安装/身份/工具白名单及平台鉴权后开放；未启用返回 404。旧密钥配置缺少策略时启动失败。API Token 不替代渠道鉴权。
 
 | 端点 | 入站配置 / 环境变量 | 出站配置 / 环境变量 |
 |---|---|---|
 | `/hooks/inbound` | `http.webhook_secret` / `JIACLAW_WEBHOOK_SECRET`，头 `X-Webhook-Secret` | 同步 JSON 回复 |
 | `/hooks/telegram` | `http.telegram_secret` / `JIACLAW_TELEGRAM_SECRET`，头 `X-Telegram-Bot-Api-Secret-Token` | `telegram_bot_token` / `JIACLAW_TELEGRAM_BOT_TOKEN` |
 | `/hooks/slack` | `http.slack_signing_secret` / `JIACLAW_SLACK_SIGNING_SECRET`，v0 HMAC-SHA256 | `slack_bot_token` / `JIACLAW_SLACK_BOT_TOKEN` |
-| `/hooks/discord` | `http.discord_public_key` / `JIACLAW_DISCORD_PUBLIC_KEY`，Ed25519 | `discord_bot_token` / `JIACLAW_DISCORD_BOT_TOKEN` |
+| `/hooks/discord` | `http.discord_public_key` / `JIACLAW_DISCORD_PUBLIC_KEY`，Ed25519 | interaction token；`JIACLAW_CHANNEL_STATE_KEY` 加密存储 |
 
-目前渠道各自管理出站调用；fixture 测试覆盖协议，不等于真实渠道联调认证。渠道身份属于实例共享工作区，没有多用户隔离。
+三条渠道使用统一持久 inbox/outbox 与有界异步发送；fixture 测试覆盖协议，不等于真实渠道联调认证。会话按安装、会话、线程和发送者绑定；工作区仍是实例共享，没有多用户工作区隔离。
 
 `memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md；系统提示各文件最多注入 32 KiB。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。
 
@@ -101,4 +101,8 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v2，旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v3（包含调度与渠道状态），旧二进制拒绝降级；升级前应按部署指南停机备份。
+
+### 渠道授权与持久消息
+
+`http.channels` 默认为空，渠道关闭。启用 Telegram/Slack/Discord 时须同时设置安装身份、发送者/会话/后台工具精确白名单，SQLite 和 API Token。旧版本只有平台密钥的配置须按[渠道指南](channels.md)显式迁移，不能依赖同步 JSON reply 或空工具列表放行所有工具。Discord 另需环境变量 `JIACLAW_CHANNEL_STATE_KEY`（32 字节密钥的 64 位十六进制编码）。

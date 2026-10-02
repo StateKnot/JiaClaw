@@ -705,7 +705,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);
