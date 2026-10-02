@@ -13,8 +13,8 @@ use serde::{Serialize, Serializer};
 use std::collections::HashSet;
 
 const MAX_EVENTS: usize = 1000;
-const MAX_DELIVERIES: usize = 10_000;
-const MAX_EVENT_CHUNKS: usize = 100;
+pub(super) const MAX_DELIVERIES: usize = 10_000;
+pub(super) const MAX_EVENT_CHUNKS: usize = 100;
 const MAX_TOMBSTONES: usize = 10_000;
 const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_CHUNK_BYTES: usize = 256 * 1024;
@@ -76,6 +76,34 @@ CREATE INDEX channel_dedup_expiry ON channel_dedup(retain_until_ms);
 PRAGMA user_version=3;
 ";
 
+pub(super) const SCHEMA_V4: &str = "
+CREATE TABLE channel_outbox_v4 (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ event_id TEXT REFERENCES channel_events(id),
+ job_run_id TEXT REFERENCES job_runs(id) ON DELETE RESTRICT,
+ channel TEXT NOT NULL, installation_id TEXT NOT NULL, destination_key TEXT NOT NULL,
+ destination TEXT NOT NULL CHECK(json_valid(destination)), sealed_token TEXT, expires_ms INTEGER,
+ ordinal INTEGER NOT NULL CHECK(ordinal>=0), text TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitting','retry_wait','delivered','unknown','permanent_failed','expired','cancelled')),
+ receipt TEXT, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 5), error TEXT,
+ created_ms INTEGER NOT NULL, started_ms INTEGER, finished_ms INTEGER, next_attempt_ms INTEGER NOT NULL,
+ CHECK((event_id IS NOT NULL)+(job_run_id IS NOT NULL)=1),
+ CHECK(job_run_id IS NULL OR (channel IN ('telegram','slack') AND sealed_token IS NULL AND expires_ms IS NULL)),
+ UNIQUE(event_id,ordinal), UNIQUE(job_run_id,ordinal)
+);
+INSERT INTO channel_outbox_v4(seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms)
+ SELECT seq,id,event_id,NULL,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms FROM channel_outbox;
+INSERT INTO sqlite_sequence(name,seq) SELECT 'channel_outbox_v4',seq FROM sqlite_sequence WHERE name='channel_outbox' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='channel_outbox_v4');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'),0)) WHERE name='channel_outbox_v4';
+DROP TABLE channel_outbox;
+ALTER TABLE channel_outbox_v4 RENAME TO channel_outbox;
+CREATE INDEX channel_outbox_ready ON channel_outbox(state,next_attempt_ms,seq);
+CREATE INDEX channel_outbox_destination ON channel_outbox(channel,installation_id,destination_key,seq);
+CREATE INDEX channel_outbox_job_run ON channel_outbox(job_run_id);
+CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,installation_id) WHERE state='submitting';
+PRAGMA user_version=4;
+";
+
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelEvent {
     pub id: String,
@@ -107,7 +135,9 @@ pub(super) struct EventAcceptance {
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelDelivery {
     pub id: String,
-    pub event_id: String,
+    pub event_id: Option<String>,
+    pub job_run_id: Option<String>,
+    pub job_id: Option<String>,
     pub destination: Destination,
     #[serde(skip_serializing)]
     pub sealed_token: Option<String>,
@@ -286,7 +316,7 @@ fn decode<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> rusqli
 }
 const EVENT_FIELDS: &str =
     "id,spec,sealed_token,status,error,created_ms,started_ms,finished_ms,reviewed_ms";
-const DELIVERY_FIELDS: &str = "id,event_id,destination,sealed_token,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms";
+const DELIVERY_FIELDS: &str = "id,event_id,destination,sealed_token,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms,job_run_id,(SELECT job_id FROM job_runs r WHERE r.id=job_run_id)";
 fn event_row(row: &Row<'_>) -> rusqlite::Result<ChannelEvent> {
     let mut spec: EventSpec = decode(row, 1)?;
     spec.sealed_token = row.get(2)?;
@@ -317,6 +347,8 @@ fn delivery_row(row: &Row<'_>) -> rusqlite::Result<ChannelDelivery> {
         started_ms: row.get(11)?,
         finished_ms: row.get(12)?,
         next_attempt_ms: row.get(13)?,
+        job_run_id: row.get(14)?,
+        job_id: row.get(15)?,
     })
 }
 fn find_event(conn: &Connection, id: &str) -> Result<Option<ChannelEvent>> {
@@ -344,6 +376,43 @@ fn expire_tombstones(conn: &Connection, now: i64) -> Result<usize> {
     let removed = conn.execute("DELETE FROM channel_dedup WHERE retain_until_ms<=?1 AND NOT EXISTS(SELECT 1 FROM channel_events e WHERE e.id=channel_dedup.id)",[now])?;
     conn.execute("DELETE FROM channel_cooldowns WHERE until_ms<=?1", [now])?;
     Ok(removed)
+}
+
+/// Call while holding an IMMEDIATE transaction before creating another durable
+/// processing/running row. Both producers reserve the same maximum reply size.
+pub(super) fn has_outbox_capacity(conn: &Connection) -> Result<bool> {
+    let actual: usize = conn.query_row("SELECT count(*) FROM channel_outbox", [], |r| r.get(0))?;
+    let inbound: usize = conn.query_row(
+        "SELECT count(*) FROM channel_events WHERE status='processing'",
+        [],
+        |r| r.get(0),
+    )?;
+    let scheduled: usize = conn.query_row("SELECT count(*) FROM job_runs WHERE status='running' AND json_extract(spec,'$.delivery') IS NOT NULL", [], |r| r.get(0))?;
+    Ok(actual.saturating_add(
+        (inbound.saturating_add(scheduled).saturating_add(1)).saturating_mul(MAX_EVENT_CHUNKS),
+    ) <= MAX_DELIVERIES)
+}
+
+pub(super) fn enqueue_job_delivery(
+    conn: &Connection,
+    run_id: &str,
+    target: &super::channel_types::ScheduledDestination,
+    chunks: Vec<String>,
+    now: i64,
+) -> Result<()> {
+    target.validate()?;
+    let destination = target.destination();
+    validate_chunks(destination.channel, &chunks)?;
+    let actual: usize = conn.query_row("SELECT count(*) FROM channel_outbox", [], |r| r.get(0))?;
+    ensure!(
+        actual.saturating_add(chunks.len()) <= MAX_DELIVERIES,
+        "scheduled delivery exceeded reserved outbox capacity"
+    );
+    let key = serde_json::to_string(&(&destination.conversation_id, &destination.thread_id))?;
+    for (ordinal, text) in chunks.into_iter().enumerate() {
+        conn.execute("INSERT INTO channel_outbox(id,job_run_id,channel,installation_id,destination_key,destination,ordinal,text,state,attempts,created_ms,next_attempt_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',0,?9,?9)", params![uuid::Uuid::new_v4().to_string(),run_id,channel_name(destination.channel),destination.installation_id,key,serde_json::to_string(&destination)?,i64::try_from(ordinal)?,text,now])?;
+    }
+    Ok(())
 }
 
 impl SessionStore {
@@ -441,9 +510,7 @@ impl SessionStore {
         // Reserve the maximum possible reply before executing any model/tool.
         // Processing rows are the durable reservations, so concurrent completion
         // converts only its own reservation into actual outbox rows.
-        let deliveries: usize =
-            tx.query_row("SELECT count(*) FROM channel_outbox", [], |r| r.get(0))?;
-        if deliveries.saturating_add((active + 1) * MAX_EVENT_CHUNKS) > MAX_DELIVERIES {
+        if !has_outbox_capacity(&tx)? {
             tx.commit()?;
             return Ok(None);
         }
@@ -524,12 +591,24 @@ impl SessionStore {
         let rows = stmt.query_map(params![event_id, limit, offset], delivery_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+    pub(super) fn list_job_deliveries(
+        &self,
+        job_id: &str,
+        run_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ChannelDelivery>> {
+        let (limit, offset) = page(limit, offset)?;
+        let mut stmt = self.channel_conn()?.prepare(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox WHERE job_run_id IN (SELECT id FROM job_runs WHERE job_id=?1 AND id=?2) ORDER BY seq LIMIT ?3 OFFSET ?4"))?;
+        let rows = stmt.query_map(params![job_id, run_id, limit, offset], delivery_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
     pub(super) fn claim_channel_delivery(&mut self, now: i64) -> Result<Option<ChannelDelivery>> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         expire_tokens(&tx, now)?;
-        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),[now],delivery_row).optional()?;
+        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.job_run_id=d.job_run_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),[now],delivery_row).optional()?;
         let Some(mut record) = record else {
             tx.commit()?;
             return Ok(None);
@@ -605,6 +684,9 @@ impl SessionStore {
             Some("rate-limit retry budget exhausted; review before further action".into())
         };
         tx.execute("UPDATE channel_outbox SET state=?3,receipt=?4,error=?5,next_attempt_ms=?6,finished_ms=?7,sealed_token=CASE WHEN ?3='retry_wait' THEN sealed_token ELSE NULL END WHERE id=?1 AND state='submitting' AND attempts=?2",params![id,expected_attempt,terminal,receipt,error,retry_after_ms.unwrap_or(now),if terminal=="retry_wait"{None}else{Some(now)}])?;
+        if matches!(terminal, "unknown" | "permanent_failed" | "expired") {
+            tx.execute("UPDATE jobs SET enabled=0 WHERE id IN (SELECT job_id FROM job_runs WHERE id IN (SELECT job_run_id FROM channel_outbox WHERE id=?1))",[id])?;
+        }
         expire_tokens(&tx, now)?;
         tx.commit()?;
         Ok(true)
@@ -614,6 +696,7 @@ impl SessionStore {
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let events=tx.execute("UPDATE channel_events SET status='needs_review',finished_ms=?1,error='process stopped during agent execution; effects may have occurred; no automatic replay' WHERE status='processing'",[now])?;
+        tx.execute("UPDATE jobs SET enabled=0 WHERE id IN (SELECT r.job_id FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE d.state='submitting')", [])?;
         let deliveries=tx.execute("UPDATE channel_outbox SET state='unknown',finished_ms=?1,sealed_token=NULL,error='process stopped during delivery; provider may have accepted it; reconcile before continuing' WHERE state='submitting'",[now])?;
         expire_tokens(&tx, now)?;
         tx.commit()?;
@@ -772,6 +855,271 @@ mod tests {
             .unwrap());
     }
 
+    fn scheduled_spec() -> crate::jobs::JobSpec {
+        crate::jobs::JobSpec {
+            name: "scheduled delivery".into(),
+            prompt: "hello".into(),
+            schedule: crate::schedule::ScheduleSpec::Interval { seconds: 60 },
+            enabled_tools: vec!["datetime_now".into()],
+            timeout_secs: 120,
+            delivery: Some(crate::channel_types::ScheduledDestination {
+                channel: Channel::Telegram,
+                installation_id: "123".into(),
+                conversation_id: "-100".into(),
+                thread_id: None,
+            }),
+        }
+    }
+
+    fn scheduled_reply() -> jiaclaw_core::ChatResponse {
+        jiaclaw_core::ChatResponse {
+            message: ChatMessage {
+                role: jiaclaw_core::MessageRole::Assistant,
+                content: "one".into(),
+            },
+            tool_calls: vec![],
+            status: jiaclaw_core::RunStatus::Completed,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn v4_migration_preserves_v3_delivery_evidence_and_sequence_even_when_empty() {
+        for empty in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("jiaclaw-v4-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("state.sqlite3");
+            let (event_id, outbox_id) = {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
+                conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
+                conn.execute_batch(SCHEMA_V3).unwrap();
+                let mut old = SessionStore::Sqlite {
+                    conn,
+                    _ownership: None,
+                };
+                let mut discord = spec("legacy");
+                discord.destination.channel = Channel::Discord;
+                discord.destination.interaction_id = Some("interaction".into());
+                discord.destination.expires_ms = Some(999_999);
+                discord.sealed_token = Some("retained-ciphertext".into());
+                let id = complete(&mut old, discord, &["legacy text"]);
+                let outbox_id: String = old
+                    .channel_conn()
+                    .unwrap()
+                    .query_row("SELECT id FROM channel_outbox", [], |r| r.get(0))
+                    .unwrap();
+                old.channel_conn().unwrap().execute_batch("UPDATE channel_outbox SET seq=100,state='unknown',receipt='receipt-evidence',attempts=2,error='uncertain',started_ms=10,finished_ms=20,next_attempt_ms=30; UPDATE sqlite_sequence SET seq=500 WHERE name='channel_outbox'; INSERT INTO channel_cooldowns VALUES('discord','installation',90000);").unwrap();
+                if empty {
+                    old.channel_conn()
+                        .unwrap()
+                        .execute("DELETE FROM channel_outbox", [])
+                        .unwrap();
+                }
+                (id, outbox_id)
+            };
+            let mut db = SessionStore::open(&path).unwrap();
+            assert_eq!(
+                db.channel_conn()
+                    .unwrap()
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                4
+            );
+            assert_eq!(
+                db.channel_conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                500
+            );
+            assert_eq!(
+                db.channel_conn()
+                    .unwrap()
+                    .query_row("SELECT until_ms FROM channel_cooldowns", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                90_000
+            );
+            assert_eq!(
+                db.get_channel_event(&event_id)
+                    .unwrap()
+                    .unwrap()
+                    .spec
+                    .sealed_token
+                    .as_deref(),
+                Some("retained-ciphertext")
+            );
+            if !empty {
+                let row = db.get_channel_delivery(&outbox_id).unwrap().unwrap();
+                assert_eq!(row.event_id.as_deref(), Some(event_id.as_str()));
+                assert!(row.job_run_id.is_none() && row.job_id.is_none());
+                assert_eq!(row.sealed_token.as_deref(), Some("retained-ciphertext"));
+                assert_eq!(
+                    (row.state.as_str(), row.text.as_str(), row.attempts),
+                    ("unknown", "legacy text", 2)
+                );
+                assert_eq!(
+                    (row.receipt.as_deref(), row.error.as_deref()),
+                    (Some("receipt-evidence"), Some("uncertain"))
+                );
+                assert_eq!(
+                    (row.started_ms, row.finished_ms, row.next_attempt_ms),
+                    (Some(10), Some(20), 30)
+                );
+                assert_eq!(
+                    db.channel_conn()
+                        .unwrap()
+                        .query_row("SELECT seq FROM channel_outbox", [], |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    100
+                );
+            }
+            complete(&mut db, spec("new"), &["new text"]);
+            assert_eq!(
+                db.channel_conn()
+                    .unwrap()
+                    .query_row("SELECT MAX(seq) FROM channel_outbox", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                501
+            );
+            assert!(db
+                .channel_conn()
+                .unwrap()
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .query([])
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_none());
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn inbound_and_scheduled_claims_share_the_same_reply_reservations() {
+        let mut db = database();
+        for i in 0..97 {
+            complete(&mut db, spec(&format!("filled-{i}")), &["chunk"; 100]);
+        }
+        complete(&mut db, spec("half"), &["chunk"; 50]);
+        for _ in 0..3 {
+            db.create_job(scheduled_spec(), 0).unwrap();
+        }
+        let runs = db.claim_due_jobs(60_000, 4).unwrap();
+        assert_eq!(runs.len(), 2);
+        let inbound = db.accept_channel_event(spec("waiting"), 60_000).unwrap();
+        assert!(db.claim_channel_event(60_000).unwrap().is_none());
+        db.finish_job_run(
+            &runs[0].id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            60_001,
+        )
+        .unwrap();
+        assert_eq!(
+            db.claim_channel_event(60_001).unwrap().unwrap().id,
+            inbound.id
+        );
+        assert!(db.claim_due_jobs(60_001, 4).unwrap().is_empty());
+        db.complete_channel_event(
+            &inbound.id,
+            None,
+            "completed",
+            vec!["chunk".into(); 50],
+            None,
+            60_002,
+        )
+        .unwrap();
+        assert!(db.claim_due_jobs(60_002, 4).unwrap().is_empty());
+        db.finish_job_run(
+            &runs[1].id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            60_003,
+        )
+        .unwrap();
+        assert_eq!(db.claim_due_jobs(60_003, 4).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn outbox_source_constraints_and_shared_fifo_apply_to_scheduled_runs() {
+        let mut db = database();
+        let job = db.create_job(scheduled_spec(), 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        let mut inbound = spec("before-job");
+        inbound.destination.installation_id = "123".into();
+        inbound.destination.conversation_id = "-100".into();
+        let event = complete(&mut db, inbound, &["inbound"]);
+        db.finish_job_run(
+            &run.id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            60_001,
+        )
+        .unwrap();
+        let scheduled = db
+            .list_job_deliveries(&job.id, &run.id, 100, 0)
+            .unwrap()
+            .remove(0);
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET event_id=?2 WHERE id=?1",
+                params![scheduled.id, event]
+            )
+            .is_err());
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET job_run_id=NULL WHERE id=?1",
+                [&scheduled.id]
+            )
+            .is_err());
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET job_run_id='absent' WHERE id=?1",
+                [&scheduled.id]
+            )
+            .is_err());
+        let first = db.claim_channel_delivery(60_002).unwrap().unwrap();
+        assert_eq!(first.event_id.as_deref(), Some(event.as_str()));
+        db.finish_channel_delivery(
+            &first.id,
+            first.attempts,
+            "unknown",
+            None,
+            None,
+            None,
+            60_003,
+        )
+        .unwrap();
+        assert!(db.claim_channel_delivery(70_000).unwrap().is_none());
+        db.cancel_channel_event(&event, 70_001).unwrap();
+        assert_eq!(
+            db.claim_channel_delivery(70_002).unwrap().unwrap().id,
+            scheduled.id
+        );
+    }
+
     #[test]
     fn migrates_v2_transactionally_and_preserves_sessions_and_jobs() {
         let directory =
@@ -794,11 +1142,12 @@ mod tests {
                         schedule: crate::schedule::ScheduleSpec::Interval { seconds: 60 },
                         enabled_tools: vec!["datetime_now".into()],
                         timeout_secs: 120,
+                        delivery: None,
                     },
                     0,
                 )
                 .unwrap();
-            old.claim_due_jobs(60_000, 4).unwrap();
+            old.channel_conn().unwrap().execute("INSERT INTO job_runs(id,job_id,scheduled_for_ms,started_ms,status,spec,session_id) VALUES('legacy-run',?1,60000,60000,'running',?2,?3)",params![job.id,serde_json::to_string(&job.spec).unwrap(),job.session_id]).unwrap();
             job.id
         };
         let mut db = SessionStore::open(&path).unwrap();
@@ -813,7 +1162,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);
@@ -1067,7 +1416,10 @@ mod tests {
         other.destination.conversation_id = "elsewhere".into();
         let elsewhere = complete(&mut db, other, &["elsewhere"]);
         let a = db.claim_channel_delivery(0).unwrap().unwrap();
-        assert_eq!((a.event_id.as_str(), a.ordinal), (first.as_str(), 0));
+        assert_eq!(
+            (a.event_id.as_deref().unwrap(), a.ordinal),
+            (first.as_str(), 0)
+        );
         assert!(db.claim_channel_delivery(5000).unwrap().is_none()); // installation is in flight
         assert!(db
             .cancel_channel_event(&first, 5000)
@@ -1085,7 +1437,7 @@ mod tests {
             )
             .unwrap());
         let c = db.claim_channel_delivery(3100).unwrap().unwrap();
-        assert_eq!(c.event_id, elsewhere);
+        assert_eq!(c.event_id, Some(elsewhere));
         delivered(&mut db, &c, 3101);
         assert!(db.claim_channel_delivery(6200).unwrap().is_none());
         assert!(db
@@ -1104,12 +1456,12 @@ mod tests {
         );
         let second = db.claim_channel_delivery(6200).unwrap().unwrap();
         assert_eq!(
-            (second.event_id.as_str(), second.ordinal),
+            (second.event_id.as_deref().unwrap(), second.ordinal),
             (first.as_str(), 1)
         );
         delivered(&mut db, &second, 6201);
         let b = db.claim_channel_delivery(9300).unwrap().unwrap();
-        assert_eq!(b.event_id, later);
+        assert_eq!(b.event_id, Some(later));
     }
 
     #[test]
@@ -1145,7 +1497,7 @@ mod tests {
         assert_eq!(all[1].error.as_deref(), Some("platform refused"));
         assert_eq!(
             db.claim_channel_delivery(6200).unwrap().unwrap().event_id,
-            second
+            Some(second)
         );
         assert!(db.purge_channel_event(&first, 6200).unwrap());
     }

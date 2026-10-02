@@ -113,6 +113,7 @@ fn runtime_with_key(key: &[u8; 32]) -> Arc<ChannelRuntime> {
                 app_id: None,
                 allowed_senders: vec![SENDER_ID.into()],
                 allowed_conversations: vec![CONVERSATION_ID.into()],
+                scheduled_destinations: vec![],
                 enabled_tools: vec!["datetime_now".into()],
                 timeout_secs: 600,
                 local_test_api_base: None,

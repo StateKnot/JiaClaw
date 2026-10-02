@@ -3,7 +3,7 @@
 
 //! Authorized channel ingress and supervised persistent message processing.
 use super::{
-    channel_types::{Channel, Destination, EventSpec},
+    channel_types::{Channel, Destination, EventSpec, ScheduledDestination},
     outbound::OutboundClient,
     AppError, AppState,
 };
@@ -127,6 +127,25 @@ impl ChannelRuntime {
             }
             if policy.enabled_tools.len() > 32 {
                 bail!("channel tools must contain 1..32 names");
+            }
+            if policy.scheduled_destinations.len() > 100
+                || policy
+                    .scheduled_destinations
+                    .iter()
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != policy.scheduled_destinations.len()
+            {
+                bail!("scheduled_destinations must contain at most 100 unique exact destinations");
+            }
+            for destination in &policy.scheduled_destinations {
+                ScheduledDestination {
+                    channel,
+                    installation_id: policy.installation_id.clone(),
+                    conversation_id: destination.conversation_id.clone(),
+                    thread_id: destination.thread_id.clone(),
+                }
+                .validate()?;
             }
             let (credential, inbound_secret, default_base) = match channel {
                 Channel::Telegram => {
@@ -631,6 +650,9 @@ async fn channel_db<T: Send + 'static>(
         {
             Ok(Err(AppError::ChannelUnavailable))
         }
+        Err(e) if e.downcast_ref::<super::jobs::JobConflict>().is_some() => {
+            Ok(Err(AppError::JobConflict(e.to_string())))
+        }
         Err(e) => Err(e),
     })
     .await?
@@ -796,7 +818,13 @@ pub(super) async fn resolve(
                 .await?
                 .ok_or(AppError::NotFound)?;
             channel_db(&state, move |store| {
-                store.cancel_channel_event(&delivery.event_id, now_ms())
+                match (delivery.event_id, delivery.job_id, delivery.job_run_id) {
+                    (Some(event_id), None, None) => store.cancel_channel_event(&event_id, now_ms()),
+                    (None, Some(job_id), Some(run_id)) => {
+                        store.cancel_job_delivery(&job_id, &run_id, now_ms())
+                    }
+                    _ => bail!("invalid delivery source"),
+                }
             })
             .await?;
         }
@@ -805,6 +833,65 @@ pub(super) async fn resolve(
                 "action must be delivered or cancel".into(),
             ))
         }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn job_deliveries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((job_id, run_id)): axum::extract::Path<(String, String)>,
+    axum::extract::Query(page): axum::extract::Query<Page>,
+) -> Result<Json<Vec<super::channel_store::ChannelDelivery>>, AppError> {
+    authorized_admin(&state, &headers)?;
+    page.validate()?;
+    if page.event_id.is_some() {
+        return Err(AppError::BadRequest(
+            "event_id does not apply to scheduled deliveries".into(),
+        ));
+    }
+    let records = channel_db(&state, move |store| {
+        let run = store.get_job_run(&run_id)?;
+        if run.is_none_or(|run| run.job_id != job_id) {
+            return Ok(None);
+        }
+        store
+            .list_job_deliveries(&job_id, &run_id, page.limit, page.offset)
+            .map(Some)
+    })
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(records))
+}
+
+pub(super) async fn cancel_job_delivery(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((job_id, run_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    authorized_admin(&state, &headers)?;
+    if !channel_db(&state, move |store| {
+        store.cancel_job_delivery(&job_id, &run_id, now_ms())
+    })
+    .await?
+    {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn purge_job_delivery(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((job_id, run_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    authorized_admin(&state, &headers)?;
+    if !channel_db(&state, move |store| {
+        store.purge_job_delivery(&job_id, &run_id)
+    })
+    .await?
+    {
+        return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -932,6 +1019,71 @@ fn still_authorized(state: &AppState, spec: &EventSpec) -> bool {
                     .all(|v| b.policy.enabled_tools.contains(v))
         })
         && validate_tools(state, &spec.enabled_tools).is_ok()
+}
+
+fn scheduled_destination_allowed(state: &AppState, destination: &ScheduledDestination) -> bool {
+    destination.validate().is_ok()
+        && state
+            .channel_runtime
+            .as_ref()
+            .and_then(|rt| rt.installation(destination.channel))
+            .is_some_and(|binding| {
+                binding.policy.installation_id == destination.installation_id
+                    && binding.policy.scheduled_destinations.iter().any(|allowed| {
+                        allowed.conversation_id == destination.conversation_id
+                            && allowed.thread_id == destination.thread_id
+                    })
+            })
+}
+
+/// Proactive destinations never inherit inbound sender/conversation authority.
+pub(super) fn validate_scheduled_delivery(
+    state: &AppState,
+    destination: &ScheduledDestination,
+) -> Result<(), AppError> {
+    if state
+        .channel_runtime
+        .as_ref()
+        .is_none_or(|rt| rt.health.load(Ordering::Acquire) != 1)
+    {
+        return Err(AppError::ChannelUnavailable);
+    }
+    if !scheduled_destination_allowed(state, destination) {
+        return Err(AppError::BadRequest(
+            "scheduled destination is not explicitly authorized".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn scheduled_job_authorized(state: &AppState, spec: &super::jobs::JobSpec) -> bool {
+    spec.delivery.as_ref().is_some_and(|destination| {
+        scheduled_destination_allowed(state, destination)
+            && state
+                .channel_runtime
+                .as_ref()
+                .and_then(|rt| rt.installation(destination.channel))
+                .is_some_and(|binding| {
+                    spec.enabled_tools
+                        .iter()
+                        .all(|tool| binding.policy.enabled_tools.contains(tool))
+                })
+    }) && validate_tools(state, &spec.enabled_tools).is_ok()
+}
+
+pub(super) fn validate_scheduled_job(
+    state: &AppState,
+    spec: &super::jobs::JobSpec,
+) -> Result<(), AppError> {
+    if let Some(destination) = &spec.delivery {
+        validate_scheduled_delivery(state, destination)?;
+        if !scheduled_job_authorized(state, spec) {
+            return Err(AppError::BadRequest(
+                "scheduled tools are not authorized for this installation".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn finish_event(
@@ -1161,16 +1313,33 @@ async fn deliver(
 ) -> Result<(), AppError> {
     use super::outbound::DeliveryOutcome;
     let rt = runtime(&state)?;
-    let event_id = delivery.event_id.clone();
-    let event = super::with_sessions(&state, move |store| store.get_channel_event(&event_id))
-        .await?
-        .ok_or_else(|| AppError::Internal("delivery event missing".into()))?;
+    let authorized = match (&delivery.event_id, &delivery.job_run_id) {
+        (Some(event_id), None) => {
+            let id = event_id.clone();
+            let event = super::with_sessions(&state, move |store| store.get_channel_event(&id))
+                .await?
+                .ok_or_else(|| AppError::Internal("delivery event missing".into()))?;
+            event.spec.destination == delivery.destination && still_authorized(&state, &event.spec)
+        }
+        (None, Some(run_id)) => {
+            let id = run_id.clone();
+            let run = super::with_sessions(&state, move |store| store.get_job_run(&id))
+                .await?
+                .ok_or_else(|| AppError::Internal("delivery run missing".into()))?;
+            run.spec
+                .delivery
+                .as_ref()
+                .is_some_and(|d| d.destination() == delivery.destination)
+                && scheduled_job_authorized(&state, &run.spec)
+        }
+        _ => return Err(AppError::Internal("invalid delivery source".into())),
+    };
     let mut credential = None;
     let mut outcome = DeliveryOutcome::Rejected {
         code: "authorization_changed",
     };
     let binding = rt.installation(delivery.destination.channel);
-    if still_authorized(&state, &event.spec) {
+    if authorized {
         if delivery
             .destination
             .expires_ms
@@ -1254,6 +1423,10 @@ async fn deliver(
 mod lifecycle_tests;
 
 #[cfg(test)]
+#[path = "scheduled_runtime_tests.rs"]
+mod scheduled_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::SessionStore;
@@ -1267,6 +1440,7 @@ mod tests {
                 app_id: Some("A123".into()),
                 allowed_senders: vec!["7".into()],
                 allowed_conversations: vec!["99".into()],
+                scheduled_destinations: vec![],
                 enabled_tools: vec!["datetime_now".into()],
                 timeout_secs: 30,
                 local_test_api_base: None,
