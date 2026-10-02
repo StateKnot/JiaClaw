@@ -25,9 +25,9 @@ use serde_json::json;
 
 use crate::channel_types::{Channel, Destination};
 
-const MAX_TEXT_BYTES: usize = 16 * 1024;
+pub(super) const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_PARTS: usize = 16;
-const MAX_PART_UTF16: usize = 2000;
+pub(super) const MAX_PART_UTF16: usize = 2000;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,15 +51,7 @@ impl OutboundClient {
 
     /// Loopback is an explicit test/deployment option, never an environment override.
     pub(super) fn new_with_loopback(allow_loopback: bool) -> Result<Self> {
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(2)
-            .build()
-            .map_err(|_| anyhow::anyhow!("failed to initialize outbound client"))?;
+        let client = http_client()?;
         Ok(Self {
             client,
             allow_loopback,
@@ -154,8 +146,9 @@ impl OutboundClient {
                         "allowed_mentions": {"parse": [], "replied_user": false}
                     }))
             }
+            Channel::Feishu => return rejected("dedicated_sender_required"),
         };
-        let Ok(mut response) = request.send().await else {
+        let Ok(response) = request.send().await else {
             return unknown("transport_error");
         };
         let status = response.status();
@@ -169,25 +162,10 @@ impl OutboundClient {
             return unknown("unexpected_http_status");
         }
         let headers = response.headers().clone();
-        if response
-            .content_length()
-            .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
-        {
-            return unknown("response_too_large");
-        }
-        let mut body = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) => {
-                    if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
-                        return unknown("response_too_large");
-                    }
-                    body.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                Err(_) => return unknown("response_read_error"),
-            }
-        }
+        let body = match response_body(response).await {
+            Ok(body) => body,
+            Err(code) => return unknown(code),
+        };
         if status == StatusCode::TOO_MANY_REQUESTS {
             return retry_delay(destination.channel, &headers, &body).map_or_else(
                 || unknown("invalid_rate_limit"),
@@ -198,11 +176,47 @@ impl OutboundClient {
     }
 }
 
-fn unknown(code: &'static str) -> DeliveryOutcome {
+pub(super) fn http_client() -> Result<Client> {
+    Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(2)
+        .build()
+        .map_err(|_| anyhow::anyhow!("failed to initialize outbound client"))
+}
+
+pub(super) async fn response_body(
+    mut response: reqwest::Response,
+) -> std::result::Result<Vec<u8>, &'static str> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err("response_too_large");
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+                    return Err("response_too_large");
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok(body),
+            Err(_) => return Err("response_read_error"),
+        }
+    }
+}
+
+pub(super) fn unknown(code: &'static str) -> DeliveryOutcome {
     DeliveryOutcome::Unknown { code }
 }
 
-fn rejected(code: &'static str) -> DeliveryOutcome {
+pub(super) fn rejected(code: &'static str) -> DeliveryOutcome {
     DeliveryOutcome::Rejected { code }
 }
 
@@ -253,6 +267,16 @@ pub(super) fn validate_destination(destination: &Destination) -> Result<()> {
                     .is_some_and(|id| positive_id(id).is_some())
                 && destination.thread_id.is_none()
         }
+        Channel::Feishu => {
+            super::feishu::validate_installation(&destination.installation_id).is_ok()
+                && feishu_id(&destination.conversation_id, "oc_")
+                && destination
+                    .thread_id
+                    .as_deref()
+                    .is_none_or(|id| feishu_id(id, "om_"))
+                && destination.interaction_id.is_none()
+                && destination.expires_ms.is_none()
+        }
     };
     if !valid {
         bail!("invalid outbound destination");
@@ -269,6 +293,7 @@ pub(super) fn validate_api_base(
         Channel::Telegram => "https://api.telegram.org",
         Channel::Slack => "https://slack.com/api",
         Channel::Discord => "https://discord.com/api/v10",
+        Channel::Feishu => "https://open.feishu.cn/open-apis",
     };
     if api_base == official || api_base == format!("{official}/") {
         return Ok(());
@@ -289,6 +314,7 @@ pub(super) fn validate_api_base(
         Channel::Telegram => "/",
         Channel::Slack => "/api",
         Channel::Discord => "/api/v10",
+        Channel::Feishu => "/open-apis",
     };
     if !allow_loopback
         || !literal_loopback
@@ -307,6 +333,16 @@ pub(super) fn validate_api_base(
         bail!("outbound API base must be official HTTPS or explicitly enabled literal loopback");
     }
     Ok(())
+}
+
+pub(super) fn feishu_id(value: &str, prefix: &str) -> bool {
+    value.len() <= 128
+        && value.strip_prefix(prefix).is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        })
 }
 
 fn port(value: &str) -> bool {
@@ -367,6 +403,7 @@ fn valid_credential(channel: Channel, credential: &str) -> bool {
             .split_once(':')
             .is_some_and(|(bot, token)| positive_id(bot).is_some() && safe_token(token)),
         Channel::Slack | Channel::Discord => safe_token(credential),
+        Channel::Feishu => false,
     }
 }
 
@@ -462,6 +499,7 @@ fn parse_receipt(destination: &Destination, body: &[u8]) -> DeliveryOutcome {
                 };
             }
         }
+        Channel::Feishu => return rejected("dedicated_sender_required"),
     }
     unknown("invalid_receipt")
 }
@@ -532,6 +570,7 @@ fn retry_delay(channel: Channel, headers: &HeaderMap, body: &[u8]) -> Option<i64
             #[allow(clippy::cast_possible_truncation)]
             Some((seconds * 1000.0).ceil() as i64)
         }
+        Channel::Feishu => None,
     }
 }
 
@@ -553,6 +592,7 @@ mod tests {
                 Channel::Telegram => "-123456789",
                 Channel::Slack => "C123ABC456",
                 Channel::Discord => "234567890123456789",
+                Channel::Feishu => "oc_testchat",
             }
             .to_owned(),
             thread_id: None,
@@ -566,6 +606,7 @@ mod tests {
             Channel::Telegram => "123456:secret_TG-token",
             Channel::Slack => "xoxb-test-token",
             Channel::Discord => "interaction-secret_token",
+            Channel::Feishu => "dedicated-sender-only",
         }
     }
 
@@ -782,6 +823,7 @@ mod tests {
                     Channel::Telegram => Some("42".to_owned()),
                     Channel::Slack => Some("1234567890.000002".to_owned()),
                     Channel::Discord => None,
+                    Channel::Feishu => unreachable!("dedicated sender is tested separately"),
                 };
                 let server = fixture(Some(response(200, "", body))).await;
                 let outcome = OutboundClient::new_with_loopback(true)
@@ -804,6 +846,7 @@ mod tests {
                 let (headers, body) = request.split_once("\r\n\r\n").unwrap();
                 let json: serde_json::Value = serde_json::from_str(body).unwrap();
                 match channel {
+                    Channel::Feishu => unreachable!("dedicated sender is tested separately"),
                     Channel::Telegram => {
                         assert!(headers
                             .starts_with("POST /bot123456:secret_TG-token/sendMessage HTTP/1.1"));

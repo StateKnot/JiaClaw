@@ -1279,9 +1279,9 @@ pub struct ScheduledChannelDestination {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelBinding {
-    /// Supported platform: telegram, slack or discord.
+    /// Supported platform: telegram, slack, discord or feishu.
     pub channel: String,
-    /// Telegram bot ID, Slack team ID or Discord application ID.
+    /// Telegram bot ID, Slack team ID, Discord app ID or Feishu app_id:tenant_key.
     pub installation_id: String,
     #[serde(default)]
     /// Slack application ID, matched independently from the team.
@@ -1349,6 +1349,16 @@ pub struct HttpConfig {
     /// 须同时配置 channels 安装/身份/工具策略；回复通过持久 outbox 投递。
     #[serde(default)]
     pub slack_bot_token: Option<String>,
+
+    /// Feishu self-built application secret (JIACLAW_FEISHU_APP_SECRET overrides).
+    #[serde(default)]
+    pub feishu_app_secret: Option<String>,
+    /// Feishu callback Encrypt Key (JIACLAW_FEISHU_ENCRYPT_KEY overrides).
+    #[serde(default)]
+    pub feishu_encrypt_key: Option<String>,
+    /// Feishu callback Verification Token (JIACLAW_FEISHU_VERIFICATION_TOKEN overrides).
+    #[serde(default)]
+    pub feishu_verification_token: Option<String>,
 
     /// Discord Interactions 公钥（可选，环境变量 `JIACLAW_DISCORD_PUBLIC_KEY` 优先）
     ///
@@ -1444,6 +1454,9 @@ impl Default for HttpConfig {
             telegram_bot_token: None,
             slack_signing_secret: None,
             slack_bot_token: None,
+            feishu_app_secret: None,
+            feishu_encrypt_key: None,
+            feishu_verification_token: None,
             discord_public_key: None,
             discord_bot_token: None,
             cors: HttpCorsConfig::default(),
@@ -1710,6 +1723,35 @@ impl HttpConfig {
         resolve_optional_secret(
             self.slack_bot_token.clone(),
             std::env::var("JIACLAW_SLACK_BOT_TOKEN").ok().as_deref(),
+        )
+    }
+
+    /// Resolve the Feishu application secret, preferring the environment.
+    #[must_use]
+    pub fn effective_feishu_app_secret(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.feishu_app_secret.clone(),
+            std::env::var("JIACLAW_FEISHU_APP_SECRET").ok().as_deref(),
+        )
+    }
+
+    /// Resolve the Feishu callback encryption/signature key, preferring the environment.
+    #[must_use]
+    pub fn effective_feishu_encrypt_key(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.feishu_encrypt_key.clone(),
+            std::env::var("JIACLAW_FEISHU_ENCRYPT_KEY").ok().as_deref(),
+        )
+    }
+
+    /// Resolve the Feishu callback verification token, preferring the environment.
+    #[must_use]
+    pub fn effective_feishu_verification_token(&self) -> Option<String> {
+        resolve_optional_secret(
+            self.feishu_verification_token.clone(),
+            std::env::var("JIACLAW_FEISHU_VERIFICATION_TOKEN")
+                .ok()
+                .as_deref(),
         )
     }
 

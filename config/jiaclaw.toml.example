@@ -40,6 +40,10 @@ shutdown_timeout_secs = 30
 # telegram_bot_token = "..."       # JIACLAW_TELEGRAM_BOT_TOKEN
 # slack_signing_secret = "..."     # JIACLAW_SLACK_SIGNING_SECRET
 # slack_bot_token = "..."          # JIACLAW_SLACK_BOT_TOKEN
+# feishu_app_secret = "..."        # JIACLAW_FEISHU_APP_SECRET
+# feishu_encrypt_key = "..."       # JIACLAW_FEISHU_ENCRYPT_KEY
+# feishu_verification_token = "..." # JIACLAW_FEISHU_VERIFICATION_TOKEN
+# Feishu uses installation_id="cli_APP:TENANT", without app_id. See docs/feishu.md.
 # discord_public_key = "..."       # JIACLAW_DISCORD_PUBLIC_KEY
 # Discord replies use interaction tokens; set JIACLAW_CHANNEL_STATE_KEY (64 hex).
 # No Discord Bot Authorization is sent for interaction replies.

@@ -104,6 +104,35 @@ CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,in
 PRAGMA user_version=4;
 ";
 
+// Preserve all v4 source identities and delivery evidence when enabling Feishu jobs.
+pub(super) const SCHEMA_V5: &str = "
+CREATE TABLE channel_outbox_v5 (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ event_id TEXT REFERENCES channel_events(id),
+ job_run_id TEXT REFERENCES job_runs(id) ON DELETE RESTRICT,
+ channel TEXT NOT NULL, installation_id TEXT NOT NULL, destination_key TEXT NOT NULL,
+ destination TEXT NOT NULL CHECK(json_valid(destination)), sealed_token TEXT, expires_ms INTEGER,
+ ordinal INTEGER NOT NULL CHECK(ordinal>=0), text TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitting','retry_wait','delivered','unknown','permanent_failed','expired','cancelled')),
+ receipt TEXT, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 5), error TEXT,
+ created_ms INTEGER NOT NULL, started_ms INTEGER, finished_ms INTEGER, next_attempt_ms INTEGER NOT NULL,
+ CHECK((event_id IS NOT NULL)+(job_run_id IS NOT NULL)=1),
+ CHECK(job_run_id IS NULL OR (channel IN ('telegram','slack','feishu') AND sealed_token IS NULL AND expires_ms IS NULL)),
+ UNIQUE(event_id,ordinal), UNIQUE(job_run_id,ordinal)
+);
+INSERT INTO channel_outbox_v5(seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms)
+ SELECT seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms FROM channel_outbox;
+INSERT INTO sqlite_sequence(name,seq) SELECT 'channel_outbox_v5',seq FROM sqlite_sequence WHERE name='channel_outbox' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='channel_outbox_v5');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'),0)) WHERE name='channel_outbox_v5';
+DROP TABLE channel_outbox;
+ALTER TABLE channel_outbox_v5 RENAME TO channel_outbox;
+CREATE INDEX channel_outbox_ready ON channel_outbox(state,next_attempt_ms,seq);
+CREATE INDEX channel_outbox_destination ON channel_outbox(channel,installation_id,destination_key,seq);
+CREATE INDEX channel_outbox_job_run ON channel_outbox(job_run_id);
+CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,installation_id) WHERE state='submitting';
+PRAGMA user_version=5;
+";
+
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelEvent {
     pub id: String,
@@ -179,6 +208,7 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Telegram => "telegram",
         Channel::Slack => "slack",
         Channel::Discord => "discord",
+        Channel::Feishu => "feishu",
     }
 }
 fn bounded_id(value: &str, maximum: usize) -> bool {
@@ -270,6 +300,7 @@ fn validate_chunks(channel: Channel, chunks: &[String]) -> Result<()> {
         Channel::Telegram => 4096,
         Channel::Slack => 40000,
         Channel::Discord => 2000,
+        Channel::Feishu => 2000,
     };
     let mut bytes = 0usize;
     for chunk in chunks {
@@ -618,6 +649,7 @@ impl SessionStore {
             Channel::Telegram => 3100,
             Channel::Slack => 1100,
             Channel::Discord => 300,
+            Channel::Feishu => 1100,
         };
         let until = now
             .checked_add(spacing_ms)
@@ -884,8 +916,8 @@ mod tests {
     }
 
     #[test]
-    fn v4_migration_preserves_v3_delivery_evidence_and_sequence_even_when_empty() {
-        for empty in [false, true] {
+    fn migration_preserves_v3_and_v4_delivery_evidence_and_sequence_even_when_empty() {
+        for (version, empty) in [(3, false), (3, true), (4, false), (4, true)] {
             let directory =
                 std::env::temp_dir().join(format!("jiaclaw-v4-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
@@ -895,6 +927,9 @@ mod tests {
                 conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
                 conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
                 conn.execute_batch(SCHEMA_V3).unwrap();
+                if version == 4 {
+                    conn.execute_batch(SCHEMA_V4).unwrap();
+                }
                 let mut old = SessionStore::Sqlite {
                     conn,
                     _ownership: None,
@@ -925,7 +960,7 @@ mod tests {
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                4
+                5
             );
             assert_eq!(
                 db.channel_conn()
@@ -1002,6 +1037,95 @@ mod tests {
             drop(db);
             std::fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn v5_preserves_scheduled_sources_and_enables_feishu_without_weakening_constraints() {
+        let directory = std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let (job_id, run_id, delivery_id, before) = {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
+            conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            let mut old = SessionStore::Sqlite {
+                conn,
+                _ownership: None,
+            };
+            let job = old.create_job(scheduled_spec(), 0).unwrap();
+            let run = old.claim_due_jobs(60_000, 1).unwrap().remove(0);
+            old.finish_job_run(
+                &run.id,
+                None,
+                "completed",
+                Some(scheduled_reply()),
+                None,
+                60_001,
+            )
+            .unwrap();
+            let row = old
+                .list_job_deliveries(&job.id, &run.id, 100, 0)
+                .unwrap()
+                .remove(0);
+            old.channel_conn().unwrap().execute("UPDATE channel_outbox SET state='unknown',attempts=2,receipt='evidence',error='ambiguous',started_ms=60002,finished_ms=60003 WHERE id=?1", [&row.id]).unwrap();
+            let before =
+                serde_json::to_value(old.get_channel_delivery(&row.id).unwrap().unwrap()).unwrap();
+            (job.id, run.id, row.id, before)
+        };
+        let mut db = SessionStore::open(&path).unwrap();
+        let after = db.get_channel_delivery(&delivery_id).unwrap().unwrap();
+        assert_eq!(serde_json::to_value(&after).unwrap(), before);
+        assert_eq!(after.job_id.as_deref(), Some(job_id.as_str()));
+        assert_eq!(after.job_run_id.as_deref(), Some(run_id.as_str()));
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute("DELETE FROM job_runs WHERE id=?1", [&run_id])
+            .is_err());
+        let mut next = scheduled_spec();
+        next.delivery = Some(super::super::channel_types::ScheduledDestination {
+            channel: Channel::Feishu,
+            installation_id: "cli_fixture:tenant_fixture".into(),
+            conversation_id: "oc_fixture".into(),
+            thread_id: Some("om_root".into()),
+        });
+        let job = db.create_job(next, 70_000).unwrap();
+        let run = db.claim_due_jobs(130_000, 1).unwrap().remove(0);
+        assert_eq!(run.job_id, job.id);
+        db.finish_job_run(
+            &run.id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            130_001,
+        )
+        .unwrap();
+        let row = db
+            .list_job_deliveries(&job.id, &run.id, 100, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(row.destination.channel, Channel::Feishu);
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET sealed_token='forbidden' WHERE id=?1",
+                [&row.id]
+            )
+            .is_err());
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
+                [&row.id]
+            )
+            .is_err());
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1162,7 +1286,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

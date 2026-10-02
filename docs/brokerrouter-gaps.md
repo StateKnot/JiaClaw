@@ -1,6 +1,6 @@
 # Brokerrouter 消费方状态
 
-核对日期：2026-10-02；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
+核对日期：2026-10-03；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
@@ -23,6 +23,8 @@
 - [PR #40 MCP 治理恢复与 SSE 资源限制](https://github.com/StateKnot/Brokerrouter/pull/40)：draft、尚未合并，核对的 head 为 `7a7afea0244828851118ba32d1cf37d906a3f388`，base 为本文 main。修复完成的 MCP 结果重新授权、semantic worker、发现刷新后的恢复，以及 SSE 慢客户端缓冲和连接结束前提前释放容量。不能将修复描述为主线已交付，也不重复报已有 PR 覆盖的问题。
 
 2026-10-02 已通过 GitHub API 重新读取 main、issues、PR 和检查状态；main 仍为上述 SHA，#31/#41 仍 OPEN，#41 无回复。PR #40 的 6 个 CI 状态为 FAILURE；抽查 Rust 检查注释明确为 GitHub 账户付款/额度导致作业没有启动，不是测试执行后失败。当前不把 SSE 资源边界、MCP 治理恢复或真实供应商默认标记为生产验收完成。此次核对尚无 Brokerrouter GitHub release。
+
+2026-10-03 回访核对：main、#31/#41、PR #40 的提交和失败状态未变化，仍无 Release。本次未重跑上游或重复提交 issue；上述 CI 注释原因保留为前次检查证据。
 
 ## 消费合同与下一步
 

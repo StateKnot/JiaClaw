@@ -36,6 +36,8 @@ pub(super) struct Installation {
     pub credential: String,
     pub inbound_secret: String,
     pub api_base: String,
+    pub feishu_sender: Option<Arc<super::feishu_outbound::FeishuSender>>,
+    pub feishu_verification_token: Option<String>,
 }
 
 pub(super) struct ChannelRuntime {
@@ -50,6 +52,7 @@ fn channel_name(channel: Channel) -> &'static str {
         Channel::Telegram => "telegram",
         Channel::Slack => "slack",
         Channel::Discord => "discord",
+        Channel::Feishu => "feishu",
     }
 }
 
@@ -76,6 +79,9 @@ impl ChannelRuntime {
             || http.effective_slack_signing_secret().is_some()
             || http.effective_slack_bot_token().is_some()
             || http.effective_discord_public_key().is_some()
+            || http.effective_feishu_app_secret().is_some()
+            || http.effective_feishu_encrypt_key().is_some()
+            || http.effective_feishu_verification_token().is_some()
             || http.effective_discord_bot_token().is_some();
         if http.channels.is_empty() {
             if credentials_present {
@@ -92,7 +98,7 @@ impl ChannelRuntime {
         ) {
             bail!("channels require brokerrouter or explicit stub provider");
         }
-        if http.channels.len() > 3 {
+        if http.channels.len() > 4 {
             bail!("at most one installation per channel is supported");
         }
         let mut seen = HashSet::new();
@@ -104,12 +110,19 @@ impl ChannelRuntime {
                 "telegram" => Channel::Telegram,
                 "slack" => Channel::Slack,
                 "discord" => Channel::Discord,
+                "feishu" => Channel::Feishu,
                 _ => bail!("unsupported channel"),
             };
             if !seen.insert(channel) {
                 bail!("duplicate channel installation");
             }
-            if !valid_id(&policy.installation_id) || !(1..=600).contains(&policy.timeout_secs) {
+            let valid_installation = if channel == Channel::Feishu {
+                super::feishu::validate_installation(&policy.installation_id).is_ok()
+                    && policy.app_id.is_none()
+            } else {
+                valid_id(&policy.installation_id)
+            };
+            if !valid_installation || !(1..=600).contains(&policy.timeout_secs) {
                 bail!("invalid channel installation or timeout");
             }
             for list in [
@@ -148,6 +161,12 @@ impl ChannelRuntime {
                 .validate()?;
             }
             let (credential, inbound_secret, default_base) = match channel {
+                Channel::Feishu => (
+                    String::new(),
+                    http.effective_feishu_encrypt_key()
+                        .context("Feishu Encrypt Key is required")?,
+                    "https://open.feishu.cn/open-apis",
+                ),
                 Channel::Telegram => {
                     let token = http
                         .effective_telegram_bot_token()
@@ -211,12 +230,36 @@ impl ChannelRuntime {
                 &api_base,
                 policy.local_test_api_base.is_some(),
             )?;
+            let (feishu_sender, feishu_verification_token) = if channel == Channel::Feishu {
+                let secret = http
+                    .effective_feishu_app_secret()
+                    .context("Feishu App Secret is required")?;
+                let token = http
+                    .effective_feishu_verification_token()
+                    .context("Feishu Verification Token is required")?;
+                if inbound_secret.len() > 1024 || token.len() > 1024 {
+                    bail!("Feishu callback secrets exceed limit");
+                }
+                (
+                    Some(Arc::new(super::feishu_outbound::FeishuSender::new(
+                        &policy.installation_id,
+                        secret,
+                        api_base.clone(),
+                        policy.local_test_api_base.is_some(),
+                    )?)),
+                    Some(token),
+                )
+            } else {
+                (None, None)
+            };
             installations.push(Installation {
                 channel,
                 policy: policy.clone(),
                 credential,
                 inbound_secret,
                 api_base,
+                feishu_sender,
+                feishu_verification_token,
             });
         }
         Ok(Some(Arc::new(Self {
@@ -501,6 +544,56 @@ pub(super) async fn slack(
         false,
     )
     .await
+}
+
+pub(super) async fn feishu(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let binding = runtime(&state)?
+        .installation(Channel::Feishu)
+        .ok_or(AppError::NotFound)?;
+    let inbound = super::feishu::parse_event(
+        &headers,
+        &body,
+        &binding.policy.installation_id,
+        &binding.inbound_secret,
+        binding
+            .feishu_verification_token
+            .as_deref()
+            .ok_or(AppError::Unauthorized)?,
+        super::unix_now_secs(),
+    )
+    .map_err(|_| AppError::Unauthorized)?;
+    match inbound {
+        super::feishu::Inbound::Challenge(challenge) => {
+            Ok(Json(json!({"challenge":challenge})).into_response())
+        }
+        super::feishu::Inbound::Ignored => Ok(skipped()),
+        super::feishu::Inbound::Message {
+            event_id,
+            sender_id,
+            conversation_id,
+            thread_id,
+            text,
+        } => {
+            let destination = Destination {
+                channel: Channel::Feishu,
+                installation_id: binding.policy.installation_id.clone(),
+                conversation_id,
+                thread_id,
+                interaction_id: None,
+                expires_ms: None,
+            };
+            accept(
+                &state,
+                event_spec(binding, event_id, sender_id, text, destination, None)?,
+                false,
+            )
+            .await
+        }
+    }
 }
 
 pub(super) async fn discord(
@@ -1349,18 +1442,30 @@ async fn deliver(
                 code: "interaction_expired",
             };
         } else if let Some(b) = binding {
-            credential = if b.channel == Channel::Discord {
-                delivery
-                    .sealed_token
-                    .as_deref()
-                    .and_then(|v| rt.unseal(v, &token_aad(&delivery.destination)).ok())
-            } else {
-                Some(b.credential.clone())
-            };
-            if credential.is_none() {
-                outcome = DeliveryOutcome::Rejected {
-                    code: "credential_unavailable",
+            if b.channel == Channel::Feishu {
+                outcome = if let Some(sender) = &b.feishu_sender {
+                    sender
+                        .send(&delivery.destination, &delivery.id, &delivery.text)
+                        .await
+                } else {
+                    DeliveryOutcome::Rejected {
+                        code: "credential_unavailable",
+                    }
                 };
+            } else {
+                credential = if b.channel == Channel::Discord {
+                    delivery
+                        .sealed_token
+                        .as_deref()
+                        .and_then(|v| rt.unseal(v, &token_aad(&delivery.destination)).ok())
+                } else {
+                    Some(b.credential.clone())
+                };
+                if credential.is_none() {
+                    outcome = DeliveryOutcome::Rejected {
+                        code: "credential_unavailable",
+                    };
+                }
             }
         }
     }
@@ -1448,7 +1553,45 @@ mod tests {
             credential: "123456:test".into(),
             inbound_secret: "test-secret".into(),
             api_base: "https://api.telegram.org".into(),
+            feishu_sender: None,
+            feishu_verification_token: None,
         }
+    }
+
+    #[test]
+    fn feishu_configuration_binds_app_and_tenant_and_requires_exact_proactive_target() {
+        let mut config = AgentConfig::default();
+        config.provider.provider_type = "stub".into();
+        config.http.feishu_app_secret = Some("fixture-app-secret".into());
+        config.http.feishu_encrypt_key = Some("fixture-encrypt-key".into());
+        config.http.feishu_verification_token = Some("fixture-verify-token".into());
+        let mut policy = installation(Channel::Feishu).policy;
+        policy.app_id = None;
+        policy.installation_id = "cli_fixture:tenant_fixture".into();
+        policy.allowed_senders = vec!["ou_fixture".into()];
+        policy.allowed_conversations = vec!["oc_fixture".into()];
+        policy.scheduled_destinations = vec![jiaclaw_core::ScheduledChannelDestination {
+            conversation_id: "oc_scheduled".into(),
+            thread_id: Some("om_root".into()),
+        }];
+        config.http.channels = vec![policy];
+        let runtime = ChannelRuntime::configure(&config, Some("owner"))
+            .unwrap()
+            .unwrap();
+        let binding = runtime.installation(Channel::Feishu).unwrap();
+        assert!(binding.feishu_sender.is_some());
+        assert!(binding.credential.is_empty());
+        assert_eq!(binding.policy.installation_id, "cli_fixture:tenant_fixture");
+        assert!(ChannelRuntime::configure(&config, None).is_err());
+        config.http.channels[0].app_id = Some("cli_another".into());
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].app_id = None;
+        config.http.channels[0].scheduled_destinations[0].thread_id =
+            Some("omt_native_thread".into());
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
+        config.http.channels[0].scheduled_destinations[0].thread_id = None;
+        config.http.channels[0].installation_id = "tenant_fixture".into();
+        assert!(ChannelRuntime::configure(&config, Some("owner")).is_err());
     }
     fn state() -> (AppState, std::path::PathBuf) {
         let workspace =

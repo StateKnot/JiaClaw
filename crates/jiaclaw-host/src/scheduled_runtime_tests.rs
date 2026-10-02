@@ -115,11 +115,13 @@ impl Fixture {
                 credential: match channel {
                     Channel::Telegram => "123456:fixture-token",
                     Channel::Slack => "xoxb-fixture-token",
-                    Channel::Discord => unreachable!(),
+                    Channel::Discord | Channel::Feishu => unreachable!(),
                 }
                 .into(),
                 inbound_secret: "inbound-fixture-secret".into(),
                 api_base: base,
+                feishu_sender: None,
+                feishu_verification_token: None,
             }],
             client: OutboundClient::new_with_loopback(true).unwrap(),
             cipher: None,
@@ -187,6 +189,7 @@ impl Drop for Fixture {
 
 fn target(channel: Channel) -> ScheduledDestination {
     match channel {
+        Channel::Feishu => unreachable!("Feishu has dedicated process fixtures"),
         Channel::Telegram => ScheduledDestination {
             channel,
             installation_id: "123456".into(),
