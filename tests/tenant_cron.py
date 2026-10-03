@@ -42,7 +42,7 @@ def port():
         return sock.getsockname()[1]
 
 
-def wait(check, description, seconds=15):
+def wait(check, description, seconds=15, diagnostics=None):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         with lock:
@@ -51,7 +51,8 @@ def wait(check, description, seconds=15):
         if value:
             return value
         time.sleep(.05)
-    raise AssertionError('Timed out: ' + description)
+    detail = json.dumps(diagnostics(), sort_keys=True) if diagnostics else 'unavailable'
+    raise AssertionError('Timed out: ' + description + '; diagnostics=' + detail)
 
 
 class Model(BaseHTTPRequestHandler):
@@ -182,11 +183,11 @@ try:
         def create(who, name, **changes):
             return api(who, '/api/jobs', 'POST', spec(name, **changes), 201)
 
-        def due(who, job_id):
+        def due(who, job_id, after_ms=300):
             # Fixture-only clock setup; no production endpoint can choose next_due.
             with sqlite3.connect(backends[who]['db']) as connection:
                 connection.execute('UPDATE jobs SET next_due_ms=? WHERE id=?',
-                                   (int(time.time() * 1000) + 300, job_id))
+                                   (int(time.time() * 1000) + after_ms, job_id))
 
         def runs(who, job_id):
             return api(who, '/api/jobs/' + job_id + '/runs?limit=5&offset=0')['items']
@@ -194,10 +195,32 @@ try:
         def completed(who, job_id, previous=0):
             return wait(lambda: next((run for run in runs(who, job_id)
                                       if run['status'] == 'completed' and run['started_ms'] > previous), None),
-                        who + ' completed run')
+                        who + ' completed run', diagnostics=lambda: scheduler_summary(who))
 
         def hold(who):
             return next(user for user in cli('user-list')['users'] if user['user_id'] == users[who]['user_id'])['hold']
+
+        def scheduler_summary(who):
+            # Only identifiers, states and timestamps: no prompt, result, key or audit note.
+            summary = {'backend': who, 'backend_returncode': backends[who]['process'].poll(),
+                       'gateway_returncode': gateway_process.poll()}
+            with lock:
+                summary['model_requests'] = sum(item[0] == who for item in observed)
+            try:
+                pending = hold(who)
+                summary['hold'] = None if pending is None else {
+                    key: pending.get(key) for key in
+                    ('request_id', 'state', 'reason', 'admitted_ms', 'updated_ms')}
+                with sqlite3.connect(backends[who]['db'].as_uri() + '?mode=ro', uri=True, timeout=1) as connection:
+                    connection.row_factory = sqlite3.Row
+                    for label, query in [
+                        ('jobs', 'SELECT id,enabled,deleted,next_due_ms FROM jobs WHERE deleted=0 ORDER BY next_due_ms LIMIT 5'),
+                        ('runs', 'SELECT id,job_id,scheduled_for_ms,started_ms,finished_ms,status FROM job_runs ORDER BY started_ms DESC LIMIT 5'),
+                        ('dispatches', 'SELECT request_id,run_id,job_id,status,issued_ms,created_ms FROM scheduler_dispatches ORDER BY created_ms DESC LIMIT 5')]:
+                        summary[label] = [dict(row) for row in connection.execute(query)]
+            except Exception as error:
+                summary['diagnostic_error'] = type(error).__name__
+            return summary
 
         for who in ('alice', 'bob'):
             directory = root / who
@@ -300,12 +323,14 @@ try:
         due('alice', jobs['alice']['id']); due('bob', jobs['bob']['id'])
         time.sleep(1.5)
         assert (count('alice'), count('bob')) == before, 'backend ran autonomous scheduler without gateway'
-        # Expire these occurrences so restarting does not create a racing test run.
+        # An expired occurrence still causes an admitted idle dispatch to advance
+        # its schedule. Park both tenants before restarting, then make only Alice
+        # due below, so the injected crash cannot also interrupt Bob's idle write.
         for who in ('alice', 'bob'):
-            with sqlite3.connect(backends[who]['db']) as connection:
-                connection.execute('UPDATE jobs SET next_due_ms=? WHERE id=?',
-                                   (int(time.time() * 1000) - 60000, jobs[who]['id']))
+            due(who, jobs[who]['id'], after_ms=3_600_000)
         gateway_process = start_gateway()
+        wait(lambda: hold('bob') is None, 'non-target Bob settled before crash',
+             diagnostics=lambda: scheduler_summary('bob'))
         print('PASS: result/dispatch identity persisted per tenant; disabled user does not dispatch, other user continues, gateway stop prevents autonomous backend work')
 
         # Claim and submit Alice's model request, then kill its backend and gateway.
@@ -319,6 +344,7 @@ try:
         status, _, _ = request(gateway_url, '/api/chat', users['alice']['token'], 'POST',
                                {'session_id': 'same', 'messages': [{'role': 'user', 'content': 'must not overlap'}]})
         assert status in (409, 429), status
+        assert hold('bob') is None, scheduler_summary('bob')
         stop(backends['alice']['process'], kill=True)
         stop(gateway_process, kill=True)
         with lock:
@@ -327,6 +353,7 @@ try:
         submitted_count = count('alice')
         start_backend('alice')
         gateway_process = start_gateway()
+        assert hold('bob') is None, scheduler_summary('bob')
         pending = hold('alice')
         assert pending is not None and pending['state'] == 'needs_review', pending
         recovered = runs('alice', jobs['alice']['id'])[0]
