@@ -124,6 +124,11 @@ impl OutboundClient {
                     .json(&body)
             }
             Channel::Discord => {
+                // Bot sends must use the separately authorized dedicated sender.
+                // Never place a Bot credential in an interaction webhook URL.
+                if destination.interaction_id.is_none() {
+                    return rejected("dedicated_sender_required");
+                }
                 let url = format!(
                     "{base}/webhooks/{}/{credential}",
                     destination.installation_id
@@ -308,12 +313,12 @@ pub(super) fn validate_destination(destination: &Destination) -> Result<()> {
                 && destination.interaction_id.is_none()
         }
         Channel::Discord => {
-            positive_id(&destination.installation_id).is_some()
-                && positive_id(&destination.conversation_id).is_some()
-                && destination
-                    .interaction_id
-                    .as_deref()
-                    .is_some_and(|id| positive_id(id).is_some())
+            super::discord_outbound::snowflake(&destination.installation_id)
+                && super::discord_outbound::snowflake(&destination.conversation_id)
+                && destination.interaction_id.as_deref().map_or_else(
+                    || destination.expires_ms.is_none(),
+                    super::discord_outbound::snowflake,
+                )
                 && destination.thread_id.is_none()
         }
         Channel::Feishu => {
@@ -670,6 +675,31 @@ mod tests {
             interaction_id: (channel == Channel::Discord).then(|| "345678901234567890".to_owned()),
             expires_ms: None,
         }
+    }
+
+    #[tokio::test]
+    async fn scheduled_discord_never_uses_interaction_webhook_transport() {
+        let mut bot = destination(Channel::Discord);
+        bot.interaction_id = None;
+        assert!(validate_destination(&bot).is_ok());
+        assert_eq!(
+            OutboundClient::new()
+                .unwrap()
+                .send(
+                    &bot,
+                    0,
+                    "scheduled text",
+                    "bot-secret",
+                    "https://discord.com/api/v10"
+                )
+                .await,
+            rejected("dedicated_sender_required")
+        );
+        bot.expires_ms = Some(123);
+        assert!(validate_destination(&bot).is_err());
+        bot.expires_ms = None;
+        bot.thread_id = Some("345678901234567890".into());
+        assert!(validate_destination(&bot).is_err());
     }
 
     fn credential(channel: Channel) -> &'static str {

@@ -48,10 +48,11 @@ enabled_tools = ["datetime_now", "json_query"]
 | `JIACLAW_TELEGRAM_BOT_TOKEN` | Bot API 发送凭证；数字前缀必须与 installation_id 相同 |
 | `JIACLAW_SLACK_SIGNING_SECRET` | 入站请求原始 body 的 HMAC 验签 |
 | `JIACLAW_SLACK_BOT_TOKEN` | 已安装到指定 Slack workspace 的 Bot Token |
+| `JIACLAW_DISCORD_BOT_TOKEN` | 仅非空 scheduled_destinations 启用的定时 Bot 文字发送；见 [Discord](discord.md) |
 | `JIACLAW_DISCORD_PUBLIC_KEY` | 应用的 32 字节 Ed25519 公钥，编码为 64 个十六进制字符 |
 | `JIACLAW_CHANNEL_STATE_KEY` | Discord 持久化交互凭证的 AES-256-GCM 密钥，编码为 64 个十六进制字符 |
 
-除加密密钥外，平台密钥也可沿用 `http.telegram_secret`、`telegram_bot_token`、`slack_signing_secret`、`slack_bot_token`、`discord_public_key` 配置；对应环境变量优先。Discord 使用交互 webhook token 回复，不需要 Bot Token。加密密钥应在首次部署时生成并通过受保护的密钥存储长期保存；重启时必须保持一致。数据库备份与密钥需分别保护，当前没有在线轮换或批量重加密接口。
+除加密密钥外，平台密钥也可沿用 `http.telegram_secret`、`telegram_bot_token`、`slack_signing_secret`、`slack_bot_token`、`discord_public_key`、`discord_bot_token` 配置；对应环境变量优先。Discord 交互回复使用 webhook token；独立的定时发送使用 Bot Token 并限定获准 guild 普通文字频道，见[Discord 配置](discord.md)。加密密钥应在首次部署时生成并通过受保护的密钥存储长期保存；重启时必须保持一致。数据库备份与密钥需分别保护，当前没有在线轮换或批量重加密接口。
 
 `allowed_senders` 和 `allowed_conversations` 必须各有 1–100 个不重复的精确 ID，不支持通配符。`enabled_tools` 必须有 1–32 个已注册工具；当前允许 `datetime_now`、`json_query`、受控容器 `exec` / `shell_exec` 及经过审核的 `mcp_` 工具。旧文件和 HTTP 工具缺少可靠的取消边界，不能进入后台渠道任务。自动 skill 选择关闭。`timeout_secs` 为 1–600 秒，默认 120 秒，覆盖等待会话锁、准备消息和 Agent 调用；取消本地等待不能证明外部副作用没有发生。
 
@@ -98,7 +99,7 @@ Telegram、Slack 和飞书成功接收返回：
 
 发送器按目的地顺序领取片段，同一安装最多一条发送请求在途。为限制突发，安装级最短发送间隔分别为 Telegram 3.1 秒、Slack 1.1 秒、Discord 0.3 秒、飞书 1.1 秒，并持久化到数据库。企业微信使用更保守的 4 秒安装间隔与持久发送预算，详见[企业微信指南](wecom.md)。钉钉同样使用本地 4 秒安装间隔，并在请求完成后延长间隔；这不是平台配额保证。对于有已核实限流合同的渠道，平台返回的有效 429 冷却期会进一步延长基础间隔。SDK 不隐式重试或跟随重定向；每次 HTTP 发送连接超时 2 秒、总超时 10 秒，响应体上限 64 KiB。
 
-回复总量最多 16 KiB UTF-8、总共最多 16 片。Telegram、Slack、Discord、飞书和钉钉每片最多 2,000 个 UTF-16 单位；企业微信按渲染后的 UTF-8 字节拆分，每片最多 2,048 字节，并将 ASCII `<`、`>` 转为全角字符。Discord 进一步限定最多 6 片，即编辑原始回复加 5 条 follow-up，兼容 user-installed 应用的 follow-up 上限。拆分保留原始 Unicode 文本，不静默截断；超出总量或片数时整批不入发件箱，事件转为 needs_review。Telegram 关闭链接预览且不设置 parse_mode；Slack 关闭 mrkdwn、名称展开和链接/媒体预览，并转义 `&<>` 控制字符；Discord 明确禁止自动 mentions。
+回复总量最多 16 KiB UTF-8、总共最多 16 片。Telegram、Slack、Discord、飞书和钉钉每片最多 2,000 个 UTF-16 单位；企业微信按渲染后的 UTF-8 字节拆分，每片最多 2,048 字节，并将 ASCII `<`、`>` 转为全角字符。Discord 交互回复进一步限定最多 6 片，即编辑原始回复加 5 条 follow-up，兼容 user-installed 应用的 follow-up 上限；Bot 定时文字最多 16 片。拆分保留原始 Unicode 文本，不静默截断；超出总量或片数时整批不入发件箱，事件转为 needs_review。Telegram 关闭链接预览且不设置 parse_mode；Slack 关闭 mrkdwn、名称展开和链接/媒体预览，并转义 `&<>` 控制字符；Discord 明确禁止自动 mentions。
 
 平台返回 HTTP 2xx 还不够：Telegram 必须提供正确 chat 的正整数 message_id，Slack 必须提供对应 channel 和合法 ts，Discord 必须提供对应 channel_id 和合法消息 id；飞书核对成功码、消息 ID 与 chat_id，企业微信核对成功码、msgid 和空的失败成员列表；钉钉要求非空 processQueryKey，且失败、过滤和限流成员列表均为空。有效回执落库后才记录 delivered，表示平台接受而非终端已读。相应平台协议见 [Telegram Bot API](https://core.telegram.org/bots/api) 和 [Slack chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/)。
 
@@ -165,3 +166,5 @@ python3 tests/channels.py target/debug/jiaclaw
 `POST /hooks/dingtalk` 接入同一持久收件箱、发件箱与管理接口。安装身份为 `robotCode:corpId`，Client ID 单独配置到 `app_id`，Client Secret 通过 `JIACLAW_DINGTALK_APP_SECRET` 或受保护配置提供。白名单和定时目的地使用保留大小写的精确成员 UserID，thread_id 为空；后台主动文本使用固定 OpenAPI 端点，忽略且不保存回调中的 sessionWebhook。
 
 钉钉的 HMAC-SHA256 签名只涵盖毫秒 timestamp 与 Client Secret，不涵盖 JSON 正文；时间窗为 ±1 小时。因此 HTTPS、可信反向代理和回调头保密属于认证边界；不要在代理日志记录 timestamp/sign。仅允许已发布的内部应用、匹配 robotCode 和企业身份、提供成员 UserID 的私聊文本。群消息和其它消息类型不运行 Agent。完整配置、平台额度及需使用真实安装核对的行为见[钉钉指南](dingtalk.md)。
+
+Discord 定时 Bot 发送复用 outbox，但不使用交互 token。成功耗尽预算和可信 429 持久延长安装冷却；401 持久阻断当前 Bot 凭据；任一 scheduled unknown 阻断同安装所有目标的 Bot 发送，保留交互回复独立路径。显式人工 resolve/cancel 解除阻断后，仅继续待发结果与未来调度，不重放未知消息。详见[Discord 定时文字](discord.md)。

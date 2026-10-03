@@ -1172,6 +1172,13 @@ mod tests {
             .delivery
             .is_none());
         valid.delivery.as_mut().unwrap().channel = crate::channel_types::Channel::Discord;
+        assert!(valid.validate().is_err()); // Telegram's negative chat ID is not a Discord channel.
+        let discord = valid.delivery.as_mut().unwrap();
+        discord.installation_id = "123456789012345678".into();
+        discord.conversation_id = "234567890123456789".into();
+        discord.thread_id = None;
+        valid.validate().unwrap();
+        valid.delivery.as_mut().unwrap().thread_id = Some("345678901234567890".into());
         assert!(valid.validate().is_err());
         let mut json = serde_json::to_value(delivery_spec()).unwrap();
         json["delivery"]["sealed_token"] = serde_json::json!("forbidden");
@@ -1715,7 +1722,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);

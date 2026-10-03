@@ -116,6 +116,7 @@ fn runtime_with_key(key: &[u8; 32]) -> Arc<ChannelRuntime> {
                 channel: "discord".into(),
                 installation_id: INSTALLATION_ID.into(),
                 app_id: None,
+                discord_guild_id: None,
                 allowed_senders: vec![SENDER_ID.into()],
                 allowed_conversations: vec![CONVERSATION_ID.into()],
                 scheduled_destinations: vec![],
@@ -132,6 +133,7 @@ fn runtime_with_key(key: &[u8; 32]) -> Arc<ChannelRuntime> {
             wecom_callback: None,
             dingtalk_sender: None,
             dingtalk_callback: None,
+            discord_sender: None,
         }],
         client: OutboundClient::new().unwrap(),
         cipher: Some(aead::LessSafeKey::new(
@@ -536,4 +538,66 @@ async fn cancelled_event_claim_cannot_create_processing_after_recovery() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_delivery_claim_cannot_create_submitting_after_recovery() {
     cancelled_claim_cannot_follow_recovery(true).await;
+}
+
+#[tokio::test]
+async fn unreadable_interaction_token_never_falls_back_to_configured_bot() {
+    let mut fixture = Fixture::new().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let app = axum::Router::new().fallback(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+        async { StatusCode::UNAUTHORIZED }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let input = spec(
+        fixture.state.channel_runtime.as_ref().unwrap(),
+        "456789012345678901",
+        now_ms() + 60_000,
+    );
+    let event = fixture.admit_and_claim(input);
+    let delivery = {
+        let mut store = fixture.state.sessions.lock().unwrap();
+        assert!(store
+            .complete_channel_event(
+                &event.id,
+                None,
+                "completed",
+                vec!["reply".into()],
+                None,
+                now_ms()
+            )
+            .unwrap());
+        store.claim_channel_delivery(now_ms()).unwrap().unwrap()
+    };
+    let rt = Arc::get_mut(fixture.state.channel_runtime.as_mut().unwrap()).unwrap();
+    rt.cipher = None; // Lost state key: a Bot token cannot replace the interaction grant.
+    rt.installations[0].api_base = base.clone();
+    rt.installations[0].discord_sender = Some(Arc::new(
+        crate::discord_outbound::DiscordBotSender::new(
+            INSTALLATION_ID,
+            "567890123456789012".into(),
+            "bot-fixture-token".into(),
+            base,
+            true,
+        )
+        .unwrap(),
+    ));
+    deliver(fixture.state.clone(), delivery.clone())
+        .await
+        .unwrap();
+    let saved = fixture
+        .state
+        .sessions
+        .lock()
+        .unwrap()
+        .get_channel_delivery(&delivery.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.state, "permanent_failed");
+    assert_eq!(saved.error.as_deref(), Some("credential_unavailable"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    server.abort();
 }

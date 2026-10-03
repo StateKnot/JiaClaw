@@ -95,7 +95,7 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 | `/hooks/inbound` | `http.webhook_secret` / `JIACLAW_WEBHOOK_SECRET`，头 `X-Webhook-Secret` | 同步 JSON 回复 |
 | `/hooks/telegram` | `http.telegram_secret` / `JIACLAW_TELEGRAM_SECRET`，头 `X-Telegram-Bot-Api-Secret-Token` | `telegram_bot_token` / `JIACLAW_TELEGRAM_BOT_TOKEN` |
 | `/hooks/slack` | `http.slack_signing_secret` / `JIACLAW_SLACK_SIGNING_SECRET`，v0 HMAC-SHA256 | `slack_bot_token` / `JIACLAW_SLACK_BOT_TOKEN` |
-| `/hooks/discord` | `http.discord_public_key` / `JIACLAW_DISCORD_PUBLIC_KEY`，Ed25519 | interaction token；`JIACLAW_CHANNEL_STATE_KEY` 加密存储 |
+| `/hooks/discord` | `http.discord_public_key` / `JIACLAW_DISCORD_PUBLIC_KEY`，Ed25519 | 交互回复：interaction token + `JIACLAW_CHANNEL_STATE_KEY`；定时文字：`discord_bot_token` / `JIACLAW_DISCORD_BOT_TOKEN` |
 | `POST /hooks/feishu` | `http.feishu_encrypt_key` / `JIACLAW_FEISHU_ENCRYPT_KEY` 和 `http.feishu_verification_token` / `JIACLAW_FEISHU_VERIFICATION_TOKEN`，签名与可选解密 | `http.feishu_app_secret` / `JIACLAW_FEISHU_APP_SECRET` |
 | `GET/POST /hooks/wecom` | `http.wecom_callback_token` / `JIACLAW_WECOM_CALLBACK_TOKEN` 和 `http.wecom_encoding_aes_key` / `JIACLAW_WECOM_ENCODING_AES_KEY`，查询签名与 AES-CBC 解密 | `http.wecom_app_secret` / `JIACLAW_WECOM_APP_SECRET` |
 | `POST /hooks/dingtalk` | `http.dingtalk_app_secret` / `JIACLAW_DINGTALK_APP_SECRET`，毫秒 timestamp 与 HMAC-SHA256 sign 请求头 | 同一 Client Secret；`http.channels[].app_id` 为独立 Client ID |
@@ -124,13 +124,13 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v8（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本；v8 增加网关派发身份摘要与时间高水位），旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v9（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本；v8 增加网关派发身份摘要与时间高水位；v9 增加 Discord Bot 凭据持久阻断），旧二进制拒绝降级；升级前应按部署指南停机备份。
 
 ### 渠道授权与持久消息
 
 `http.channels` 默认为空，渠道关闭。启用 Telegram/Slack/Discord/飞书/企业微信/钉钉时须同时设置安装身份、发送者/会话/后台工具精确白名单，SQLite 和 API Token。旧版本只有平台密钥的配置须按[渠道指南](channels.md)显式迁移，不能依赖同步 JSON reply 或空工具列表放行所有工具。Discord 另需环境变量 `JIACLAW_CHANNEL_STATE_KEY`（32 字节密钥的 64 位十六进制编码）。
 
-Telegram/Slack/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_destinations = [{ conversation_id = "...", thread_id = "..." }]`；thread_id 省略表示只授权会话顶层。该列表默认空，最多 100 个精确且不重复的目的地，独立于入站会话白名单。有通知的任务工具必须同时获得该安装授权；任务 `delivery` 不允许携带凭证或服务端点。详见[定时通知指南](scheduled-delivery.md)。
+Telegram/Slack/Discord/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_destinations = [{ conversation_id = "...", thread_id = "..." }]`；thread_id 省略表示只授权会话顶层。该列表默认空，最多 100 个精确且不重复的目的地，独立于入站会话白名单。有通知的任务工具必须同时获得该安装授权；任务 `delivery` 不允许携带凭证或服务端点。详见[定时通知指南](scheduled-delivery.md)。
 
 飞书企业自建应用使用 `feishu_app_secret`、`feishu_encrypt_key`、`feishu_verification_token`（对应 `JIACLAW_FEISHU_APP_SECRET`、`JIACLAW_FEISHU_ENCRYPT_KEY`、`JIACLAW_FEISHU_VERIFICATION_TOKEN` 环境变量优先）。安装身份为 `cli_<app>:<tenant_key>`，不另填 app_id；群组 thread_id 指 `om_` 根消息 ID。配置、签名、token 生命周期和验收范围见[飞书指南](feishu.md)。
 
@@ -143,3 +143,5 @@ Telegram/Slack/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_
 `jiaclaw gateway` 使用独立、严格校验的 JSON 配置与私有身份 SQLite，不读取上述 Agent 配置，也不创建共享 Agent。具体 `serve`、用户/Key 管理命令、限额、TLS/容器/磁盘隔离、未知写入恢复见[网关指南](gateway.md)。现有普通 `serve` 配置仍是一用户一实例。
 
 `[scheduler] gateway_driven` 默认 false；显式设为 true 时要求 `enabled=true`，后端只接受网关准入后的内部派发，不自主定时执行。网关 `scheduled_jobs` 默认 false；仅显式启用并通过后端模式检查后开放任务管理。此模式任务最长 120 秒，仅允许 datetime_now/json_query，禁止 delivery；完整配置和本批验收状态见[独立用户定时任务](tenant-cron.md)。
+
+Discord 定时文字必须同时配置 `discord_guild_id`、非空 `scheduled_destinations` 和 Bot Token；只允许指定 guild 的普通文字频道（type 0），thread_id 必须为空。仅交互回复的安装不配置 guild，也不需要 Bot Token。非 Discord 安装不能配置 guild 字段；每次 Bot 发送前核对应用、guild 与频道类型。401 持久阻断当前凭据，未知发送阻断同安装后续 Bot 投递；配置与人工恢复见[Discord 指南](discord.md)。

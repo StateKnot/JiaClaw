@@ -194,7 +194,7 @@ CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护�
 
 ## 模型调用收据批次
 
-2026-10-03，macOS arm64，本批最终二进制本地验收完成；Linux/macOS/容器验收以最终 PR 当前 head 的 checks 为准。
+2026-10-03，macOS arm64，本批最终二进制本地验收完成；PR #72 最终 head `a841b026` 已通过 [CI 37093371689](https://github.com/jiawenyao401/JiaClaw/actions/runs/37093371689)，覆盖 Linux/macOS、Chromium 和真实容器。
 
 - 最终 `tests/model_calls.py` 7 组全部通过：默认关闭零账本；POST UUID/精确字节摘要、原生工具分轮及摘要收据、进程重启读取；摘要响应错误后持久 hold 且不继续聊天 POST；已知远端 UUID 的 GET 状态/无 UUID 头结果恢复，不执行恢复工具或修改原会话；更换 Key/模型不能绕过；缺 UUID/断连的拒重试与显式核对；实际提交后 SIGKILL 重启保留原操作和摘要；scheduler 父运行超时后收据 worker 完成，真实已批准的本机 MCP probe 零 tools/call，运行保持 interrupted。
 - 私有目录验收覆盖已有 0755 的外层 state：默认新 `model-calls` 子目录为 0700、数据库为 0600，外层目录保持原权限。发送正文标记不出现在账本文件；CLI status 不展示收据正文；存活服务持有独占所有权，维护 CLI 被拒绝。
@@ -202,8 +202,14 @@ CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护�
 
 fixture 的 SQLite 检查以 `mode=rw` 打开已有库并立即启用 `query_only`，允许 SQLite 在 WAL 已 checkpoint 后创建自身 sidecar；不写账本记录，也不对运行中的库使用忽略 WAL 的 immutable 模式。 查询连接显式关闭，不依赖 Python 垃圾回收。
 
-PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收据组暴露了存储层问题，macOS 同组通过：SQLite 建立连接后才关闭预检文件句柄，会在 POSIX 下释放同进程的主库锁；独立只读查询连接关闭时可能误删仍在使用的 WAL。离线 Linux 两进程最小对照验证，旧顺序下写入方看到 completed，而新读者仍看到 submitting；把预检句柄移到 SQLite 建连之前关闭后，两方都读到 completed。模型调用与语义索引两个同型 store 已修复该句柄顺序，fixture 增加有界脱敏状态/门控时间/服务器错误类别和宿主事件诊断，不增加超时或放松成功断言。修复后的完整跨平台验收仍以最终 PR 当前 head 的 checks 为准；此处不把首轮 Linux 失败记为通过。语义记忆新增真实 serve 与独立只读 observer 回归，验证 observer 关闭不移除或替换活跃 WAL/SHM、后续回执跨进程可见、重启查询复用回执不新增 POST；修复后二进制的语义记忆全部 10 组通过。
+PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收据组暴露了存储层问题，macOS 同组通过：SQLite 建立连接后才关闭预检文件句柄，会在 POSIX 下释放同进程的主库锁；独立只读查询连接关闭时可能误删仍在使用的 WAL。离线 Linux 两进程最小对照验证，旧顺序下写入方看到 completed，而新读者仍看到 submitting；把预检句柄移到 SQLite 建连之前关闭后，两方都读到 completed。模型调用与语义索引两个同型 store 已修复该句柄顺序，fixture 增加有界脱敏状态/门控时间/服务器错误类别和宿主事件诊断，不增加超时或放松成功断言。修复后 PR #72 最终 head `a841b026` 的完整跨平台 CI 已通过；首轮失败及修复证据保留用于追踪。语义记忆新增真实 serve 与独立只读 observer 回归，验证 observer 关闭不移除或替换活跃 WAL/SHM、后续回执跨进程可见、重启查询复用回执不新增 POST；修复后二进制的语义记忆全部 10 组通过。
 
 该文件句柄行为与 [SQLite 官方文件锁说明（2.2）](https://www.sqlite.org/howtocorrupt.html#_posix_advisory_locks_canceled_by_a_separate_thread_doing_close_) 一致。官方说明 3.51.0 增加了部分 WAL 多进程防御；本机观察者为 3.51.0、Linux 最小复现为 3.40.1，因此不将平台表现差异直接归为操作系统本身，也不依赖新版防御代替修复。
 
 没有使用付费模型或真实供应商凭据。该账本只保存模型调用事实，不是供应商费用主账、工具执行日志或完整 turn 检查点；真实 Brokerrouter、供应商计费、StateKnot durable、SSE 与媒体身份链认证分别保留。配置与操作见[模型调用收据](model-calls.md)。
+
+## Discord Bot 定时文字批次
+
+2026-10-03，macOS arm64，最终二进制的 `tests/discord_scheduled.py` 六组真实进程验收全部通过。测试只使用本机模型/Discord HTTP fixture、临时 SQLite 和一次性凭据，覆盖配置与精确授权、应用/guild/type 前置核验零 POST、超过六片的 Unicode 结果与完整 UUID nonce、可信 429/成功耗尽预算的持久安装冷却、401 跨重启与环境新 Token、错回执安装阻断、实际 POST 后 SIGKILL 及人工核查后不重放。既有 `tests/channels.py` 独立回归交互凭据路径。
+
+数据库迁移至 schema v9；全量 Rust 832 项通过（library 334、core 122、host 376），Clippy correctness/suspicious、fmt/diff-check 与锁定构建通过。最终二进制既有 channels、scheduled_delivery 与 model_calls（7 组）回归全部通过；Docker 专项保留独立 CI 验收。fixture 同时检查 API、日志及停服后数据库/保留 sidecar 不含一次性凭据与上游私有错误标记。Token 轮换验收保留原 permanent_failed，并通过人工取消同目标旧失败计划后才发送未来结果，未放宽目标 FIFO。Linux/macOS/Chromium/真实 Docker 与镜像以本批 PR 最终 head checks 为准。没有真实 Discord 或付费供应商调用，正式 Bot 安装、guild/频道权限和限流认证仍需独立完成。

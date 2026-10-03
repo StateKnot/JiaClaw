@@ -42,6 +42,7 @@ pub(super) struct Installation {
     pub wecom_callback: Option<Arc<super::wecom::Callback>>,
     pub dingtalk_sender: Option<Arc<super::dingtalk_outbound::DingTalkSender>>,
     pub dingtalk_callback: Option<Arc<super::dingtalk::Callback>>,
+    pub discord_sender: Option<Arc<super::discord_outbound::DiscordBotSender>>,
 }
 
 pub(super) struct ChannelRuntime {
@@ -145,6 +146,21 @@ impl ChannelRuntime {
             };
             if !valid_installation || !(1..=600).contains(&policy.timeout_secs) {
                 bail!("invalid channel installation or timeout");
+            }
+            if let Some(guild) = &policy.discord_guild_id {
+                if channel != Channel::Discord
+                    || !super::discord_outbound::snowflake(guild)
+                    || policy.scheduled_destinations.is_empty()
+                {
+                    bail!("discord_guild_id requires explicit Discord scheduled destinations");
+                }
+            }
+            if channel == Channel::Discord
+                && !policy.scheduled_destinations.is_empty()
+                && (policy.discord_guild_id.is_none()
+                    || !super::discord_outbound::snowflake(&policy.installation_id))
+            {
+                bail!("Discord scheduled delivery requires a canonical application and guild ID");
             }
             for (index, list) in [
                 &policy.allowed_senders,
@@ -330,6 +346,22 @@ impl ChannelRuntime {
             } else {
                 (None, None)
             };
+            let discord_sender =
+                if channel == Channel::Discord && !policy.scheduled_destinations.is_empty() {
+                    Some(Arc::new(super::discord_outbound::DiscordBotSender::new(
+                        &policy.installation_id,
+                        policy
+                            .discord_guild_id
+                            .clone()
+                            .context("Discord guild ID is required")?,
+                        http.effective_discord_bot_token()
+                            .context("Discord scheduled delivery requires a Bot Token")?,
+                        api_base.clone(),
+                        policy.local_test_api_base.is_some(),
+                    )?))
+                } else {
+                    None
+                };
             installations.push(Installation {
                 channel,
                 policy: policy.clone(),
@@ -342,6 +374,7 @@ impl ChannelRuntime {
                 wecom_callback,
                 dingtalk_sender,
                 dingtalk_callback,
+                discord_sender,
             });
         }
         Ok(Some(Arc::new(Self {
@@ -1299,6 +1332,7 @@ fn scheduled_destination_allowed(state: &AppState, destination: &ScheduledDestin
             .and_then(|rt| rt.installation(destination.channel))
             .is_some_and(|binding| {
                 binding.policy.installation_id == destination.installation_id
+                    && (destination.channel != Channel::Discord || binding.discord_sender.is_some())
                     && binding.policy.scheduled_destinations.iter().any(|allowed| {
                         allowed.conversation_id == destination.conversation_id
                             && allowed.thread_id == destination.thread_id
@@ -1613,6 +1647,7 @@ async fn deliver(
         _ => return Err(AppError::Internal("invalid delivery source".into())),
     };
     let mut credential = None;
+    let mut discord_meta = None;
     let mut outcome = DeliveryOutcome::Rejected {
         code: "authorization_changed",
     };
@@ -1627,7 +1662,37 @@ async fn deliver(
                 code: "interaction_expired",
             };
         } else if let Some(b) = binding {
-            if b.channel == Channel::Dingtalk {
+            if b.channel == Channel::Discord && delivery.job_run_id.is_some() {
+                if let Some(sender) = &b.discord_sender {
+                    let fingerprint = sender.credential_fingerprint();
+                    let admission_hash = fingerprint.clone();
+                    let admitted = super::with_sessions(&state, move |store| {
+                        store.admit_discord_bot(&admission_hash)
+                    })
+                    .await?;
+                    if admitted {
+                        let result = sender
+                            .send(&delivery.destination, &delivery.id, &delivery.text)
+                            .await;
+                        discord_meta = Some(super::channel_store::DiscordDeliveryMeta {
+                            credential_hash: fingerprint,
+                            cooldown_until_ms: result
+                                .cooldown_ms
+                                .map(|delay| now_ms().saturating_add(delay)),
+                            credential_rejected: result.credential_rejected,
+                        });
+                        outcome = result.outcome;
+                    } else {
+                        outcome = DeliveryOutcome::Rejected {
+                            code: "discord_bot_credential_blocked",
+                        };
+                    }
+                } else {
+                    outcome = DeliveryOutcome::Rejected {
+                        code: "credential_unavailable",
+                    };
+                }
+            } else if b.channel == Channel::Dingtalk {
                 outcome = if let Some(sender) = &b.dingtalk_sender {
                     sender.send(&delivery.destination, &delivery.text).await
                 } else {
@@ -1705,7 +1770,7 @@ async fn deliver(
     let completed = super::with_sessions(&state, move |store| {
         let completed_now = now_ms();
         let retry = retry.map(|delay| completed_now.saturating_add(delay));
-        store.finish_channel_delivery(
+        store.finish_channel_delivery_with_discord(
             &delivery.id,
             delivery.attempts,
             status,
@@ -1713,6 +1778,7 @@ async fn deliver(
             error,
             retry,
             completed_now,
+            discord_meta,
         )
     })
     .await?;
@@ -1744,6 +1810,7 @@ mod tests {
                 channel: channel_name(channel).into(),
                 installation_id: "123456".into(),
                 app_id: Some("A123".into()),
+                discord_guild_id: None,
                 allowed_senders: vec!["7".into()],
                 allowed_conversations: vec!["99".into()],
                 scheduled_destinations: vec![],
@@ -1760,6 +1827,7 @@ mod tests {
             wecom_callback: None,
             dingtalk_sender: None,
             dingtalk_callback: None,
+            discord_sender: None,
         }
     }
 

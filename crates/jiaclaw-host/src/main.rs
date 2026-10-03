@@ -57,6 +57,7 @@ mod channel_types;
 mod channels;
 mod dingtalk;
 mod dingtalk_outbound;
+mod discord_outbound;
 mod feishu;
 mod feishu_outbound;
 mod gateway;
@@ -2100,7 +2101,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     }
     if discord_bot_token.is_some() {
         tracing::info!(
-            "   • Discord 出站: interaction 回复通过持久 outbox 投递（不发送 Bot Authorization）"
+            "   • Discord 出站: Bot Token 可供显式授权的定时通知使用；interaction 回复继续使用短期令牌"
         );
     } else {
         tracing::info!("   • Discord 出站: interaction 回复使用加密的短期令牌；无需 Bot Token");
@@ -2313,12 +2314,12 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
 
     if discord_bot_token.is_some() {
         println!(
-            "   • Discord 旧 Bot Token: 已配置（通过 {}，回复不会发送 Bot Authorization）",
+            "   • Discord Bot Token: 已配置（通过 {}，仅用于显式授权的定时通知）",
             discord_token_config_source()
         );
     } else {
         println!(
-            "   • Discord Bot Token: ⚠️  不需要 Bot Token；interaction 回复使用加密的短期令牌"
+            "   • Discord Bot Token: 未配置；定时通知需要 Bot Token，interaction 回复使用加密短期令牌"
         );
     }
 
@@ -4866,7 +4867,7 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
             discord_token_config_source()
         );
     } else {
-        println!("   Discord Bot Token: 无需配置；interaction 回复使用加密短期令牌");
+        println!("   Discord Bot Token: 未配置；定时通知需配置，interaction 回复使用加密短期令牌");
         println!("   💡 设置环境变量: export JIACLAW_DISCORD_BOT_TOKEN=your-bot-token");
     }
 
