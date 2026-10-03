@@ -62,8 +62,12 @@ exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上�
 
 启用调度时，SQLite v2 的 jobs/runs 保存任务、UTC occurrence 和输入快照；领取事务后才调用 Agent。同一任务至多一个运行，全局上限 4。最终会话与 run 状态同事务提交，会话锁随 blocking 提交保留，即使调用 Future 被取消也不提前释放。进程中断、期限耗尽或未知结果会暂停任务，由管理员核查后恢复未来调度；没有自动重放工具。详细时间、权限和容量合同见[调度指南](scheduler.md)。
 
+## 独立用户 Telegram
+
+显式网关模式将 Bot/私聊发送者固定到 registry 用户及专属后端，用户启用/hold 与 Web/cron 共用；backend 只接收受 Token 保护的受限 channel 请求。网关先持久准入，并在私有绑定库的同一 claim 事务关联内部 UUIDv7 与 event/delivery attempt。后端会话和网关回复队列分属不同 SQLite；跨进程断连不能按成功事务恢复工具循环，遗留 processing/submitting 分别进入 needs_review/unknown，只有离线人工核对后才继续。队列私有文件共享网关有限额盘，不等于逐用户块设备隔离。配置与恢复见[独立用户 Telegram](tenant-telegram.md)。
+
 ## 可靠渠道
 
-Telegram、Slack、Discord、飞书、企业微信和钉钉共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite 保存 inbox/outbox、去重记录及投递回执（v7 引入钉钉，当前 schema 10），并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)、[企业微信指南](wecom.md)和[钉钉指南](dingtalk.md)。
+Telegram、Slack、Discord、飞书、企业微信和钉钉共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。在单实例渠道模式中，会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite 保存 inbox/outbox、去重记录及投递回执（v7 引入钉钉，当前 schema 10），并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)、[企业微信指南](wecom.md)和[钉钉指南](dingtalk.md)。
 
 定时 Telegram/Slack/飞书/企业微信/钉钉通知使用独立的目的地与工具授权，复用同一发送器、容量预留和目的地顺序。任务运行、会话和所有消息分片一起提交；有未解决投递的任务不会产生下一轮执行，发送结果未知或永久失败会暂停任务。清理历史必须保留被发件箱引用的来源，显式核对后才可删除；详见[定时通知](scheduled-delivery.md)。

@@ -66,6 +66,73 @@ pub enum Commands {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Permanently bind one enabled user's backend to a Telegram bot and private sender.
+    TelegramBind {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long)]
+        bot_id: String,
+        #[arg(long)]
+        sender_id: String,
+    },
+    /// List all Telegram bindings, including permanent revocations; no bot tokens.
+    TelegramBindings {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Permanently revoke a Telegram binding without releasing its user or bot reservation.
+    TelegramRevoke {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+    },
+    /// Inspect private Telegram queues after stopping gateway. No credentials are printed.
+    TelegramInspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long, value_parser = ["events", "deliveries", "operations"])]
+        kind: String,
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Record a verified platform receipt for an unknown send; never send again.
+    TelegramResolve {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        receipt: String,
+    },
+    /// Cancel an event's remaining sends after external review; requires stopped gateway.
+    TelegramCancel {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
+    /// Purge only fully resolved Telegram events, retaining dedup tombstones.
+    TelegramPurge {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
     /// Clear an uncertain write hold only after checking that its backend is idle.
     ReviewClear {
         #[arg(long)]
@@ -140,6 +207,83 @@ pub async fn run(command: Commands) -> Result<()> {
             let (_, registry) = registry(&config)?;
             output(&json!({"users":registry.list()?}))
         }
+        Commands::TelegramBind {
+            config,
+            user,
+            bot_id,
+            sender_id,
+        } => {
+            let (config, registry) = registry(&config)?;
+            let owner = registry
+                .list()?
+                .into_iter()
+                .find(|entry| entry.user_id == user)
+                .context("gateway user not found")?;
+            ensure!(
+                config
+                    .backends
+                    .iter()
+                    .any(|entry| entry.id == owner.backend_id),
+                "user backend is not configured"
+            );
+            output(&serde_json::to_value(
+                registry.add_telegram_binding(user, &bot_id, &sender_id)?,
+            )?)
+        }
+        Commands::TelegramBindings { config } => {
+            let (_, registry) = registry(&config)?;
+            output(&json!({"bindings":registry.list_telegram_bindings()?}))
+        }
+        Commands::TelegramRevoke { config, binding } => {
+            let (_, registry) = registry(&config)?;
+            registry.revoke_telegram_binding(binding)?;
+            output(&json!({"binding_id":binding.to_string(),"revoked":true}))
+        }
+        Commands::TelegramInspect {
+            config,
+            binding,
+            kind,
+            event,
+            limit,
+            offset,
+        } => output(&super::telegram::admin(
+            &Config::load(&config)?,
+            binding,
+            super::telegram::AdminAction::Inspect {
+                kind,
+                event,
+                limit,
+                offset,
+            },
+        )?),
+        Commands::TelegramResolve {
+            config,
+            binding,
+            delivery,
+            receipt,
+        } => output(&super::telegram::admin(
+            &Config::load(&config)?,
+            binding,
+            super::telegram::AdminAction::Resolve { delivery, receipt },
+        )?),
+        Commands::TelegramCancel {
+            config,
+            binding,
+            event,
+        } => output(&super::telegram::admin(
+            &Config::load(&config)?,
+            binding,
+            super::telegram::AdminAction::Cancel { event },
+        )?),
+        Commands::TelegramPurge {
+            config,
+            binding,
+            event,
+        } => output(&super::telegram::admin(
+            &Config::load(&config)?,
+            binding,
+            super::telegram::AdminAction::Purge { event },
+        )?),
         Commands::ReviewClear {
             config,
             user,
@@ -151,6 +295,8 @@ pub async fn run(command: Commands) -> Result<()> {
                 "review-clear requires --confirm-backend-idle after checking the backend"
             );
             let (_, registry) = registry(&config)?;
+            let current_config = Config::load(&config)?;
+            let _channel_guard = super::telegram::review_guard(&current_config, &registry, user)?;
             registry.clear_review(user, &note)?;
             output(&json!({"user_id":user.to_string(),"review_cleared":true}))
         }
@@ -217,5 +363,103 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("--confirm-backend-idle"));
+    }
+
+    #[test]
+    fn telegram_commands_require_explicit_identity_and_never_accept_bot_credentials_or_backend() {
+        let id = "12345678-1234-4234-9234-123456789012";
+        assert!(Args::try_parse_from([
+            "gateway",
+            "telegram-bind",
+            "--config",
+            "c.json",
+            "--user",
+            id,
+            "--bot-id",
+            "101",
+            "--sender-id",
+            "201"
+        ])
+        .is_ok());
+        assert!(
+            Args::try_parse_from(["gateway", "telegram-bindings", "--config", "c.json"]).is_ok()
+        );
+        assert!(Args::try_parse_from([
+            "gateway",
+            "telegram-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            id
+        ])
+        .is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "telegram-bind",
+            "--config",
+            "c.json",
+            "--user",
+            id,
+            "--bot-id",
+            "101"
+        ])
+        .is_err());
+        for (flag, value) in [("--token", "secret"), ("--backend", "other")] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                "telegram-bind",
+                "--config",
+                "c.json",
+                "--user",
+                id,
+                "--bot-id",
+                "101",
+                "--sender-id",
+                "201",
+                flag,
+                value
+            ])
+            .is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "telegram-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            "not-uuid"
+        ])
+        .is_err());
+        assert!(Args::try_parse_from(["gateway", "telegram-bindings"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn telegram_bind_checks_the_immutable_users_backend_is_configured_before_mutation() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir =
+            Cleanup(std::env::temp_dir().join(format!("jiaclaw-telegram-cli-{}", Uuid::new_v4())));
+        let registry_path = dir.0.join("private/users.sqlite3");
+        let registry = Registry::open(&registry_path).unwrap();
+        let user = registry.add_user("alice").unwrap();
+        let config = dir.0.join("gateway.json");
+        std::fs::write(&config,serde_json::to_vec(&json!({
+            "registry_path":registry_path,
+            "backends":[{"id":"bob","url":"http://127.0.0.1:18080","token_file":dir.0.join("backend-token")}]
+        })).unwrap()).unwrap();
+        let error = run(Commands::TelegramBind {
+            config,
+            user: user.user_id,
+            bot_id: "101".into(),
+            sender_id: "201".into(),
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("backend is not configured"));
+        assert!(registry.list_telegram_bindings().unwrap().is_empty());
     }
 }

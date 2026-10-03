@@ -1,0 +1,19 @@
+# Explicit opt-in: merge with compose.yaml only after following docs/tenant-telegram.md.
+# Registry bindings, gateway.json entries and backend gateway_channel_chat remain operator-managed.
+services:
+  gateway:
+    secrets:
+      - alice_telegram_bot_token
+      - alice_telegram_webhook_secret
+      - bob_telegram_bot_token
+      - bob_telegram_webhook_secret
+
+secrets:
+  alice_telegram_bot_token:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/alice-telegram-bot-token
+  alice_telegram_webhook_secret:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/alice-telegram-webhook-secret
+  bob_telegram_bot_token:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/bob-telegram-bot-token
+  bob_telegram_webhook_secret:
+    file: ${JIACLAW_SECRET_DIR:?Set the absolute Secret directory}/bob-telegram-webhook-secret

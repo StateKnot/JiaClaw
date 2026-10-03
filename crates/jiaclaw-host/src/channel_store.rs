@@ -603,6 +603,37 @@ pub(super) fn enqueue_job_delivery(
     Ok(())
 }
 
+// Only the private gateway Telegram store creates this ledger. Keep these
+// checks inside the same IMMEDIATE transaction as the claim; ordinary channel
+// callers never touch the table.
+pub(super) const MAX_TELEGRAM_OPERATIONS: usize = 16_000;
+
+fn check_recorded_claim(conn: &Connection, request_id: &str) -> Result<()> {
+    let id = uuid::Uuid::parse_str(request_id)?;
+    ensure!(
+        id.get_version_num() == 7
+            && id.get_variant() == uuid::Variant::RFC4122
+            && id.to_string() == request_id,
+        "recorded channel request must be a canonical UUIDv7"
+    );
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM gateway_telegram_operations WHERE request_id=?1)",
+        [request_id],
+        |row| row.get(0),
+    )?;
+    ensure!(!exists, "recorded channel request ID was already used");
+    let count: usize = conn.query_row(
+        "SELECT count(*) FROM gateway_telegram_operations",
+        [],
+        |row| row.get(0),
+    )?;
+    ensure!(
+        count < MAX_TELEGRAM_OPERATIONS,
+        "Telegram operation ledger is full; reconcile and purge reviewed events"
+    );
+    Ok(())
+}
+
 impl SessionStore {
     fn channel_conn(&self) -> Result<&Connection> {
         match self {
@@ -698,9 +729,26 @@ impl SessionStore {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub(super) fn claim_channel_event(&mut self, now: i64) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, None)
+    }
+    pub(super) fn claim_channel_event_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, Some(request_id))
+    }
+    fn claim_channel_event_impl(
+        &mut self,
+        now: i64,
+        request_id: Option<&str>,
+    ) -> Result<Option<ChannelEvent>> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(request_id) = request_id {
+            check_recorded_claim(&tx, request_id)?;
+        }
         expire_tokens(&tx, now)?;
         let active: usize = tx.query_row(
             "SELECT count(*) FROM channel_events WHERE status='processing'",
@@ -724,6 +772,14 @@ impl SessionStore {
             return Ok(None);
         };
         tx.execute("UPDATE channel_events SET status='processing',started_ms=?2 WHERE id=?1 AND status='received'",params![event.id,now])?;
+        if let Some(request_id) = request_id {
+            ensure!(
+                event.spec.destination.channel == Channel::Telegram,
+                "recorded event claims require a Telegram event"
+            );
+            tx.execute("INSERT INTO gateway_telegram_operations(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'event',?2,NULL,1,?3)",
+                params![request_id,event.id,now])?;
+        }
         event.status = "processing".into();
         event.started_ms = Some(now);
         tx.commit()?;
@@ -808,9 +864,26 @@ impl SessionStore {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub(super) fn claim_channel_delivery(&mut self, now: i64) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, None)
+    }
+    pub(super) fn claim_channel_delivery_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, Some(request_id))
+    }
+    fn claim_channel_delivery_impl(
+        &mut self,
+        now: i64,
+        request_id: Option<&str>,
+    ) -> Result<Option<ChannelDelivery>> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(request_id) = request_id {
+            check_recorded_claim(&tx, request_id)?;
+        }
         expire_tokens(&tx, now)?;
         // In-flight/unknown requests retain credit indefinitely. A receipt or
         // explicit operator reconciliation starts a fresh rolling-day window;
@@ -843,6 +916,14 @@ impl SessionStore {
             now.checked_add(WECOM_BUDGET_WINDOW_MS)
                 .ok_or_else(|| anyhow::anyhow!("WeCom budget timestamp overflow"))?;
             tx.execute("INSERT INTO wecom_send_reservations(installation_id,delivery_id,attempt,reserved_ms) VALUES(?1,?2,?3,?4)", params![record.destination.installation_id,record.id,record.attempts+1,now])?;
+        }
+        if let Some(request_id) = request_id {
+            ensure!(
+                record.destination.channel == Channel::Telegram && record.event_id.is_some(),
+                "recorded delivery claims require an inbound Telegram event"
+            );
+            tx.execute("INSERT INTO gateway_telegram_operations(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'delivery',?2,?3,?4,?5)",
+                params![request_id,record.event_id,record.id,record.attempts + 1,now])?;
         }
         record.state = "submitting".into();
         record.attempts += 1;

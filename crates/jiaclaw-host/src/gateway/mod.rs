@@ -7,6 +7,8 @@ mod keys;
 mod proxy;
 mod registry;
 mod scheduler;
+mod telegram;
+mod telegram_store;
 
 use anyhow::{bail, Context, Result};
 use axum::{routing::get, Router};
@@ -36,6 +38,7 @@ struct State {
     timeout: Duration,
     control: Arc<Semaphore>,
     scheduled_jobs: bool,
+    telegram: Option<Arc<telegram::Runtime>>,
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -161,6 +164,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             },
         );
     }
+    let telegram =
+        telegram::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     drop(unique_tokens);
     let capacity = u32::try_from(config.max_in_flight).context("gateway capacity overflow")?;
     let state = Arc::new(State {
@@ -171,6 +176,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         timeout,
         control: Arc::new(Semaphore::new(8)),
         scheduled_jobs: config.scheduled_jobs,
+        telegram,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -183,18 +189,26 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             "/health",
             get(|| async { axum::Json(serde_json::json!({"status":"ok"})) }),
         )
+        .route(
+            "/hooks/telegram/:binding_id",
+            axum::routing::post(telegram::ingress),
+        )
         .fallback(proxy::handle)
         .with_state(Arc::clone(&state));
     let scheduled = scheduler::start(Arc::clone(&state));
     let stop_scheduled = scheduled.stopper();
+    let telegram = telegram::start(Arc::clone(&state));
+    let stop_telegram = telegram.stopper();
     tracing::info!("isolated user gateway listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown().await;
             stop_scheduled.stop();
+            stop_telegram.stop();
         })
         .await?;
     let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
+    let _ = telegram.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
     let _drain = tokio::time::timeout(

@@ -290,6 +290,21 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - Rust 测试验证规范路径、epoch 前时间向下取整、父目录能力保留和叶子替换不跟随、完整工作区路径 1024 字节/64 组件在 lstat 前限制及 list_dir 同步收紧、tree DFS/深度和完整输出预算；既有共享 I/O 取消/许可与精确扫描/deadline 回归同样通过。非 UTF-8 文件名专项仅在 Linux 执行，本机 APFS 不允许构造该名称，不将其算作本机覆盖。
 - 本批七套既有真实进程回归 `workspace_files.py`（四组）、`file_search.py`（六组）、`native_tools.py`、`mcp.py`、`memory_io.py`（四组）、`e2e.py`、`workspace_mutations.py`（六组）全部通过、退出码 0。
 
-测试只使用本机模型协议、一次性凭据和临时文件，没有真实模型或平台请求。跨平台、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #78 的检查结果。
+测试只使用本机模型协议、一次性凭据和临时文件，没有真实模型或平台请求。PR #79 最终 head `768cfba3041c7c863e14cbdcc17d6b13ef6470d5` 已通过 [CI 37110081396](https://github.com/jiawenyao401/JiaClaw/actions/runs/37110081396)，Ubuntu、macOS 与 container 三项均成功，包含 Chromium 与真实容器。
 
 验收范围为本机文件元数据、目录扫描、参数/配置授权及资源边界；持久渠道和 cron/interval 继续拒绝这些工具，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 则受现有注册工具与配置开关控制。不据此承诺一致快照、持久文件操作收据、工具循环恢复或完整 OS 沙箱。
+
+## 独立用户 Telegram 私聊批次
+
+本批先完成私有队列与持久 claim 关联：新 TelegramStore 七项定向测试通过，既有 channel_store 35 项回归通过。覆盖不可变 owner/独占锁、符号链接/硬链接/特殊文件及错误权限拒绝、普通 session DB 拒绝收养、重复请求 ID、claim 插入失败及 SQLITE_FULL 原子回滚、16000 条容量满后审计与清理、重启 processing/submitting 恢复、purge 外键级联和 FIFO/冷却提示。操作关联仅在保留期防止重复关联，不提供公开重放协议或 purge 后永久幂等。
+
+最终本机全量 Rust 918 项通过（library 372、core 123、host 423），1 项真实 Docker 专项本地 ignored 留给 Linux CI；fmt、Clippy correctness/suspicious 和锁定 host 构建通过，仍有既有及 style/pedantic warnings。
+
+- 最终二进制 `tests/tenant_telegram.py` 七组全部通过、退出码 0：默认关闭/后端握手、严格私聊身份；两个真实 JiaClaw 后端及本机 Brokerrouter/Telegram 协议 fixture 完成原生工具闭环，验证 channel 模型路由、会话与私有队列不跨用户。
+- 共享执行容量和用户禁用覆盖模型已准入但尚未发送的窗口；重新启用才继续已排队回复。未知第一片阻挡后续，重启不重放模型/发送；离线 inspect 关联 hold 与实际 delivery，resolve 仅记回执，核对后只继续剩余分片。
+- 429 绝对冷却跨重启保留，第五次限流成为失败 hold，拒绝第六次发送；取消/purge 后保留去重。真实 SIGKILL 网关而后端仍继续工具循环并提交会话，重启保留原 request ID 和 needs_review，另一用户仍可处理；人工取消及 review-clear 后只执行新的显式事件。
+- 永久撤销绑定阻止未来入站与排队发送，用户 enable 不复活绑定，不能重新分配已预留用户/Bot；运行期间离线维护被锁拒绝。日志校验不含 fixture 密钥。
+- 本批既有 e2e、mcp、native_tools、user_gateway、tenant_cron、channels、scheduled_delivery 七套真实进程回归均通过、退出码 0。
+- JSON/YAML 示例解析与 docker compose 合并配置检查通过：六个 Secret 仅挂到网关，两个后端不含 Telegram Secret，原有限额卷与私网不变；没有据此声称新增 overlay 的容器启动或平台实测。
+
+跨平台、Chromium 与真实容器以本批 draft PR 最终 head CI 为准。部署与人工核对见[指南](tenant-telegram.md)；真实 Telegram、TLS/egress、共享网关卷压力与供应商联调不由本机协议 fixture 认证。

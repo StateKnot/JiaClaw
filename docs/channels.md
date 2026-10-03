@@ -2,6 +2,8 @@
 
 Telegram、Slack、Discord、飞书、企业微信和钉钉共用 SQLite 收件箱、受监督的 Agent worker 及持久化发件箱。合法事件先入库再返回 webhook ACK；模型调用、会话提交和向平台发送消息在后台执行。在去重保留期内，平台重投同一事件不会再次运行 Agent。现有安装必须补齐下面的安装身份、发送者、会话和工具白名单；只配置旧平台密钥的服务会启动失败，需要先迁移配置。
 
+本文是普通单用户 serve 的平台安装合同。多用户网关的[独立 Telegram 私聊](tenant-telegram.md)使用永久 registry 绑定、带 binding UUID 的 webhook、每绑定私有队列和离线管理 CLI，不读取本页的 http.channels；该分支不与后端会话构成跨库原子事务，也不向网关用户开放管理员发件箱。
+
 ## 部署与身份
 
 渠道要求 `http.persist = true`、非空 API Token 和工作空间之外的 SQLite 路径。模型提供商必须是 `brokerrouter`，离线验收可显式使用 `stub`。一个进程每个平台最多配置一个安装，最多六个安装；SQLite 沿用独占进程锁，不支持多实例共享同一个文件。

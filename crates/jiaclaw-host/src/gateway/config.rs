@@ -34,6 +34,9 @@ pub struct Config {
     /// Opt in to user-owned cron on backends configured in gateway-driven mode.
     #[serde(default)]
     pub scheduled_jobs: bool,
+    /// Dedicated Telegram private-chat installations, authorized by immutable registry bindings.
+    #[serde(default)]
+    pub telegram: Vec<TelegramConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -42,6 +45,21 @@ pub struct BackendConfig {
     pub id: String,
     pub url: String,
     pub token_file: PathBuf,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramConfig {
+    pub binding_id: String,
+    pub bot_token_file: PathBuf,
+    pub webhook_secret_file: PathBuf,
+    #[serde(default = "telegram_api")]
+    pub api_base: String,
+    #[serde(default)]
+    pub allow_loopback: bool,
+}
+fn telegram_api() -> String {
+    "https://api.telegram.org".into()
 }
 
 fn default_bind() -> String {
@@ -119,6 +137,35 @@ impl Config {
             !self.scheduled_jobs || self.request_timeout_seconds >= 150,
             "scheduled_jobs requires request_timeout_seconds >= 150 for bounded execution and commit"
         );
+        ensure!(
+            self.telegram.len() <= 32,
+            "at most 32 Telegram bindings are supported"
+        );
+        ensure!(
+            self.telegram.is_empty() || self.request_timeout_seconds >= 150,
+            "Telegram requires request_timeout_seconds >= 150"
+        );
+        let mut telegram_ids = HashSet::new();
+        for entry in &self.telegram {
+            ensure!(
+                uuid::Uuid::parse_str(&entry.binding_id)
+                    .is_ok_and(|id| !id.is_nil() && id.to_string() == entry.binding_id),
+                "Telegram binding_id must be a canonical non-nil UUID"
+            );
+            ensure!(
+                telegram_ids.insert(&entry.binding_id),
+                "duplicate Telegram binding_id"
+            );
+            ensure!(
+                entry.bot_token_file.is_absolute() && entry.webhook_secret_file.is_absolute(),
+                "Telegram secret paths must be absolute"
+            );
+            crate::outbound::validate_api_base(
+                crate::channel_types::Channel::Telegram,
+                &entry.api_base,
+                entry.allow_loopback,
+            )?;
+        }
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
@@ -320,5 +367,79 @@ mod tests {
         Config::load(&path).unwrap();
         assert!(Config::load(&dir).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn telegram_value() -> serde_json::Value {
+        let mut input = value();
+        input["telegram"] = json!([{"binding_id":"12345678-1234-4234-9234-123456789012","bot_token_file":"/tmp/bot.token","webhook_secret_file":"/tmp/webhook.secret"}]);
+        input
+    }
+
+    #[test]
+    fn telegram_configuration_requires_bounded_canonical_bindings_and_explicit_loopback() {
+        let c = config(telegram_value());
+        c.validate().unwrap();
+        assert_eq!(c.telegram[0].api_base, "https://api.telegram.org");
+        assert!(!c.telegram[0].allow_loopback);
+        for id in [
+            "",
+            "00000000-0000-0000-0000-000000000000",
+            "ABCDEF01-2345-4678-9ABC-DEF012345678",
+            "not-uuid",
+        ] {
+            let mut c = config(telegram_value());
+            c.telegram[0].binding_id = id.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(telegram_value());
+        c.request_timeout_seconds = 149;
+        assert!(c.validate().is_err());
+        c.request_timeout_seconds = 150;
+        c.validate().unwrap();
+        c.telegram.push(c.telegram[0].clone());
+        assert!(c.validate().is_err());
+        let mut c = config(telegram_value());
+        c.telegram = vec![c.telegram[0].clone(); 33];
+        assert!(c.validate().is_err());
+        for url in [
+            "https://other.example",
+            "http://localhost:8080",
+            "https://api.telegram.org/path",
+            "https://secret@api.telegram.org",
+        ] {
+            let mut c = config(telegram_value());
+            c.telegram[0].api_base = url.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(telegram_value());
+        c.telegram[0].api_base = "http://127.0.0.1:8080".into();
+        assert!(c.validate().is_err());
+        c.telegram[0].allow_loopback = true;
+        c.validate().unwrap();
+        c.telegram[0].bot_token_file = "relative.token".into();
+        assert!(c.validate().is_err());
+        let mut c = config(telegram_value());
+        c.telegram[0].webhook_secret_file = "relative.secret".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn telegram_configuration_rejects_inline_credentials_and_client_chosen_identity_fields() {
+        for (field, value) in [
+            ("bot_token", json!("secret")),
+            ("sender_id", json!("201")),
+            ("backend_id", json!("other")),
+            ("user_id", json!("other")),
+            ("enabled", json!(true)),
+        ] {
+            let mut input = telegram_value();
+            input["telegram"][0][field] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err(), "{field}");
+        }
+        for value in [json!(null), json!(1), json!("true")] {
+            let mut input = telegram_value();
+            input["telegram"][0]["allow_loopback"] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err());
+        }
     }
 }

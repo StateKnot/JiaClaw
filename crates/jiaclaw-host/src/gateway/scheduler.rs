@@ -31,7 +31,7 @@ struct StopState {
 #[derive(Clone)]
 pub(super) struct Stop(Arc<StopState>);
 impl Stop {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Arc::new(StopState {
             stopped: AtomicBool::new(false),
             admission: Mutex::new(()),
@@ -47,7 +47,19 @@ impl Stop {
         self.0.stopped.store(true, Ordering::Release);
         self.0.wake.notify_waiters();
     }
-    fn is_stopped(&self) -> bool {
+    pub(super) fn admit<T>(&self, work: impl FnOnce() -> T) -> Option<T> {
+        let _guard = self
+            .0
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_stopped() {
+            None
+        } else {
+            Some(work())
+        }
+    }
+    pub(super) fn is_stopped(&self) -> bool {
         self.0.stopped.load(Ordering::Acquire)
     }
 }
@@ -431,6 +443,7 @@ mod tests {
             timeout: Duration::from_secs(5),
             control: Arc::new(Semaphore::new(8)),
             scheduled_jobs: true,
+            telegram: None,
         });
         (state, user, fake, server)
     }
