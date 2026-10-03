@@ -6,6 +6,7 @@ mod config;
 mod keys;
 mod proxy;
 mod registry;
+mod scheduler;
 
 use anyhow::{bail, Context, Result};
 use axum::{routing::get, Router};
@@ -25,6 +26,7 @@ struct Backend {
     url: reqwest::Url,
     token: axum::http::HeaderValue,
     permit: Arc<Semaphore>,
+    control: Arc<Semaphore>,
 }
 struct State {
     registry: Registry,
@@ -32,6 +34,8 @@ struct State {
     client: reqwest::Client,
     permits: Arc<Semaphore>,
     timeout: Duration,
+    control: Arc<Semaphore>,
+    scheduled_jobs: bool,
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -118,12 +122,42 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             health.get("agent_name").and_then(serde_json::Value::as_str) == Some(&backend.id),
             "backend identity does not match configured backend ID"
         );
+        if config.scheduled_jobs {
+            let response = client
+                .get(url.join("internal/scheduler/status")?)
+                .header(axum::http::header::AUTHORIZATION, token.clone())
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .context("backend scheduler handshake failed")?;
+            anyhow::ensure!(
+                response.status() == reqwest::StatusCode::OK,
+                "backend scheduler mode unavailable"
+            );
+            anyhow::ensure!(
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.split(';').next())
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json")),
+                "backend scheduler handshake must be JSON"
+            );
+            let bytes =
+                tokio::time::timeout(Duration::from_secs(5), proxy::read_response(response, 4096))
+                    .await
+                    .context("scheduler handshake timed out")?
+                    .map_err(|()| anyhow::anyhow!("invalid scheduler handshake"))?;
+            scheduler::parse_status(&bytes, &backend.id)
+                .map_err(|()| anyhow::anyhow!("backend scheduler contract mismatch"))?;
+        }
         backends.insert(
             backend.id.clone(),
             Backend {
                 url,
                 token,
                 permit: Arc::new(Semaphore::new(1)),
+                control: Arc::new(Semaphore::new(2)),
             },
         );
     }
@@ -135,6 +169,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         client,
         permits: Arc::new(Semaphore::new(config.max_in_flight)),
         timeout,
+        control: Arc::new(Semaphore::new(8)),
+        scheduled_jobs: config.scheduled_jobs,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -149,10 +185,16 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         )
         .fallback(proxy::handle)
         .with_state(Arc::clone(&state));
+    let scheduled = scheduler::start(Arc::clone(&state));
+    let stop_scheduled = scheduled.stopper();
     tracing::info!("isolated user gateway listening");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(async move {
+            shutdown().await;
+            stop_scheduled.stop();
+        })
         .await?;
+    let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
     let _drain = tokio::time::timeout(

@@ -31,6 +31,9 @@ pub struct Config {
     /// Non-loopback listeners require an independently configured TLS reverse proxy.
     #[serde(default)]
     pub allow_remote_bind: bool,
+    /// Opt in to user-owned cron on backends configured in gateway-driven mode.
+    #[serde(default)]
+    pub scheduled_jobs: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -111,6 +114,10 @@ impl Config {
         ensure!(
             (1..=64).contains(&self.max_in_flight),
             "gateway max_in_flight must be 1..64"
+        );
+        ensure!(
+            !self.scheduled_jobs || self.request_timeout_seconds >= 150,
+            "scheduled_jobs requires request_timeout_seconds >= 150 for bounded execution and commit"
         );
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
@@ -194,6 +201,13 @@ mod tests {
         assert_eq!(c.bind, "127.0.0.1:8081");
         assert_eq!(c.request_timeout_seconds, 180);
         assert_eq!(c.max_in_flight, 16);
+        assert!(!c.scheduled_jobs);
+        c.scheduled_jobs = true;
+        c.request_timeout_seconds = 149;
+        assert!(c.validate().is_err());
+        c.request_timeout_seconds = 150;
+        c.validate().unwrap();
+        c.request_timeout_seconds = 180;
         for url in [
             "http://[::1]:9001/",
             "http://127.0.0.2:9001",

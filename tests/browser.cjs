@@ -53,13 +53,76 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   await page.locator('#api-token').fill(token);await page.getByRole('button',{name:'连接',exact:true}).click();
   await page.locator('#sessions button').first().click();
   await page.waitForFunction(()=>document.querySelectorAll('.message').length===4);
+  // A 2xx response may still carry an unresolved write receipt: preserve the draft.
+  let reviewedChatCalls=0;
+  await page.route('**/api/chat',route=>{reviewedChatCalls++;return route.fulfill({status:200,contentType:'application/json',headers:{'x-jiaclaw-write-review':'required'},body:JSON.stringify({status:'requireshumaninput'})});});
+  await page.locator('#message').fill('chat draft requiring review');await page.locator('#send').click();
+  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('勿重复提交'));
+  assert.strictEqual(await page.locator('#message').inputValue(),'chat draft requiring review');
+  assert.strictEqual(await page.locator('#messages .message').count(),4);assert.strictEqual(reviewedChatCalls,1);
+  await page.unroute('**/api/chat');
+  // Standalone has no gateway capability: jobs must stay hidden without breaking login.
+  assert.strictEqual(await page.locator('#workspace-tabs').isVisible(),false);
+  const taskId=crypto.randomUUID(), runId=crypto.randomUUID();
+  let job={id:taskId,spec:{name:'<img src=x onerror="window.JOB_XSS=1">',prompt:'private task prompt',schedule:{kind:'interval',seconds:3600},enabled_tools:['datetime_now'],timeout_secs:120},enabled:true,deleted:false,next_due_ms:Date.now()+3600000,session_id:'job:'+taskId};
+  let created=false, heldRun=null, delayRun=false;
+  const calls=[];
+  await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:true})}));
+  await page.route('**/api/jobs**',async route=>{
+   const req=route.request(), u=new URL(req.url()), method=req.method();calls.push([method,u.pathname,u.search]);
+   if(u.pathname==='/api/jobs'&&method==='POST'){const spec=req.postDataJSON();assert.deepStrictEqual(spec.enabled_tools,['datetime_now']);job={...job,spec};created=true;return route.fulfill({status:201,contentType:'application/json',headers:spec.name==='review-required-draft'?{'x-jiaclaw-write-review':'required'}:{},body:JSON.stringify(job)});}
+   if(u.pathname==='/api/jobs'&&method==='GET'){assert.strictEqual(u.searchParams.get('limit'),'5');return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:created&&(!job.deleted||u.searchParams.get('include_deleted')==='true')?[job]:[],next_offset:null})});}
+   if(u.pathname.endsWith('/runs')){if(delayRun){delayRun=false;await new Promise(r=>heldRun=r);}return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{id:runId,job_id:taskId,status:'completed',scheduled_for_ms:Date.now(),response:{message:{content:'<img src=x onerror="window.RUN_XSS=1">'+ 'x'.repeat(20000)}}}],next_offset:null})});}
+   if(u.pathname.endsWith('/pause'))job.enabled=false;
+   if(u.pathname.endsWith('/resume'))job.enabled=true;
+   if(method==='DELETE'){job.deleted=true;job.enabled=false;return route.fulfill({status:204,body:''});}
+   return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(job)});
+  });
+  await page.locator('#api-token').fill(token);await page.getByRole('button',{name:'连接',exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('status').textContent==='已连接 · 选择或新建会话');
+  await page.locator('#jobs-tab').click();await page.locator('#job-create summary').click();
+  await page.locator('#job-name').fill(job.spec.name);await page.locator('#job-prompt').fill(job.spec.prompt);await page.locator('#job-submit').click();
+  await page.waitForFunction(()=>document.getElementById('status').textContent==='任务已创建并启用');
+  assert.strictEqual(await page.locator('#jobs-view img').count(),0);
+  assert.strictEqual(await page.evaluate(()=>typeof window.JOB_XSS+typeof window.RUN_XSS),'undefinedundefined');
+  assert((await page.locator('#job-runs').textContent()).includes('显示已截断'));
+  assert.strictEqual(await page.locator('#jobs-view a').count(),0); // No broken job: session links.
   await page.setViewportSize({width:390,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
-  page.on('dialog',d=>d.accept());await page.locator('#delete-session').click();
+  await page.setViewportSize({width:1360,height:900});
+  await page.locator('#job-toggle').click();await page.waitForFunction(()=>document.getElementById('job-toggle').textContent==='恢复任务');
+  page.on('dialog',d=>d.accept());
+  await page.locator('#job-toggle').click();await page.waitForFunction(()=>document.getElementById('job-toggle').textContent==='暂停任务');
+  await page.locator('#job-delete').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='任务已删除，运行记录已保留');
+  assert.strictEqual(await page.locator('#job-delete').isDisabled(),true);
+  assert(calls.some(([method,p])=>method==='DELETE'&&p==='/api/jobs/'+taskId));
+  await page.locator('#job-create summary').click();
+  await page.locator('#job-name').fill('review-required-draft');await page.locator('#job-prompt').fill('job draft requiring review');await page.locator('#job-submit').click();
+  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('勿重复提交'));
+  assert.strictEqual(await page.locator('#job-name').inputValue(),'review-required-draft');
+  assert.strictEqual(await page.locator('#job-prompt').inputValue(),'job draft requiring review');
+  assert.strictEqual(calls.filter(([method,p])=>method==='POST'&&p==='/api/jobs').length,2);
+  // An old result response arriving after a failed identity switch cannot repopulate the task DOM.
+  delayRun=true;await page.locator('#runs-refresh').click();
+  await page.waitForFunction(()=>document.getElementById('runs-refresh').disabled);
+  while(!heldRun)await new Promise(r=>setTimeout(r,10));
+  await page.locator('#job-create summary').click();await page.locator('#api-token').fill('invalid-task-identity');
+  await page.getByRole('button',{name:'连接',exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('鉴权失败'));
+  heldRun();await page.waitForTimeout(100);
+  for(const id of ['jobs-list','job-runs','job-title','job-summary','job-detail-prompt'])assert.strictEqual(await page.locator('#'+id).textContent(),'');
+  assert.strictEqual(await page.locator('#job-name').inputValue(),'');assert.strictEqual(await page.locator('#job-prompt').inputValue(),'');
+  assert.strictEqual(await page.locator('#workspace-tabs').isVisible(),false);
+  await page.unroute('**/api/jobs**');await page.unroute('**/api/gateway/capabilities');
+  await page.locator('#api-token').fill(token);await page.getByRole('button',{name:'连接',exact:true}).click();
+  await page.locator('#sessions button').first().click();
+  await page.setViewportSize({width:390,height:844});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+  await page.locator('#delete-session').click();
   await page.waitForFunction(()=>document.getElementById('status').textContent==='会话已删除');
   assert.strictEqual(await page.locator('#sessions button').count(),0);
   await page.reload();assert.strictEqual(await page.locator('#new-session').isDisabled(),true);
   assert.deepStrictEqual(errors,[]);
-  console.log('PASS: real Chromium connect/create/chat/delete; identity-switch and revoked-key state clearing; text-only model rendering; memory-only token; mobile layout');
+  console.log('PASS: real Chromium connect/create/chat/delete; identity-switch and revoked-key state clearing; text-only model rendering; capability-gated task CRUD/204, 2xx review headers preserve chat/job drafts, text-only bounded results and stale identity guard; memory-only token; mobile layout');
  } finally {if(browser)await browser.close();server.kill('SIGTERM');await new Promise(r=>server.once('exit',r));fs.rmSync(root,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);process.exitCode=1});

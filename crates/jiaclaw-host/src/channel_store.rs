@@ -1141,7 +1141,7 @@ mod tests {
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                7
+                8
             );
             assert_eq!(
                 db.channel_conn()
@@ -1221,138 +1221,217 @@ mod tests {
     }
 
     #[test]
-    fn v5_to_v7_migrate_scheduled_sources_without_weakening_constraints() {
+    fn v4_to_v8_migrate_scheduled_sources_without_weakening_constraints() {
         for old_version in [4, 5, 6] {
-            let directory =
-                std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
-            let path = directory.join("state.sqlite3");
-            let (job_id, run_id, delivery_id, before) = {
-                let conn = Connection::open(&path).unwrap();
-                conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
-                conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
-                conn.execute_batch(SCHEMA_V3).unwrap();
-                conn.execute_batch(SCHEMA_V4).unwrap();
-                if old_version >= 5 {
-                    conn.execute_batch(SCHEMA_V5).unwrap();
-                }
-                if old_version >= 6 {
-                    conn.execute_batch(SCHEMA_V6).unwrap();
-                }
-                let mut old = SessionStore::Sqlite {
-                    conn,
-                    _ownership: None,
-                };
-                let mut prior = scheduled_spec();
-                if old_version >= 5 {
-                    prior.delivery = Some(super::super::channel_types::ScheduledDestination {
-                        channel: Channel::Feishu,
-                        installation_id: "cli_fixture:tenant_fixture".into(),
-                        conversation_id: "oc_prior".into(),
-                        thread_id: Some("om_root".into()),
-                    });
-                }
-                let job = old.create_job(prior, 0).unwrap();
-                let run = old.claim_due_jobs(60_000, 1).unwrap().remove(0);
-                old.finish_job_run(
-                    &run.id,
-                    None,
-                    "completed",
-                    Some(scheduled_reply()),
-                    None,
-                    60_001,
-                )
-                .unwrap();
-                let row = old
-                    .list_job_deliveries(&job.id, &run.id, 100, 0)
-                    .unwrap()
-                    .remove(0);
-                old.channel_conn().unwrap().execute("UPDATE channel_outbox SET state='unknown',attempts=2,receipt='evidence',error='ambiguous',started_ms=60002,finished_ms=60003 WHERE id=?1", [&row.id]).unwrap();
-                let before =
-                    serde_json::to_value(old.get_channel_delivery(&row.id).unwrap().unwrap())
-                        .unwrap();
-                (job.id, run.id, row.id, before)
+            assert_scheduled_sources_survive_migration(old_version);
+        }
+    }
+
+    #[test]
+    fn v7_to_v8_preserves_scheduled_sources_and_initializes_dispatch_state() {
+        assert_scheduled_sources_survive_migration(7);
+    }
+
+    fn assert_scheduled_sources_survive_migration(old_version: i64) {
+        let directory = std::env::temp_dir().join(format!("jiaclaw-v5-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let (job_id, run_id, delivery_id, before) = {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY NOT NULL,messages TEXT NOT NULL CHECK(json_valid(messages)),accessed_ms INTEGER NOT NULL);CREATE TABLE migration_sources(path TEXT PRIMARY KEY NOT NULL);").unwrap();
+            conn.execute_batch(crate::jobs::SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            if old_version >= 5 {
+                conn.execute_batch(SCHEMA_V5).unwrap();
+            }
+            if old_version >= 6 {
+                conn.execute_batch(SCHEMA_V6).unwrap();
+            }
+            if old_version >= 7 {
+                conn.execute_batch(SCHEMA_V7).unwrap();
+            }
+            let mut old = SessionStore::Sqlite {
+                conn,
+                _ownership: None,
             };
-            let mut db = SessionStore::open(&path).unwrap();
-            let after = db.get_channel_delivery(&delivery_id).unwrap().unwrap();
-            assert_eq!(serde_json::to_value(&after).unwrap(), before);
-            assert_eq!(after.job_id.as_deref(), Some(job_id.as_str()));
-            assert_eq!(after.job_run_id.as_deref(), Some(run_id.as_str()));
-            assert!(db
-                .channel_conn()
-                .unwrap()
-                .execute("DELETE FROM job_runs WHERE id=?1", [&run_id])
-                .is_err());
-            let mut next = scheduled_spec();
-            next.delivery = Some(super::super::channel_types::ScheduledDestination {
-                channel: if old_version == 6 {
-                    Channel::Dingtalk
-                } else if old_version == 5 {
-                    Channel::Wecom
-                } else {
-                    Channel::Feishu
-                },
-                installation_id: if old_version == 6 {
-                    "dingrobot:dingcorp"
-                } else if old_version == 5 {
-                    "wwfixture:1"
-                } else {
-                    "cli_fixture:tenant_fixture"
-                }
-                .into(),
-                conversation_id: if old_version >= 5 {
-                    "alice"
-                } else {
-                    "oc_fixture"
-                }
-                .into(),
-                thread_id: None,
-            });
-            let job = db.create_job(next, 70_000).unwrap();
-            let run = db.claim_due_jobs(130_000, 1).unwrap().remove(0);
-            assert_eq!(run.job_id, job.id);
-            db.finish_job_run(
-                &run.id,
-                None,
-                "completed",
-                Some(scheduled_reply()),
-                None,
-                130_001,
+            let mut prior = scheduled_spec();
+            if old_version >= 5 {
+                prior.delivery = Some(super::super::channel_types::ScheduledDestination {
+                    channel: Channel::Feishu,
+                    installation_id: "cli_fixture:tenant_fixture".into(),
+                    conversation_id: "oc_prior".into(),
+                    thread_id: Some("om_root".into()),
+                });
+            }
+            let job = old.create_job(prior, 0).unwrap();
+            let run = old.claim_due_jobs(60_000, 1).unwrap().remove(0);
+            // Seed a real legacy terminal outcome without calling the v8
+            // completion path, which also writes scheduler dispatch receipts.
+            let tx = old.channel_conn_mut().unwrap().transaction().unwrap();
+            tx.execute(
+                "UPDATE job_runs SET status='completed',response=?2,finished_ms=60001 WHERE id=?1",
+                params![run.id, serde_json::to_string(&scheduled_reply()).unwrap()],
             )
             .unwrap();
-            let row = db
+            enqueue_job_delivery(
+                &tx,
+                &run.id,
+                job.spec.delivery.as_ref().unwrap(),
+                vec!["one".into()],
+                60_001,
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO sessions(id,messages,accessed_ms) VALUES(?1,'[]',60001)",
+                [&run.session_id],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            assert_eq!(
+                old.channel_conn()
+                    .unwrap()
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                old_version
+            );
+            assert_eq!(
+                old.channel_conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE name='scheduler_dispatches'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            let row = old
                 .list_job_deliveries(&job.id, &run.id, 100, 0)
                 .unwrap()
                 .remove(0);
-            assert_eq!(
-                row.destination.channel,
-                if old_version == 6 {
-                    Channel::Dingtalk
-                } else if old_version == 5 {
-                    Channel::Wecom
-                } else {
-                    Channel::Feishu
-                }
-            );
-            assert!(db
-                .channel_conn()
+            old.channel_conn().unwrap().execute("UPDATE channel_outbox SET state='unknown',attempts=2,receipt='evidence',error='ambiguous',started_ms=60002,finished_ms=60003 WHERE id=?1", [&row.id]).unwrap();
+            let before =
+                serde_json::to_value(old.get_channel_delivery(&row.id).unwrap().unwrap()).unwrap();
+            (job.id, run.id, row.id, before)
+        };
+        let mut db = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            db.channel_conn()
                 .unwrap()
-                .execute(
-                    "UPDATE channel_outbox SET sealed_token='forbidden' WHERE id=?1",
-                    [&row.id]
-                )
-                .is_err());
-            assert!(db
-                .channel_conn()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        assert_eq!(
+            db.channel_conn()
                 .unwrap()
-                .execute(
-                    "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
-                    [&row.id]
+                .query_row("SELECT count(*) FROM scheduler_dispatches", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT highwater_ms FROM scheduler_dispatch_clock WHERE id=1",
+                    [],
+                    |row| row.get::<_, i64>(0)
                 )
-                .is_err());
-            drop(db);
-            std::fs::remove_dir_all(directory).unwrap();
-        }
+                .unwrap(),
+            0
+        );
+        let preserved_job = db.get_job(&job_id).unwrap().unwrap();
+        let preserved_run = db.list_job_runs(&job_id, 10, 0).unwrap().remove(0);
+        assert_eq!(preserved_run.id, run_id);
+        assert_eq!(preserved_run.status, "completed");
+        assert_eq!(
+            serde_json::to_value(preserved_run.response).unwrap(),
+            serde_json::to_value(Some(scheduled_reply())).unwrap()
+        );
+        assert_eq!(preserved_run.finished_ms, Some(60_001));
+        assert!(db.get(&preserved_job.session_id).unwrap().is_some());
+        let after = db.get_channel_delivery(&delivery_id).unwrap().unwrap();
+        assert_eq!(serde_json::to_value(&after).unwrap(), before);
+        assert_eq!(after.job_id.as_deref(), Some(job_id.as_str()));
+        assert_eq!(after.job_run_id.as_deref(), Some(run_id.as_str()));
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute("DELETE FROM job_runs WHERE id=?1", [&run_id])
+            .is_err());
+        let mut next = scheduled_spec();
+        next.delivery = Some(super::super::channel_types::ScheduledDestination {
+            channel: if old_version >= 6 {
+                Channel::Dingtalk
+            } else if old_version == 5 {
+                Channel::Wecom
+            } else {
+                Channel::Feishu
+            },
+            installation_id: if old_version >= 6 {
+                "dingrobot:dingcorp"
+            } else if old_version == 5 {
+                "wwfixture:1"
+            } else {
+                "cli_fixture:tenant_fixture"
+            }
+            .into(),
+            conversation_id: if old_version >= 5 {
+                "alice"
+            } else {
+                "oc_fixture"
+            }
+            .into(),
+            thread_id: None,
+        });
+        let job = db.create_job(next, 70_000).unwrap();
+        let run = db.claim_due_jobs(130_000, 1).unwrap().remove(0);
+        assert_eq!(run.job_id, job.id);
+        db.finish_job_run(
+            &run.id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            130_001,
+        )
+        .unwrap();
+        let row = db
+            .list_job_deliveries(&job.id, &run.id, 100, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            row.destination.channel,
+            if old_version >= 6 {
+                Channel::Dingtalk
+            } else if old_version == 5 {
+                Channel::Wecom
+            } else {
+                Channel::Feishu
+            }
+        );
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET sealed_token='forbidden' WHERE id=?1",
+                [&row.id]
+            )
+            .is_err());
+        assert!(db
+            .channel_conn()
+            .unwrap()
+            .execute(
+                "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
+                [&row.id]
+            )
+            .is_err());
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1970,7 +2049,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

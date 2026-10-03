@@ -176,6 +176,17 @@ Rust 镜像摘要取自 [Docker 官方 repo-info 历史](https://github.com/dock
 - 全量 Rust 回归：773 passed、0 failed（library 317、core 120、host 336）；1 项真实 Docker 专项保持独立 ignored。fmt、Clippy correctness/suspicious 和锁定构建通过，保留已有 style/pedantic warnings。
 - 最终 `tests/semantic_memory.py` 的 9 组真实二进制验收全部通过：默认关键词及关闭零缓存/embedding 请求、刷新/查询/重启、原生 semantic 工具、paths 只能收窄、同大小/mtime 编辑与删除的零请求拒绝、响应期间源变化、错误回执/断连/已提交后 SIGKILL 的持久 hold、同库换 Key/版本与重建不可绕过、GET 恢复与显式管理员解除、继承源路径控制字符/边界空白启动拒绝、私有路径/独占所有权/工作区与数据库身份隔离。禁用 semantic 时，工具 schema 在分派前拒绝该模式。
 - 存储 12 项测试全部通过：binary f32 的最大 generation 为 7,383,192 字节，单个回执为 98,320 字节，65 个回执加新旧 generation 为 21,157,184 字节，在 32 MiB 上限内；六次原子替换通过，后四次页数稳定。schema 2 拒绝旧 schema，不清除账本。传输测试另覆盖向量、响应身份与资源边界。
-- 最终二进制既有 e2e、native_tools、memory_io、model_routing 回归全部通过。semantic fixture 已接入 Linux/macOS CI；跨平台和真实容器仍待最终提交验证，以 draft PR 最终 head 检查为准。
+- 最终二进制既有 e2e、native_tools、memory_io、model_routing 回归全部通过。PR #70 的 head `dae57af27c77f553e6344f5391611b35df454bfe` 已通过 [CI 37082943062](https://github.com/jiawenyao401/JiaClaw/actions/runs/37082943062)，覆盖 Linux/macOS、Chromium 及真实容器。
 
 CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护同库前须停止 `serve`，没有公开 HTTP 管理路由。测试只使用本机 embeddings/chat fixture、一次性凭据和合成向量，不发送付费模型请求。不能将本批协议验收解释为真实模型检索质量、真实供应商计费或 StateKnot durable Agent 认证。配置、资源与人工核对边界见[语义记忆指南](semantic-memory.md)。
+
+
+## 独立用户定时任务批次
+
+2026-10-03，macOS arm64，最终二进制本地验收。
+
+- `tests/tenant_cron.py` 4 组通过：真实双后端/网关/本机模型验证受保护能力发现、任务 CRUD/204、输入和分页边界、租户结果隔离、普通 Key 轮换保留用户任务、禁用零派发、共享执行容量及运行期间状态读取、网关停机零自主执行。领取且模型提交后强杀后端与网关，重启保留同一 interrupted run、未知 hold 及 request/run ID 关联；更换 Key 不能解除 hold，另一租户继续运行；明确核对并恢复后只建立新的运行。
+- 最终二进制内嵌工作台的 Chromium 验收通过：原有会话流程、任务创建/暂停/恢复/软删、204、聊天 200/任务 201 的待核对标志保留草稿并阻止成功提示、恶意 HTML 纯文本展示、结果截断、身份切换清空任务/结果/草稿和迟到响应隔离。浏览器任务接口使用 route fixture；真实接口由双后端脚本独立验收。
+- 全量 Rust：797 passed、0 failed（library 317、core 121、host 359），1 项真实 Docker 专项保持独立 ignored。fmt、diff-check、Clippy correctness/suspicious 和锁定构建通过；既有 e2e、user_gateway、scheduler、scheduled_delivery、model_routing 回归通过。Linux/macOS 与真实容器 CI 尚未运行，最终证据以本批 draft PR head 检查为准。
+
+本批使用一次性本机凭据、临时数据库与合成模型响应，没有付费模型调用。保留跨服务未知结果与人工核对边界，不能据此声称真实供应商计费或完整多用户后台能力已认证；见[独立用户定时任务](tenant-cron.md)。

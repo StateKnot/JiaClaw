@@ -228,6 +228,24 @@ pub struct SchedulerConfig {
     /// Enable authenticated job APIs and the bounded background worker.
     #[serde(default)]
     pub enabled: bool,
+    /// Only an authenticated gateway dispatch may claim a scheduled run.
+    #[serde(default)]
+    pub gateway_driven: bool,
+}
+
+impl SchedulerConfig {
+    /// Validate the scheduler's administrator-selected execution mode.
+    ///
+    /// # Errors
+    /// Gateway-driven execution cannot be selected while scheduling is disabled.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        if self.gateway_driven && !self.enabled {
+            return Err(JiaClawError::Configuration(
+                "scheduler.gateway_driven requires scheduler.enabled".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn default_workspace_path() -> std::path::PathBuf {
@@ -4244,5 +4262,21 @@ mod scheduler_configuration_tests {
         let base = "[agent]\nname='test'\ndescription='test'\nsystem_instructions='test'\nmax_turns=1\n[scheduler]\nenabled=true\n";
         assert!(AgentConfig::from_toml_str(base).unwrap().scheduler.enabled);
         assert!(AgentConfig::from_toml_str(&format!("{base}enable=true\n")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod scheduler_config_tests {
+    use super::*;
+    #[test]
+    fn gateway_mode_requires_explicit_scheduler_and_rejects_typos() {
+        let legacy: SchedulerConfig = toml::from_str("enabled=true").unwrap();
+        assert!(!legacy.gateway_driven);
+        assert!(legacy.validate().is_ok());
+        let enabled: SchedulerConfig = toml::from_str("enabled=true\ngateway_driven=true").unwrap();
+        assert!(enabled.validate().is_ok());
+        let invalid: SchedulerConfig = toml::from_str("gateway_driven=true").unwrap();
+        assert!(invalid.validate().is_err());
+        assert!(toml::from_str::<SchedulerConfig>("enabled=true\ngateway_drivn=true").is_err());
     }
 }

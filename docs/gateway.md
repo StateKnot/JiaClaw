@@ -2,7 +2,7 @@
 
 `jiaclaw gateway` 为个人 API Key 绑定一个专属 JiaClaw 后端。每个用户使用不同的进程、工作区、SQLite 会话、身份/记忆文件和 Brokerrouter 虚拟 Key。网关负责鉴权、固定后端映射和不确定写入暂停；隔离依赖本页的容器、网络、存储与运维配置，不能只给同一个后端换两个 Key。
 
-首批支持同源 Web 聊天和会话管理。渠道、定时任务、HEARTBEAT、MCP、exec 和其他后台执行不在此多用户准入边界内，部署样例全部关闭。普通 `jiaclaw serve` 仍是单用户实例；本批不改变 StateKnot durable 或真实供应商认证状态。
+首批支持同源 Web 聊天和会话管理。显式网关驱动的[独立用户定时任务](tenant-cron.md)已通过本地进程与浏览器验收，最终 CI 待验证，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此多用户准入边界内，部署样例保持关闭。普通 `jiaclaw serve` 仍是单用户实例；本批不改变 StateKnot durable 或真实供应商认证状态。
 
 ## 请求与身份合同
 

@@ -301,7 +301,7 @@ try:
             'http': {'bind': '0.0.0.0:8080', 'api_token': backend_tokens[tenant], 'persist': True,
                      'persist_path': '/data/state/sessions.sqlite3', 'metrics_public': False, 'channels': []},
             'tools': {'exec': {'enabled': False}, 'web_search': {'enabled': False}, 'web_fetch': {'enabled': False}},
-            'mcp': {'servers': []}, 'scheduler': {'enabled': False}, 'heartbeat': {'enabled': False},
+            'mcp': {'servers': []}, 'scheduler': {'enabled': True, 'gateway_driven': True}, 'heartbeat': {'enabled': False},
         })
         name = backend_names[tenant]
         args = container_args(name, volume_names[tenant], net_names[tenant])
@@ -315,7 +315,7 @@ try:
         'bind': '0.0.0.0:8080', 'registry_path': '/data/gateway/registry.sqlite3',
         'backends': [{'id': tenant, 'url': 'http://' + tenant + '-backend:8080',
                       'token_file': '/run/secrets/' + tenant + '.token'} for tenant in backend_tokens],
-        'request_timeout_seconds': 30, 'max_in_flight': 16,
+        'request_timeout_seconds': 150, 'max_in_flight': 16, 'scheduled_jobs': True,
         'allow_private_http': True, 'allow_remote_bind': True,
     })
     args = container_args(gateway_name, volume_names['gateway'], net_names['ingress'])
@@ -369,6 +369,46 @@ try:
     assert len(a_history) == len(b_history) == 2
     assert 'Alice' in json.dumps(a_history) and 'Bob' not in json.dumps(a_history)
     assert 'Bob' in json.dumps(b_history) and 'Alice' not in json.dumps(b_history)
+    # The same hardened tenant volumes also persist gateway-admitted cron.
+    # No provider call: each backend explicitly uses the deterministic stub.
+    assert request('/api/gateway/capabilities', a) == (200, {'scheduled_jobs': True})
+    status, job = request('/api/jobs', a, 'POST', {
+        'name': 'container clock', 'prompt': 'Report current time.',
+        'schedule': {'kind': 'interval', 'seconds': 10},
+        'enabled_tools': ['datetime_now'], 'timeout_secs': 10,
+    })
+    assert status == 201, (status, job)
+    job_path = '/api/jobs/' + job['id']
+    assert request(job_path, b)[0] == 404
+    assert request('/internal/scheduler/status', a)[0] == 404
+    deadline = time.monotonic() + 25
+    while True:
+        status, page = request(job_path + '/runs?limit=5', a)
+        assert status == 200, (status, page)
+        finished = [entry for entry in page['items'] if entry['status'] == 'completed']
+        if finished:
+            break
+        assert time.monotonic() < deadline, page
+        time.sleep(0.15)
+    assert all(entry['job_id'] == job['id'] for entry in page['items'])
+    deadline = time.monotonic() + 5
+    while True:
+        status, paused_job = request(job_path + '/pause', a, 'POST', {})
+        if status != 429:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert status == 200 and not paused_job['enabled'], (status, paused_job)
+    status, settled_runs = request(job_path + '/runs?limit=5', a)
+    assert status == 200 and settled_runs['items']
+    settled_ids = {entry['id'] for entry in settled_runs['items']}
+    docker('restart', backend_names['alice'])
+    wait_backend('alice')
+    status, restored = request(job_path + '/runs?limit=5', a)
+    assert status == 200 and {entry['id'] for entry in restored['items']} == settled_ids
+    assert all(not row['id'].startswith('job:') for row in request('/api/sessions', a)[1]['sessions'])
+    assert request(job_path, a, 'DELETE')[0] == 204
+    print('PASS: gateway-driven cron executes and persists on the tenant quota volume; jobs/results stay isolated across tenants and backend restart')
     marker = uuid.uuid4().hex + '.txt'
     docker('exec', backend_names['alice'], '/bin/sh', '-c', 'printf isolated > /data/workspace/' + marker)
     assert docker('exec', backend_names['bob'], 'test', '-e', '/data/workspace/' + marker, check=False).returncode == 1
@@ -414,7 +454,7 @@ try:
     docker('kill', '--signal=KILL', gateway_name)
     docker('unpause', backend_names['alice'])
     # Terminate the old backend process before claiming that it is idle. No
-    # background jobs/tools or real external services exist in this fixture.
+    # active background jobs or real external services remain in this fixture.
     docker('stop', '--time=10', backend_names['alice'])
     docker('start', backend_names['alice'])
     wait_backend('alice')

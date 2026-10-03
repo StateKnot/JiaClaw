@@ -81,6 +81,21 @@ pub(super) struct JobSpec {
 }
 
 impl JobSpec {
+    /// The complete capability contract for gateway-owned background admission.
+    pub(super) fn validate_gateway(&self) -> Result<()> {
+        self.validate()?;
+        if self.timeout_secs > 120
+            || self.delivery.is_some()
+            || self
+                .enabled_tools
+                .iter()
+                .any(|tool| !matches!(tool.as_str(), "datetime_now" | "json_query"))
+        {
+            bail!("gateway schedules require timeout_secs <=120, datetime_now/json_query only, and no delivery");
+        }
+        Ok(())
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() || self.name.len() > 128 {
             bail!("job name must contain 1..128 bytes");
@@ -268,7 +283,223 @@ fn bounded_error(mut error: String) -> String {
     error
 }
 
+pub(super) const SCHEMA_V8: &str = "
+CREATE TABLE scheduler_dispatch_clock(id INTEGER PRIMARY KEY CHECK(id=1),highwater_ms INTEGER NOT NULL);
+INSERT INTO scheduler_dispatch_clock(id,highwater_ms) VALUES(1,0);
+CREATE TABLE scheduler_dispatches(
+ request_id TEXT PRIMARY KEY NOT NULL, issued_ms INTEGER NOT NULL, created_ms INTEGER NOT NULL,
+ run_id TEXT UNIQUE, job_id TEXT,
+ status TEXT NOT NULL CHECK(status IN ('idle','running','completed','failed','needs_review','interrupted','skipped')),
+ CHECK((status='idle' AND run_id IS NULL AND job_id IS NULL) OR (status<>'idle' AND run_id IS NOT NULL AND job_id IS NOT NULL))
+);
+CREATE INDEX scheduler_dispatch_expiry ON scheduler_dispatches(issued_ms) WHERE status IN ('idle','completed');
+PRAGMA user_version=8;
+";
+const MAX_DISPATCHES: usize = 10_000;
+const DISPATCH_PAST_MS: i64 = 60_000;
+const DISPATCH_FUTURE_MS: i64 = 30_000;
+const DISPATCH_RETAIN_MS: i64 = DISPATCH_PAST_MS + 120_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GatewayRunReceipt {
+    pub id: String,
+    pub job_id: String,
+    pub status: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GatewayDispatchReceipt {
+    pub request_id: String,
+    pub run: Option<GatewayRunReceipt>,
+}
+pub(super) struct GatewayDispatch {
+    pub receipt: GatewayDispatchReceipt,
+    pub claimed: Option<JobRun>,
+}
+
+/// A canonical, time-bearing identity permits bounded deduplication without
+/// accepting an old request again after its receipt has been retired.
+pub(super) fn dispatch_issued_ms(request_id: &str) -> Result<i64> {
+    let id = uuid::Uuid::parse_str(request_id).context("dispatch requires a canonical UUIDv7")?;
+    if id.to_string() != request_id || id.get_version_num() != 7 {
+        bail!("dispatch requires a canonical UUIDv7");
+    }
+    let (seconds, nanos) = id
+        .get_timestamp()
+        .context("dispatch requires UUIDv7 timestamp")?
+        .to_unix();
+    i64::try_from(seconds)
+        .ok()
+        .and_then(|s| s.checked_mul(1000))
+        .and_then(|s| s.checked_add(i64::from(nanos / 1_000_000)))
+        .context("dispatch timestamp is out of bounds")
+}
+fn gateway_dispatch_on(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<GatewayDispatchReceipt>> {
+    Ok(conn
+        .query_row(
+            "SELECT run_id,job_id,status FROM scheduler_dispatches WHERE request_id=?1",
+            [request_id],
+            |row| {
+                let id: Option<String> = row.get(0)?;
+                let run = id
+                    .map(|id| {
+                        Ok::<_, rusqlite::Error>(GatewayRunReceipt {
+                            id,
+                            job_id: row.get(1)?,
+                            status: row.get(2)?,
+                        })
+                    })
+                    .transpose()?;
+                Ok(GatewayDispatchReceipt {
+                    request_id: request_id.to_owned(),
+                    run,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn claim_due_jobs_in(tx: &Transaction<'_>, now: i64, capacity: usize) -> Result<Vec<JobRun>> {
+    let running: usize = tx.query_row(
+        "SELECT count(*) FROM job_runs WHERE status='running'",
+        [],
+        |row| row.get(0),
+    )?;
+    let capacity = capacity.min(MAX_CONCURRENT_RUNS.saturating_sub(running));
+    let jobs = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM jobs WHERE enabled=1 AND deleted=0 AND next_due_ms<=?1 AND NOT EXISTS(SELECT 1 FROM job_runs WHERE job_runs.job_id=jobs.id AND status='running') AND NOT EXISTS(SELECT 1 FROM channel_outbox d JOIN job_runs r ON r.id=d.job_run_id WHERE r.job_id=jobs.id AND d.state NOT IN ('delivered','cancelled')) ORDER BY next_due_ms,id LIMIT 100"
+        ))?;
+        let rows = stmt.query_map([now], job_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut claimed = Vec::new();
+    for job in jobs {
+        let next = next_occurrence(tx, &job, now)?;
+        if now.saturating_sub(job.next_due_ms) > MAX_LATENESS_MS {
+            tx.execute(
+                "UPDATE jobs SET next_due_ms=?2 WHERE id=?1",
+                params![job.id, next],
+            )?;
+            tracing::info!(job_id = %job.id, scheduled_for_ms = job.next_due_ms, "scheduler skipped missed occurrence");
+            continue;
+        }
+        if claimed.len() >= capacity {
+            continue;
+        }
+        job.spec.validate()?;
+        let remaining = trim_history(tx, &job.id, MAX_RUNS_PER_JOB - 1)?;
+        let total: usize = tx.query_row("SELECT count(*) FROM job_runs", [], |row| row.get(0))?;
+        if remaining >= MAX_RUNS_PER_JOB || total >= MAX_RUNS {
+            tx.execute("UPDATE jobs SET enabled=0 WHERE id=?1", [&job.id])?;
+            tracing::warn!(job_id = %job.id, "scheduler paused job: retained audit records reached quota; explicit review and purge required");
+            continue;
+        }
+        if job.spec.delivery.is_some() && !super::channel_store::has_outbox_capacity(tx)? {
+            continue;
+        }
+        let run = JobRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            job_id: job.id.clone(),
+            scheduled_for_ms: job.next_due_ms,
+            started_ms: now,
+            finished_ms: None,
+            status: "running".into(),
+            spec: job.spec,
+            session_id: job.session_id,
+            response: None,
+            error: None,
+        };
+        let inserted = tx.execute(
+            "INSERT INTO job_runs(id,job_id,scheduled_for_ms,started_ms,finished_ms,status,spec,session_id) VALUES(?1,?2,?3,?4,NULL,'running',?5,?6) ON CONFLICT(job_id,scheduled_for_ms) DO NOTHING",
+            params![run.id, run.job_id, run.scheduled_for_ms, now, serde_json::to_string(&run.spec)?, run.session_id],
+        )?;
+        tx.execute(
+            "UPDATE jobs SET next_due_ms=?2 WHERE id=?1",
+            params![job.id, next],
+        )?;
+        if inserted == 1 {
+            claimed.push(run);
+        }
+    }
+    Ok(claimed)
+}
+
 impl SessionStore {
+    pub(super) fn gateway_dispatch(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<GatewayDispatchReceipt>> {
+        dispatch_issued_ms(request_id)?;
+        gateway_dispatch_on(self.job_conn()?, request_id)
+    }
+
+    pub(super) fn gateway_job_due(&self, now: i64) -> Result<bool> {
+        Ok(self.job_conn()?.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE enabled=1 AND deleted=0 AND next_due_ms<=?1 AND NOT EXISTS(SELECT 1 FROM job_runs WHERE status='running') AND NOT EXISTS(SELECT 1 FROM channel_outbox d JOIN job_runs r ON r.id=d.job_run_id WHERE r.job_id=jobs.id AND d.state NOT IN ('delivered','cancelled')))", [now], |row| row.get(0))?)
+    }
+
+    pub(super) fn claim_gateway_dispatch(
+        &mut self,
+        request_id: &str,
+        now: i64,
+    ) -> Result<GatewayDispatch> {
+        let issued = dispatch_issued_ms(request_id)?;
+        let tx = self
+            .job_conn_mut()?
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(receipt) = gateway_dispatch_on(&tx, request_id)? {
+            return Ok(GatewayDispatch {
+                receipt,
+                claimed: None,
+            });
+        }
+        let highwater: i64 = tx.query_row(
+            "SELECT highwater_ms FROM scheduler_dispatch_clock WHERE id=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let effective_now = now.max(highwater);
+        // Persist the anti-rollback bound with every pruning/claim transaction.
+        tx.execute(
+            "UPDATE scheduler_dispatch_clock SET highwater_ms=?1 WHERE id=1",
+            [effective_now],
+        )?;
+        if issued < effective_now.saturating_sub(DISPATCH_PAST_MS)
+            || issued > effective_now.saturating_add(DISPATCH_FUTURE_MS)
+        {
+            tx.commit()?;
+            return Err(JobConflict(
+                "dispatch identity expired or outside the accepted clock window",
+            )
+            .into());
+        }
+        tx.execute("DELETE FROM scheduler_dispatches WHERE status IN ('idle','completed') AND issued_ms<?1", [effective_now.saturating_sub(DISPATCH_RETAIN_MS)])?;
+        let count: usize =
+            tx.query_row("SELECT count(*) FROM scheduler_dispatches", [], |row| {
+                row.get(0)
+            })?;
+        if count >= MAX_DISPATCHES {
+            tx.commit()?;
+            return Err(JobConflict("dispatch audit capacity exhausted; retained uncertain outcomes require operator review").into());
+        }
+        let claimed = claim_due_jobs_in(&tx, now, 1)?.pop();
+        let receipt = GatewayDispatchReceipt {
+            request_id: request_id.to_owned(),
+            run: claimed.as_ref().map(|run| GatewayRunReceipt {
+                id: run.id.clone(),
+                job_id: run.job_id.clone(),
+                status: run.status.clone(),
+            }),
+        };
+        tx.execute("INSERT INTO scheduler_dispatches(request_id,issued_ms,created_ms,run_id,job_id,status) VALUES(?1,?2,?3,?4,?5,?6)", params![request_id, issued, effective_now, receipt.run.as_ref().map(|r| &r.id), receipt.run.as_ref().map(|r| &r.job_id), receipt.run.as_ref().map_or("idle", |r| r.status.as_str())])?;
+        tx.commit()?;
+        Ok(GatewayDispatch { receipt, claimed })
+    }
+
     fn job_conn(&self) -> Result<&Connection> {
         match self {
             Self::Sqlite { conn, .. } => Ok(conn),
@@ -514,69 +745,7 @@ impl SessionStore {
         let tx = self
             .job_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let running: usize = tx.query_row(
-            "SELECT count(*) FROM job_runs WHERE status='running'",
-            [],
-            |row| row.get(0),
-        )?;
-        let capacity = capacity.min(MAX_CONCURRENT_RUNS.saturating_sub(running));
-        let jobs = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {JOB_COLUMNS} FROM jobs WHERE enabled=1 AND deleted=0 AND next_due_ms<=?1 AND NOT EXISTS(SELECT 1 FROM job_runs WHERE job_runs.job_id=jobs.id AND status='running') AND NOT EXISTS(SELECT 1 FROM channel_outbox d JOIN job_runs r ON r.id=d.job_run_id WHERE r.job_id=jobs.id AND d.state NOT IN ('delivered','cancelled')) ORDER BY next_due_ms,id LIMIT 100"
-            ))?;
-            let rows = stmt.query_map([now], job_from_row)?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        let mut claimed = Vec::new();
-        for job in jobs {
-            let next = next_occurrence(&tx, &job, now)?;
-            if now.saturating_sub(job.next_due_ms) > MAX_LATENESS_MS {
-                tx.execute(
-                    "UPDATE jobs SET next_due_ms=?2 WHERE id=?1",
-                    params![job.id, next],
-                )?;
-                tracing::info!(job_id = %job.id, scheduled_for_ms = job.next_due_ms, "scheduler skipped missed occurrence");
-                continue;
-            }
-            if claimed.len() >= capacity {
-                continue;
-            }
-            job.spec.validate()?;
-            let remaining = trim_history(&tx, &job.id, MAX_RUNS_PER_JOB - 1)?;
-            let total: usize =
-                tx.query_row("SELECT count(*) FROM job_runs", [], |row| row.get(0))?;
-            if remaining >= MAX_RUNS_PER_JOB || total >= MAX_RUNS {
-                tx.execute("UPDATE jobs SET enabled=0 WHERE id=?1", [&job.id])?;
-                tracing::warn!(job_id = %job.id, "scheduler paused job: retained audit records reached quota; explicit review and purge required");
-                continue;
-            }
-            if job.spec.delivery.is_some() && !super::channel_store::has_outbox_capacity(&tx)? {
-                continue;
-            }
-            let run = JobRun {
-                id: uuid::Uuid::new_v4().to_string(),
-                job_id: job.id.clone(),
-                scheduled_for_ms: job.next_due_ms,
-                started_ms: now,
-                finished_ms: None,
-                status: "running".into(),
-                spec: job.spec,
-                session_id: job.session_id,
-                response: None,
-                error: None,
-            };
-            let inserted = tx.execute(
-                "INSERT INTO job_runs(id,job_id,scheduled_for_ms,started_ms,finished_ms,status,spec,session_id) VALUES(?1,?2,?3,?4,NULL,'running',?5,?6) ON CONFLICT(job_id,scheduled_for_ms) DO NOTHING",
-                params![run.id, run.job_id, run.scheduled_for_ms, now, serde_json::to_string(&run.spec)?, run.session_id],
-            )?;
-            tx.execute(
-                "UPDATE jobs SET next_due_ms=?2 WHERE id=?1",
-                params![job.id, next],
-            )?;
-            if inserted == 1 {
-                claimed.push(run);
-            }
-        }
+        let claimed = claim_due_jobs_in(&tx, now, capacity)?;
         tx.commit()?;
         Ok(claimed)
     }
@@ -680,6 +849,10 @@ impl SessionStore {
             "UPDATE job_runs SET status=?2,response=?3,error=?4,finished_ms=?5 WHERE id=?1 AND status='running'",
             params![run_id, status, serialized_response, error.map(bounded_error), now.max(started)],
         )?;
+        tx.execute(
+            "UPDATE scheduler_dispatches SET status=?2 WHERE run_id=?1 AND status='running'",
+            params![run_id, status],
+        )?;
         if matches!(status, "failed" | "needs_review" | "interrupted") {
             tx.execute("UPDATE jobs SET enabled=0 WHERE id=?1", [&job_id])?;
         }
@@ -701,6 +874,10 @@ impl SessionStore {
         let recovered = tx.execute(
             "UPDATE job_runs SET status='interrupted',finished_ms=MAX(?1,started_ms),error='process stopped before a terminal outcome was committed; effects may have occurred; review before resuming' WHERE status='running'",
             [now],
+        )?;
+        tx.execute(
+            "UPDATE scheduler_dispatches SET status='interrupted' WHERE status='running'",
+            [],
         )?;
         let jobs = {
             let mut stmt = tx.prepare(&format!(
@@ -765,6 +942,223 @@ mod tests {
             .finish_job_run(&run.id, None, "completed", Some(reply()), None, 60_001)
             .unwrap());
         run
+    }
+
+    fn dispatch_id(milliseconds: i64, serial: u64) -> String {
+        let mut bytes = [0_u8; 16];
+        bytes[..6].copy_from_slice(&milliseconds.to_be_bytes()[2..]);
+        bytes[6] = 0x70;
+        bytes[8] = 0x80;
+        bytes[10..].copy_from_slice(&serial.to_be_bytes()[2..]);
+        uuid::Uuid::from_bytes(bytes).to_string()
+    }
+
+    #[test]
+    fn gateway_specs_are_a_strict_subset_of_background_capabilities() {
+        assert!(spec().validate_gateway().is_ok());
+        for tool in ["exec", "shell_exec", "mcp_read", "memory_search"] {
+            let mut job = spec();
+            job.enabled_tools = vec![tool.into()];
+            assert!(job.validate().is_ok());
+            assert!(job.validate_gateway().is_err());
+        }
+        let mut job = spec();
+        job.timeout_secs = 121;
+        assert!(job.validate_gateway().is_err());
+        job.timeout_secs = 120;
+        assert!(job.validate_gateway().is_ok());
+    }
+
+    #[test]
+    fn gateway_claim_and_identity_are_one_transaction_and_repeats_never_claim() {
+        let mut db = store();
+        let job = db.create_job(spec(), 0).unwrap();
+        let id = dispatch_id(60_000, 1);
+        db.job_conn().unwrap().execute_batch("CREATE TRIGGER reject_dispatch BEFORE INSERT ON scheduler_dispatches BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+        assert!(db.claim_gateway_dispatch(&id, 60_000).is_err());
+        assert!(db.list_job_runs(&job.id, 5, 0).unwrap().is_empty());
+        assert_eq!(db.get_job(&job.id).unwrap().unwrap().next_due_ms, 60_000);
+        assert!(db.gateway_dispatch(&id).unwrap().is_none());
+        db.job_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_dispatch;")
+            .unwrap();
+        let dispatch = db.claim_gateway_dispatch(&id, 60_000).unwrap();
+        let run = dispatch.claimed.unwrap();
+        assert_eq!(dispatch.receipt.run.unwrap().id, run.id);
+        let repeated = db.claim_gateway_dispatch(&id, 60_001).unwrap();
+        assert!(repeated.claimed.is_none());
+        assert_eq!(repeated.receipt.run.unwrap().status, "running");
+        db.finish_job_run(&run.id, None, "completed", Some(reply()), None, 60_002)
+            .unwrap();
+        assert_eq!(
+            db.gateway_dispatch(&id)
+                .unwrap()
+                .unwrap()
+                .run
+                .unwrap()
+                .status,
+            "completed"
+        );
+        db.delete_job(&job.id).unwrap();
+        db.purge_job(&job.id).unwrap();
+        db.create_job(spec(), 0).unwrap();
+        let repeated = db.claim_gateway_dispatch(&id, 60_003).unwrap();
+        assert!(repeated.claimed.is_none());
+        assert_eq!(repeated.receipt.run.unwrap().id, run.id);
+    }
+
+    #[test]
+    fn gateway_clock_watermark_survives_restart_and_receipt_retirement() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-dispatch-clock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let mut db = SessionStore::open(&path).unwrap();
+        let old = dispatch_id(60_000, 1);
+        assert!(db
+            .claim_gateway_dispatch(&old, 60_000)
+            .unwrap()
+            .receipt
+            .run
+            .is_none());
+        let future = dispatch_id(300_001, 2);
+        db.claim_gateway_dispatch(&future, 300_001).unwrap();
+        assert!(db.gateway_dispatch(&old).unwrap().is_none());
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        assert!(
+            db.claim_gateway_dispatch(&old, 60_000).is_err(),
+            "clock rollback must not revive a retired identity"
+        );
+        assert!(db
+            .claim_gateway_dispatch(&dispatch_id(330_002, 3), 300_001)
+            .is_err());
+        assert!(db
+            .claim_gateway_dispatch(&dispatch_id(240_000, 4), 300_001)
+            .is_err());
+        assert!(db
+            .claim_gateway_dispatch(&dispatch_id(240_001, 5), 300_001)
+            .is_ok());
+        assert!(db
+            .claim_gateway_dispatch(&uuid::Uuid::new_v4().to_string(), 300_001)
+            .is_err());
+        assert!(db
+            .claim_gateway_dispatch(&future.to_uppercase(), 300_001)
+            .is_err());
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn gateway_interruption_receipt_is_atomic_and_never_automatically_pruned() {
+        let mut db = store();
+        let job = db.create_job(spec(), 0).unwrap();
+        let id = dispatch_id(60_000, 1);
+        let run = db
+            .claim_gateway_dispatch(&id, 60_000)
+            .unwrap()
+            .claimed
+            .unwrap();
+        db.job_conn().unwrap().execute_batch("CREATE TRIGGER reject_receipt BEFORE UPDATE OF status ON scheduler_dispatches BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+        assert!(db
+            .finish_job_run(&run.id, None, "completed", Some(reply()), None, 60_001)
+            .is_err());
+        assert_eq!(db.get_job_run(&run.id).unwrap().unwrap().status, "running");
+        assert_eq!(
+            db.gateway_dispatch(&id)
+                .unwrap()
+                .unwrap()
+                .run
+                .unwrap()
+                .status,
+            "running"
+        );
+        db.job_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_receipt;")
+            .unwrap();
+        db.recover_jobs(60_002).unwrap();
+        assert_eq!(
+            db.gateway_dispatch(&id)
+                .unwrap()
+                .unwrap()
+                .run
+                .unwrap()
+                .status,
+            "interrupted"
+        );
+        assert!(!db.get_job(&job.id).unwrap().unwrap().enabled);
+        db.claim_gateway_dispatch(&dispatch_id(400_000, 2), 400_000)
+            .unwrap();
+        assert_eq!(
+            db.gateway_dispatch(&id).unwrap().unwrap().run.unwrap().id,
+            run.id
+        );
+    }
+
+    #[test]
+    fn gateway_receipts_do_not_block_normal_run_retention_or_advance_into_replay() {
+        let mut db = store();
+        let job = db.create_job(spec(), 0).unwrap();
+        for number in 1..=120 {
+            let now = number * 60_000;
+            let run = db
+                .claim_gateway_dispatch(&dispatch_id(now, number as u64), now)
+                .unwrap()
+                .claimed
+                .unwrap();
+            db.finish_job_run(&run.id, None, "completed", Some(reply()), None, now + 1)
+                .unwrap();
+        }
+        assert_eq!(db.list_job_runs(&job.id, 100, 0).unwrap().len(), 100);
+        assert!(db.get_job(&job.id).unwrap().unwrap().enabled);
+        let count: usize = db
+            .job_conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM scheduler_dispatches", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            count <= 5,
+            "expired terminal receipts should be retired: {count}"
+        );
+    }
+
+    #[test]
+    fn gateway_uncertain_identity_capacity_stops_before_a_new_claim() {
+        let mut db = store();
+        let job = db.create_job(spec(), 0).unwrap();
+        db.job_conn().unwrap().execute_batch("WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) INSERT INTO scheduler_dispatches(request_id,issued_ms,created_ms,run_id,job_id,status) SELECT printf('%08x-0000-7000-8000-%012x',n,n),0,0,printf('run-%d',n),'preserved-job','needs_review' FROM numbers;").unwrap();
+        assert!(db
+            .claim_gateway_dispatch(&dispatch_id(60_000, 1), 60_000)
+            .is_err());
+        assert!(db.list_job_runs(&job.id, 5, 0).unwrap().is_empty());
+        assert_eq!(db.get_job(&job.id).unwrap().unwrap().next_due_ms, 60_000);
+        let count: usize = db
+            .job_conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM scheduler_dispatches", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, MAX_DISPATCHES);
+    }
+
+    #[test]
+    fn gateway_due_hint_keeps_overdue_jobs_advancing_without_execution() {
+        let mut db = store();
+        let job = db.create_job(spec(), 0).unwrap();
+        assert!(db.gateway_job_due(120_000).unwrap());
+        let receipt = db
+            .claim_gateway_dispatch(&dispatch_id(120_000, 1), 120_000)
+            .unwrap();
+        assert!(receipt.claimed.is_none());
+        assert!(receipt.receipt.run.is_none());
+        assert!(!db.gateway_job_due(120_000).unwrap());
+        assert!(db.list_job_runs(&job.id, 5, 0).unwrap().is_empty());
+        assert!(db.get_job(&job.id).unwrap().unwrap().next_due_ms > 120_000);
     }
 
     #[test]
@@ -1321,7 +1715,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);

@@ -14,7 +14,7 @@
 | 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；Discord 主动发送及 WhatsApp 仍待交付；进程 fixture 不能替代真实安装认证 |
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
-| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷，独立网关哈希 Key 轮换撤销、受限代理、未知写入持久核对；[部署和验收范围](gateway.md)。多用户后台任务/渠道身份绑定与真实供应商联合认证仍待完成 |
+| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷，独立网关哈希 Key 轮换撤销、受限代理、未知写入持久核对；[部署和验收范围](gateway.md)。受限用户定时任务已通过本地验收；渠道后台身份绑定与真实供应商联合认证仍待完成 |
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
@@ -29,4 +29,6 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 本批先收紧既有 MEMORY / SOUL / USER / HEARTBEAT 文件边界：配置路径接线、有界读取、统一写入上限、目录句柄约束、原子发布、协作追加锁和初始化保留；新增整机 fixture 与 747 项 Rust 回归已在本机通过，跨平台/真实容器以本批 draft PR 最终 head CI 为准。这是语义记忆前置修复，不能据此将 embeddings 或向量检索标记完成。
 
-语义记忆本批仅在显式启用时接入 Brokerrouter embeddings 与私有 SQLite。源变更先拒绝查询计费，未知提交保留 hold；维护 CLI 要求同库服务停机，不新增公开管理路由。最终二进制的 9 组离线整机验收、773 项 Rust 回归、fmt/Clippy/锁定构建以及 e2e/native_tools/memory_io/model_routing 已在本机通过。Linux/macOS 和真实容器仍待最终 head CI；合成向量不代表真实模型检索质量认证。
+语义记忆本批仅在显式启用时接入 Brokerrouter embeddings 与私有 SQLite。源变更先拒绝查询计费，未知提交保留 hold；维护 CLI 要求同库服务停机，不新增公开管理路由。最终二进制的 9 组离线整机验收、773 项 Rust 回归、fmt/Clippy/锁定构建以及 e2e/native_tools/memory_io/model_routing 已在本机通过。该批 PR #70 的 head `dae57af27c77f553e6344f5391611b35df454bfe` 已通过 [CI 37082943062](https://github.com/jiawenyao401/JiaClaw/actions/runs/37082943062)，含 Linux/macOS 与真实容器；合成向量不代表真实模型检索质量认证。
+
+独立用户定时任务已接线并完成本地进程与浏览器验收：以网关 enabled/hold 和共享执行容量准入，后端停止自主 tick；任务及结果保存在每租户数据库，工作台提供受能力探测控制的管理入口。最终二进制双租户 4 组及 Chromium 验收通过，最终 head CI 尚待运行；见[范围及生产边界](tenant-cron.md)。

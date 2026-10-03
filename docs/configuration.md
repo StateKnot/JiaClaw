@@ -112,7 +112,7 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v7（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本），旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v8（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本；v8 增加网关派发身份摘要与时间高水位），旧二进制拒绝降级；升级前应按部署指南停机备份。
 
 ### 渠道授权与持久消息
 
@@ -129,3 +129,5 @@ Telegram/Slack/飞书/企业微信/钉钉每个安装可额外配置 `scheduled_
 ## 独立用户网关
 
 `jiaclaw gateway` 使用独立、严格校验的 JSON 配置与私有身份 SQLite，不读取上述 Agent 配置，也不创建共享 Agent。具体 `serve`、用户/Key 管理命令、限额、TLS/容器/磁盘隔离、未知写入恢复见[网关指南](gateway.md)。现有普通 `serve` 配置仍是一用户一实例。
+
+`[scheduler] gateway_driven` 默认 false；显式设为 true 时要求 `enabled=true`，后端只接受网关准入后的内部派发，不自主定时执行。网关 `scheduled_jobs` 默认 false；仅显式启用并通过后端模式检查后开放任务管理。此模式任务最长 120 秒，仅允许 datetime_now/json_query，禁止 delivery；完整配置和本批验收状态见[独立用户定时任务](tenant-cron.md)。
