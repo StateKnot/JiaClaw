@@ -5,6 +5,7 @@ Every endpoint is a disposable localhost fixture. No paid model, supplier key,
 remote service, tool-loop recovery or billing certification is involved.
 """
 import copy
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -38,6 +39,12 @@ mcp_descriptor = {'name': 'probe', 'description': 'Read a local fixture counter.
 lock = threading.Lock()
 posts, gets, errors = [], [], []
 behaviors, receipts, remote_states = {}, {}, {}
+server_events = []
+
+
+def server_event(case, event):
+    with lock:
+        server_events.append({'case': case, 'event': event, 'at': round(time.monotonic(), 4)})
 
 
 def eventually(check, description, timeout=15):
@@ -86,6 +93,7 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self):
+        case = 'unclassified'
         try:
             if self.path == '/mcp/':
                 assert self.headers.get('Authorization') == 'Bearer ' + mcp_secret
@@ -136,8 +144,10 @@ class Gateway(BaseHTTPRequestHandler):
                 assert {item['function']['name'] for item in body['tools']} == {expected_tool}
             if isinstance(behavior, tuple):
                 submitted, released = behavior
+                server_event(case, 'gate_wait')
                 submitted.set()
                 assert released.wait(20), 'fixture response was not released'
+                server_event(case, 'gate_released')
             if behavior == 'disconnect':
                 self.close_connection = True
                 self.connection.shutdown(socket.SHUT_RDWR)
@@ -148,9 +158,11 @@ class Gateway(BaseHTTPRequestHandler):
                 self.reply(200, receipt)
             else:
                 self.reply(200, receipt, remote_id)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # Real process death is an expected fault injection.
+                server_event(case, 'response_sent')
+        except (BrokenPipeError, ConnectionResetError) as error:
+            server_event(case, type(error).__name__)  # Expected only in SIGKILL injection.
         except Exception as error:
+            server_event(case, type(error).__name__)
             with lock:
                 errors.append(type(error).__name__ + ': ' + str(error))
             try:
@@ -232,11 +244,48 @@ def operations(directory):
     # query_only prevents SQL mutations. Never use immutable on a live worker DB.
     path = directory / 'state/model-calls/index.sqlite3'
     assert path.is_file(), 'model-call database missing at configured private path'
-    with sqlite3.connect(path.as_uri() + '?mode=rw', uri=True) as db:
+    with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True)) as db:
         db.execute('PRAGMA query_only=ON')
         db.row_factory = sqlite3.Row
         return [dict(row) for row in db.execute('SELECT id,turn_id,purpose,session_hash,round,model,'
                 'body_hash,remote_id,state,recovered,receipt IS NOT NULL AS has_receipt FROM model_calls ORDER BY seq')]
+
+
+def receipt_diagnostics(directory, host, submitted, released):
+    # Whitelisted state only: no HTTP body, prompt, response, token, note or path.
+    details = {'host_exit': host.process.poll(), 'sqlite_version': sqlite3.sqlite_version,
+               'submitted': submitted.is_set(), 'released': released.is_set()}
+    try:
+        fields = ('id', 'turn_id', 'purpose', 'round', 'remote_id', 'state', 'recovered', 'has_receipt')
+        details['operations'] = [{key: row[key] for key in fields} for row in operations(directory)[-4:]]
+    except Exception as error:
+        details['database_error'] = type(error).__name__
+    with lock:
+        details['post_count'] = sum(item['case'] == 'cancelled' for item in posts)
+        details['get_count'] = len(gets)
+        details['mcp_calls'] = mcp_methods.count('tools/call')
+        details['server_errors'] = [error.split(':', 1)[0] for error in errors[-4:]]
+        details['server_events'] = [item for item in server_events if item['case'] == 'cancelled'][-8:]
+    markers = ('scheduler worker failed', 'model worker failed', 'needs_review',
+               'session_storage_error', '会话存储失败', '会话提交成功', 'received signal',
+               '收到关闭信号', 'HTTP 服务已启动', '服务器已关闭')
+    log = host.log.read_text()
+    # Save only known event labels/counts; never echo the free-form host log.
+    details['host_log_events'] = {marker: log.count(marker) for marker in markers if marker in log}
+    return json.dumps(details, sort_keys=True)
+
+
+def wait_for_receipt(directory, host, submitted, released):
+    def completed():
+        row = operations(directory)[0]
+        if row['state'] == 'unknown' or host.process.poll() is not None:
+            raise AssertionError('receipt worker stopped before completion')
+        return row['state'] == 'completed'
+    try:
+        eventually(completed, 'detached receipt commit')
+    except Exception as error:
+        raise AssertionError(str(error) + '; diagnostics=' + receipt_diagnostics(
+            directory, host, submitted, released)) from error
 
 
 def ledger_matches(directory, expected):
@@ -514,11 +563,14 @@ try:
                 return next((run for run in runs if run['status'] == 'interrupted'), None)
             interrupted_run = eventually(interrupted_run, 'parent timeout before receipt')
             assert operations(directory)[0]['state'] == 'submitting'
+            ledger_path = directory / 'state/model-calls/index.sqlite3'
+            assert all(Path(str(ledger_path) + suffix).is_file() for suffix in ('-wal', '-shm')), \
+                'query-only observer removed the active ledger WAL/SHM'
             before = snapshot()
             status, blocked = host.chat('while-worker-active')
             assert status >= 400 and len(snapshot()[0]) == len(before[0])
             released.set()
-            eventually(lambda: operations(directory)[0]['state'] == 'completed', 'detached receipt commit')
+            wait_for_receipt(directory, host, submitted, released)
             with lock:
                 assert mcp_methods.count('tools/call') == 0, 'cancelled parent executed returned MCP tool'
             assert not interrupted_run['response']['tool_calls'], interrupted_run

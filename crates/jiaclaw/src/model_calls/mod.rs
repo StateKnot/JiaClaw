@@ -152,7 +152,8 @@ impl ModelCalls {
             }.await;
             match outcome {
                 Ok(message) => Ok(message),
-                Err(_) => {
+                Err(cause) => {
+                    tracing::warn!(operation_id = %id, error = %cause, "model call requires reconciliation");
                     let local = id.clone();
                     // A failed write still leaves the original submitting hold intact.
                     let _ = service.database(move |store| store.mark_unknown(&local)).await;
