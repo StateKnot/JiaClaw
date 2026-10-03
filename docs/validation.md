@@ -236,3 +236,7 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 - 同批 schema 10 后端的 `tests/scheduled_delivery.py` 和 `tests/discord_scheduled.py`（六组）进程回归均退出码 0；这两项使用最后 UI 筛选修复前的二进制，之后后端未改动。Rust 回归覆盖规范 UUIDv4、typed 指纹、异体与旧任务/遗留会话拒绝认领、同 ID 并发、创建事务回滚、重启及 purge 墓碑、永久容量和模式/权限边界。
 
 本批只使用一次性本地凭据与协议 fixture，没有付费模型或真实平台请求。跨平台与真实容器由本批 draft PR 最终 head CI 验证；配置、备份和恢复边界见[单实例工作台](standalone-scheduler.md)。
+
+PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 37100634034](https://github.com/jiawenyao401/JiaClaw/actions/runs/37100634034) 在 Linux 的 `tests/tenant_cron.py:307` 遇到 `GET /api/sessions` 返回 429（`user request already in progress`）。运行状态属于控制请求，可先读到后端 completed；此时网关尚未完成 `finish_write` 收据提交，仍持有执行许可，会话查询使用执行容量，因此该 429 是正常的在途保护，不能以 completed 状态推定执行许可已经释放。
+
+修正仅限 fixture 的两处会话列表断言：遇到精确匹配的 busy 429 时，对只读 GET 作有界轮询，其他错误仍直接失败；另通过暂停模型响应确定性验证在途期间仍返回该 429。不自动重放写入，不提前释放生产执行许可，也不放宽后端准入。生产代码无需修改；修正后的真实双租户进程验收四组通过、退出码 0，原 SIGKILL/持久 hold/Key 轮换/其他用户继续及零模型重发断言保留。修正后最终 head 的完整 CI 仍待确认，首轮失败不记为验收通过。
