@@ -1330,6 +1330,9 @@ pub struct ChannelBinding {
     #[serde(default)]
     /// Slack application ID, or DingTalk Client ID (separate from robotCode).
     pub app_id: Option<String>,
+    /// Exact Discord guild authorized for Bot scheduled sends; absent disables them.
+    #[serde(default)]
+    pub discord_guild_id: Option<String>,
     /// Exact platform user IDs authorized to invoke this agent.
     pub allowed_senders: Vec<String>,
     /// Exact platform chat/channel IDs authorized for ingress and reply.
@@ -1425,7 +1428,7 @@ pub struct HttpConfig {
 
     /// Discord Bot token（可选，环境变量 `JIACLAW_DISCORD_BOT_TOKEN` 优先）
     ///
-    /// 兼容读取旧配置；interaction 出站使用加密保存的 interaction token，不发送 Bot Authorization。
+    /// 仅用于显式授权的定时 Bot 通知；interaction 回复继续使用加密保存的 interaction token。
     #[serde(default)]
     pub discord_bot_token: Option<String>,
 

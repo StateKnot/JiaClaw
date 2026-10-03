@@ -201,6 +201,59 @@ CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,in
 PRAGMA user_version=7;
 ";
 
+// Add Bot-authenticated Discord jobs without changing interaction token lifetime.
+pub(super) const SCHEMA_V9: &str = "
+CREATE TABLE channel_outbox_v9 (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ event_id TEXT REFERENCES channel_events(id),
+ job_run_id TEXT REFERENCES job_runs(id) ON DELETE RESTRICT,
+ channel TEXT NOT NULL, installation_id TEXT NOT NULL, destination_key TEXT NOT NULL,
+ destination TEXT NOT NULL CHECK(json_valid(destination)), sealed_token TEXT, expires_ms INTEGER,
+ ordinal INTEGER NOT NULL CHECK(ordinal>=0), text TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','submitting','retry_wait','delivered','unknown','permanent_failed','expired','cancelled')),
+ receipt TEXT, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 5), error TEXT,
+ created_ms INTEGER NOT NULL, started_ms INTEGER, finished_ms INTEGER, next_attempt_ms INTEGER NOT NULL,
+ CHECK((event_id IS NOT NULL)+(job_run_id IS NOT NULL)=1),
+ CHECK(job_run_id IS NULL OR (channel IN ('telegram','slack','feishu','wecom','dingtalk','discord') AND sealed_token IS NULL AND expires_ms IS NULL)),
+ CHECK(job_run_id IS NULL OR channel<>'discord' OR (json_extract(destination,'$.interaction_id') IS NULL AND json_extract(destination,'$.expires_ms') IS NULL AND json_extract(destination,'$.thread_id') IS NULL)),
+ UNIQUE(event_id,ordinal), UNIQUE(job_run_id,ordinal)
+);
+INSERT INTO channel_outbox_v9(seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms)
+ SELECT seq,id,event_id,job_run_id,channel,installation_id,destination_key,destination,sealed_token,expires_ms,ordinal,text,state,receipt,attempts,error,created_ms,started_ms,finished_ms,next_attempt_ms FROM channel_outbox;
+INSERT INTO sqlite_sequence(name,seq) SELECT 'channel_outbox_v9',seq FROM sqlite_sequence WHERE name='channel_outbox' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='channel_outbox_v9');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='channel_outbox'),0)) WHERE name='channel_outbox_v9';
+DROP TABLE channel_outbox;
+ALTER TABLE channel_outbox_v9 RENAME TO channel_outbox;
+CREATE INDEX channel_outbox_ready ON channel_outbox(state,next_attempt_ms,seq);
+CREATE INDEX channel_outbox_destination ON channel_outbox(channel,installation_id,destination_key,seq);
+CREATE INDEX channel_outbox_job_run ON channel_outbox(job_run_id);
+CREATE UNIQUE INDEX channel_installation_submitting ON channel_outbox(channel,installation_id) WHERE state='submitting';
+CREATE TABLE discord_bot_auth (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ credential_hash TEXT NOT NULL CHECK(length(credential_hash)=64 AND credential_hash NOT GLOB '*[^0-9a-f]*'),
+ blocked INTEGER NOT NULL CHECK(blocked IN (0,1))
+);
+PRAGMA user_version=9;
+";
+
+/// Provider metadata applied atomically with one scheduled Discord outcome.
+#[derive(Clone)]
+pub(super) struct DiscordDeliveryMeta {
+    pub credential_hash: String,
+    pub cooldown_until_ms: Option<i64>,
+    pub credential_rejected: bool,
+}
+fn validate_discord_credential_hash(hash: &str) -> Result<()> {
+    ensure!(
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "Discord credential identity must be a canonical SHA-256 digest"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Serialize)]
 pub(super) struct ChannelEvent {
     pub id: String,
@@ -563,6 +616,22 @@ impl SessionStore {
             Self::Memory(_) => bail!("durable channels require SQLite persistence"),
         }
     }
+    /// Remember only a token digest. A rejected token stays blocked across restarts;
+    /// rotation admits a new identity without reviving failed delivery attempts.
+    pub(super) fn admit_discord_bot(&mut self, credential_hash: &str) -> Result<bool> {
+        validate_discord_credential_hash(credential_hash)?;
+        let tx = self
+            .channel_conn_mut()?
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("INSERT INTO discord_bot_auth(id,credential_hash,blocked) VALUES(1,?1,0) ON CONFLICT(id) DO UPDATE SET credential_hash=excluded.credential_hash,blocked=0 WHERE discord_bot_auth.credential_hash<>excluded.credential_hash", [credential_hash])?;
+        let blocked: bool = tx.query_row(
+            "SELECT blocked FROM discord_bot_auth WHERE id=1",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(!blocked)
+    }
     pub(super) fn accept_channel_event(
         &mut self,
         mut spec: EventSpec,
@@ -753,7 +822,7 @@ impl SessionStore {
         tx.execute("UPDATE channel_outbox SET next_attempt_ms=MAX(next_attempt_ms,COALESCE((SELECT MIN(r.settled_ms) FROM wecom_send_reservations r WHERE r.installation_id=channel_outbox.installation_id)+?1,next_attempt_ms)),error='wecom_daily_budget' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND (SELECT COUNT(*) FROM wecom_send_reservations r WHERE r.installation_id=channel_outbox.installation_id)>=?2", params![WECOM_BUDGET_WINDOW_MS,WECOM_DAILY_LIMIT])?;
         tx.execute("UPDATE channel_outbox SET next_attempt_ms=MAX(next_attempt_ms,COALESCE((SELECT MIN(settled_ms) FROM wecom_send_reservations)+?1,next_attempt_ms)),error='wecom_budget_capacity' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND (SELECT COUNT(*) FROM wecom_send_reservations)>=?2", params![WECOM_BUDGET_WINDOW_MS,MAX_WECOM_RESERVATIONS])?;
         tx.execute("UPDATE channel_outbox SET error='wecom_delivery_review_required' WHERE channel='wecom' AND state IN ('pending','retry_wait') AND EXISTS(SELECT 1 FROM channel_outbox u JOIN wecom_send_reservations r ON r.delivery_id=u.id WHERE u.channel='wecom' AND u.installation_id=channel_outbox.installation_id AND u.state='unknown' AND r.settled_ms IS NULL)", [])?;
-        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND (d.channel<>'wecom' OR ((SELECT COUNT(*) FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id)<?2 AND (SELECT COUNT(*) FROM wecom_send_reservations)<?3 AND NOT EXISTS(SELECT 1 FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id AND r.settled_ms IS NULL))) AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.job_run_id=d.job_run_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),params![now,WECOM_DAILY_LIMIT,MAX_WECOM_RESERVATIONS],delivery_row).optional()?;
+        let record=tx.query_row(&format!("SELECT {DELIVERY_FIELDS} FROM channel_outbox d WHERE state IN ('pending','retry_wait') AND next_attempt_ms<=?1 AND attempts<5 AND (d.channel<>'wecom' OR ((SELECT COUNT(*) FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id)<?2 AND (SELECT COUNT(*) FROM wecom_send_reservations)<?3 AND NOT EXISTS(SELECT 1 FROM wecom_send_reservations r WHERE r.installation_id=d.installation_id AND r.settled_ms IS NULL))) AND (d.channel<>'discord' OR d.job_run_id IS NULL OR NOT EXISTS(SELECT 1 FROM channel_outbox u WHERE u.channel='discord' AND u.installation_id=d.installation_id AND u.job_run_id IS NOT NULL AND u.state='unknown')) AND NOT EXISTS(SELECT 1 FROM channel_outbox live WHERE live.channel=d.channel AND live.installation_id=d.installation_id AND live.state='submitting') AND NOT EXISTS(SELECT 1 FROM channel_cooldowns c WHERE c.channel=d.channel AND c.installation_id=d.installation_id AND c.until_ms>?1) AND NOT EXISTS(SELECT 1 FROM channel_outbox p WHERE p.channel=d.channel AND p.installation_id=d.installation_id AND p.destination_key=d.destination_key AND p.seq<d.seq AND p.state<>'delivered' AND (p.event_id=d.event_id OR p.job_run_id=d.job_run_id OR p.state<>'cancelled')) ORDER BY seq LIMIT 1"),params![now,WECOM_DAILY_LIMIT,MAX_WECOM_RESERVATIONS],delivery_row).optional()?;
         let Some(mut record) = record else {
             tx.commit()?;
             return Ok(None);
@@ -785,6 +854,7 @@ impl SessionStore {
         Ok(Some(record))
     }
     // Owned receipt matches the blocking worker's owned completion message.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     pub(super) fn finish_channel_delivery(
         &mut self,
@@ -796,6 +866,42 @@ impl SessionStore {
         retry_after_ms: Option<i64>,
         now: i64,
     ) -> Result<bool> {
+        self.finish_channel_delivery_with_discord(
+            id,
+            expected_attempt,
+            status,
+            receipt,
+            error,
+            retry_after_ms,
+            now,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    pub(super) fn finish_channel_delivery_with_discord(
+        &mut self,
+        id: &str,
+        expected_attempt: u32,
+        status: &str,
+        receipt: Option<String>,
+        error: Option<String>,
+        retry_after_ms: Option<i64>,
+        now: i64,
+        discord: Option<DiscordDeliveryMeta>,
+    ) -> Result<bool> {
+        if let Some(meta) = &discord {
+            validate_discord_credential_hash(&meta.credential_hash)?;
+            ensure!(
+                !meta.credential_rejected || status == "permanent_failed",
+                "rejected Discord credentials require a permanent failure"
+            );
+            ensure!(
+                meta.cooldown_until_ms.is_none_or(
+                    |until| until >= 0 && until <= now.saturating_add(24 * 60 * 60 * 1000)
+                ),
+                "Discord cooldown exceeds its bounded deadline"
+            );
+        }
         ensure!(
             matches!(
                 status,
@@ -821,10 +927,26 @@ impl SessionStore {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT channel,installation_id,attempts FROM channel_outbox WHERE id=?1 AND state='submitting' AND attempts=?2",params![id,expected_attempt],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u32>(2)?))).optional()?;
-        let Some((channel, installation, attempts)) = row else {
+        let row=tx.query_row("SELECT channel,installation_id,attempts,job_run_id FROM channel_outbox WHERE id=?1 AND state='submitting' AND attempts=?2",params![id,expected_attempt],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u32>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
+        let Some((channel, installation, attempts, job_run_id)) = row else {
             return Ok(false);
         };
+        if let Some(meta) = &discord {
+            ensure!(
+                channel == "discord" && job_run_id.is_some(),
+                "Bot metadata requires a scheduled Discord delivery"
+            );
+            if let Some(until) = meta.cooldown_until_ms {
+                tx.execute("INSERT INTO channel_cooldowns(channel,installation_id,until_ms) VALUES('discord',?1,?2) ON CONFLICT(channel,installation_id) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)", params![installation, until])?;
+            }
+            if meta.credential_rejected {
+                // A late old-token result must not disable a newly admitted token.
+                tx.execute(
+                    "UPDATE discord_bot_auth SET blocked=1 WHERE id=1 AND credential_hash=?1",
+                    [&meta.credential_hash],
+                )?;
+            }
+        }
         let terminal = if status == "retry_wait" && attempts >= MAX_ATTEMPTS {
             "permanent_failed"
         } else {
@@ -1071,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_preserves_v3_to_v6_delivery_evidence_and_sequence_even_when_empty() {
+    fn migration_preserves_v3_to_v8_delivery_evidence_and_sequence_even_when_empty() {
         for (version, empty) in [
             (3, false),
             (3, true),
@@ -1081,6 +1203,10 @@ mod tests {
             (5, true),
             (6, false),
             (6, true),
+            (7, false),
+            (7, true),
+            (8, false),
+            (8, true),
         ] {
             let directory =
                 std::env::temp_dir().join(format!("jiaclaw-v4-{}", uuid::Uuid::new_v4()));
@@ -1100,6 +1226,12 @@ mod tests {
                 if version >= 6 {
                     conn.execute_batch(SCHEMA_V6).unwrap();
                     conn.execute_batch("INSERT INTO wecom_send_reservations VALUES('wwold:1','pending-evidence',1,500,NULL),('wwold:1','settled-evidence',1,501,999);").unwrap();
+                }
+                if version >= 7 {
+                    conn.execute_batch(SCHEMA_V7).unwrap();
+                }
+                if version >= 8 {
+                    conn.execute_batch(crate::jobs::SCHEMA_V8).unwrap();
                 }
                 let mut old = SessionStore::Sqlite {
                     conn,
@@ -1126,7 +1258,7 @@ mod tests {
                 (id, outbox_id)
             };
             let mut db = SessionStore::open(&path).unwrap();
-            if version == 6 {
+            if version >= 6 {
                 let ledger = db.channel_conn().unwrap().prepare("SELECT delivery_id,reserved_ms,settled_ms FROM wecom_send_reservations ORDER BY delivery_id").unwrap().query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
                 assert_eq!(
                     ledger,
@@ -1141,7 +1273,7 @@ mod tests {
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                8
+                9
             );
             assert_eq!(
                 db.channel_conn()
@@ -1221,15 +1353,16 @@ mod tests {
     }
 
     #[test]
-    fn v4_to_v8_migrate_scheduled_sources_without_weakening_constraints() {
+    fn v4_to_v9_migrate_scheduled_sources_without_weakening_constraints() {
         for old_version in [4, 5, 6] {
             assert_scheduled_sources_survive_migration(old_version);
         }
     }
 
     #[test]
-    fn v7_to_v8_preserves_scheduled_sources_and_initializes_dispatch_state() {
+    fn v7_and_v8_to_v9_preserve_scheduled_sources_and_dispatch_state() {
         assert_scheduled_sources_survive_migration(7);
+        assert_scheduled_sources_survive_migration(8);
     }
 
     fn assert_scheduled_sources_survive_migration(old_version: i64) {
@@ -1250,6 +1383,10 @@ mod tests {
             }
             if old_version >= 7 {
                 conn.execute_batch(SCHEMA_V7).unwrap();
+            }
+            if old_version >= 8 {
+                conn.execute_batch(crate::jobs::SCHEMA_V8).unwrap();
+                conn.execute_batch("UPDATE scheduler_dispatch_clock SET highwater_ms=60001; INSERT INTO scheduler_dispatches VALUES('old-dispatch',60000,60001,NULL,NULL,'idle');").unwrap();
             }
             let mut old = SessionStore::Sqlite {
                 conn,
@@ -1304,7 +1441,7 @@ mod tests {
                         |row| row.get::<_, i64>(0)
                     )
                     .unwrap(),
-                0
+                i64::from(old_version >= 8)
             );
             let row = old
                 .list_job_deliveries(&job.id, &run.id, 100, 0)
@@ -1321,7 +1458,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         assert_eq!(
             db.channel_conn()
@@ -1331,7 +1468,7 @@ mod tests {
                     0
                 ))
                 .unwrap(),
-            0
+            i64::from(old_version >= 8)
         );
         assert_eq!(
             db.channel_conn()
@@ -1342,7 +1479,7 @@ mod tests {
                     |row| row.get::<_, i64>(0)
                 )
                 .unwrap(),
-            0
+            if old_version >= 8 { 60001 } else { 0 }
         );
         let preserved_job = db.get_job(&job_id).unwrap().unwrap();
         let preserved_run = db.list_job_runs(&job_id, 10, 0).unwrap().remove(0);
@@ -1426,12 +1563,425 @@ mod tests {
             .channel_conn()
             .unwrap()
             .execute(
-                "UPDATE channel_outbox SET channel='discord' WHERE id=?1",
+                "UPDATE channel_outbox SET channel='discord', destination=json_set(destination,'$.interaction_id','forbidden') WHERE id=?1",
                 [&row.id]
             )
             .is_err());
         drop(db);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn discord_scheduled(db: &mut SessionStore, installation: &str, room: &str) -> ChannelDelivery {
+        let mut input = scheduled_spec();
+        input.delivery = Some(crate::channel_types::ScheduledDestination {
+            channel: Channel::Discord,
+            installation_id: installation.into(),
+            conversation_id: room.into(),
+            thread_id: None,
+        });
+        let job = db.create_job(input, 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        assert_eq!(run.job_id, job.id);
+        db.finish_job_run(
+            &run.id,
+            None,
+            "completed",
+            Some(scheduled_reply()),
+            None,
+            60_001,
+        )
+        .unwrap();
+        db.list_job_deliveries(&job.id, &run.id, 10, 0)
+            .unwrap()
+            .remove(0)
+    }
+    fn discord_meta(hash: &str, until: Option<i64>, rejected: bool) -> DiscordDeliveryMeta {
+        DiscordDeliveryMeta {
+            credential_hash: hash.into(),
+            cooldown_until_ms: until,
+            credential_rejected: rejected,
+        }
+    }
+    fn discord_cooldown(db: &SessionStore, installation: &str) -> i64 {
+        db.channel_conn().unwrap().query_row("SELECT until_ms FROM channel_cooldowns WHERE channel='discord' AND installation_id=?1", [installation], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn discord_scheduled_schema_excludes_interaction_credentials_and_threads() {
+        let mut db = database();
+        let item = discord_scheduled(&mut db, "111111111111111111", "222222222222222222");
+        assert!(item.event_id.is_none() && item.job_run_id.is_some());
+        assert!(
+            item.sealed_token.is_none()
+                && item.destination.interaction_id.is_none()
+                && item.destination.expires_ms.is_none()
+        );
+        for change in [
+            "sealed_token='not-a-bot-token'",
+            "expires_ms=90000",
+            "destination=json_set(destination,'$.interaction_id','interaction')",
+            "destination=json_set(destination,'$.expires_ms',90000)",
+            "destination=json_set(destination,'$.thread_id','333333333333333333')",
+        ] {
+            assert!(
+                db.channel_conn()
+                    .unwrap()
+                    .execute(
+                        &format!("UPDATE channel_outbox SET {change} WHERE id=?1"),
+                        [&item.id]
+                    )
+                    .is_err(),
+                "accepted {change}"
+            );
+        }
+        let mut inbound = spec("invalid-interaction");
+        inbound.destination.channel = Channel::Discord;
+        assert!(db.accept_channel_event(inbound, 60_002).is_err());
+        for hash in ["", "secret-token", &"A".repeat(64), &"g".repeat(64)] {
+            assert!(db.admit_discord_bot(hash).is_err());
+        }
+        for sql in [
+            "INSERT INTO discord_bot_auth VALUES(2,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0)",
+            "INSERT INTO discord_bot_auth VALUES(1,'invalid',0)",
+            "INSERT INTO discord_bot_auth VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',2)",
+        ] {
+            assert!(db.channel_conn().unwrap().execute_batch(sql).is_err());
+        }
+    }
+
+    #[test]
+    fn discord_success_and_retry_cooldowns_persist_and_never_shorten() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-discord-cooldown-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("state.sqlite3");
+        let hash = "a".repeat(64);
+        let installation = "111111111111111111";
+        let mut db = SessionStore::open(&path).unwrap();
+        let first = discord_scheduled(&mut db, installation, "222222222222222222");
+        let second = discord_scheduled(&mut db, installation, "333333333333333333");
+        assert!(db.admit_discord_bot(&hash).unwrap());
+        assert_eq!(
+            db.claim_channel_delivery(60_002).unwrap().unwrap().id,
+            first.id
+        );
+        assert!(db
+            .finish_channel_delivery_with_discord(
+                &first.id,
+                1,
+                "delivered",
+                Some("receipt-one".into()),
+                None,
+                None,
+                60_003,
+                Some(discord_meta(&hash, Some(90_000), false))
+            )
+            .unwrap());
+        assert_eq!(discord_cooldown(&db, installation), 90_000);
+        assert!(!db
+            .finish_channel_delivery_with_discord(
+                &first.id,
+                1,
+                "permanent_failed",
+                None,
+                None,
+                None,
+                60_004,
+                Some(discord_meta(&hash, Some(100_000), true))
+            )
+            .unwrap());
+        assert!(db.admit_discord_bot(&hash).unwrap());
+        assert_eq!(discord_cooldown(&db, installation), 90_000);
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        assert!(db.claim_channel_delivery(89_999).unwrap().is_none());
+        assert_eq!(
+            db.claim_channel_delivery(90_000).unwrap().unwrap().id,
+            second.id
+        );
+        db.finish_channel_delivery_with_discord(
+            &second.id,
+            1,
+            "retry_wait",
+            None,
+            None,
+            Some(100_000),
+            90_001,
+            Some(discord_meta(&hash, Some(99_000), false)),
+        )
+        .unwrap();
+        assert_eq!(discord_cooldown(&db, installation), 100_000);
+        assert!(db.claim_channel_delivery(99_999).unwrap().is_none());
+        assert_eq!(
+            db.claim_channel_delivery(100_000)
+                .unwrap()
+                .unwrap()
+                .attempts,
+            2
+        );
+        db.finish_channel_delivery_with_discord(
+            &second.id,
+            2,
+            "delivered",
+            Some("receipt-two".into()),
+            None,
+            None,
+            100_001,
+            Some(discord_meta(&hash, Some(95_000), false)),
+        )
+        .unwrap();
+        assert_eq!(discord_cooldown(&db, installation), 100_300);
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn discord_rejected_token_survives_restart_and_late_old_result_cannot_block_rotation() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-discord-auth-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("state.sqlite3");
+        let (old, new, newest) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let mut db = SessionStore::open(&path).unwrap();
+        let first = discord_scheduled(&mut db, "111111111111111111", "222222222222222222");
+        let second = discord_scheduled(&mut db, "111111111111111111", "333333333333333333");
+        assert!(db.admit_discord_bot(&old).unwrap());
+        assert_eq!(
+            db.claim_channel_delivery(60_002).unwrap().unwrap().id,
+            first.id
+        );
+        db.finish_channel_delivery_with_discord(
+            &first.id,
+            1,
+            "permanent_failed",
+            None,
+            Some("discord_unauthorized".into()),
+            None,
+            60_003,
+            Some(discord_meta(&old, None, true)),
+        )
+        .unwrap();
+        assert!(!db.admit_discord_bot(&old).unwrap());
+        assert!(
+            !db.get_job(first.job_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        assert!(!db.admit_discord_bot(&old).unwrap());
+        assert!(db.admit_discord_bot(&new).unwrap());
+        assert_eq!(
+            db.claim_channel_delivery(60_302).unwrap().unwrap().id,
+            second.id
+        );
+        assert!(db.admit_discord_bot(&newest).unwrap());
+        db.finish_channel_delivery_with_discord(
+            &second.id,
+            1,
+            "permanent_failed",
+            None,
+            None,
+            None,
+            60_303,
+            Some(discord_meta(&new, None, true)),
+        )
+        .unwrap();
+        assert!(db.admit_discord_bot(&newest).unwrap());
+        assert_eq!(
+            db.get_channel_delivery(&first.id).unwrap().unwrap().state,
+            "permanent_failed"
+        );
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT credential_hash,blocked FROM discord_bot_auth",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+                )
+                .unwrap(),
+            (newest, false)
+        );
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn discord_unknown_blocks_other_bot_targets_across_restart_until_operator_review() {
+        for (stopped_in_flight, cancel) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let directory = std::env::temp_dir()
+                .join(format!("jiaclaw-discord-unknown-{}", uuid::Uuid::new_v4()));
+            let path = directory.join("state.sqlite3");
+            let installation = "111111111111111111";
+            let mut db = SessionStore::open(&path).unwrap();
+            let first = discord_scheduled(&mut db, installation, "222222222222222222");
+            let waiting = discord_scheduled(&mut db, installation, "333333333333333333");
+            assert_eq!(
+                db.claim_channel_delivery(60_002).unwrap().unwrap().id,
+                first.id
+            );
+            if !stopped_in_flight {
+                db.finish_channel_delivery(&first.id, 1, "unknown", None, None, None, 60_003)
+                    .unwrap();
+            }
+            drop(db);
+            let mut db = SessionStore::open(&path).unwrap();
+            db.recover_channels(70_000).unwrap();
+            assert_eq!(
+                db.get_channel_delivery(&first.id).unwrap().unwrap().state,
+                "unknown"
+            );
+            assert!(db.admit_discord_bot(&"b".repeat(64)).unwrap());
+            assert!(
+                db.claim_channel_delivery(70_000).unwrap().is_none(),
+                "changing credentials must not bypass an unknown send"
+            );
+            assert_eq!(
+                db.get_channel_delivery(&waiting.id)
+                    .unwrap()
+                    .unwrap()
+                    .attempts,
+                0
+            );
+            let other = discord_scheduled(&mut db, "444444444444444444", "555555555555555555");
+            let claimed_other = db.claim_channel_delivery(70_001).unwrap().unwrap();
+            assert_eq!(claimed_other.id, other.id);
+            delivered(&mut db, &claimed_other, 70_002);
+            let mut inbound = spec("independent-interaction");
+            inbound.destination.channel = Channel::Discord;
+            inbound.destination.installation_id = installation.into();
+            inbound.destination.interaction_id = Some("interaction".into());
+            inbound.destination.expires_ms = Some(999_999);
+            inbound.sealed_token = Some("sealed-interaction".into());
+            let event = complete(&mut db, inbound, &["interaction reply"]);
+            let interaction = db.claim_channel_delivery(70_003).unwrap().unwrap();
+            assert_eq!(interaction.event_id.as_deref(), Some(event.as_str()));
+            delivered(&mut db, &interaction, 70_004);
+            assert!(db.claim_channel_delivery(70_303).unwrap().is_none());
+            if cancel {
+                assert!(db
+                    .cancel_job_delivery(
+                        first.job_id.as_ref().unwrap(),
+                        first.job_run_id.as_ref().unwrap(),
+                        70_304
+                    )
+                    .unwrap());
+            } else {
+                assert!(db
+                    .resolve_channel_delivery(
+                        &first.id,
+                        "operator verified remote receipt".into(),
+                        70_304
+                    )
+                    .unwrap());
+            }
+            assert_eq!(
+                db.claim_channel_delivery(70_304).unwrap().unwrap().id,
+                waiting.id
+            );
+            assert!(
+                !db.get_job(first.job_id.as_ref().unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .enabled,
+                "review does not automatically re-enable the original job"
+            );
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn discord_metadata_failure_rolls_back_auth_cooldown_and_delivery_together() {
+        let mut db = database();
+        let hash = "a".repeat(64);
+        let installation = "111111111111111111";
+        let item = discord_scheduled(&mut db, installation, "222222222222222222");
+        assert!(db.admit_discord_bot(&hash).unwrap());
+        db.claim_channel_delivery(60_002).unwrap().unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER refuse_discord_finish BEFORE UPDATE OF state ON channel_outbox BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+        assert!(db
+            .finish_channel_delivery_with_discord(
+                &item.id,
+                1,
+                "permanent_failed",
+                None,
+                None,
+                None,
+                60_003,
+                Some(discord_meta(&hash, Some(90_000), true))
+            )
+            .is_err());
+        assert!(db.admit_discord_bot(&hash).unwrap());
+        assert_eq!(discord_cooldown(&db, installation), 60_302);
+        assert_eq!(
+            db.get_channel_delivery(&item.id).unwrap().unwrap().state,
+            "submitting"
+        );
+        assert!(
+            db.get_job(item.job_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        db.channel_conn().unwrap().execute_batch("DROP TRIGGER refuse_discord_finish; CREATE TRIGGER refuse_discord_auth BEFORE UPDATE OF blocked ON discord_bot_auth BEGIN SELECT RAISE(ABORT,'fixture auth failure'); END;").unwrap();
+        assert!(db
+            .finish_channel_delivery_with_discord(
+                &item.id,
+                1,
+                "permanent_failed",
+                None,
+                None,
+                None,
+                60_003,
+                Some(discord_meta(&hash, Some(90_000), true))
+            )
+            .is_err());
+        assert_eq!(discord_cooldown(&db, installation), 60_302);
+        assert_eq!(
+            db.get_channel_delivery(&item.id).unwrap().unwrap().state,
+            "submitting"
+        );
+        assert!(db.admit_discord_bot(&hash).unwrap());
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER refuse_discord_auth;")
+            .unwrap();
+        db.finish_channel_delivery_with_discord(
+            &item.id,
+            1,
+            "permanent_failed",
+            None,
+            None,
+            None,
+            60_004,
+            Some(discord_meta(&hash, Some(90_000), true)),
+        )
+        .unwrap();
+        assert!(!db.admit_discord_bot(&hash).unwrap());
+        assert_eq!(discord_cooldown(&db, installation), 90_000);
+
+        let event = complete(&mut db, spec("wrong-platform"), &["hello"]);
+        let claimed = db.claim_channel_delivery(60_005).unwrap().unwrap();
+        assert_eq!(claimed.event_id.as_deref(), Some(event.as_str()));
+        assert!(db
+            .finish_channel_delivery_with_discord(
+                &claimed.id,
+                1,
+                "delivered",
+                Some("receipt".into()),
+                None,
+                None,
+                60_006,
+                Some(discord_meta(&hash, Some(100_000), false))
+            )
+            .is_err());
+        assert_eq!(
+            db.get_channel_delivery(&claimed.id).unwrap().unwrap().state,
+            "submitting"
+        );
     }
 
     #[test]
@@ -2049,7 +2599,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

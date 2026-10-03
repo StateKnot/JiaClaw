@@ -69,6 +69,17 @@ shutdown_timeout_secs = 30
 # discord_public_key = "..."       # JIACLAW_DISCORD_PUBLIC_KEY
 # Discord replies use interaction tokens; set JIACLAW_CHANNEL_STATE_KEY (64 hex).
 # No Discord Bot Authorization is sent for interaction replies.
+# discord_bot_token = "..."        # JIACLAW_DISCORD_BOT_TOKEN; scheduled text only.
+# Scheduled Discord requires a Bot installed in the authorized guild; see docs/discord.md.
+# [[http.channels]]
+# channel = "discord"
+# installation_id = "123456789012345678" # Application ID.
+# discord_guild_id = "223456789012345678" # Only with nonempty scheduled_destinations.
+# allowed_senders = ["623456789012345678"]
+# allowed_conversations = ["323456789012345678"]
+# scheduled_destinations = [{ conversation_id = "323456789012345678" }] # Guild text type 0; no threads.
+# enabled_tools = ["datetime_now"]
+# Omit guild and Bot Token for an interaction-only installation.
 # [[http.channels]]
 # channel = "telegram"
 # installation_id = "123456"  # Numeric prefix of your Bot Token.

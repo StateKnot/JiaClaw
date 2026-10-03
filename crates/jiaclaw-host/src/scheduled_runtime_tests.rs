@@ -100,6 +100,7 @@ impl Fixture {
                     channel: channel_name(channel).into(),
                     installation_id: destination.installation_id.clone(),
                     app_id: (channel == Channel::Slack).then(|| "ATESTAPP".into()),
+                    discord_guild_id: None,
                     // These intentionally authorize another conversation. A
                     // scheduled destination must neither require nor grant ingress.
                     allowed_senders: vec![sender_id(channel).into()],
@@ -128,6 +129,7 @@ impl Fixture {
                 wecom_callback: None,
                 dingtalk_sender: None,
                 dingtalk_callback: None,
+                discord_sender: None,
             }],
             client: OutboundClient::new_with_loopback(true).unwrap(),
             cipher: None,

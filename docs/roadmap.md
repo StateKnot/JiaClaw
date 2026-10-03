@@ -10,11 +10,11 @@
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
 | 5 | Web 工作台 | 实现 | 内置同源静态资源，鉴权后创建/选择/聊天/删除会话，无模型 HTML 执行、无浏览器持久密钥 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
-| 6 | cron 多任务 | 实现；含 Telegram/Slack/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
-| 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；Discord 主动发送及 WhatsApp 仍待交付；进程 fixture 不能替代真实安装认证 |
+| 6 | cron 多任务 | 实现；含 Telegram/Slack/Discord/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
+| 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/Discord/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；[Discord](discord.md) Bot 定时文字已接线（单 guild 普通频道，六组本机整机验收通过）；WhatsApp 仍待交付；进程 fixture 不能替代真实安装认证 |
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
-| 9a | 模型调用收据 | 已接线并本地验收；CI 以最终 PR 当前 head checks 为准 | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
+| 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
 | 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷，独立网关哈希 Key 轮换撤销、受限代理、未知写入持久核对；[部署和验收范围](gateway.md)。受限用户定时任务已通过本地验收；渠道后台身份绑定与真实供应商联合认证仍待完成 |
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
@@ -34,4 +34,6 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 独立用户定时任务已接线并完成本地进程与浏览器验收：以网关 enabled/hold 和共享执行容量准入，后端停止自主 tick；任务及结果保存在每租户数据库，工作台提供受能力探测控制的管理入口。最终二进制双租户 4 组及 Chromium 验收通过；PR #71 的最终 head `949aebb` 已通过 [CI 37089235842](https://github.com/jiawenyao401/JiaClaw/actions/runs/37089235842)，包含 Linux/macOS 与真实容器；见[范围及生产边界](tenant-cron.md)。
 
-模型调用收据批次只补模型请求的身份、收据和人工核对入口；最终二进制 7 组整机验收与 815 项 Rust 测试已在本机通过，跨平台及容器验收以最终 PR 当前 head 的 checks 为准；不能据此将真正流式、工具运行恢复或多模态标记完成。媒体上游已支持文生视频作业和受控 MP4 交付，但 JiaClaw 尚缺受信 turn、独立审批/审阅及下载身份链，不能将 `output_pending` 当作可交付视频；固定合同见[Brokerrouter 状态](brokerrouter-gaps.md)。
+模型调用收据批次只补模型请求的身份、收据和人工核对入口；最终二进制 7 组整机验收与 815 项 Rust 测试已在本机通过，PR #72 最终 head `a841b026` 已通过 [CI 37093371689](https://github.com/jiawenyao401/JiaClaw/actions/runs/37093371689) 的 Linux/macOS 与容器验收；不能据此将真正流式、工具运行恢复或多模态标记完成。媒体上游已支持文生视频作业和受控 MP4 交付，但 JiaClaw 尚缺受信 turn、独立审批/审阅及下载身份链，不能将 `output_pending` 当作可交付视频；固定合同见[Brokerrouter 状态](brokerrouter-gaps.md)。
+
+Discord Bot 定时文字本批补齐独立目的地/guild 授权、每次发送前验证、持久冷却、401 凭据阻断和安装范围 unknown 核对；真实二进制 fixture 与最终 CI 结果见[验收记录](validation.md)，真实 Discord 安装认证仍独立。

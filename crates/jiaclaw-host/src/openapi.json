@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom/DingTalk hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord uses encrypted short-lived interaction tokens, without Bot Authorization.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Feishu/WeCom/DingTalk destinations only, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom/DingTalk hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord interaction replies use encrypted short-lived interaction tokens without Bot Authorization; separately authorized scheduled Bot sends use server-held Bot credentials and verify application/guild/channel identity.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Discord/Feishu/WeCom/DingTalk destinations, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
   },
   "servers": [
     {
@@ -2552,7 +2552,11 @@
                 "type": "string",
                 "enum": [
                   "telegram",
-                  "slack"
+                  "slack",
+                  "discord",
+                  "feishu",
+                  "wecom",
+                  "dingtalk"
                 ]
               },
               "installation_id": {
@@ -2567,7 +2571,7 @@
                 "default": null
               }
             },
-            "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted.",
+            "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. Discord requires a configured Bot Token and discord_guild_id, and supports only normal guild text channels without threads. No credentials or endpoint overrides accepted.",
             "nullable": true,
             "default": null
           }
@@ -3162,18 +3166,18 @@
           "thread_id": {
             "type": "string",
             "nullable": true,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk requires null or omission."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk and scheduled Discord Bot delivery require null or omission."
           },
           "interaction_id": {
             "type": "string",
             "nullable": true,
-            "description": "Discord interaction metadata; null for WeCom. Null for DingTalk."
+            "description": "Discord interaction metadata; null for scheduled Discord Bot delivery and all other platforms."
           },
           "expires_ms": {
             "type": "integer",
             "format": "int64",
             "nullable": true,
-            "description": "Discord interaction metadata; null for WeCom. Null for DingTalk."
+            "description": "Discord interaction metadata; null for scheduled Discord Bot delivery and all other platforms."
           }
         },
         "required": [
@@ -3427,6 +3431,7 @@
             "enum": [
               "telegram",
               "slack",
+              "discord",
               "feishu",
               "wecom",
               "dingtalk"
@@ -3444,10 +3449,10 @@
             "type": "string",
             "nullable": true,
             "default": null,
-            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk requires null or omission."
+            "description": "Exact platform thread key. Feishu uses om_ root message ID, never omt_ native thread ID; null targets the chat. WeCom requires null or omission. DingTalk and scheduled Discord Bot delivery require null or omission."
           }
         },
-        "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. No credentials or endpoint overrides accepted."
+        "description": "Exact proactive destination; separate scheduled_destinations configuration and installation tool policy required. Discord requires a configured Bot Token and discord_guild_id, and supports only normal guild text channels without threads. No credentials or endpoint overrides accepted."
       },
       "DingtalkRobotCallback": {
         "type": "object",
