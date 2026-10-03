@@ -139,6 +139,11 @@ enabled = true
 enabled = true
 [tools.list_dir]
 enabled = true
+# 元数据与有界目录树；参数和资源上限见 docs/workspace-files.md。
+[tools.stat]
+enabled = true
+[tools.tree]
+enabled = true
 [tools.write_file]
 enabled = true
 [tools.delete_file]

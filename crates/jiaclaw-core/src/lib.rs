@@ -806,7 +806,7 @@ fn default_move_enabled() -> bool {
 ///
 /// 历史示例里的 `[tools] enabled = [...]` 列表仍可出现在文件中（未知字段忽略），
 /// 当前真正生效的是嵌套表 `[tools.web_search]`、`[tools.web_fetch]`、
-/// `[tools.memory_search]`、`[tools.memory_write]`、`[tools.read_file]`、`[tools.list_dir]`、`[tools.write_file]`、`[tools.delete_file]`、`[tools.str_replace]`、`[tools.grep]`、`[tools.glob]`、`[tools.mkdir]` 与 `[tools.move]`。
+/// `[tools.memory_search]`、`[tools.memory_write]`、`[tools.read_file]`、`[tools.list_dir]`、`[tools.write_file]`、`[tools.delete_file]`、`[tools.str_replace]`、`[tools.grep]`、`[tools.glob]`、`[tools.mkdir]`、`[tools.move]`、`[tools.stat]` 与 `[tools.tree]`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
     /// 原子复制文件，默认启用。
@@ -840,6 +840,14 @@ pub struct ToolsConfig {
     /// `list_dir` 工具配置
     #[serde(default)]
     pub list_dir: ListDirToolConfig,
+
+    /// `stat` 工作区元数据工具配置。
+    #[serde(default)]
+    pub stat: StatToolConfig,
+
+    /// `tree` 有界工作区目录树工具配置。
+    #[serde(default)]
+    pub tree: TreeToolConfig,
 
     /// `write_file` 工具配置
     #[serde(default)]
@@ -1042,6 +1050,34 @@ impl Default for ListDirToolConfig {
         Self {
             enabled: default_list_dir_enabled(),
         }
+    }
+}
+
+/// 工作区元数据检查工具开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StatToolConfig {
+    /// 是否注册 `stat` 工具，默认 true。
+    pub enabled: bool,
+}
+
+impl Default for StatToolConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// 有界工作区目录树工具开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TreeToolConfig {
+    /// 是否注册 `tree` 工具，默认 true。
+    pub enabled: bool,
+}
+
+impl Default for TreeToolConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -3725,6 +3761,24 @@ enabled = false
         assert!(config.tools.glob.enabled);
         assert!(config.tools.mkdir.enabled);
         assert!(config.tools.r#move.enabled);
+    }
+
+    #[test]
+    fn filesystem_info_switches_parse_independently_and_reject_typos() {
+        let default: ToolsConfig = toml::from_str("").unwrap();
+        assert!(default.stat.enabled && default.tree.enabled);
+        for (stat, tree) in [(false, true), (true, false), (false, false)] {
+            let text = format!("[stat]\nenabled={stat}\n[tree]\nenabled={tree}\n");
+            let configured: ToolsConfig = toml::from_str(&text).unwrap();
+            assert_eq!(configured.stat.enabled, stat);
+            assert_eq!(configured.tree.enabled, tree);
+            assert!(configured.list_dir.enabled && configured.read_file.enabled);
+            let restored: ToolsConfig =
+                serde_json::from_value(serde_json::to_value(configured).unwrap()).unwrap();
+            assert_eq!((restored.stat.enabled, restored.tree.enabled), (stat, tree));
+        }
+        assert!(toml::from_str::<ToolsConfig>("[stat]\nenabld=false").is_err());
+        assert!(serde_json::from_str::<ToolsConfig>(r#"{"tree":{"enabled":"false"}}"#).is_err());
     }
 
     #[test]

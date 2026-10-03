@@ -778,11 +778,102 @@ fn move_entry_with(
     Ok((kind, overwritten))
 }
 
+// Metadata operations accept the workspace root but never a blank input.
+pub(crate) fn info_relative(raw: &str) -> Result<PathBuf, JiaClawError> {
+    if raw.len() > MAX_PATH_BYTES || raw.trim().is_empty() {
+        return Err(failure("路径必须非空白，且最多 1024 字节"));
+    }
+    let path = Path::new(raw.trim());
+    if path.components().all(|part| part == Component::CurDir) {
+        return Ok(PathBuf::from("."));
+    }
+    normalized_entry_path(raw)
+}
+
+fn metadata_kind(metadata: &Metadata) -> &'static str {
+    if metadata.file_type().is_symlink() {
+        "symlink"
+    } else if metadata.is_dir() {
+        "dir"
+    } else if metadata.is_file() && regular(metadata).is_ok() {
+        "file"
+    } else {
+        "unsupported"
+    }
+}
+
+fn unix_milliseconds(time: std::time::SystemTime) -> Option<i64> {
+    use std::time::UNIX_EPOCH;
+    let millis = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i128::try_from(duration.as_millis()).ok()?,
+        Err(error) => {
+            let duration = error.duration();
+            // Floor fractional milliseconds on both sides of the epoch.
+            -i128::try_from(duration.as_millis()).ok()?
+                - i128::from(duration.subsec_nanos() % 1_000_000 != 0)
+        }
+    };
+    i64::try_from(millis).ok()
+}
+
+fn stat_metadata(path: String, metadata: Metadata) -> crate::filesystem_info::StatOutput {
+    let kind = metadata_kind(&metadata);
+    let modified_unix_ms = if kind == "file" || kind == "dir" {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|time| unix_milliseconds(time.into_std()))
+    } else {
+        None
+    };
+    crate::filesystem_info::StatOutput {
+        path,
+        kind: kind.into(),
+        size_bytes: (kind == "file").then_some(metadata.len()),
+        modified_unix_ms,
+    }
+}
+
+fn stat_leaf(
+    dir: &Dir,
+    name: &OsStr,
+    path: String,
+) -> Result<crate::filesystem_info::StatOutput, JiaClawError> {
+    // lstat only: even a FIFO, dangling link, or large binary needs no open/read.
+    Ok(stat_metadata(
+        path,
+        dir.symlink_metadata(name).map_err(failure)?,
+    ))
+}
+
+pub(crate) fn stat_entry(
+    workspace: &Path,
+    raw: &str,
+) -> Result<crate::filesystem_info::StatOutput, JiaClawError> {
+    let path = info_relative(raw)?;
+    let display = path.to_string_lossy().into_owned();
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    if path == Path::new(".") {
+        return Ok(stat_metadata(
+            display,
+            root.dir_metadata().map_err(failure)?,
+        ));
+    }
+    let dir = parent(&root, &path, false)?.ok_or_else(|| failure("父目录不存在"))?;
+    stat_leaf(
+        &dir,
+        path.file_name().ok_or_else(|| failure("路径无效"))?,
+        display,
+    )
+}
+
 struct Listing {
     entries: Vec<crate::files::DirEntryInfo>,
     scanned: usize,
     bytes: usize,
     limit: usize,
+    base: PathBuf,
+    max_descent: usize,
     truncated: bool,
     deadline: std::time::Instant,
 }
@@ -829,20 +920,15 @@ impl Listing {
             } else {
                 format!("{prefix}/{name}")
             };
-            if rel.len() > MAX_PATH_BYTES {
+            let complete_path = self.base.join(&rel);
+            if complete_path.as_os_str().len() > MAX_PATH_BYTES
+                || complete_path.components().count() > 64
+            {
                 self.truncated = true;
                 continue;
             }
             let meta = dir.symlink_metadata(&name).map_err(failure)?;
-            let kind = if meta.file_type().is_symlink() {
-                "symlink"
-            } else if meta.is_dir() {
-                "dir"
-            } else if meta.is_file() && regular(&meta).is_ok() {
-                "file"
-            } else {
-                "unsupported"
-            };
+            let kind = metadata_kind(&meta);
             let item = crate::files::DirEntryInfo {
                 name: rel.clone(),
                 kind: kind.into(),
@@ -859,7 +945,7 @@ impl Listing {
             self.bytes += encoded;
             self.entries.push(item);
             if recursive && kind == "dir" {
-                if depth >= DIRECTORY_DEPTH_LIMIT || self.exhausted() {
+                if depth >= self.max_descent || self.exhausted() {
                     self.truncated = true;
                     continue;
                 }
@@ -902,12 +988,64 @@ pub(crate) fn list_directory(
             .len()
             + 8,
         limit: maximum.clamp(1, crate::files::LIST_DIR_MAX_ENTRIES),
+        base: path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => Some(name),
+                _ => None,
+            })
+            .collect(),
+        max_descent: DIRECTORY_DEPTH_LIMIT,
         truncated: false,
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
     };
     listing.walk(&dir, "", recursive, 0)?;
     listing.entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok((listing.entries, listing.truncated))
+}
+
+pub(crate) fn tree_directory(
+    workspace: &Path,
+    raw: &str,
+    max_depth: usize,
+    max_entries: usize,
+) -> Result<crate::filesystem_info::TreeOutput, JiaClawError> {
+    if !(1..=32).contains(&max_depth) || !(1..=1000).contains(&max_entries) {
+        return Err(failure(
+            "max_depth 必须为 1..=32；max_entries 必须为 1..=1000",
+        ));
+    }
+    let path = info_relative(raw)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let dir = descend(&root, &path, false)?.ok_or_else(|| failure("目录不存在"))?;
+    let mut output = crate::filesystem_info::TreeOutput {
+        path: path.to_string_lossy().into_owned(),
+        max_depth,
+        max_entries,
+        truncated: false,
+        entries: Vec::new(),
+    };
+    let mut listing = Listing {
+        entries: Vec::new(),
+        scanned: 0,
+        bytes: serde_json::to_string_pretty(&output)
+            .map_err(failure)?
+            .len()
+            + 8,
+        limit: max_entries,
+        base: if path == Path::new(".") {
+            PathBuf::new()
+        } else {
+            path
+        },
+        max_descent: max_depth - 1,
+        truncated: false,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+    };
+    listing.walk(&dir, "", true, 0)?;
+    output.entries = listing.entries;
+    output.truncated = listing.truncated;
+    Ok(output)
 }
 
 // Search has its own walker: listing's output/entry limits must not silently
@@ -1342,6 +1480,8 @@ mod tests {
             scanned: 0,
             bytes: 0,
             limit: 1000,
+            base: PathBuf::new(),
+            max_descent: DIRECTORY_DEPTH_LIMIT,
             truncated: false,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
         };
@@ -1354,6 +1494,8 @@ mod tests {
             scanned: 0,
             bytes: 0,
             limit: 1000,
+            base: PathBuf::new(),
+            max_descent: DIRECTORY_DEPTH_LIMIT,
             truncated: false,
             deadline: std::time::Instant::now(),
         };
@@ -2106,5 +2248,198 @@ mod tests {
             std::fs::read(destination_tmp.path().join("b")).unwrap(),
             b"destination"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stat_is_metadata_only_for_large_binary_links_and_fifo_without_a_write_lock() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = ws.path().join("binary");
+        std::fs::write(&path, [0xff, 0, 0x80]).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(32 * 1024 * 1024).unwrap();
+        let before_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_millis(1234);
+        file.set_times(std::fs::FileTimes::new().set_modified(before_epoch))
+            .unwrap();
+        std::fs::write(outside.path().join("secret"), b"private").unwrap();
+        symlink(outside.path().join("secret"), ws.path().join("link")).unwrap();
+        symlink("missing", ws.path().join("dangling")).unwrap();
+        symlink(outside.path(), ws.path().join("parent_link")).unwrap();
+        std::fs::hard_link(outside.path().join("secret"), ws.path().join("hard")).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(ws.path().join("fifo"))
+            .status()
+            .unwrap()
+            .success());
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let _writer = writer_lock(&root).unwrap();
+        let output = stat_entry(ws.path(), "./binary").unwrap();
+        assert_eq!(output.kind, "file");
+        assert_eq!(output.size_bytes, Some(32 * 1024 * 1024));
+        assert_eq!(output.modified_unix_ms, Some(-1234));
+        for (name, kind) in [
+            ("link", "symlink"),
+            ("dangling", "symlink"),
+            ("hard", "unsupported"),
+            ("fifo", "unsupported"),
+        ] {
+            let output = serde_json::to_value(stat_entry(ws.path(), name).unwrap()).unwrap();
+            assert_eq!(output, serde_json::json!({"path":name,"type":kind}));
+        }
+        let root_stat = stat_entry(ws.path(), ".").unwrap();
+        assert_eq!(root_stat.kind, "dir");
+        assert!(root_stat.size_bytes.is_none());
+        assert!(root_stat.modified_unix_ms.is_some());
+        assert!(stat_entry(ws.path(), "parent_link/secret").is_err());
+        assert!(stat_entry(ws.path(), "missing").is_err());
+        let tree = tree_directory(ws.path(), ".", 3, 200).unwrap();
+        assert!(!tree.truncated);
+        assert_eq!(tree.entries.len(), 6);
+        assert_eq!(
+            std::fs::read(outside.path().join("secret")).unwrap(),
+            b"private"
+        );
+    }
+
+    #[test]
+    fn stat_timestamps_floor_pre_epoch_and_reject_unrepresentable_milliseconds() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(unix_milliseconds(UNIX_EPOCH), Some(0));
+        assert_eq!(
+            unix_milliseconds(UNIX_EPOCH + Duration::from_nanos(1)),
+            Some(0)
+        );
+        assert_eq!(
+            unix_milliseconds(UNIX_EPOCH - Duration::from_nanos(1)),
+            Some(-1)
+        );
+        assert_eq!(
+            unix_milliseconds(UNIX_EPOCH - Duration::from_micros(1500)),
+            Some(-2)
+        );
+        if let Some(too_late) = UNIX_EPOCH.checked_add(Duration::from_millis(i64::MAX as u64 + 1)) {
+            assert_eq!(unix_milliseconds(too_late), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_and_tree_use_held_parent_descriptors_and_never_follow_replaced_leaves() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ws.path().join("nested")).unwrap();
+        std::fs::write(ws.path().join("nested/file"), b"inside").unwrap();
+        std::fs::write(outside.path().join("file"), b"outside secret").unwrap();
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let held = descend(&root, Path::new("nested"), false).unwrap().unwrap();
+        std::fs::rename(ws.path().join("nested"), ws.path().join("retained")).unwrap();
+        symlink(outside.path(), ws.path().join("nested")).unwrap();
+        assert_eq!(
+            stat_leaf(&held, OsStr::new("file"), "nested/file".into())
+                .unwrap()
+                .size_bytes,
+            Some(6)
+        );
+        let mut listing = Listing {
+            entries: Vec::new(),
+            scanned: 0,
+            bytes: 0,
+            limit: 100,
+            base: PathBuf::from("nested"),
+            max_descent: 2,
+            truncated: false,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        };
+        listing.walk(&held, "", true, 0).unwrap();
+        assert_eq!(listing.entries[0].size, Some(6));
+        std::fs::remove_file(ws.path().join("retained/file")).unwrap();
+        symlink(outside.path().join("file"), ws.path().join("retained/file")).unwrap();
+        let replaced = stat_leaf(&held, OsStr::new("file"), "nested/file".into()).unwrap();
+        assert_eq!(replaced.kind, "symlink");
+        assert!(replaced.size_bytes.is_none() && replaced.modified_unix_ms.is_none());
+        assert!(stat_entry(ws.path(), "nested/file").is_err());
+        assert!(tree_directory(ws.path(), "nested", 2, 100).is_err());
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside secret"
+        );
+    }
+
+    #[test]
+    fn tree_preserves_dfs_and_applies_depth_and_entry_boundaries() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join(".git")).unwrap();
+        std::fs::write(ws.path().join(".git/config"), b"").unwrap();
+        std::fs::write(ws.path().join(".hidden"), b"").unwrap();
+        std::fs::create_dir_all(ws.path().join("a/child/grandchild")).unwrap();
+        std::fs::write(ws.path().join("a/z"), b"").unwrap();
+        std::fs::write(ws.path().join("a.rs"), b"").unwrap();
+        let full = tree_directory(ws.path(), ".", 4, 200).unwrap();
+        let names: Vec<_> = full
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ".git",
+                ".git/config",
+                ".hidden",
+                "a",
+                "a/child",
+                "a/child/grandchild",
+                "a/z",
+                "a.rs"
+            ]
+        );
+        assert!(!full.truncated);
+        let limited = tree_directory(ws.path(), ".", 3, 200).unwrap();
+        assert_eq!(limited.entries.len(), full.entries.len());
+        assert!(
+            limited.truncated,
+            "depth-limited empty directory is conservatively incomplete"
+        );
+        let first = tree_directory(ws.path(), ".", 4, 1).unwrap();
+        assert_eq!(first.entries.len(), 1);
+        assert!(first.truncated);
+        let flat = tree_directory(ws.path(), ".", 1, 200).unwrap();
+        assert!(flat.truncated);
+        assert!(flat.entries.iter().all(|entry| !entry.name.contains('/')));
+        assert!(tree_directory(ws.path(), "a.rs", 3, 200).is_err());
+        for (depth, entries) in [(0, 1), (33, 1), (1, 0), (1, 1001)] {
+            assert!(tree_directory(ws.path(), ".", depth, entries).is_err());
+        }
+    }
+
+    #[test]
+    fn tree_budget_includes_escaped_envelope_and_full_workspace_paths_before_lstat() {
+        let ws = tempfile::tempdir().unwrap();
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let selected = "\"\\".repeat(90);
+        let dir = descend(&root, Path::new(&selected), true).unwrap().unwrap();
+        for index in 0..400 {
+            dir.write(format!("{index:04}{}", "\"\n\\".repeat(60)), b"")
+                .unwrap();
+        }
+        let tree = tree_directory(ws.path(), &selected, 3, 1000).unwrap();
+        assert!(tree.truncated);
+        assert!(!tree.entries.is_empty());
+        assert!(serde_json::to_string_pretty(&tree).unwrap().len() <= DIRECTORY_JSON_BUDGET);
+        for base in [vec!["d"; 64].join("/"), vec!["b".repeat(250); 4].join("/")] {
+            let dir = descend(&root, Path::new(&base), true).unwrap().unwrap();
+            let name = "x".repeat(32);
+            dir.write(&name, b"").unwrap();
+            // Both listings omit entries that other workspace tools cannot
+            // address within their full path byte/component limits.
+            let tree = tree_directory(ws.path(), &base, 3, 1000).unwrap();
+            assert!(tree.truncated);
+            assert!(tree.entries.is_empty());
+            let (entries, truncated) = list_directory(ws.path(), &base, 1000, false).unwrap();
+            assert!(truncated && entries.is_empty());
+        }
     }
 }

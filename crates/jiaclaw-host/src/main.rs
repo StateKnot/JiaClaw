@@ -1420,6 +1420,20 @@ fn glob_status_line(config: &AgentConfig) -> String {
     "已启用（工作区 glob 按模式找文件；默认最多 100 条；禁穿越/symlink 逃逸）".to_string()
 }
 
+fn stat_status_line(config: &AgentConfig) -> String {
+    if !config.tools.stat.enabled {
+        return "已关闭（[tools.stat] enabled = false，未注册）".to_string();
+    }
+    "已启用（工作区元数据；不读取正文、不跟随链接）".to_string()
+}
+
+fn tree_status_line(config: &AgentConfig) -> String {
+    if !config.tools.tree.enabled {
+        return "已关闭（[tools.tree] enabled = false，未注册）".to_string();
+    }
+    "已启用（有界目录树；默认三层、200条；不跟随链接）".to_string()
+}
+
 fn mkdir_status_line(config: &AgentConfig) -> String {
     if !config.tools.mkdir.enabled {
         return "已关闭（[tools.mkdir] enabled = false，未注册）".to_string();
@@ -2215,6 +2229,8 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     } else {
         tracing::info!("   • glob: 已关闭（未注册）");
     }
+    tracing::info!("   • stat: {}", stat_status_line(&config));
+    tracing::info!("   • tree: {}", tree_status_line(&config));
     if config.tools.mkdir.enabled {
         tracing::info!("   • mkdir: 已启用（工作区相对路径创建目录，默认 mkdir -p）");
     } else {
@@ -2481,6 +2497,18 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         println!("   • glob: ✅ {}", glob_status_line(&config));
     } else {
         println!("   • glob: ⚠️  {}", glob_status_line(&config));
+    }
+
+    if config.tools.stat.enabled {
+        println!("   • stat: ✅ {}", stat_status_line(&config));
+    } else {
+        println!("   • stat: ⚠️  {}", stat_status_line(&config));
+    }
+
+    if config.tools.tree.enabled {
+        println!("   • tree: ✅ {}", tree_status_line(&config));
+    } else {
+        println!("   • tree: ⚠️  {}", tree_status_line(&config));
     }
 
     if config.tools.mkdir.enabled {
@@ -4694,6 +4722,18 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
         println!("   glob: ✅ {}", glob_status_line(&config));
     } else {
         println!("   glob: ⚠️  {}", glob_status_line(&config));
+    }
+
+    if config.tools.stat.enabled {
+        println!("   stat: ✅ {}", stat_status_line(&config));
+    } else {
+        println!("   stat: ⚠️  {}", stat_status_line(&config));
+    }
+
+    if config.tools.tree.enabled {
+        println!("   tree: ✅ {}", tree_status_line(&config));
+    } else {
+        println!("   tree: ⚠️  {}", tree_status_line(&config));
     }
 
     if config.tools.mkdir.enabled {

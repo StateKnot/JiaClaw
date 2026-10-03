@@ -14,17 +14,20 @@ pub use jiaclaw_core::{
     GrepToolConfig, HeartbeatConfig, HttpConfig, IdentityConfig, JiaClawError, ListDirToolConfig,
     MemoryConfig, MemorySearchToolConfig, MemoryWriteToolConfig, MessageRole, MkdirToolConfig,
     ModelPurpose, ModelRoute, ModelRoutingConfig, ModelSelection, MoveToolConfig, ProviderConfig,
-    ReadFileToolConfig, RunStatus, SessionConfig, StrReplaceToolConfig, ToolCall, ToolsConfig,
-    WebFetchToolConfig, WebSearchToolConfig, WriteFileToolConfig, DEFAULT_HEARTBEAT_INTERVAL_SECS,
-    DEFAULT_HEARTBEAT_PATH, DEFAULT_HEARTBEAT_SESSION_ID, DEFAULT_HTTP_MAX_BODY_BYTES,
-    DEFAULT_HTTP_SHUTDOWN_TIMEOUT_SECS, DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_MEMORY_PATH,
-    DEFAULT_SESSION_KEEP_RECENT, DEFAULT_SOUL_PATH, DEFAULT_USER_PATH, MAX_MAX_TOOL_ITERATIONS,
-    MAX_SESSION_MESSAGES, MEMORY_PROMPT_MAX_BYTES, MIN_MAX_TOOL_ITERATIONS,
+    ReadFileToolConfig, RunStatus, SessionConfig, StatToolConfig, StrReplaceToolConfig, ToolCall,
+    ToolsConfig, TreeToolConfig, WebFetchToolConfig, WebSearchToolConfig, WriteFileToolConfig,
+    DEFAULT_HEARTBEAT_INTERVAL_SECS, DEFAULT_HEARTBEAT_PATH, DEFAULT_HEARTBEAT_SESSION_ID,
+    DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_HTTP_SHUTDOWN_TIMEOUT_SECS, DEFAULT_MAX_TOOL_ITERATIONS,
+    DEFAULT_MEMORY_PATH, DEFAULT_SESSION_KEEP_RECENT, DEFAULT_SOUL_PATH, DEFAULT_USER_PATH,
+    MAX_MAX_TOOL_ITERATIONS, MAX_SESSION_MESSAGES, MEMORY_PROMPT_MAX_BYTES,
+    MIN_MAX_TOOL_ITERATIONS,
 };
 
 mod copy;
 mod exec;
 mod files;
+mod filesystem_info;
+pub use filesystem_info::{StatOutput, TreeOutput, WorkspaceStatTool, WorkspaceTreeTool};
 mod glob_pattern;
 pub use copy::{copy_workspace, CopyOutput, WorkspaceCopyTool, COPY_MAX_BYTES};
 pub use exec::{validate_exec_config, ControlledExecTool};
@@ -102,7 +105,7 @@ pub use workspace::Workspace;
 /// 工具执行计数钩子（`true` = ok，`false` = error）。
 pub type ToolMetricsHook = std::sync::Arc<dyn Fn(&str, bool) + Send + Sync>;
 
-/// 按配置注册可选工作区文件工具（`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move`）。
+/// 按配置注册可选工作区文件工具（`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move` / `stat` / `tree`）。
 fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &AgentConfig) {
     let workspace = &config.workspace_path;
     if config.tools.read_file.enabled {
@@ -112,6 +115,12 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
     if config.tools.list_dir.enabled {
         tools.register(Box::new(WorkspaceListDirTool::new(workspace)));
         tools.register(Box::new(FileListTool::new(workspace)));
+    }
+    if config.tools.stat.enabled {
+        tools.register(Box::new(WorkspaceStatTool::new(workspace)));
+    }
+    if config.tools.tree.enabled {
+        tools.register(Box::new(WorkspaceTreeTool::new(workspace)));
     }
     if config.tools.write_file.enabled {
         tools.register(Box::new(WorkspaceWriteFileTool::new(workspace)));
@@ -2449,6 +2458,47 @@ mod tests {
             err.to_string().contains("工具不存在"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn filesystem_info_configuration_controls_registry_and_prompt() {
+        for (stat, tree) in [(true, true), (false, true), (true, false), (false, false)] {
+            let workspace = tempfile::tempdir().unwrap();
+            let agent = JiaClawAgent::new(AgentConfig {
+                workspace_path: workspace.path().to_path_buf(),
+                tools: ToolsConfig {
+                    stat: StatToolConfig { enabled: stat },
+                    tree: TreeToolConfig { enabled: tree },
+                    ..ToolsConfig::default()
+                },
+                ..AgentConfig::default()
+            })
+            .unwrap();
+            let prompt = agent.build_system_prompt(&ChatRequest {
+                messages: vec![],
+                enabled_tools: vec![],
+                enabled_skills: vec![],
+                auto_skills: true,
+                session_id: None,
+            });
+            for (name, enabled) in [("stat", stat), ("tree", tree)] {
+                assert_eq!(agent.tools().get(name).is_some(), enabled);
+                assert_eq!(prompt.contains(&format!("### {name}")), enabled);
+                if !enabled {
+                    let error = agent
+                        .tools()
+                        .execute(&ToolCall {
+                            tool_name: name.into(),
+                            arguments: serde_json::json!({}),
+                            result: None,
+                        })
+                        .await
+                        .unwrap_err();
+                    assert!(error.to_string().contains("工具不存在"));
+                }
+            }
+            assert!(agent.tools().get("list_dir").is_some());
+        }
     }
 
     #[test]
