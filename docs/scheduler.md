@@ -1,6 +1,6 @@
 # 持久化定时任务
 
-JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。默认只保存会话和运行结果；可通过显式 `delivery` 与独立目的地白名单发送 Telegram/Slack/飞书/企业微信/钉钉通知，见[定时通知指南](scheduled-delivery.md)。
+JiaClaw 可以将多个 cron 或固定间隔任务保存在 SQLite，在 `jiaclaw serve` 运行时调度。每个任务有独立会话和运行记录，使用配置好的 Agent、工作空间和模型提供商。默认只保存会话和运行结果；可通过显式 `delivery` 与独立目的地白名单发送 Telegram/Slack/Discord/飞书/企业微信/钉钉通知，见[定时通知指南](scheduled-delivery.md)。
 
 ## 启用
 
@@ -16,10 +16,11 @@ persist_path = "../state/sessions.sqlite3"
 
 还必须通过 `JIACLAW_API_TOKEN` 或 `http.api_token` 配置 API Token。后台执行只接受 `provider_type = "brokerrouter"`，或供离线验收使用的显式 `stub`；`openai_compatible` 旧路径不能用于调度。调度器和旧 `heartbeat.enabled` 不能同时开启；迁移时关闭旧 heartbeat、启用调度器，再将原提示词创建为定时任务。服务在配置不满足要求时启动失败。调度器默认关闭，数据库必须使用工作空间之外的 SQLite 路径；沿用会话存储的独占进程锁。
 
-开启后可使用同源 REST API 管理任务。下面命令假定已在环境中设置 API Token：
+开启后可使用[单实例定时任务工作台](standalone-scheduler.md)或同源 REST API 管理任务。工作台先确认 `create_identity_protocol: "job-id-v1"`，再使用持久创建身份；独立用户网关仍按其能力声明授权。下面示例假定已在环境中设置 API Token；先生成一次 UUIDv4 并保留，请求结果未知时不得重新生成 ID：
 
 ```sh
-curl -fsS http://127.0.0.1:8080/api/jobs \
+JIACLAW_JOB_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+curl -fsS -X PUT "http://127.0.0.1:8080/api/jobs/${JIACLAW_JOB_ID}" \
   -H "Authorization: Bearer ${JIACLAW_API_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -31,7 +32,7 @@ curl -fsS http://127.0.0.1:8080/api/jobs \
   }'
 ```
 
-创建响应是一个 Job 对象，其中 `id` 是任务 ID，`session_id` 为 `job:<任务 UUID>`，`next_due_ms` 为下一次计划执行的 UTC Unix 毫秒时间。任务配置的 `enabled_tools` 必填、非空，表示这项后台任务允许使用的工具，不能继承前台请求“空数组允许全部工具”的语义。
+首次 PUT 创建返回 201；相同 ID 和同一 typed JobSpec 重试返回 200 及任务当前状态，不更改暂停/删除状态或下一次运行时间。异体、purge 后旧 ID 和旧任务没有匹配创建收据均返回 409。对象键顺序和已填默认值规范化，工具数组顺序与字符串保留精确值；完整恢复和容量合同见[持久创建身份](standalone-scheduler.md#有持久创建身份的-api)。创建响应是一个 Job 对象，其中 `id` 是任务 ID，`session_id` 为 `job:<任务 UUID>`，`next_due_ms` 为下一次计划执行的 UTC Unix 毫秒时间。任务配置的 `enabled_tools` 必填、非空，表示这项后台任务允许使用的工具，不能继承前台请求“空数组允许全部工具”的语义。
 
 ## 模型选择
 
@@ -70,9 +71,10 @@ cron 固定为五字段“分钟 小时 日 月 星期”，时区必须是 IANA
 
 | 方法与路径 | 行为 |
 |---|---|
-| `GET /api/jobs/status` | 查看调度器运行状态和 `max_concurrent_runs: 4` |
+| `GET /api/jobs/status` | 查看调度器状态；standalone 返回 `max_concurrent_runs: 4` 和 `create_identity_protocol: "job-id-v1"`；gateway_driven 最大并发为 1，不提供创建身份协议 |
 | `GET /api/jobs?limit=50&offset=0` | 分页列出未删除任务；`include_deleted=true` 时包含软删除记录；limit 为 1–100 |
-| `POST /api/jobs` | 创建 JobSpec，创建后启用 |
+| `PUT /api/jobs/{UUIDv4}` | standalone 的 create-only 创建；新建 201，相同创建身份/正文 200；网关及 gateway_driven 后端禁止 |
+| `POST /api/jobs` | 保留兼容的创建接口，创建后启用；每次生成新 ID，不提供响应丢失后的同 ID 核对保证 |
 | `GET /api/jobs/{id}` | 查看配置、启用状态、下一次时间及会话 ID |
 | `POST /api/jobs/{id}/pause` | 暂停后续调度 |
 | `POST /api/jobs/{id}/resume` | 从未来时间恢复调度，不重放历史运行 |
@@ -84,7 +86,7 @@ pause 和软删除阻止后续调度；已经领取的工作以该运行的最�
 
 JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabled_tools` 为 1–32 个不重复工具名，`timeout_secs` 为 1–600 秒，默认 120。后台工具必须已注册，且属于 `datetime_now`、`json_query`、受控 Docker `exec` / `shell_exec` 或经过审核的 `mcp_` 工具。当前不允许 `file_write`、`file_read`、`http_get` 等缺少可靠取消边界的旧工具进入后台任务；未知或不允许的工具在创建时拒绝。
 
-`/api/jobs/status` 的 `state` 为 running、failed、stopping 或 disabled。后台存储/worker 致命错误会停止准入并报告 failed，创建和 resume 返回 HTTP 503；管理者应检查日志、修复故障并重启 serve，不要把 HTTP 服务仍存活理解为调度器仍工作。
+`/api/jobs/status` 的 `state` 为 running、failed、stopping 或 disabled；配置完全关闭 scheduler 时，管理接口返回 404。后台存储/worker 致命错误会停止准入并报告 failed，新建和 resume 返回 HTTP 503；已记录的同 ID/正文 PUT 可只读返回现有任务，仍要求 enabled、管理员鉴权及 SQLite。管理者应检查日志、修复故障并重启 serve，不要把 HTTP 服务仍存活理解为调度器仍工作。
 
 ## 领取、结果和中断
 
@@ -101,11 +103,13 @@ JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabl
 
 任务 timeout 覆盖等待会话锁、准备上下文、模型与工具循环。超时取消本地等待不代表供应商或外部工具没有执行；执行超时、异常与不确定结果不会自动重放。正常关闭先停止新领取，在 `http.shutdown_timeout_secs` 内等待运行结束；超出宽限后取消本地工作并记录 interrupted。进程被 SIGKILL 或主机掉电后，下一次启动将残留 running 标记为 interrupted，并暂停对应任务。管理员必须查看工具/网关证据后决定是否 resume；resume 安排下一次未来执行，不是恢复旧请求。
 
-这里持久化的是调度和结果记录。模型操作 ID、供应商账务、外部副作用仍需要 [StateKnot durable 接线与 Brokerrouter 合同](brokerrouter-gaps.md) 才能做跨系统恢复；不能将本地单次领取解释为外部效果 exactly-once。真实供应商默认认证仍受 [Brokerrouter #31](https://github.com/StateKnot/Brokerrouter/issues/31) 约束。
+这里持久化的是调度、创建身份和结果记录；可选[模型调用收据](model-calls.md)只核对模型请求事实，不恢复任务或工具循环。供应商账务、外部副作用及完整运行恢复仍受 [StateKnot durable 接线与 Brokerrouter 合同](brokerrouter-gaps.md) 约束；不能将本地单次领取解释为外部效果 exactly-once。真实供应商默认认证仍受 [Brokerrouter #31](https://github.com/StateKnot/Brokerrouter/issues/31) 约束。
 
 ## 保留与验收
 
 任务上限为 100，包含软删除记录；每个任务保留最多 100 条运行，总运行记录上限为 10,000。系统只自动淘汰较旧的 completed、failed、skipped，以及这些运行全部已 delivered/cancelled 的投递；needs_review、interrupted 和仍有未解决投递的运行不自动清除。审计记录占满上限时暂停该任务，要求显式核对与清理，不删除未知效果的证据来继续执行。长期审计需在保留窗口之外另行归档。
+
+schema 10 新增独立的创建收据表，只保存 ID 与规范 JobSpec 的 SHA-256，不另存提示词；同库最多 10000 个终身创建身份，不随任务 purge 或自动清理删除。容量满时新 PUT 返回 409，已有收据回读可用；任务 100 项上限与收据容量分别计算。升级前做一致备份，不能通过删除收据或恢复旧数据库继续声称拒绝旧 ID 重放；详见[存储与备份边界](standalone-scheduler.md#数据库容量和备份)。
 
 构建后运行真实进程验收：
 

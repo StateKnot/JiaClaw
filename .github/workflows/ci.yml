@@ -53,6 +53,7 @@ jobs:
           "$RUNNER_TEMP/jiaclaw-browser/node_modules/.bin/playwright" install --with-deps chromium
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/outbox_browser.cjs target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/scheduler_browser.cjs target/debug/jiaclaw
       - name: Real container sandbox acceptance
         if: runner.os == 'Linux'
         env:

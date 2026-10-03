@@ -201,9 +201,12 @@
                     },
                     "max_concurrent_runs": {
                       "type": "integer",
-                      "enum": [
-                        4
-                      ]
+                      "enum": [1, 4]
+                    },
+                    "create_identity_protocol": {
+                      "type": "string",
+                      "enum": ["job-id-v1"],
+                      "description": "Present only for the standalone administrator create-only PUT contract; omitted in gateway-driven mode. Scheduler disabled still returns 404."
                     }
                   }
                 }
@@ -275,6 +278,29 @@
             }
           }
         ]
+      },
+      "put": {
+        "tags": ["scheduler"],
+        "operationId": "createJobWithIdentity",
+        "summary": "Create a standalone job once under a durable client-chosen UUIDv4",
+        "description": "Create-only, never replacement. Available only in standalone scheduler mode with create_identity_protocol=job-id-v1; rejected by both the tenant gateway and gateway-driven backends. New identities require a running scheduler and current tool/destination authorization. The same identity and typed JobSpec fingerprint return the existing current job, including paused or deleted state, without enabling it or changing its next due time, even if scheduler health or tool policy changed. Object key order and omitted default fields are normalized; tool array order and all string values remain exact. A different specification, a legacy job without a matching receipt, or a purged identity returns 409. Receipt tombstones survive purge, store only ID and SHA-256, and are never automatically removed; 10000 lifetime identities per database, then new identities fail closed. No automatic HTTP retry; GET the known job ID or explicitly repeat the exact PUT after reviewing an unknown result. Backup/restore must preserve the complete SQLite database including receipts.",
+        "security": [{"bearerAuth": []}, {"apiToken": []}],
+        "parameters": [{
+          "in": "path", "name": "id", "required": true,
+          "schema": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"}
+        }],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJobSpec"}}}},
+        "responses": {
+          "200": {"description": "Known identity; existing current job returned without mutation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJob"}}}},
+          "201": {"description": "New job and creation receipt committed atomically", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJob"}}}},
+          "400": {"description": "Invalid canonical UUIDv4 or job specification/authorization"},
+          "401": {"description": "Administrator API Token required"},
+          "404": {"description": "Scheduler disabled or gateway-driven mode"},
+          "409": {"description": "Identity/specification conflict, permanently retired identity, or job/creation-receipt capacity reached"},
+          "413": {"$ref": "#/components/responses/PayloadTooLarge"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "503": {"description": "New creation unavailable; known receipts remain readable"}
+        }
       },
       "delete": {
         "tags": [

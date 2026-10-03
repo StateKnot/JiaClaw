@@ -124,7 +124,7 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 ## 持久调度
 
-`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v9（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本；v8 增加网关派发身份摘要与时间高水位；v9 增加 Discord Bot 凭据持久阻断），旧二进制拒绝降级；升级前应按部署指南停机备份。
+`[scheduler] enabled = true` 启用 cron/interval 多任务与鉴权管理 API，默认关闭。要求 SQLite、API Token、Brokerrouter 或显式 stub；与 legacy heartbeat 互斥。工具范围、时区、中断处理和配额见[定时任务指南](scheduler.md)。数据库自动事务迁移至 schema v10（保留入站事件和定时运行两种发件来源，支持飞书、企业微信、钉钉通知及独立的企业微信发送额度账本；v8 增加网关派发身份摘要与时间高水位；v9 增加 Discord Bot 凭据持久阻断；v10 增加独立于任务删除的创建身份收据），旧二进制拒绝降级；升级前应按部署指南停机备份。创建收据的永久容量、同 ID 核对及备份边界见[单实例定时任务工作台](standalone-scheduler.md#数据库容量和备份)。
 
 ### 渠道授权与持久消息
 

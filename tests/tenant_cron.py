@@ -173,6 +173,22 @@ try:
             assert status == expected, (who, method, path, status, data)
             return data
 
+        def sessions_after_dispatch(who):
+            # Run completion is readable through the control pool before the
+            # gateway finishes its receipt and releases execution capacity.
+            # Retry only this fixed read and this exact known busy response.
+            busy_reads = 0
+            def read():
+                nonlocal busy_reads
+                status, data, _ = request(gateway_url, '/api/sessions', users[who]['token'])
+                if status == 429 and data == {'error': 'user request already in progress'}:
+                    busy_reads += 1
+                    return None
+                assert status == 200, (who, 'GET', '/api/sessions', status, data)
+                return data
+            return wait(read, who + ' sessions after dispatch settles', seconds=15,
+                        diagnostics=lambda: {**scheduler_summary(who), 'busy_reads': busy_reads})
+
         def spec(label, **changes):
             value = {'name': label, 'prompt': 'tenant-cron:' + label,
                      'schedule': {'kind': 'interval', 'seconds': 60},
@@ -271,7 +287,7 @@ try:
             page = api(who, '/api/jobs?limit=5&offset=0&include_deleted=false')
             assert [job['id'] for job in page['items']] == [jobs[who]['id']] and page['next_offset'] is None
             assert api(who, '/api/jobs/' + jobs[who]['id'])['session_id'].startswith('job:')
-        assert not api('alice', '/api/sessions')['sessions'], 'job sessions exposed as ordinary chat sessions'
+        assert not sessions_after_dispatch('alice')['sessions'], 'job sessions exposed as ordinary chat sessions'
         for changes in [{'timeout_secs': 121}, {'enabled_tools': ['exec']}, {'delivery': {}},
                         {'name': 'x' * 129}, {'prompt': 'x' * (32768 + 1)}]:
             api('alice', '/api/jobs', 'POST', spec('rejected', **changes), 400)
@@ -304,7 +320,7 @@ try:
             receipt = request(backends[who]['url'], '/internal/scheduler/operations/' + binding[0], backends[who]['token'])
             assert receipt[0] == 200 and receipt[1]['request_id'] == binding[0], receipt
             assert receipt[1]['run']['id'] == first[who]['id'] and receipt[1]['run']['status'] == 'completed', receipt
-        assert not api('alice', '/api/sessions')['sessions']
+        assert not sessions_after_dispatch('alice')['sessions']
         previous_key = users['alice']
         users['alice'] = cli('key-rotate', '--key', previous_key['key_id'])
         assert request(gateway_url, '/api/jobs', previous_key['token'])[0] == 401
@@ -341,6 +357,11 @@ try:
         in_flight = runs('alice', jobs['alice']['id'])[0]
         assert in_flight['status'] == 'running'
         assert api('alice', '/api/jobs/status') is not None, 'control reads blocked by execution'
+        # Deterministic evidence for the completion-read race above: a real
+        # submitted model request still owns this tenant's execution permit,
+        # while the scheduler control read remains available.
+        busy_status, busy_body, _ = request(gateway_url, '/api/sessions', users['alice']['token'])
+        assert busy_status == 429 and busy_body == {'error': 'user request already in progress'}, (busy_status, busy_body)
         status, _, _ = request(gateway_url, '/api/chat', users['alice']['token'], 'POST',
                                {'session_id': 'same', 'messages': [{'role': 'user', 'content': 'must not overlap'}]})
         assert status in (409, 429), status
@@ -371,7 +392,7 @@ try:
         with sqlite3.connect(backends['alice']['db']) as connection:
             assert connection.execute('SELECT run_id FROM scheduler_dispatches WHERE request_id=?',
                                       (pending['request_id'],)).fetchone() == (in_flight['id'],)
-        print('PASS: claimed/submitted run survives SIGKILL as interrupted with matching durable hold; key rotation cannot bypass it, Bob continues and no model POST repeats')
+        print('PASS: held execution returns exact sessions busy429 while scheduler control reads work; claimed/submitted run survives SIGKILL as interrupted with matching durable hold; key rotation cannot bypass it, Bob continues and no model POST repeats')
 
         # Explicit reconciliation permits a new future occurrence, never the interrupted run.
         cli('review-clear', '--user', users['alice']['user_id'], '--confirm-backend-idle',

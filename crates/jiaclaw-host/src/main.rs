@@ -1027,7 +1027,9 @@ fn build_router_with_body_limit(
         .route("/api/jobs/status", get(scheduler::status))
         .route(
             "/api/jobs/:id",
-            get(scheduler::get).delete(scheduler::delete),
+            get(scheduler::get)
+                .put(scheduler::create_with_id)
+                .delete(scheduler::delete),
         )
         .route("/api/jobs/:id/runs", get(scheduler::runs))
         .route(
@@ -10448,6 +10450,297 @@ mod tests {
         );
     }
 
+    fn job_identity_test_state(gateway: bool) -> AppState {
+        let mut config = offline_test_config();
+        config.scheduler.enabled = true;
+        config.scheduler.gateway_driven = gateway;
+        let mut state = create_test_state_from_config(config);
+        state.api_token = Some("job-identity-fixture".into());
+        state.persist_enabled = true;
+        state.sessions = Arc::new(Mutex::new(
+            SessionStore::open(std::path::Path::new(":memory:")).unwrap(),
+        ));
+        state
+            .scheduler_health
+            .store(1, std::sync::atomic::Ordering::Release);
+        state
+    }
+
+    fn job_identity_spec() -> serde_json::Value {
+        serde_json::json!({"name":"identity fixture", "prompt":"Use the clock", "schedule":{"kind":"interval","seconds":60}, "enabled_tools":["datetime_now"], "timeout_secs":120})
+    }
+
+    async fn job_identity_http(
+        app: &Router,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let body = if let Some(body) = body {
+            request = request.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&body).unwrap())
+        } else {
+            Body::empty()
+        };
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn job_creation_identity_http_requires_admin_v4_and_standalone_mode() {
+        let state = job_identity_test_state(false);
+        let app = build_router(state.clone());
+        let token = Some("job-identity-fixture");
+        let spec = job_identity_spec();
+        let id = "abcdef01-2345-4678-9abc-def012345678";
+        let path = format!("/api/jobs/{id}");
+        for auth in [None, Some("incorrect")] {
+            assert_eq!(
+                job_identity_http(&app, "PUT", &path, auth, Some(spec.clone()))
+                    .await
+                    .0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        for invalid in [
+            "not-a-uuid".to_owned(),
+            uuid::Uuid::nil().to_string(),
+            uuid::Uuid::now_v7().to_string(),
+            "abcdef01-2345-4678-1abc-def012345678".to_owned(),
+            id.to_uppercase(),
+            id.replace('-', ""),
+        ] {
+            assert_eq!(
+                job_identity_http(
+                    &app,
+                    "PUT",
+                    &format!("/api/jobs/{invalid}"),
+                    token,
+                    Some(spec.clone())
+                )
+                .await
+                .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let mut invalid = spec.clone();
+        invalid["enabled_tools"] = serde_json::json!(["file_write"]);
+        assert_eq!(
+            job_identity_http(&app, "PUT", &path, token, Some(invalid))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert!(state
+            .sessions
+            .lock()
+            .unwrap()
+            .get_job(id)
+            .unwrap()
+            .is_none());
+        let health = job_identity_http(&app, "GET", "/api/jobs/status", token, None).await;
+        assert_eq!(health.0, StatusCode::OK);
+        assert_eq!(health.1["create_identity_protocol"], "job-id-v1");
+        assert_eq!(health.1["max_concurrent_runs"], 4);
+        let mut anonymous = state.clone();
+        anonymous.api_token = None;
+        assert_eq!(
+            job_identity_http(
+                &build_router(anonymous),
+                "PUT",
+                &path,
+                None,
+                Some(spec.clone())
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let mut ephemeral = state;
+        ephemeral.persist_enabled = false;
+        assert_eq!(
+            job_identity_http(
+                &build_router(ephemeral),
+                "PUT",
+                &path,
+                token,
+                Some(spec.clone())
+            )
+            .await
+            .0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let gateway = job_identity_test_state(true);
+        gateway
+            .sessions
+            .lock()
+            .unwrap()
+            .create_job_with_id(id, serde_json::from_value(spec.clone()).unwrap(), 0)
+            .unwrap();
+        let gateway = build_router(gateway);
+        assert_eq!(
+            job_identity_http(&gateway, "PUT", &path, token, Some(spec.clone()))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            job_identity_http(
+                &gateway,
+                "PUT",
+                &format!("/api/jobs/{}", uuid::Uuid::new_v4()),
+                token,
+                Some(spec)
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let health = job_identity_http(&gateway, "GET", "/api/jobs/status", token, None).await;
+        assert_eq!(health.0, StatusCode::OK);
+        assert!(health.1.get("create_identity_protocol").is_none());
+        assert_eq!(health.1["max_concurrent_runs"], 1);
+    }
+
+    #[tokio::test]
+    async fn job_creation_identity_http_replays_only_current_state_and_survives_policy_failure() {
+        let state = job_identity_test_state(false);
+        let app = build_router(state.clone());
+        let token = Some("job-identity-fixture");
+        let spec = job_identity_spec();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = format!("/api/jobs/{id}");
+        let created = job_identity_http(&app, "PUT", &path, token, Some(spec.clone())).await;
+        assert_eq!(created.0, StatusCode::CREATED);
+        assert_eq!(created.1["id"], id);
+        let original_due = created.1["next_due_ms"].clone();
+        assert_eq!(
+            job_identity_http(&app, "POST", &format!("{path}/pause"), token, None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        for health in [2, 3] {
+            state
+                .scheduler_health
+                .store(health, std::sync::atomic::Ordering::Release);
+            let repeated = job_identity_http(&app, "PUT", &path, token, Some(spec.clone())).await;
+            assert_eq!(repeated.0, StatusCode::OK);
+            assert_eq!(repeated.1["enabled"], false);
+            assert_eq!(repeated.1["next_due_ms"], original_due);
+            assert_eq!(
+                job_identity_http(
+                    &app,
+                    "PUT",
+                    &format!("/api/jobs/{}", uuid::Uuid::new_v4()),
+                    token,
+                    Some(spec.clone())
+                )
+                .await
+                .0,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+        let mut changed = spec.clone();
+        changed["prompt"] = "Different work".into();
+        assert_eq!(
+            job_identity_http(&app, "PUT", &path, token, Some(changed))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        // An old creation remains auditable even when its once-registered tool is gone.
+        let retired_id = uuid::Uuid::new_v4().to_string();
+        let mut retired = spec.clone();
+        retired["enabled_tools"] = serde_json::json!(["mcp_retired"]);
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .create_job_with_id(
+                &retired_id,
+                serde_json::from_value(retired.clone()).unwrap(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            job_identity_http(
+                &app,
+                "PUT",
+                &format!("/api/jobs/{retired_id}"),
+                token,
+                Some(retired)
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            job_identity_http(&app, "DELETE", &path, token, None)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        let deleted = job_identity_http(&app, "PUT", &path, token, Some(spec.clone())).await;
+        assert_eq!(deleted.0, StatusCode::OK);
+        assert_eq!(deleted.1["deleted"], true);
+        assert_eq!(
+            job_identity_http(&app, "DELETE", &format!("{path}?purge=true"), token, None)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            job_identity_http(&app, "PUT", &path, token, Some(spec.clone()))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        state
+            .scheduler_health
+            .store(1, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            job_identity_http(&app, "PUT", &path, token, Some(spec.clone()))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            job_identity_http(&app, "GET", &path, token, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let legacy = job_identity_http(&app, "POST", "/api/jobs", token, Some(spec.clone())).await;
+        assert_eq!(legacy.0, StatusCode::CREATED);
+        assert_eq!(
+            job_identity_http(
+                &app,
+                "PUT",
+                &format!("/api/jobs/{}", legacy.1["id"].as_str().unwrap()),
+                token,
+                Some(spec)
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+    }
+
     #[tokio::test]
     async fn outbox_detail_requires_admin_and_persistence_and_survives_channel_shutdown() {
         let mut state = create_test_state_from_config(offline_test_config());
@@ -10664,6 +10957,21 @@ mod tests {
         assert_eq!(detail["parameters"][0]["schema"]["format"], "uuid");
         assert!(detail["get"]["responses"].get("400").is_some());
         assert_eq!(detail["get"]["security"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            paths["/api/jobs/{id}"]["put"]["operationId"],
+            "createJobWithIdentity"
+        );
+        assert!(paths["/api/jobs/{id}"]["put"]["responses"]
+            .get("200")
+            .is_some());
+        assert!(paths["/api/jobs/{id}"]["put"]["responses"]
+            .get("201")
+            .is_some());
+        assert_eq!(
+            paths["/api/jobs/status"]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["properties"]["create_identity_protocol"]["enum"][0],
+            "job-id-v1"
+        );
         assert!(paths["/api/sessions"].get("get").is_some());
         assert!(paths["/api/sessions"].get("post").is_some());
         assert!(paths["/api/sessions/{id}"].get("get").is_some());

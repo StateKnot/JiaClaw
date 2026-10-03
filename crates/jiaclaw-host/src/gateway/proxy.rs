@@ -787,6 +787,17 @@ mod tests {
         }
     }
     #[test]
+    fn standalone_job_creation_identity_is_never_forwarded_by_the_gateway() {
+        let id = "abcdef01-2345-4678-9abc-def012345678";
+        for path in [
+            "/api/jobs".to_owned(),
+            format!("/api/jobs/{id}"),
+            format!("/api/jobs/{id}/resume"),
+        ] {
+            assert!(!allowed(&Method::PUT, &path.parse().unwrap()));
+        }
+    }
+    #[test]
     fn outbox_audit_routes_are_never_forwarded_to_tenant_backends() {
         let id = "abcdef01-2345-4678-9abc-def012345678";
         for path in [

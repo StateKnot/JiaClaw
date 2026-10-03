@@ -86,9 +86,11 @@ pub(super) async fn status(
     } else {
         MAX_CONCURRENCY
     };
-    Ok(Json(
-        serde_json::json!({"state": status, "max_concurrent_runs": maximum}),
-    ))
+    let mut response = serde_json::json!({"state": status, "max_concurrent_runs": maximum});
+    if !state.agent.config().scheduler.gateway_driven {
+        response["create_identity_protocol"] = "job-id-v1".into();
+    }
+    Ok(Json(response))
 }
 
 pub(super) async fn jobs_db<T: Send + 'static>(
@@ -221,6 +223,47 @@ pub(super) async fn create(
             job,
             state.agent.config().scheduler.gateway_driven,
         )?),
+    ))
+}
+
+/// Standalone administrator create-only operation with a durable client identity.
+pub(super) async fn create_with_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(spec): Json<JobSpec>,
+) -> Result<(StatusCode, Json<Job>), AppError> {
+    authorize(&state, &headers)?;
+    if state.agent.config().scheduler.gateway_driven {
+        return Err(AppError::NotFound);
+    }
+    if !super::jobs::valid_creation_id(&id) {
+        return Err(AppError::BadRequest(
+            "creation ID must be a canonical UUIDv4".into(),
+        ));
+    }
+    let lookup_id = id.clone();
+    let lookup_spec = spec.clone();
+    if let Some(job) = jobs_db(&state, move |store| {
+        store.get_job_creation(&lookup_id, &lookup_spec)
+    })
+    .await?
+    {
+        return Ok((StatusCode::OK, Json(job)));
+    }
+    accepting(&state)?;
+    validate_tools(&state, &spec)?;
+    let (job, created) = jobs_db(&state, move |store| {
+        store.create_job_with_id(&id, spec, now_ms())
+    })
+    .await?;
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(job),
     ))
 }
 
@@ -644,6 +687,59 @@ mod tests {
         assert!(larger.validate(true).is_err());
         assert_eq!(larger.validate(false).unwrap(), 6);
         assert!(serde_json::from_str::<Pagination>(r#"{"backend":"other"}"#).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_creation_identity_survives_cancelled_admitted_database_waiter() {
+        let workspace =
+            std::env::temp_dir().join(format!("jiaclaw-create-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut state = crate::tests::test_state_for_workspace(workspace.clone());
+        state.sessions = Arc::new(std::sync::Mutex::new(
+            SessionStore::open(std::path::Path::new(":memory:")).unwrap(),
+        ));
+        let id = uuid::Uuid::new_v4().to_string();
+        let spec = JobSpec {
+            name: "cancelled waiter".into(),
+            prompt: "Use the clock".into(),
+            schedule: ScheduleSpec::Interval { seconds: 60 },
+            enabled_tools: vec!["datetime_now".into()],
+            timeout_secs: 120,
+            delivery: None,
+        };
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (worker_state, worker_id, worker_spec) = (state.clone(), id.clone(), spec.clone());
+        let waiter = tokio::spawn(async move {
+            jobs_db(&worker_state, move |store| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                store.create_job_with_id(&worker_id, worker_spec, 0)
+            })
+            .await
+        });
+        entered_rx.await.unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(
+            state.sessions.try_lock().is_err(),
+            "admitted transaction still owns the store after HTTP wait cancellation"
+        );
+        release_tx.send(()).unwrap();
+        let (job, created) = tokio::time::timeout(
+            Duration::from_secs(5),
+            jobs_db(&state, move |store| {
+                store.create_job_with_id(&id, spec, 90_000)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!created);
+        assert_eq!(job.created_ms, 0);
+        assert_eq!(job.next_due_ms, 60_000);
+        drop(state);
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     async fn cancellation_race(recover_before_release: bool) {

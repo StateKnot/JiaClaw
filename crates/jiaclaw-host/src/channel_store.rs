@@ -1273,7 +1273,7 @@ mod tests {
                     .unwrap()
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                9
+                10
             );
             assert_eq!(
                 db.channel_conn()
@@ -1458,7 +1458,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             db.channel_conn()
@@ -2599,7 +2599,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert!(db.accept_channel_event(spec("new"), 0).unwrap().created);
         drop(db);

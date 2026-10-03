@@ -38,4 +38,6 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 Discord Bot 定时文字补齐独立目的地/guild 授权、每次发送前验证、持久冷却、401 凭据阻断和安装范围 unknown 核对；PR #73 最终 head `b99e96690b6ec2ec0265fe68d2895a135cb9e8d5` 已通过 [CI 37095933677](https://github.com/jiawenyao401/JiaClaw/actions/runs/37095933677)，含 Linux/macOS、Chromium 与真实容器。真实 Discord 安装认证仍独立。
 
-本批补齐 [Web 发件箱审计](web-outbox.md)：单实例管理员通过既有 status 接口探测能力，渠道停用后仍可查看历史；独立用户网关不开放渠道权限。单条详情与人工核对保留服务端状态竞争、未知结果和整来源取消边界，浏览器超时不等于服务端停止。最终二进制的真实 Chromium 发件箱验收、旧工作台回归及 834 项 Rust 测试通过；fmt/Clippy/锁定构建通过，跨平台与真实容器由本批 draft PR 最终 head CI 独立验证。不将该 UI 扩展记为多用户渠道授权或自动恢复。
+本批补齐 [Web 发件箱审计](web-outbox.md)：单实例管理员通过既有 status 接口探测能力，渠道停用后仍可查看历史；独立用户网关不开放渠道权限。单条详情与人工核对保留服务端状态竞争、未知结果和整来源取消边界，浏览器超时不等于服务端停止。最终二进制的真实 Chromium 发件箱验收、旧工作台回归及 834 项 Rust 测试通过；fmt/Clippy/锁定构建通过。PR #74 最终 head `e22965dd9dc2488c9433d0a93f7b9e1bf59304a5` 已通过 [CI 37098122253](https://github.com/jiawenyao401/JiaClaw/actions/runs/37098122253)，含 Linux/macOS、Chromium 与真实容器。不将该 UI 扩展记为多用户渠道授权或自动恢复。
+
+本批为 [standalone 定时任务工作台](standalone-scheduler.md)补齐管理员能力探测、有限分页与完整授权展示，并用 UUIDv4 create-only PUT/SQLite 收据解决响应丢失后的创建身份核对。schema 10 保留 purge 后创建 tombstone，不自动遗忘旧 ID；网关继续禁止该 PUT。845 项 Rust、fmt/Clippy/Node 语法检查和锁定构建通过；最终二进制的三套 Chromium 验收及同批 schema 10 后端两套进程回归通过。跨平台与真实容器以本批 draft PR 最终 head CI 为准，不扩大 cron 的执行恢复保证。
