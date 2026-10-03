@@ -33,6 +33,7 @@ jobs:
       - run: python3 tests/semantic_memory.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
+      - run: python3 tests/tenant_cron.py target/debug/jiaclaw
       - run: python3 tests/scheduler.py target/debug/jiaclaw
       - name: Select OpenSSL 3 for channel signature fixtures
         if: runner.os == 'macOS'

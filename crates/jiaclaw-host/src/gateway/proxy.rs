@@ -24,11 +24,41 @@ fn session_id(value: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
+fn canonical_uuid(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+fn job_path(path: &str) -> Option<(&str, &str)> {
+    let tail = path.strip_prefix("/api/jobs/")?;
+    let (id, action) = tail.split_once('/').unwrap_or((tail, ""));
+    (canonical_uuid(id) && matches!(action, "" | "runs" | "pause" | "resume"))
+        .then_some((id, action))
+}
+fn jobs_path(path: &str) -> bool {
+    path == "/api/jobs" || path.starts_with("/api/jobs/")
+}
+fn job_method(method: &Method, path: &str) -> bool {
+    match job_path(path) {
+        Some((_, "")) => method == Method::GET || method == Method::DELETE,
+        Some((_, "runs")) => method == Method::GET,
+        Some((_, "pause" | "resume")) => method == Method::POST,
+        _ => false,
+    }
+}
+fn decimal(value: &str, min: usize, max: usize) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value
+            .parse::<usize>()
+            .is_ok_and(|n| (min..=max).contains(&n))
+}
 fn allowed(method: &Method, uri: &Uri) -> bool {
     let path = uri.path();
     let basic = match path {
+        "/api/gateway/capabilities" | "/api/jobs/status" => method == Method::GET,
+        "/api/jobs" => method == Method::GET || method == Method::POST,
         "/api/chat" | "/api/sessions/import" => method == Method::POST,
         "/api/sessions" => method == Method::GET || method == Method::POST,
+        _ if jobs_path(path) => job_method(method, path),
         _ => path.strip_prefix("/api/sessions/").is_some_and(|tail| {
             if let Some(id) = tail.strip_suffix("/export") {
                 method == Method::GET && session_id(id)
@@ -45,6 +75,26 @@ fn allowed(method: &Method, uri: &Uri) -> bool {
     };
     if query.is_empty() || query.len() > 256 {
         return false;
+    }
+    if jobs_path(path) {
+        if method != Method::GET
+            || !(path == "/api/jobs" || job_path(path).is_some_and(|(_, action)| action == "runs"))
+        {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        return query.split('&').all(|part| {
+            let Some((key, value)) = part.split_once('=') else {
+                return false;
+            };
+            seen.insert(key)
+                && match key {
+                    "limit" => decimal(value, 1, 5),
+                    "offset" => decimal(value, 0, 10_000),
+                    "include_deleted" => path == "/api/jobs" && matches!(value, "true" | "false"),
+                    _ => false,
+                }
+        });
     }
     let import = path == "/api/sessions/import";
     if !import && !path.ends_with("/export") {
@@ -92,13 +142,22 @@ pub(super) async fn handle(
     request: Request,
 ) -> Response {
     let request_id = Uuid::new_v4();
-    if !allowed(request.method(), request.uri()) {
+    if !allowed(request.method(), request.uri())
+        || (jobs_path(request.uri().path()) && !state.scheduled_jobs)
+    {
         return error(StatusCode::NOT_FOUND, "route unavailable", request_id);
     }
     let Some(token) = bearer(request.headers()) else {
         return error(StatusCode::UNAUTHORIZED, "invalid API key", request_id);
     };
-    let Ok(global_permit) = state.permits.clone().try_acquire_owned() else {
+    let is_control = request.method() == Method::GET
+        && (jobs_path(request.uri().path()) || request.uri().path() == "/api/gateway/capabilities");
+    let pool = if is_control {
+        &state.control
+    } else {
+        &state.permits
+    };
+    let Ok(global_permit) = pool.clone().try_acquire_owned() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "gateway capacity reached",
@@ -129,7 +188,12 @@ pub(super) async fn handle(
             request_id,
         );
     };
-    let Ok(user_permit) = backend.permit.clone().try_acquire_owned() else {
+    let pool = if is_control {
+        &backend.control
+    } else {
+        &backend.permit
+    };
+    let Ok(user_permit) = pool.clone().try_acquire_owned() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "user request already in progress",
@@ -174,6 +238,29 @@ pub(super) async fn handle(
             "GET body is unsupported",
             request_id,
         );
+    }
+    if parts.uri.path() == "/api/gateway/capabilities" {
+        return finish(
+            axum::Json(serde_json::json!({"scheduled_jobs":state.scheduled_jobs})).into_response(),
+            request_id,
+        );
+    }
+    if jobs_path(parts.uri.path()) && parts.method != Method::GET {
+        let valid = if parts.uri.path() == "/api/jobs" && parts.method == Method::POST {
+            serde_json::from_slice::<crate::jobs::JobSpec>(&body)
+                .is_ok_and(|spec| spec.validate_gateway().is_ok())
+        } else {
+            body.is_empty()
+                || serde_json::from_slice::<serde_json::Value>(&body)
+                    .is_ok_and(|value| value.as_object().is_some_and(serde_json::Map::is_empty))
+        };
+        if !valid || content_type != "application/json" {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid or unauthorized scheduled job request",
+                request_id,
+            );
+        }
     }
     if parts.uri.path() == "/api/chat" {
         let parsed = serde_json::from_slice::<crate::ChatHttpBody>(&body);
@@ -332,6 +419,17 @@ async fn forward(
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT, "application/json")
         .header("x-request-id", request_id.to_string());
+    if jobs_path(uri.path()) {
+        // A backend restarted in autonomous mode must reject this request before
+        // mutating a job, even when its API token remains valid.
+        request = request.header("x-jiaclaw-gateway-scheduler", "1");
+    }
+    let requested_job = if uri.path() == "/api/jobs" && method == Method::POST {
+        let spec: crate::jobs::JobSpec = serde_json::from_slice(&body).map_err(|_| ())?;
+        Some(serde_json::to_value(spec).map_err(|_| ())?)
+    } else {
+        None
+    };
     let requested_session = match uri.path() {
         "/api/chat" => serde_json::from_slice::<crate::ChatHttpBody>(&body)
             .ok()
@@ -354,6 +452,18 @@ async fn forward(
     }
     let response = request.send().await.map_err(|_| ())?;
     let status = response.status();
+    if method == Method::DELETE
+        && job_path(uri.path()).is_some_and(|(_, action)| action.is_empty())
+        && status == StatusCode::NO_CONTENT
+    {
+        if !read_response(response, 0).await?.is_empty() {
+            return Err(());
+        }
+        return Ok((
+            finish(StatusCode::NO_CONTENT.into_response(), request_id),
+            true,
+        ));
+    }
     let mime = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -365,7 +475,15 @@ async fn forward(
         "application/x-ndjson" => "application/x-ndjson",
         _ => return Err(()),
     };
-    let bytes = read_response(response, MAX_RESPONSE).await?;
+    let bytes = read_response(
+        response,
+        if jobs_path(uri.path()) {
+            1024 * 1024
+        } else {
+            MAX_RESPONSE
+        },
+    )
+    .await?;
     // Never propagate backend errors, redirects, cookies, or private response headers.
     if !status.is_success() {
         return Ok((
@@ -388,7 +506,9 @@ async fn forward(
             serde_json::from_slice::<serde_json::Value>(line).map_err(|_| ())?;
         }
     }
-    let settled = if method == Method::GET {
+    let settled = if jobs_path(uri.path()) {
+        validate_job_response(&method, &uri, &bytes, requested_job.as_ref())?
+    } else if method == Method::GET {
         true
     } else {
         if mime != "application/json" {
@@ -411,6 +531,101 @@ async fn forward(
         );
     }
     Ok((response, settled))
+}
+fn validate_job(job: &crate::jobs::Job) -> Result<(), ()> {
+    if !canonical_uuid(&job.id)
+        || job.session_id != format!("job:{}", job.id)
+        || job.spec.validate().is_err()
+    {
+        return Err(());
+    }
+    Ok(())
+}
+fn validate_job_response(
+    method: &Method,
+    uri: &Uri,
+    bytes: &[u8],
+    requested: Option<&serde_json::Value>,
+) -> Result<bool, ()> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| ())?;
+    if uri.path() == "/api/jobs/status" && method == Method::GET {
+        return matches!(
+            value.get("state").and_then(serde_json::Value::as_str),
+            Some("running" | "failed" | "stopping" | "disabled")
+        )
+        .then_some(true)
+        .ok_or(());
+    }
+    if method == Method::GET
+        && (uri.path() == "/api/jobs"
+            || job_path(uri.path()).is_some_and(|(_, action)| action == "runs"))
+    {
+        let items = value
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(())?;
+        if items.len() > 5 || value.get("next_offset").is_none() {
+            return Err(());
+        }
+        let offset = uri
+            .query()
+            .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("offset=")))
+            .unwrap_or("0")
+            .parse::<usize>()
+            .map_err(|_| ())?;
+        if !value["next_offset"].is_null()
+            && (items.is_empty()
+                || value["next_offset"].as_u64() != Some((offset + items.len()) as u64)
+                || offset + items.len() > 10_000)
+        {
+            return Err(());
+        }
+        for item in items {
+            if uri.path() == "/api/jobs" {
+                validate_job(&serde_json::from_value(item.clone()).map_err(|_| ())?)?;
+            } else {
+                let run: crate::jobs::JobRun =
+                    serde_json::from_value(item.clone()).map_err(|_| ())?;
+                if !canonical_uuid(&run.id)
+                    || Some(run.job_id.as_str()) != job_path(uri.path()).map(|(id, _)| id)
+                    || run.session_id != format!("job:{}", run.job_id)
+                    || run.spec.validate().is_err()
+                    || !matches!(
+                        run.status.as_str(),
+                        "running"
+                            | "completed"
+                            | "failed"
+                            | "interrupted"
+                            | "needs_review"
+                            | "skipped"
+                    )
+                {
+                    return Err(());
+                }
+            }
+        }
+        return Ok(true);
+    }
+    let job: crate::jobs::Job = serde_json::from_value(value).map_err(|_| ())?;
+    validate_job(&job)?;
+    if uri.path() == "/api/jobs" && method == Method::POST {
+        job.spec.validate_gateway().map_err(|_| ())?;
+        return Ok(!job.deleted
+            && job.enabled
+            && requested == Some(&serde_json::to_value(&job.spec).map_err(|_| ())?));
+    }
+    let (id, action) = job_path(uri.path()).ok_or(())?;
+    if job.id != id {
+        return Err(());
+    }
+    match (method, action) {
+        (&Method::GET, "") => Ok(true),
+        (&Method::POST, "pause") => Ok(!job.deleted && !job.enabled),
+        (&Method::POST, "resume") => {
+            Ok(!job.deleted && job.enabled && job.spec.validate_gateway().is_ok())
+        }
+        _ => Err(()),
+    }
 }
 fn known_completion(
     method: &Method,
@@ -498,6 +713,8 @@ mod tests {
                 client: reqwest::Client::new(),
                 permits: Arc::new(tokio::sync::Semaphore::new(1)),
                 timeout: Duration::from_secs(10),
+                control: Arc::new(tokio::sync::Semaphore::new(8)),
+                scheduled_jobs: false,
             });
             let (release, receiver) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();
@@ -554,7 +771,7 @@ mod tests {
                 .unwrap()
         ));
         for path in [
-            "/api/jobs",
+            "/api/jobs?limit=6",
             "/metrics",
             "/api/sessions/%2e%2e",
             "/api/sessions/..",
@@ -568,6 +785,87 @@ mod tests {
         ] {
             assert!(!allowed(&Method::GET, &path.parse().unwrap()), "{path}");
         }
+    }
+    #[test]
+    fn tenant_job_routes_only_expose_canonical_bounded_public_operations() {
+        let id = "abcdef01-2345-4678-9abc-def012345678".to_owned();
+        for (method, path) in [
+            (Method::GET, "/api/gateway/capabilities".into()),
+            (
+                Method::GET,
+                "/api/jobs?limit=5&offset=10&include_deleted=true".into(),
+            ),
+            (Method::POST, "/api/jobs".into()),
+            (Method::GET, format!("/api/jobs/{id}/runs?limit=1&offset=0")),
+            (Method::POST, format!("/api/jobs/{id}/pause")),
+            (Method::POST, format!("/api/jobs/{id}/resume")),
+            (Method::DELETE, format!("/api/jobs/{id}")),
+        ] {
+            assert!(allowed(&method, &path.parse().unwrap()), "{path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/internal/scheduler/dispatch".into()),
+            (Method::GET, "/internal/scheduler/status".into()),
+            (Method::GET, "/api/jobs?limit=0".into()),
+            (Method::GET, "/api/jobs?offset=10001".into()),
+            (Method::GET, "/api/jobs?limit=1&limit=2".into()),
+            (Method::GET, "/api/jobs?tenant=bob".into()),
+            (
+                Method::GET,
+                format!("/api/jobs/{id}/runs?include_deleted=true"),
+            ),
+            (Method::DELETE, format!("/api/jobs/{id}?purge=true")),
+            (Method::POST, format!("/api/jobs/{id}/pause?anything=1")),
+            (Method::GET, format!("/api/jobs/{}/runs", id.to_uppercase())),
+            (Method::GET, "/api/jobs/%2e%2e".into()),
+            (Method::GET, "/api/sessions/job%3A123".into()),
+            (Method::POST, "/api/sessions/import?id=job:123".into()),
+        ] {
+            assert!(!allowed(&method, &path.parse().unwrap()), "{path}");
+        }
+    }
+    #[test]
+    fn job_receipts_bind_target_state_spec_and_pagination() {
+        let id = Uuid::new_v4().to_string();
+        let spec = serde_json::json!({"name":"fixture","prompt":"Report time","schedule":{"kind":"interval","seconds":60},"enabled_tools":["datetime_now"],"timeout_secs":120});
+        let mut job = serde_json::json!({"id":id,"spec":spec,"enabled":true,"deleted":false,"created_ms":1,"next_due_ms":60001,"session_id":format!("job:{id}")});
+        let valid = |method: Method,
+                     path: &str,
+                     value: &serde_json::Value,
+                     expected: Option<&serde_json::Value>| {
+            validate_job_response(
+                &method,
+                &path.parse().unwrap(),
+                &serde_json::to_vec(value).unwrap(),
+                expected,
+            )
+        };
+        assert_eq!(
+            valid(Method::POST, "/api/jobs", &job, Some(&spec)),
+            Ok(true)
+        );
+        job["spec"]["prompt"] = serde_json::json!("wrong operation");
+        assert_ne!(
+            valid(Method::POST, "/api/jobs", &job, Some(&spec)),
+            Ok(true)
+        );
+        job["spec"] = spec;
+        let pause = format!("/api/jobs/{id}/pause");
+        assert_eq!(valid(Method::POST, &pause, &job, None), Ok(false));
+        job["enabled"] = serde_json::json!(false);
+        assert_eq!(valid(Method::POST, &pause, &job, None), Ok(true));
+        let page = serde_json::json!({"items":[job.clone()],"next_offset":1});
+        assert_eq!(valid(Method::GET, "/api/jobs", &page, None), Ok(true));
+        assert!(valid(Method::GET, "/api/jobs?offset=5", &page, None).is_err());
+        assert!(valid(
+            Method::GET,
+            "/api/jobs",
+            &serde_json::json!({"items":[],"next_offset":1}),
+            None
+        )
+        .is_err());
+        job["session_id"] = serde_json::json!("ordinary-chat");
+        assert!(valid(Method::POST, &pause, &job, None).is_err());
     }
     #[test]
     fn authentication_header_is_unambiguous() {

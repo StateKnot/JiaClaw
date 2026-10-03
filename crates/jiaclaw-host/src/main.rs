@@ -65,6 +65,7 @@ mod outbound;
 mod schedule;
 mod scheduler;
 mod store;
+mod tenant_scheduler;
 mod ui;
 mod wecom;
 mod wecom_outbound;
@@ -505,6 +506,8 @@ struct AppState {
     metrics: Arc<Metrics>,
     metrics_require_auth: bool,
     scheduler_health: Arc<std::sync::atomic::AtomicU8>,
+    tenant_dispatch_permit: Arc<tokio::sync::Semaphore>,
+    tenant_control_permits: Arc<tokio::sync::Semaphore>,
 }
 
 /// 健康检查响应
@@ -980,6 +983,15 @@ fn build_router_with_body_limit(
         .route(
             "/api/channels/deliveries/:id/resolve",
             post(channels::resolve),
+        )
+        .route("/internal/scheduler/status", get(tenant_scheduler::status))
+        .route(
+            "/internal/scheduler/dispatch",
+            post(tenant_scheduler::dispatch),
+        )
+        .route(
+            "/internal/scheduler/operations/:request_id",
+            get(tenant_scheduler::operation),
         )
         .route("/api/jobs", get(scheduler::list).post(scheduler::create))
         .route("/api/jobs/status", get(scheduler::status))
@@ -1883,6 +1895,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         anyhow::bail!("启用 MCP 必须设置 API Token");
     }
 
+    config.scheduler.validate()?;
     if config.scheduler.enabled {
         if !config.http.persist || api_token.is_none() {
             anyhow::bail!("scheduler requires SQLite persistence and an API Token");
@@ -1899,6 +1912,19 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     }
 
     let channel_runtime = channels::ChannelRuntime::configure(&config, api_token.as_deref())?;
+    if config.scheduler.gateway_driven
+        && (channel_runtime.is_some()
+            || config
+                .http
+                .webhook_secret
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || std::env::var("JIACLAW_WEBHOOK_SECRET").is_ok_and(|s| !s.trim().is_empty()))
+    {
+        anyhow::bail!(
+            "gateway-driven scheduler requires all channel and webhook entry points disabled"
+        );
+    }
 
     // Local authorization is checked before outbound MCP discovery.
     let metrics = Arc::new(Metrics::default());
@@ -1966,6 +1992,8 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         metrics_require_auth,
         channel_runtime,
         scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+        tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
     };
 
     let mut ttl_sweeper = None;
@@ -2890,6 +2918,11 @@ async fn list_sessions_handler(
             .collect())
     })
     .await?;
+    // Scheduled results have a dedicated bounded runs API. Do not expose
+    // reserved job sessions as ordinary editable/importable chat sessions.
+    if state.agent.config().scheduler.gateway_driven {
+        sessions.retain(|session| !session.id.starts_with("job:"));
+    }
     sessions.sort_by(|a, b| a.id.cmp(&b.id));
 
     tracing::info!(
@@ -5116,6 +5149,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         build_router_with_body_limit(state, None, max_body_bytes)
     }
@@ -5171,6 +5206,8 @@ mod tests {
             metrics_require_auth,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
 
         build_router(state)
@@ -5206,6 +5243,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         build_router_with_cors(state, build_cors_layer(cors))
     }
@@ -5250,6 +5289,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         }
     }
 
@@ -6300,6 +6341,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
         let response = http_import_session(
@@ -6501,6 +6544,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
 
         {
@@ -6549,6 +6594,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         }
     }
 
@@ -6880,6 +6927,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7239,6 +7288,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7292,6 +7343,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7346,6 +7399,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7414,6 +7469,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7481,6 +7538,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7535,6 +7594,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7589,6 +7650,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7647,6 +7710,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7705,6 +7770,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7767,6 +7834,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7833,6 +7902,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7899,6 +7970,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -7961,6 +8034,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let app = build_router(state);
 
@@ -8688,7 +8763,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert!(!root.exists());
-        let mut store = open_configured_session_store(&config).unwrap();
+        let store = open_configured_session_store(&config).unwrap();
         assert!(config.workspace_path.is_dir());
         assert!(root.join("state/sessions.sqlite3").is_file());
         store.flush().unwrap();
@@ -8724,6 +8799,8 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
+            tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
 
         let session_id = "test-session".to_string();

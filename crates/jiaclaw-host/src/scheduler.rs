@@ -14,7 +14,8 @@ use axum::{
     Json,
 };
 use jiaclaw_core::{ChatMessage, ChatRequest, ChatResponse, MessageRole, ModelPurpose, RunStatus};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{
@@ -26,7 +27,7 @@ use tokio::{
 const MAX_CONCURRENCY: usize = 4;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -36,7 +37,18 @@ fn now_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
+pub(super) fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
+    if headers.contains_key("x-jiaclaw-gateway-scheduler") {
+        let mut values = headers.get_all("x-jiaclaw-gateway-scheduler").iter();
+        if values.next().is_none_or(|value| value != "1")
+            || values.next().is_some()
+            || !state.agent.config().scheduler.gateway_driven
+        {
+            return Err(AppError::BadRequest(
+                "gateway scheduler mode assertion failed".into(),
+            ));
+        }
+    }
     if !state.agent.config().scheduler.enabled {
         return Err(AppError::NotFound);
     }
@@ -51,7 +63,7 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
     Ok(())
 }
 
-fn accepting(state: &AppState) -> Result<(), AppError> {
+pub(super) fn accepting(state: &AppState) -> Result<(), AppError> {
     if state.scheduler_health.load(Ordering::Acquire) != 1 {
         return Err(AppError::ServiceUnavailable);
     }
@@ -69,12 +81,17 @@ pub(super) async fn status(
         3 => "stopping",
         _ => "disabled",
     };
+    let maximum = if state.agent.config().scheduler.gateway_driven {
+        1
+    } else {
+        MAX_CONCURRENCY
+    };
     Ok(Json(
-        serde_json::json!({"state": status, "max_concurrent_runs": MAX_CONCURRENCY}),
+        serde_json::json!({"state": status, "max_concurrent_runs": maximum}),
     ))
 }
 
-async fn jobs_db<T: Send + 'static>(
+pub(super) async fn jobs_db<T: Send + 'static>(
     state: &AppState,
     operation: impl FnOnce(&mut super::store::SessionStore) -> Result<T> + Send + 'static,
 ) -> Result<T, AppError> {
@@ -92,8 +109,12 @@ async fn jobs_db<T: Send + 'static>(
 // Background execution only admits adapters with verified cancellation/resource bounds.
 // A request cannot turn an unbounded legacy tool into an unattended capability.
 fn validate_tools(state: &AppState, spec: &JobSpec) -> Result<(), AppError> {
-    spec.validate()
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    if state.agent.config().scheduler.gateway_driven {
+        spec.validate_gateway()
+    } else {
+        spec.validate()
+    }
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
     for name in &spec.enabled_tools {
         if state.agent.tools().get(name).is_none() {
             return Err(AppError::BadRequest(format!(
@@ -113,28 +134,76 @@ fn validate_tools(state: &AppState, spec: &JobSpec) -> Result<(), AppError> {
     super::channels::validate_scheduled_job(state, spec)
 }
 
+const MAX_GATEWAY_PAGE_BYTES: usize = 1024 * 1024;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Pagination {
-    #[serde(default = "page_limit")]
-    limit: usize,
+    #[serde(default)]
+    limit: Option<usize>,
     #[serde(default)]
     offset: usize,
     #[serde(default)]
     include_deleted: bool,
 }
-fn page_limit() -> usize {
-    50
-}
 impl Pagination {
-    fn validate(&self) -> Result<(), AppError> {
-        if !(1..=100).contains(&self.limit) || self.offset > 10_000 {
-            return Err(AppError::BadRequest(
-                "pagination requires limit 1..100 and offset 0..10000".into(),
-            ));
+    fn validate(&self, gateway: bool) -> Result<usize, AppError> {
+        let limit = self.limit.unwrap_or(if gateway { 5 } else { 50 });
+        let maximum = if gateway { 5 } else { 100 };
+        if !(1..=maximum).contains(&limit) || self.offset > 10_000 {
+            return Err(AppError::BadRequest(format!(
+                "pagination requires limit 1..{maximum} and offset 0..10000"
+            )));
         }
-        Ok(())
+        Ok(limit)
     }
+}
+
+fn bounded_single<T: Serialize>(value: T, gateway: bool) -> Result<T, AppError> {
+    if gateway
+        && serde_json::to_vec(&value).map_or(true, |bytes| bytes.len() > MAX_GATEWAY_PAGE_BYTES)
+    {
+        return Err(AppError::BadRequest(
+            "stored item exceeds the gateway response byte budget".into(),
+        ));
+    }
+    Ok(value)
+}
+
+fn page_response<T: Serialize>(
+    items: Vec<T>,
+    limit: usize,
+    offset: usize,
+    gateway: bool,
+) -> Result<Value, AppError> {
+    if !gateway {
+        return serde_json::to_value(items)
+            .map_err(|_| AppError::Internal("job serialization failed".into()));
+    }
+    let available = items.len();
+    let mut output = Vec::new();
+    let mut bytes = 64; // Reserve envelope, separators and bounded numeric cursor.
+    for item in items.into_iter().take(limit) {
+        let item = serde_json::to_value(item)
+            .map_err(|_| AppError::Internal("job serialization failed".into()))?;
+        let size = serde_json::to_vec(&item)
+            .map_err(|_| AppError::Internal("job serialization failed".into()))?
+            .len();
+        if bytes + size + 1 > MAX_GATEWAY_PAGE_BYTES {
+            if output.is_empty() {
+                return Err(AppError::BadRequest(
+                    "stored item exceeds the gateway response byte budget; item was not skipped"
+                        .into(),
+                ));
+            }
+            break;
+        }
+        bytes += size + 1;
+        output.push(item);
+    }
+    let next = (output.len() < available).then_some(offset + output.len());
+    let result = serde_json::json!({"items":output, "next_offset":next});
+    bounded_single(result, true)
 }
 
 pub(super) async fn create(
@@ -146,26 +215,34 @@ pub(super) async fn create(
     accepting(&state)?;
     validate_tools(&state, &spec)?;
     let job = jobs_db(&state, move |store| store.create_job(spec, now_ms())).await?;
-    Ok((StatusCode::CREATED, Json(job)))
+    Ok((
+        StatusCode::CREATED,
+        Json(bounded_single(
+            job,
+            state.agent.config().scheduler.gateway_driven,
+        )?),
+    ))
 }
 
 pub(super) async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(page): Query<Pagination>,
-) -> Result<Json<Vec<Job>>, AppError> {
+) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
-    page.validate()?;
-    Ok(Json(
-        with_sessions(&state, move |store| {
-            if page.include_deleted {
-                store.list_jobs_including_deleted(page.limit, page.offset, true)
-            } else {
-                store.list_jobs(page.limit, page.offset)
-            }
-        })
-        .await?,
-    ))
+    let gateway = state.agent.config().scheduler.gateway_driven;
+    let limit = page.validate(gateway)?;
+    let fetch = limit + usize::from(gateway);
+    let offset = page.offset;
+    let items = with_sessions(&state, move |store| {
+        if page.include_deleted {
+            store.list_jobs_including_deleted(fetch, page.offset, true)
+        } else {
+            store.list_jobs(fetch, page.offset)
+        }
+    })
+    .await?;
+    Ok(Json(page_response(items, limit, offset, gateway)?))
 }
 
 pub(super) async fn get(
@@ -174,11 +251,13 @@ pub(super) async fn get(
     Path(id): Path<String>,
 ) -> Result<Json<Job>, AppError> {
     authorize(&state, &headers)?;
-    Ok(Json(
-        with_sessions(&state, move |store| store.get_job(&id))
-            .await?
-            .ok_or(AppError::NotFound)?,
-    ))
+    let job = with_sessions(&state, move |store| store.get_job(&id))
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(bounded_single(
+        job,
+        state.agent.config().scheduler.gateway_driven,
+    )?))
 }
 
 pub(super) async fn runs(
@@ -186,9 +265,10 @@ pub(super) async fn runs(
     headers: HeaderMap,
     Path(id): Path<String>,
     Query(page): Query<Pagination>,
-) -> Result<Json<Vec<JobRun>>, AppError> {
+) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
-    page.validate()?;
+    let gateway = state.agent.config().scheduler.gateway_driven;
+    let limit = page.validate(gateway)?;
     if page.include_deleted {
         return Err(AppError::BadRequest(
             "include_deleted applies only to the job list".into(),
@@ -201,12 +281,13 @@ pub(super) async fn runs(
     {
         return Err(AppError::NotFound);
     }
-    Ok(Json(
-        with_sessions(&state, move |store| {
-            store.list_job_runs(&id, page.limit, page.offset)
-        })
-        .await?,
-    ))
+    let fetch = limit + usize::from(gateway);
+    let offset = page.offset;
+    let items = with_sessions(&state, move |store| {
+        store.list_job_runs(&id, fetch, page.offset)
+    })
+    .await?;
+    Ok(Json(page_response(items, limit, offset, gateway)?))
 }
 
 #[derive(Deserialize)]
@@ -252,13 +333,15 @@ async fn set_enabled(
             .ok_or(AppError::NotFound)?;
         validate_tools(&state, &job.spec)?;
     }
-    Ok(Json(
-        jobs_db(&state, move |store| {
-            store.set_job_enabled(&id, enabled, now_ms())
-        })
-        .await?
-        .ok_or(AppError::NotFound)?,
-    ))
+    let job = jobs_db(&state, move |store| {
+        store.set_job_enabled(&id, enabled, now_ms())
+    })
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(bounded_single(
+        job,
+        state.agent.config().scheduler.gateway_driven,
+    )?))
 }
 pub(super) async fn pause(
     State(state): State<AppState>,
@@ -312,6 +395,15 @@ pub(super) async fn start(state: AppState) -> Result<Option<Scheduler>> {
     }
     state.scheduler_health.store(1, Ordering::Release);
     let (stop, mut shutdown) = watch::channel(false);
+    if state.agent.config().scheduler.gateway_driven {
+        let handle = tokio::spawn(async move {
+            let _ = shutdown.changed().await;
+            // No autonomous tick in this mode. Existing dispatch owns the permit
+            // until execution and the durable receipt have actually settled.
+            let _drain = state.tenant_dispatch_permit.acquire().await;
+        });
+        return Ok(Some(Scheduler { stop, handle }));
+    }
     let handle = tokio::spawn(async move {
         let mut active = JoinSet::new();
         let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -400,7 +492,7 @@ async fn finish(
     Ok(())
 }
 
-async fn execute(state: AppState, run: JobRun) -> Result<(), AppError> {
+pub(super) async fn execute(state: AppState, run: JobRun) -> Result<(), AppError> {
     let deadline = Instant::now() + Duration::from_secs(run.spec.timeout_secs);
     if validate_tools(&state, &run.spec).is_err() {
         return finish(
@@ -524,6 +616,35 @@ mod tests {
     use super::*;
     use crate::{schedule::ScheduleSpec, store::SessionStore};
     use std::sync::Arc;
+
+    #[test]
+    fn gateway_pages_count_encoded_bytes_and_never_skip_unreturned_items() {
+        let values = vec![
+            serde_json::json!({"value":"\0".repeat(100_000)}),
+            serde_json::json!({"value":"\0".repeat(100_000)}),
+        ];
+        let first = page_response(values.clone(), 5, 0, true).unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), 1);
+        assert_eq!(first["next_offset"], 1);
+        assert!(serde_json::to_vec(&first).unwrap().len() <= MAX_GATEWAY_PAGE_BYTES);
+        let second = page_response(values[1..].to_vec(), 5, 1, true).unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 1);
+        assert!(second["next_offset"].is_null());
+        let too_large = vec![serde_json::json!({"value":"\0".repeat(200_000)})];
+        assert!(page_response(too_large, 5, 0, true).is_err());
+        assert!(page_response(values, 50, 0, false).unwrap().is_array());
+    }
+
+    #[test]
+    fn pagination_preserves_legacy_defaults_and_bounds_gateway_rows() {
+        let defaults: Pagination = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.validate(false).unwrap(), 50);
+        assert_eq!(defaults.validate(true).unwrap(), 5);
+        let larger: Pagination = serde_json::from_str(r#"{"limit":6}"#).unwrap();
+        assert!(larger.validate(true).is_err());
+        assert_eq!(larger.validate(false).unwrap(), 6);
+        assert!(serde_json::from_str::<Pagination>(r#"{"backend":"other"}"#).is_err());
+    }
 
     async fn cancellation_race(recover_before_release: bool) {
         let workspace =

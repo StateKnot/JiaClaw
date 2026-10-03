@@ -30,6 +30,13 @@ pub struct Principal {
     pub backend_id: String,
 }
 
+/// User-owned cron identity; independent of any particular API key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduledUser {
+    pub user_id: Uuid,
+    pub backend_id: String,
+}
+
 /// A credential has ceased to authorize admission, or an earlier write needs resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteAdmissionError {
@@ -422,6 +429,64 @@ impl Registry {
         }
         tx.commit()?;
         Ok(result)
+    }
+
+    /// Bounded scheduling candidates. This snapshot grants no authority: admission
+    /// transactionally rechecks enabled state, backend binding and the write hold.
+    pub fn scheduled_users(&self) -> Result<Vec<ScheduledUser>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,backend_id FROM users u WHERE enabled=1 AND NOT EXISTS(SELECT 1 FROM write_holds h WHERE h.user_id=u.id) ORDER BY backend_id LIMIT 32")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (user, backend_id) = row?;
+            Ok(ScheduledUser {
+                user_id: uuid(user)?,
+                backend_id,
+            })
+        })
+        .collect()
+    }
+
+    /// Cron belongs to the enabled user, not a rotating or revoked login key.
+    /// Shares the same sole write hold as foreground chat and mutations.
+    pub fn admit_scheduled(&self, user_id: Uuid, backend_id: &str, request_id: Uuid) -> Result<()> {
+        ensure!(
+            request_id.get_version_num() == 7,
+            "scheduled request ID must be UUIDv7"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let authorized: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND backend_id=?2 AND enabled=1)",
+            params![user_id.to_string(), backend_id],
+            |row| row.get(0),
+        )?;
+        if !authorized {
+            return Err(WriteAdmissionError::Unauthorized.into());
+        }
+        let held: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
+            [user_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if held {
+            return Err(WriteAdmissionError::Held.into());
+        }
+        let now = now_ms();
+        tx.execute("INSERT INTO write_holds(user_id,request_id,state,reason,admitted_ms,updated_ms) VALUES(?1,?2,'in_flight','request_in_flight',?3,?3)",params![user_id.to_string(),request_id.to_string(),now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            Some(request_id),
+            "scheduled_write_admitted",
+            None,
+            now,
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Read live key/user state for every request. No successful-authentication cache exists.
@@ -944,6 +1009,10 @@ mod tests {
         let conn = registry.connection().unwrap();
         let reject = "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected audit storage failure'); END";
         conn.execute_batch(reject).unwrap();
+        assert!(registry
+            .admit_scheduled(owner.user_id, &owner.backend_id, Uuid::now_v7())
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
         assert!(registry.admit_write(&owner, request).is_err());
         assert!(registry.list().unwrap()[0].hold.is_none());
         conn.execute_batch("DROP TRIGGER fail_audit").unwrap();
@@ -1018,5 +1087,127 @@ mod tests {
                 0o755
             );
         }
+    }
+    #[test]
+    fn scheduled_authority_is_user_owned_and_rechecks_disable_binding_and_hold() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        assert_eq!(registry.scheduled_users().unwrap().len(), 2);
+        let stale = registry.scheduled_users().unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry
+            .scheduled_users()
+            .unwrap()
+            .iter()
+            .all(|user| user.user_id != alice.user_id));
+        assert!(registry
+            .admit_scheduled(stale[0].user_id, &stale[0].backend_id, Uuid::now_v7())
+            .unwrap_err()
+            .is::<WriteAdmissionError>());
+        registry.set_enabled(alice.user_id, true).unwrap();
+        let rotated = registry.rotate(alice.key_id).unwrap();
+        registry.revoke(rotated.key_id).unwrap();
+        // Even no active login keys does not cancel an enabled user's job.
+        assert!(registry
+            .scheduled_users()
+            .unwrap()
+            .iter()
+            .any(|user| user.user_id == alice.user_id));
+        assert!(registry
+            .admit_scheduled(alice.user_id, "bob", Uuid::now_v7())
+            .is_err());
+        assert!(registry
+            .admit_scheduled(alice.user_id, "alice", Uuid::new_v4())
+            .is_err());
+        let request = Uuid::now_v7();
+        registry
+            .admit_scheduled(alice.user_id, "alice", request)
+            .unwrap();
+        assert!(registry
+            .scheduled_users()
+            .unwrap()
+            .iter()
+            .all(|user| user.user_id != alice.user_id));
+        let key = registry.add_key(alice.user_id).unwrap();
+        assert!(registry
+            .admit_write(&principal(registry, &key), Uuid::new_v4())
+            .unwrap_err()
+            .is::<WriteAdmissionError>());
+        assert!(registry
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        assert!(registry
+            .scheduled_users()
+            .unwrap()
+            .iter()
+            .any(|user| user.user_id == bob.user_id));
+        let conn = registry.connection().unwrap();
+        let (key_id,audited):(Option<String>,String)=conn.query_row("SELECT key_id,request_id FROM audit_events WHERE action='scheduled_write_admitted'",[],|row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert!(key_id.is_none());
+        assert_eq!(audited, request.to_string());
+        drop(conn);
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.recover_writes().unwrap(), 1);
+        registry.finish_write(alice.user_id, request, true).unwrap();
+        assert!(reopened
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        reopened.set_enabled(alice.user_id, false).unwrap();
+        reopened.set_enabled(alice.user_id, true).unwrap();
+        assert!(reopened
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        reopened
+            .clear_review(
+                alice.user_id,
+                "Backend stopped and exact scheduled run reconciled",
+            )
+            .unwrap();
+        reopened
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .unwrap();
+    }
+
+    #[test]
+    fn foreground_and_scheduled_admission_have_only_one_winner() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let issued = registry.add_user("alice").unwrap();
+        let owner = principal(registry, &issued);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|index| {
+                let registry = registry.clone();
+                let owner = owner.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if index == 0 {
+                        registry.admit_write(&owner, Uuid::new_v4())
+                    } else {
+                        registry.admit_scheduled(owner.user_id, &owner.backend_id, Uuid::now_v7())
+                    }
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.as_ref().err().is_some_and(|error| error
+                    .downcast_ref::<WriteAdmissionError>(
+                ) == Some(
+                    &WriteAdmissionError::Held
+                )))
+                .count(),
+            1
+        );
+        assert!(registry.scheduled_users().unwrap().is_empty());
     }
 }
