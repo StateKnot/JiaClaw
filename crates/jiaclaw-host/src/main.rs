@@ -202,6 +202,14 @@ enum Commands {
         action: MemoryCommands,
     },
 
+    /// Inspect and reconcile private model-call receipts; stop serve before maintenance
+    ModelCalls {
+        #[command(subcommand)]
+        action: ModelCallCommands,
+        #[arg(short, long, value_name = "FILE", global = true)]
+        config: Option<PathBuf>,
+    },
+
     /// Agent 人格（SOUL.md）
     Soul {
         #[command(subcommand)]
@@ -280,6 +288,25 @@ enum MemoryCommands {
         /// 配置文件路径
         #[arg(short, long, value_name = "FILE", global = true)]
         config: Option<PathBuf>,
+    },
+}
+
+/// Local maintenance only. Recovery never submits a model request.
+#[derive(Subcommand)]
+enum ModelCallCommands {
+    /// Inspect metadata without exposing response contents
+    Status,
+    /// Print a retained model response (may contain sensitive output)
+    Result { operation_id: String },
+    /// GET a known gateway result, without applying it to tools or sessions
+    Recover { operation_id: String },
+    /// Record independent reconciliation and release the unknown-call hold
+    ReviewClear {
+        operation_id: String,
+        #[arg(long)]
+        note: String,
+        #[arg(long, required = true)]
+        confirm_reconciled: bool,
     },
 }
 
@@ -388,6 +415,7 @@ async fn main() -> Result<()> {
                 semantic_memory_command(config, action).await?;
             }
         },
+        Commands::ModelCalls { action, config } => model_calls_command(config, action).await?,
         Commands::Soul { action } => match action {
             IdentityFileCommands::Show { config } => {
                 identity_show_command(config, IdentityShowKind::Soul)?;
@@ -1610,7 +1638,11 @@ async fn prepare_session_chat_messages(
         );
     }
 
-    let compacted = state.agent.compact_session_messages(all_messages).await;
+    let compacted = state
+        .agent
+        .compact_session_messages(all_messages)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     tracing::info!(
         request_id = %request_id,
         "使用 {channel_label} session {session_id}, 合并后消息数: {} (压缩前 {before})",
@@ -3787,7 +3819,7 @@ async fn single_chat(
         content: message.to_string(),
     });
     let request = ChatRequest {
-        messages: agent.compact_session_messages(messages).await,
+        messages: agent.compact_session_messages(messages).await?,
         enabled_tools: vec![],
         enabled_skills: skills.to_vec(),
         auto_skills: !no_auto_skill,
@@ -3916,7 +3948,7 @@ async fn repl_chat(
                 };
                 history.push(user_message);
 
-                history = agent.compact_session_messages(history).await;
+                history = agent.compact_session_messages(history).await?;
 
                 // 构建请求
                 let request = ChatRequest {
@@ -4209,6 +4241,37 @@ async fn import_session_into_persist_file(
     sessions.insert(session_id.clone(), compacted);
     save_sessions(&persist_path.to_path_buf(), &sessions)?;
     Ok(session_id)
+}
+
+async fn model_calls_command(
+    config_path: Option<PathBuf>,
+    action: ModelCallCommands,
+) -> Result<()> {
+    if let ModelCallCommands::ReviewClear {
+        confirm_reconciled,
+        note,
+        ..
+    } = &action
+    {
+        anyhow::ensure!(
+            *confirm_reconciled && !note.trim().is_empty(),
+            "review-clear requires --confirm-reconciled and a nonempty --note"
+        );
+    }
+    let config = load_agent_config(config_path)?;
+    let ledger = jiaclaw::ModelCalls::open(&config)
+        .await?
+        .context("model_calls_disabled: explicitly enable [model_calls] first")?;
+    let output = match action {
+        ModelCallCommands::Status => ledger.status().await?,
+        ModelCallCommands::Result { operation_id } => ledger.result(operation_id).await?,
+        ModelCallCommands::Recover { operation_id } => ledger.recover(operation_id).await?,
+        ModelCallCommands::ReviewClear {
+            operation_id, note, ..
+        } => ledger.review_clear(operation_id, note).await?,
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
 }
 
 async fn semantic_memory_command(

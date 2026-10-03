@@ -565,6 +565,10 @@ impl Store {
                 ));
             }
         }
+        // POSIX closes release this process's fcntl locks for the inode,
+        // including locks taken by a different descriptor. Finish preflight
+        // before SQLite opens the file, or another reader can unlink live WAL.
+        drop(file);
         let mut connection = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE

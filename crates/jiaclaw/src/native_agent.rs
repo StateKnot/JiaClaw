@@ -96,17 +96,19 @@ impl JiaClawAgent {
         let mut records = Vec::new();
         let mut seen_ids = HashSet::new();
         let maximum = self.config.effective_max_tool_iterations();
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let session_hash = request.session_id.as_ref().map(crate::model_calls::digest);
         let outcome: Result<(String, RunStatus), JiaClawError> = async {
         for iteration in 0..maximum {
-            let message = provider
-                .complete(
-                    &selection.model,
-                    &messages,
-                    selection.temperature,
-                    selection.max_tokens,
-                    &definitions,
-                )
-                .await?;
+            let message = if let Some(ledger) = &self.model_calls {
+                let prepared = ledger.prepare(&selection.model, &messages, selection.temperature,
+                    selection.max_tokens, &definitions)?;
+                ledger.complete(prepared, turn_id.clone(), selection.purpose, session_hash.clone(),
+                    u32::try_from(iteration).map_err(|_| failure("invalid model round"))?).await?
+            } else {
+                provider.complete(&selection.model, &messages, selection.temperature,
+                    selection.max_tokens, &definitions).await?
+            };
             if message.tool_calls.is_empty() {
                 return Ok((message.content.unwrap_or_default(), RunStatus::Completed));
             }

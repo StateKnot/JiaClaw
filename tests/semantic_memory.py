@@ -282,6 +282,30 @@ class Host:
         return json.loads(record['result'])
 
 
+def observe_semantic_state(db):
+    # A separate process must open AND close SQLite while serve still owns it.
+    # mode=rw refuses to create a missing DB; query_only permits only reads while
+    # retaining ordinary SQLite WAL lifecycle behavior (unlike immutable mode).
+    script = """import json, pathlib, sqlite3, sys
+connection = sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri() + '?mode=rw', uri=True, timeout=2)
+try:
+    connection.execute('PRAGMA query_only=ON')
+    assert connection.execute('PRAGMA query_only').fetchone() == (1,)
+    assert connection.execute('PRAGMA journal_mode').fetchone() == ('wal',)
+    rows = connection.execute(
+        'SELECT id, kind, remote_id, state, receipt IS NOT NULL FROM operations ORDER BY seq'
+    ).fetchall()
+    generation = connection.execute('SELECT chunk_count FROM generation WHERE id=1').fetchone()
+    print(json.dumps({'operations': rows, 'chunks': generation[0] if generation else None}))
+finally:
+    connection.close()
+"""
+    result = subprocess.run([sys.executable, '-c', script, str(db)], env=env,
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, ('independent SQLite observer failed', result.stderr)
+    return json.loads(result.stdout)
+
+
 try:
     with tempfile.TemporaryDirectory(prefix='jiaclaw-semantic-') as temporary:
         root = Path(temporary).resolve()
@@ -364,6 +388,54 @@ try:
         assert cli(config_path, 'refresh')['status'] == 'ready'
         assert counts() == before, 'rebuild must retain validated receipts, not rebill the same batches'
         print('PASS: content hashes detect edits/deletion; in-flight changes reject results; rebuild clears only derived index')
+
+        directory, workspace, config_path, config = new_case(root, 'observer-lifetime')
+        assert cli(config_path, 'refresh')['status'] == 'ready'
+        db = directory / 'state/semantic/index.sqlite3'
+        before = counts()
+        query_before = 'tea before independent SQLite observer'
+        query_after = 'tea after independent SQLite observer'
+        with Host(directory, config_path) as host:
+            first = host.tool('observer-before', {'query': query_before, 'mode': 'semantic'})
+            assert first['matches'] and first['matches'][0]['path'] == 'MEMORY.md', first
+            assert counts() == (before[0] + 1, before[1])
+            sidecars = [db.with_name(db.name + suffix) for suffix in ('-wal', '-shm')]
+            identities = [(sidecar.stat().st_dev, sidecar.stat().st_ino) for sidecar in sidecars]
+            snapshot = observe_semantic_state(db)
+            assert snapshot['chunks'] == 1 and len(snapshot['operations']) == 2, snapshot
+            assert all(row[3:] == ['completed', 1] for row in snapshot['operations']), snapshot
+            assert host.process.poll() is None, host.log.read_text()
+            assert all(sidecar.exists() for sidecar in sidecars), (
+                'closing an independent observer removed the live semantic WAL/SHM', snapshot)
+            assert [(sidecar.stat().st_dev, sidecar.stat().st_ino) for sidecar in sidecars] == identities
+            with lock:
+                posted_before = dict(posts[before[0]])
+            assert snapshot['operations'][-1][:4] == [
+                posted_before['key'], 'query', posted_before['remote_id'], 'completed'], snapshot
+
+            # A fresh embedding must persist after the observer has closed. An
+            # unlinked WAL can appear successful in serve while new readers see
+            # only the old snapshot, so the tool result alone is insufficient.
+            second = host.tool('observer-after', {'query': query_after, 'mode': 'semantic'})
+            assert second['matches'] and second['matches'][0]['path'] == 'MEMORY.md', second
+            assert counts() == (before[0] + 2, before[1])
+            snapshot = observe_semantic_state(db)
+            assert snapshot['chunks'] == 1 and len(snapshot['operations']) == 3, snapshot
+            assert all(row[3:] == ['completed', 1] for row in snapshot['operations']), snapshot
+            with lock:
+                posted_after = dict(posts[before[0] + 1])
+            assert snapshot['operations'][-1][:4] == [
+                posted_after['key'], 'query', posted_after['remote_id'], 'completed'], snapshot
+            assert host.process.poll() is None, host.log.read_text()
+            assert all(sidecar.exists() for sidecar in sidecars), (
+                'the second observer removed the live semantic WAL/SHM', snapshot)
+            assert [(sidecar.stat().st_dev, sidecar.stat().st_ino) for sidecar in sidecars] == identities
+        persisted = counts()
+        assert cli(config_path, 'status')['pending'] is None
+        cached = cli(config_path, 'search', query_after)
+        assert cached['matches'] and cached['matches'][0]['path'] == 'MEMORY.md', cached
+        assert counts() == persisted, 'a receipt lost after observer close was billed again after restart'
+        print('PASS: independent SQLite observer close preserves live WAL/SHM; later semantic receipts are externally visible and reused after restart')
 
         directory, workspace, config_path, config = new_case(root, 'recover')
         (workspace / 'MEMORY.md').write_text(''.join(f'tea {index}' + 'x' * 1019 for index in range(9)))

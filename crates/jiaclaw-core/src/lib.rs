@@ -15,6 +15,9 @@ pub use mcp::{McpConfig, McpServerConfig, McpToolConfig, McpToolEffect};
 mod routing;
 pub use routing::{ModelPurpose, ModelRoute, ModelRoutingConfig, ModelSelection};
 
+mod model_calls;
+pub use model_calls::ModelCallsConfig;
+
 mod semantic;
 pub use semantic::SemanticMemoryConfig;
 
@@ -170,6 +173,10 @@ pub struct AgentConfig {
     /// Optional operator-owned model selection by trusted execution purpose.
     #[serde(default)]
     pub routing: ModelRoutingConfig,
+
+    /// Optional private model-call receipts and unknown-outcome admission hold.
+    #[serde(default)]
+    pub model_calls: ModelCallsConfig,
 
     /// HTTP 服务配置
     #[serde(default)]
@@ -1942,6 +1949,7 @@ impl Default for AgentConfig {
             workspace_path: default_workspace_path(),
             provider: ProviderConfig::default(),
             routing: ModelRoutingConfig::default(),
+            model_calls: ModelCallsConfig::default(),
             http: HttpConfig::default(),
             memory: MemoryConfig::default(),
             identity: IdentityConfig::default(),
@@ -2008,6 +2016,8 @@ impl AgentConfig {
             #[serde(default)]
             routing: Option<ModelRoutingConfig>,
             #[serde(default)]
+            model_calls: Option<ModelCallsConfig>,
+            #[serde(default)]
             http: Option<HttpConfig>,
             #[serde(default)]
             memory: Option<MemoryConfig>,
@@ -2036,6 +2046,9 @@ impl AgentConfig {
         }
         if let Some(routing) = config_file.routing {
             config_file.agent.routing = routing;
+        }
+        if let Some(model_calls) = config_file.model_calls {
+            config_file.agent.model_calls = model_calls;
         }
         if let Some(http) = config_file.http {
             config_file.agent.http = http;
@@ -2093,6 +2106,8 @@ impl AgentConfig {
             #[serde(default)]
             routing: Option<ModelRoutingConfig>,
             #[serde(default)]
+            model_calls: Option<ModelCallsConfig>,
+            #[serde(default)]
             http: Option<HttpConfig>,
             #[serde(default)]
             memory: Option<MemoryConfig>,
@@ -2121,6 +2136,9 @@ impl AgentConfig {
         }
         if let Some(routing) = config_file.routing {
             config_file.agent.routing = routing;
+        }
+        if let Some(model_calls) = config_file.model_calls {
+            config_file.agent.model_calls = model_calls;
         }
         if let Some(http) = config_file.http {
             config_file.agent.http = http;

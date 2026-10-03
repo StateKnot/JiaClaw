@@ -1,6 +1,6 @@
 # 独立用户定时任务
 
-本批将定时任务接入独立用户网关的准入边界。每个用户仍拥有独立后端、工作区和数据库；任务、运行历史与结果保存在对应后端。网关仅在用户已启用、没有待核对的操作并取得执行容量后派发。本批已完成本地双租户进程与 Chromium 验收；最终提交的跨平台与真实容器 CI 尚待验证。
+本批将定时任务接入独立用户网关的准入边界。每个用户仍拥有独立后端、工作区和数据库；任务、运行历史与结果保存在对应后端。网关仅在用户已启用、没有待核对的操作并取得执行容量后派发。本批已完成本地双租户进程与 Chromium 验收；最终 PR #71 head `949aebb` 的 [CI 37089235842](https://github.com/jiawenyao401/JiaClaw/actions/runs/37089235842) 已通过 Linux/macOS 与真实容器验证。
 
 ## 启用与授权
 
@@ -53,4 +53,4 @@ enabled = false
 
 ## 验证状态
 
-2026-10-03，macOS arm64：最终二进制的 `tests/tenant_cron.py` 4 组验收通过，覆盖真实双后端/网关/本机模型的 CRUD、租户与执行容量隔离、禁用及 Key 轮换、网关停机零自主派发、已领取且模型已提交后 SIGKILL、持久 hold 与运行身份关联、核对后显式新运行。最终内嵌工作台的 Chromium 验收通过：任务 CRUD/204、聊天及任务的 2xx 待核对响应保留草稿、文本展示与截断、身份切换清空和迟到响应隔离；任务接口由浏览器 fixture 提供，真实接口另由双后端脚本验证。全量 Rust 797 项、fmt、Clippy correctness/suspicious、锁定构建及既有 e2e/user_gateway/scheduler/scheduled_delivery/model_routing 回归通过。Linux/macOS 与真实容器 CI 尚未运行，证据以最终 draft PR head 为准。测试不使用真实供应商凭据，也不替代真实模型计费、渠道投递、StateKnot durable 或完整多用户后台能力认证。
+2026-10-03，macOS arm64：最终二进制的 `tests/tenant_cron.py` 4 组验收通过，覆盖真实双后端/网关/本机模型的 CRUD、租户与执行容量隔离、禁用及 Key 轮换、网关停机零自主派发、已领取且模型已提交后 SIGKILL、持久 hold 与运行身份关联、核对后显式新运行。最终内嵌工作台的 Chromium 验收通过：任务 CRUD/204、聊天及任务的 2xx 待核对响应保留草稿、文本展示与截断、身份切换清空和迟到响应隔离；任务接口由浏览器 fixture 提供，真实接口另由双后端脚本验证。全量 Rust 797 项、fmt、Clippy correctness/suspicious、锁定构建及既有 e2e/user_gateway/scheduler/scheduled_delivery/model_routing 回归通过。最终 PR #71 head `949aebb` 已通过 Linux/macOS 与真实容器 [CI 37089235842](https://github.com/jiawenyao401/JiaClaw/actions/runs/37089235842)。测试不使用真实供应商凭据，也不替代真实模型计费、渠道投递、StateKnot durable 或完整多用户后台能力认证。
