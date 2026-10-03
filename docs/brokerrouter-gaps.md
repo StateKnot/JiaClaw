@@ -30,12 +30,20 @@
 
 `provider.provider_type="brokerrouter"`，`base_url` 是自己运行的网关，`model` 为授权逻辑模型，`JIACLAW_API_KEY` 是有限预算的虚拟 Key。JiaClaw 每次请求生成 Idempotency-Key，不启用 SDK 自动重试。完整合同见 [上游消费者指南](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/jiaclaw-consumer-guide.md)。
 
-目前聊天模型调用的操作 ID 与 request ID 没有持久化；新接入的 embeddings 独立持久化操作身份与已知请求 ID，不能据此推断聊天或工具循环已具备同样的恢复能力。下游断开或 `submission_unknown` 后，不能以新键自动重发，也不能假设计费未发生。durable 集成需要保存原操作身份、使用网关状态/结果恢复，最终 `[DONE]` 才能确认 SSE 已持久结算。
+本批已为显式启用的聊天补全/摘要接入独立模型调用账本：发送前持久操作身份、保存经过校验的收据，并对已知远端 UUID 提供仅 GET 核对；最终二进制 7 组本机验收通过，跨平台及容器验收以最终 PR 当前 head 的 checks 为准，见[模型调用收据](model-calls.md)。embeddings 继续使用独立账本，两者都不能恢复工具循环。下游断开或 `submission_unknown` 后，不能以新键自动重发，也不能假设计费未发生。durable 集成需要保存原操作身份、使用网关状态/结果恢复，最终 `[DONE]` 才能确认 SSE 已持久结算。
 
 接入 StateKnot 现成 durable graph 还需解决 #41 的原生输出合同。已核对固定版本代码和文档：发布版 OpenAI adapter 使用 Responses；另写应用层 Chat `Model` adapter 仍需要网关允许原生 schema。该议题的证据是合同检查与脱敏请求，没有声称执行过真实收费供应商请求。
 
 工具生产默认需要在固定供应商/地域/模型版本/网关提交上，完成原样 assistant.tool_calls → tool message → 最终回答两轮调用，并核对 usage、人民币账本、预留归零、幂等重放。矩阵见 [上游认证证据](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/tool-roundtrip-certification.md)。没有真实供应商凭证与该证据时，不能以 mock 测试关闭 #31。
 
-真正流式仍属于 JiaClaw 的待实现适配任务；语义记忆已接入 embeddings 契约，已完成本机应用与进程恢复验收，跨平台以本批最终提交 CI 为准，真实供应商检索质量另行验收。遇到具体上游契约缺陷时，提交含固定版本、脱敏重现与验收要求的新 issue；不要重复提交已经完成的能力。
+真正流式仍属于 JiaClaw 的待实现适配任务；语义记忆已接入 embeddings 契约，已完成本机应用与进程恢复验收，该批 #70 的最终 CI 已通过，真实供应商检索质量另行验收。遇到具体上游契约缺陷时，提交含固定版本、脱敏重现与验收要求的新 issue；不要重复提交已经完成的能力。
 
 任务路由仅改变提交前选定的逻辑 `model` 与允许的采样/输出上限，不增加 `route`、`provider`、`endpoint` 或 `fallback` 请求字段。网关内部 attempt 的 `not_sent` 和消费方返回的 `not_submitted` 不是同一个状态；后者的允许重试仍要求原正文和原幂等键，换模型改变正文。JiaClaw 当前不自动重发任何模型请求，不能将 fixture 中的错误停止解释为网关端点降级或真实供应商认证。
+
+## 媒体消费者边界
+
+在上述固定 main，`media-jobs-v1` 仅支持 `video.generate` 文生视频；输入为文本 prompt/negative_prompt，实际分辨率、宽高比和 2–15 秒时长组合由授权 capabilities 决定。私有资产上传虽然已经交付，目前没有图片、音频或视频生成输入接线，多模态 chat content 仍拒绝。详情见[媒体作业](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m4-media-jobs.md)和[私有输入资产](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m4-assets-pricing.md)。
+
+后续 M4/M5 包已交付扫描后受控 MP4 下载，不能再把历史 M4.2 的“无下载接口”当作当前能力。但生成终态 `output_pending` 不代表可交付：作业创建时必须绑定独立受信控制面建立的 turn，最长一小时、不可补绑或续期；产物经当前扫描/策略及必要真人审批后，逐块重新授权并验证整文件 SHA-256。JiaClaw 尚无这一身份链，媒体接线不在本批范围。[交付合同](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m4-output-delivery.md)、[隔离 MP4 审阅](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m5-isolated-media-review.md)。
+
+媒体创建须持久保存原幂等键、正文和 turn 绑定；已提交后的取消只是意图，不保证供应商停止或退款。未知提交不能重新生成，模型费用、检测费用及存储/流量费用分别核对。固定连接器、真实费用与产物源、S3、IdP 和检测质量仍在上游 LIVE-10/11/12/13/20 发布闸门内；离线 fixture 只能证明消费者协议和恢复行为，不能代替这些认证。[上游验收清单](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/acceptance-backlog.md)。

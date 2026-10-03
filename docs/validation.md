@@ -187,6 +187,19 @@ CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护�
 
 - `tests/tenant_cron.py` 4 组通过：真实双后端/网关/本机模型验证受保护能力发现、任务 CRUD/204、输入和分页边界、租户结果隔离、普通 Key 轮换保留用户任务、禁用零派发、共享执行容量及运行期间状态读取、网关停机零自主执行。领取且模型提交后强杀后端与网关，重启保留同一 interrupted run、未知 hold 及 request/run ID 关联；更换 Key 不能解除 hold，另一租户继续运行；明确核对并恢复后只建立新的运行。
 - 最终二进制内嵌工作台的 Chromium 验收通过：原有会话流程、任务创建/暂停/恢复/软删、204、聊天 200/任务 201 的待核对标志保留草稿并阻止成功提示、恶意 HTML 纯文本展示、结果截断、身份切换清空任务/结果/草稿和迟到响应隔离。浏览器任务接口使用 route fixture；真实接口由双后端脚本独立验收。
-- 全量 Rust：797 passed、0 failed（library 317、core 121、host 359），1 项真实 Docker 专项保持独立 ignored。fmt、diff-check、Clippy correctness/suspicious 和锁定构建通过；既有 e2e、user_gateway、scheduler、scheduled_delivery、model_routing 回归通过。Linux/macOS 与真实容器 CI 尚未运行，最终证据以本批 draft PR head 检查为准。
+- 全量 Rust：797 passed、0 failed（library 317、core 121、host 359），1 项真实 Docker 专项保持独立 ignored。fmt、diff-check、Clippy correctness/suspicious 和锁定构建通过；既有 e2e、user_gateway、scheduler、scheduled_delivery、model_routing 回归通过。PR #71 最终 head `949aebb` 已通过 [CI 37089235842](https://github.com/jiawenyao401/JiaClaw/actions/runs/37089235842)，包含 Linux/macOS、Chromium、真实 Docker 沙箱及镜像。首轮 Linux 故障注入触发了非目标租户的合法未知 hold；fixture 已隔离非目标任务并保留全部目标 SIGKILL 断言，修复后完整 CI 通过。
 
 本批使用一次性本机凭据、临时数据库与合成模型响应，没有付费模型调用。保留跨服务未知结果与人工核对边界，不能据此声称真实供应商计费或完整多用户后台能力已认证；见[独立用户定时任务](tenant-cron.md)。
+
+
+## 模型调用收据批次
+
+2026-10-03，macOS arm64，本批最终二进制本地验收完成；Linux/macOS/容器验收以最终 PR 当前 head 的 checks 为准。
+
+- 最终 `tests/model_calls.py` 7 组全部通过：默认关闭零账本；POST UUID/精确字节摘要、原生工具分轮及摘要收据、进程重启读取；摘要响应错误后持久 hold 且不继续聊天 POST；已知远端 UUID 的 GET 状态/无 UUID 头结果恢复，不执行恢复工具或修改原会话；更换 Key/模型不能绕过；缺 UUID/断连的拒重试与显式核对；实际提交后 SIGKILL 重启保留原操作和摘要；scheduler 父运行超时后收据 worker 完成，真实已批准的本机 MCP probe 零 tools/call，运行保持 interrupted。
+- 私有目录验收覆盖已有 0755 的外层 state：默认新 `model-calls` 子目录为 0700、数据库为 0600，外层目录保持原权限。发送正文标记不出现在账本文件；CLI status 不展示收据正文；存活服务持有独占所有权，维护 CLI 被拒绝。
+- Rust 验证：原全量 814 项通过，另新增 worker 生命周期测试通过，合计 815 项（library 334、core 122、host 359），无失败；真实 Docker 专项仍由独立 CI 执行。新增测试验证取消等待并丢弃调用方后，worker 仍持有数据库独占锁直至收据完成，再打开可见 completed。Clippy correctness/suspicious 与锁定构建通过。既有 e2e、native_tools、model_routing、semantic_memory、scheduler、tenant_cron、scheduled_delivery 七组整机回归通过。
+
+fixture 的 SQLite 检查以 `mode=rw` 打开已有库并立即启用 `query_only`，允许 SQLite 在 WAL 已 checkpoint 后创建自身 sidecar；不写账本记录，也不对运行中的库使用忽略 WAL 的 immutable 模式。
+
+没有使用付费模型或真实供应商凭据。该账本只保存模型调用事实，不是供应商费用主账、工具执行日志或完整 turn 检查点；真实 Brokerrouter、供应商计费、StateKnot durable、SSE 与媒体身份链认证分别保留。配置与操作见[模型调用收据](model-calls.md)。

@@ -34,7 +34,10 @@ mod memory;
 mod memory_io;
 mod native_agent;
 pub use mcp::inspect_mcp_server;
+mod model_calls;
 mod provider;
+pub use model_calls::ModelCalls;
+
 mod semantic;
 mod session;
 pub use semantic::SemanticMemory;
@@ -144,6 +147,7 @@ pub struct JiaClawAgent {
     tools: ToolRegistry,
     /// 可选：每次真实 tool 执行后回调（serve 的 Prometheus 计数）。
     tool_metrics: Option<ToolMetricsHook>,
+    model_calls: Option<std::sync::Arc<ModelCalls>>,
     /// 测试专用：stub 每次都请求该工具，用于验证 tool loop 上限。
     #[cfg(test)]
     test_repeat_tool: Option<String>,
@@ -166,9 +170,12 @@ impl JiaClawAgent {
     ///
     /// 参见 `docs/stateknot-gaps.md` 了解详情。
     pub fn new(config: AgentConfig) -> Result<Self, JiaClawError> {
-        if !config.mcp.servers.is_empty() || config.memory.semantic.enabled {
+        if !config.mcp.servers.is_empty()
+            || config.memory.semantic.enabled
+            || config.model_calls.enabled
+        {
             return Err(JiaClawError::Configuration(
-                "MCP/semantic memory requires JiaClawAgent::connect(...).await; synchronous construction does not omit configured tools".into(),
+                "MCP/semantic memory/model calls requires JiaClawAgent::connect(...).await; synchronous construction does not omit configured tools".into(),
             ));
         }
         Self::new_local(config)
@@ -180,8 +187,10 @@ impl JiaClawAgent {
     /// # Errors
     /// Local initialization, private storage, policy, discovery, pin or schema validation failures.
     pub async fn connect(config: AgentConfig) -> Result<Self, JiaClawError> {
+        let model_calls = ModelCalls::open(&config).await?;
         let semantic = SemanticMemory::open(&config).await?;
         let mut agent = Self::new_local(config)?;
+        agent.model_calls = model_calls;
         mcp::initialize(&agent.config.mcp, &mut agent.tools).await?;
         if let Some(semantic) = semantic {
             agent.tools.register(Box::new(
@@ -201,6 +210,7 @@ impl JiaClawAgent {
 
     fn new_local(config: AgentConfig) -> Result<Self, JiaClawError> {
         config.routing.validate(&config.provider)?;
+        config.model_calls.validate(&config.provider)?;
         // 加载工作空间文件
         let workspace = Workspace::load(&config.workspace_path)?;
 
@@ -298,6 +308,7 @@ impl JiaClawAgent {
             skills,
             tools,
             tool_metrics: None,
+            model_calls: None,
             #[cfg(test)]
             test_repeat_tool: None,
         })
@@ -538,16 +549,28 @@ impl JiaClawAgent {
         }
     }
 
-    /// 会话接近上限时压缩历史：未开启则硬截断；开启则摘要，失败回退截断。
-    pub async fn compact_session_messages(&self, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-        compact_session_history(
+    /// Compact history; an uncertain paid summary must preserve the caller's session.
+    /// # Errors
+    /// An unresolved model call blocks compaction instead of silently truncating history.
+    pub async fn compact_session_messages(
+        &self,
+        messages: Vec<ChatMessage>,
+    ) -> Result<Vec<ChatMessage>, JiaClawError> {
+        if let Some(ledger) = &self.model_calls {
+            ledger.ensure_clear().await?;
+        }
+        let compacted = compact_session_history(
             messages,
             MAX_SESSION_MESSAGES,
             self.config.session.effective_summarize_on_overflow(),
             self.config.session.effective_keep_recent(),
             self,
         )
-        .await
+        .await;
+        if let Some(ledger) = &self.model_calls {
+            ledger.ensure_clear().await?;
+        }
+        Ok(compacted)
     }
 
     /// 使用当前 LLM provider 生成会话摘要（无工具、限制 `max_tokens`）。
@@ -610,6 +633,54 @@ impl JiaClawAgent {
         Ok(text.to_string())
     }
 
+    async fn brokerrouter_text(
+        &self,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        key: &str,
+        selection: &ModelSelection,
+    ) -> Result<ChatResponse, JiaClawError> {
+        if let Some(ledger) = &self.model_calls {
+            let wire = provider::brokerrouter::WireMessage::history(system_prompt, messages);
+            let prepared = ledger.prepare(
+                &selection.model,
+                &wire,
+                selection.temperature,
+                selection.max_tokens,
+                &[],
+            )?;
+            let message = ledger
+                .complete(
+                    prepared,
+                    uuid::Uuid::new_v4().to_string(),
+                    selection.purpose,
+                    None,
+                    0,
+                )
+                .await?;
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: message.content.unwrap_or_default(),
+                },
+                tool_calls: vec![],
+                status: RunStatus::Completed,
+                routing: None,
+                session_id: None,
+            })
+        } else {
+            BrokerrouterProvider::new(&self.config.provider.base_url, key)
+                .chat(
+                    &selection.model,
+                    system_prompt,
+                    messages,
+                    selection.temperature,
+                    selection.max_tokens,
+                )
+                .await
+        }
+    }
+
     /// 单次补全，不进入 tool loop（供摘要压缩使用，避免递归工具/心跳爆炸）。
     async fn complete_without_tools(
         &self,
@@ -621,15 +692,7 @@ impl JiaClawAgent {
     ) -> Result<ChatResponse, JiaClawError> {
         match provider_type {
             "brokerrouter" => {
-                let provider = BrokerrouterProvider::new(&self.config.provider.base_url, api_key);
-                provider
-                    .chat(
-                        &selection.model,
-                        system_prompt,
-                        messages,
-                        selection.temperature,
-                        selection.max_tokens,
-                    )
+                self.brokerrouter_text(system_prompt, messages, api_key, selection)
                     .await
             }
             "openai_compatible" => {
@@ -843,15 +906,11 @@ impl JiaClawAgent {
         if let Some(key) = api_key {
             match provider_type {
                 "brokerrouter" => {
-                    let provider = BrokerrouterProvider::new(&self.config.provider.base_url, key);
-                    provider
-                        .chat(
-                            &self.config.provider.model,
-                            system_prompt,
-                            messages,
-                            self.config.provider.temperature,
-                            self.config.provider.max_tokens,
-                        )
+                    let selection = self
+                        .config
+                        .routing
+                        .select(&self.config.provider, ModelPurpose::Chat);
+                    self.brokerrouter_text(system_prompt, messages, key, &selection)
                         .await
                 }
                 "openai_compatible" => {
@@ -3180,7 +3239,10 @@ mod tests {
         let config = AgentConfig::default();
         assert!(!config.session.effective_summarize_on_overflow());
         let agent = JiaClawAgent::new(config).unwrap();
-        let compacted = agent.compact_session_messages(overflow_messages(60)).await;
+        let compacted = agent
+            .compact_session_messages(overflow_messages(60))
+            .await
+            .unwrap();
         let expected = hard_truncate_session_messages(overflow_messages(60), MAX_SESSION_MESSAGES);
         assert_eq!(compacted, expected);
         assert_eq!(compacted.len(), MAX_SESSION_MESSAGES);
@@ -3198,7 +3260,10 @@ mod tests {
             ..stub_config()
         };
         let agent = JiaClawAgent::new(config).unwrap();
-        let compacted = agent.compact_session_messages(overflow_messages(51)).await;
+        let compacted = agent
+            .compact_session_messages(overflow_messages(51))
+            .await
+            .unwrap();
         assert_eq!(compacted.len(), 11);
         assert_eq!(compacted[0].role, MessageRole::System);
         assert!(compacted[0].content.contains(SESSION_SUMMARY_PREFIX));
@@ -3247,7 +3312,10 @@ mod tests {
             .expect("mock summary");
         assert_eq!(summary, "Summary: user asked about 0-9.");
 
-        let compacted = agent.compact_session_messages(overflow_messages(51)).await;
+        let compacted = agent
+            .compact_session_messages(overflow_messages(51))
+            .await
+            .unwrap();
         assert_eq!(compacted.len(), 11);
         assert!(compacted[0].content.contains(SESSION_SUMMARY_PREFIX));
         assert!(compacted[0]
@@ -3280,7 +3348,10 @@ mod tests {
             ..AgentConfig::default()
         };
         let agent = JiaClawAgent::new(config).unwrap();
-        let compacted = agent.compact_session_messages(overflow_messages(60)).await;
+        let compacted = agent
+            .compact_session_messages(overflow_messages(60))
+            .await
+            .unwrap();
         let expected = hard_truncate_session_messages(overflow_messages(60), MAX_SESSION_MESSAGES);
         assert_eq!(compacted, expected);
     }

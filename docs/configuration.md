@@ -18,7 +18,19 @@ TOML 与 JSON 使用同一契约，顶层必须有 `agent`，其他段覆盖 `ag
 | `provider.model` | 网关授权的逻辑模型 ID；工具模型必须满足上游认证矩阵 |
 | `provider.temperature`, `max_tokens` | 0.7 / 4096，仍受网关和模型上限约束 |
 
-CLI 对话与 `serve` 对缺失 Key 或未知 provider 启动失败，不隐式切到 stub。Brokerrouter 收费请求带独立 Idempotency-Key，应用没有自动供应商重试或静默降级直连。当前聊天补全的请求操作 ID 尚未持久化；断电或未知提交状态不能自动重跑工具轮次。显式语义记忆另有 embedding 操作账本，见下文。
+CLI 对话与 `serve` 对缺失 Key 或未知 provider 启动失败，不隐式切到 stub。Brokerrouter 收费请求带独立 Idempotency-Key，应用没有自动供应商重试或静默降级直连。显式启用 `[model_calls]` 后，聊天补全和摘要保存模型调用收据及未知提交状态；断电后仍不能自动重跑工具轮次。显式语义记忆使用独立的 embedding 操作账本，见下文。
+
+## 模型调用收据
+
+```toml
+[model_calls]
+enabled = true
+store_path = "../state/model-calls/index.sqlite3"
+```
+
+默认关闭，仅 `provider.provider_type="brokerrouter"` 可启用。状态路径相对于工作区解析，必须位于工作区外的私有状态目录，与会话和语义索引使用不同数据库。启用后，所有聊天补全及无工具摘要在发送前持久化操作身份、正文摘要与绑定，成功响应经校验后保存收据；不保存原始请求正文，但响应可能含敏感内容。未知提交阻止同库后续模型调用；重启或更换模型/Key 不能将其视为成功或未发送。
+
+`jiaclaw model-calls --config CONFIG status|result|recover|review-clear` 是本地管理入口，操作前必须停止持有同库的 `serve`。`recover` 只查询已知远端 UUID 的状态和结果，不重新 POST、不执行返回工具、不恢复会话或整个运行。无 UUID、过期结果、审批或未知费用需管理员核对；`review-clear` 必须提供说明及 `--confirm-reconciled`。完整命令、保存范围和恢复边界见[模型调用收据](model-calls.md)，验收状态见[记录](validation.md)。
 
 ## 按用途选择模型
 
