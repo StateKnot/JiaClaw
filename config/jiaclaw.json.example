@@ -78,6 +78,12 @@
     "list_dir": {
       "enabled": true
     },
+    "stat": {
+      "enabled": true
+    },
+    "tree": {
+      "enabled": true
+    },
     "write_file": {
       "enabled": true
     },

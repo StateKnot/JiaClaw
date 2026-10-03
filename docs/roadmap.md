@@ -5,6 +5,7 @@
 | 顺序 | 能力 | 状态 | 完成标准 / 当前证据 |
 |---|---|---|---|
 | 1 | copy | 实现并本地验收 | 二进制文件、64 MiB 上限、越界/链接拒绝、原子覆盖与并发不覆盖 |
+| 1a | stat / tree | 实现并本机验收 | [只读元数据与目录树](workspace-files.md#stat--tree-元数据与目录树合同)：独立配置开关、目录句柄、叶子链接不跟随、严格参数及完整路径/扫描/输出预算；本机 884 项 Rust、新工具六组与七套既有进程回归通过，跨平台以本轮 draft PR 最终 head CI 为准 |
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
@@ -46,4 +47,6 @@ Discord Bot 定时文字补齐独立目的地/guild 授权、每次发送前验�
 
 本轮继续收紧 [grep/glob](workspace-files.md#grep--glob-扫描合同)：目录句柄访问、所有目录条目计数、深度与合作时间限制、grep 累计实际读取及完整 JSON 预算，并用多项式匹配消除 `**` 指数递归。两工具与其余五个文件工具共用八个阻塞 I/O 许可；授权、后台工具范围和写入恢复保证均不扩大。最终本机 864 项 Rust、fmt/Clippy/锁定构建通过；新搜索六组及 workspace_files、native_tools、memory_io、e2e 真实进程回归通过。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/jiawenyao401/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器；该批未迁移 `mkdir` / `move`，也未新增可选 `stat` / `tree`。
 
-本轮迁移 [mkdir/move](workspace-files.md#mkdir--move-原子变更合同)：九个主文件工具共用八槽阻塞 I/O，目录变更与记忆写入共用协作锁。move 使用 descriptor-relative 同卷原子 rename，默认原子不覆盖、覆盖时不预删目标，移除跨卷 copy/delete 回退；mkdir 逐级同步但不回滚先前创建的目录。最终本机 875 项 Rust、fmt/Clippy/锁定构建通过；新变更六组与 workspace_files、file_search、native_tools、memory_io 真实进程回归通过。跨平台、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准；Linux 真实 EXDEV 专项不计入本机 macOS 证据。不声称对非协作编辑器的叶子 inode CAS、自动回滚或 durable 恢复；stat/tree 仍待实现。
+本轮迁移 [mkdir/move](workspace-files.md#mkdir--move-原子变更合同)：九个主文件工具共用八槽阻塞 I/O，目录变更与记忆写入共用协作锁。move 使用 descriptor-relative 同卷原子 rename，默认原子不覆盖、覆盖时不预删目标，移除跨卷 copy/delete 回退；mkdir 逐级同步但不回滚先前创建的目录。最终本机 875 项 Rust、fmt/Clippy/锁定构建通过；新变更六组与 workspace_files、file_search、native_tools、memory_io 真实进程回归通过。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/jiawenyao401/JiaClaw/actions/runs/37107782116)，含 Linux/macOS、Chromium、真实容器及 Linux 真实 EXDEV 专项；跨卷实测不计入本机 macOS 证据。不声称对非协作编辑器的叶子 inode CAS、自动回滚或 durable 恢复；该批没有新增 stat/tree。
+
+本轮接入 [stat/tree](workspace-files.md#stat--tree-元数据与目录树合同)，与既有九个主文件工具共享八槽只读/写入 I/O 容量，但元数据查询和目录树不取 mutation 锁。新增严格参数、叶子类型最小元数据、可调整深度和完整 JSON 预算；list_dir 同步按完整工作区相对路径收紧限制，保留既有排序和深度语义。持久渠道及 cron/interval 白名单不扩大；管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 依既有全部已注册工具策略使用配置中启用的工具。最终本机 884 项 Rust、fmt/Clippy/锁定构建通过；最终二进制的新工具六组通过；本批七套既有进程回归也均通过、退出码 0。跨平台、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准；这些证据不构成 OS 沙箱或 durable 运行认证。

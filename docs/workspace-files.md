@@ -1,6 +1,6 @@
 # 工作区文件工具与权限边界
 
-本页覆盖 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir`、`grep`、`glob`、`mkdir`、`move`，以及四个兼容名称。九个主工具共用有界目录句柄 I/O，mutation 另受协作写入锁控制。本轮补齐 mkdir/move 的原子变更边界，验收状态见文末。独立的 `copy` 保留自己的原子复制合同，不因此继承本页所有资源/锁语义。可选 `stat` / `tree` 仍未新增。
+本页覆盖 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir`、`grep`、`glob`、`mkdir`、`move`、`stat`、`tree`，以及四个兼容名称。十一个主工具共用有界目录句柄 I/O，mutation 另受协作写入锁控制。本轮新增只读元数据与目录树工具，已通过本机验收，跨平台状态见文末。独立的 `copy` 保留自己的原子复制合同，不因此继承本页所有资源/锁语义。
 
 ## 配置与兼容名称
 
@@ -15,8 +15,10 @@
 | `tools.glob.enabled` | `glob` | 无 |
 | `tools.mkdir.enabled` | `mkdir` | 无 |
 | `tools.move.enabled` | `move` | 无 |
+| `tools.stat.enabled` | `stat` | 无 |
+| `tools.tree.enabled` | `tree` | 无 |
 
-这些开关默认 true；关闭开关会移除该主名称及存在的兼容名称，别名不能绕过配置。请求的 `enabled_tools` 仍按确切名称授权：允许 `read_file` 不隐式允许 `file_read`，反之亦然。普通聊天传空数组沿用“允许全部已注册工具”的行为，见[原生工具合同](native-tools.md)。
+这些开关默认 true；`stat` 与 `tree` 可分别关闭，不互相依赖。关闭开关会移除该主名称及存在的兼容名称，别名不能绕过配置。请求的 `enabled_tools` 仍按确切名称授权：允许 `read_file` 不隐式允许 `file_read`，反之亦然。普通聊天传空数组沿用“允许全部已注册工具”的行为，见[原生工具合同](native-tools.md)。
 
 兼容名称现在直接使用主名称的参数 schema、描述和执行路径，不另行改写参数。已有 `path` / `content` 请求继续可用，别名也可使用主名称的行范围、追加模式等参数。**这是安全相关的兼容变化**：四个别名的成功结果由旧人类可读字符串改为同结构 JSON；缺失的读取、目录或删除目标返回错误，不能再将旧提示文本当作成功。调用方应解析 JSON 与错误状态，不匹配旧展示文字。
 
@@ -39,19 +41,19 @@ enabled = false
 enabled = false
 ```
 
-这只关闭上述配置对应的入口。完整只读工作区还需分别限制记忆/身份写入、`copy`、可写 exec、外部 MCP 及文件系统权限。通用文件工具获准后可以编辑 MEMORY 等工作文件，不受 `tools.memory_write.enabled` 代为限制。普通实例内不提供逐路径、逐用户 ACL；用户隔离使用[独立工作区与容器](gateway.md)。后台渠道和定时任务的工具白名单仍不接纳这些文件工具，本批不扩大后台授权。
+这只关闭上述配置对应的入口。完整只读工作区还需分别限制记忆/身份写入、`copy`、可写 exec、外部 MCP 及文件系统权限。通用文件工具获准后可以编辑 MEMORY 等工作文件，不受 `tools.memory_write.enabled` 代为限制。普通实例内不提供逐路径、逐用户 ACL；用户隔离使用[独立工作区与容器](gateway.md)。持久渠道和 cron/interval 定时任务的固定工具白名单仍不接纳这些文件工具。管理员启用的独立 HEARTBEAT 与兼容入口 `/hooks/inbound` 沿用 `enabled_tools=[]`，与普通聊天空白名单一样可使用全部已注册工具，因此也包含默认启用的 stat/tree，分别受配置开关限制；本轮不改变这一现有策略，也不把它记为持久渠道或 cron 授权。
 
 ## 路径与文件类型
 
-路径相对于管理员配置的工作区，不展开 `~` 或环境变量。禁止绝对路径、`..` 和空文件路径，最多 1024 UTF-8 字节、64 个路径组件；`list_dir`、`grep`、`glob` 缺省目录为 `.`。工作区根及其上级目录必须由管理员控制。
+路径相对于管理员配置的工作区，不展开 `~` 或环境变量。禁止绝对路径、`..` 和空文件路径，最多 1024 UTF-8 字节、64 个路径组件；`list_dir`、`grep`、`glob`、`stat`、`tree` 缺省目录为 `.`。`stat` / `tree` 显式传空白路径或 null 会报错，不等同于省略参数。工作区根及其上级目录必须由管理员控制。
 
-实现逐级打开工作区内父目录，再通过所持目录句柄操作叶子，不在检查后重新用宿主绝对路径打开文件。父目录符号链接被拒绝；文件读写、替换和删除拒绝符号链接、硬链接、目录、FIFO、socket 等非常规目标。写入可创建缺失的普通父目录。目录列表的目标路径也不得经过链接；列表中的符号链接显示为 `type: "symlink"`，硬链接或特殊文件显示为 `"unsupported"`，均不会被跟随或读取正文。
+实现逐级打开工作区内父目录，再通过所持目录句柄操作叶子，不在检查后重新用宿主绝对路径打开文件。父目录符号链接被拒绝；文件读写、替换和删除拒绝符号链接、硬链接、目录、FIFO、socket 等非常规目标。写入可创建缺失的普通父目录。目录列表和 tree 的目标路径也不得经过链接；目录条目中的符号链接显示为 `type: "symlink"`，硬链接或特殊文件显示为 `"unsupported"`，均不会被跟随或读取正文。stat 同样拒绝符号链接父目录，但允许查询叶子条目自身的类型；叶子链接只返回 `path` 与 `type`，不读取或泄露链接目标。
 
 这些约束不是宿主 OS 沙箱。管理员不得把工作区根或父目录的移动/替换权交给不可信进程；不遵守锁的编辑器也不参与后述串行化。跨网络文件系统、设备故障和恶意宿主进程需独立部署验证。
 
 ## 参数、输出与资源上限
 
-KiB 为 1024 字节。返回的 `path` 是工作区相对路径，目录条目名称相对于所列目录。
+KiB 为 1024 字节。返回的 `path` 是工作区相对路径，目录条目名称相对于所列目录。list_dir 保留原有 path 字段表示；stat/tree 则规范化去除 `./` 与重复分隔符。
 
 | 工具 | 参数与行为 | 成功 JSON |
 |---|---|---|
@@ -63,9 +65,9 @@ KiB 为 1024 字节。返回的 `path` 是工作区相对路径，目录条目�
 
 `read_file.truncated` 表示行范围没有包含全文，不表示超大文件被静默截断。读取所得字节和大小仅属于本次打开文件的观测，不保证与同时发生的外部编辑形成一致快照。
 
-`list_dir` 最多扫描 2000 个条目、32 层子目录，并在遍历检查点执行 2 秒预算；达到深度边界的目录仍可能列出，但不会继续遍历。最终 pretty JSON 连同路径、外层字段、转义和缩进不得超过 64 KiB。达到条目、扫描、深度、路径长度、输出或时间预算时设置 `truncated=true`；截断结果不能当作完整清单。已收集条目按名称排序，但扫描被截断时不保证是全目录字典序的前 N 项。非 UTF-8 文件名无法无损表达时明确报错；遍历期间目录消失或访问失败也可返回错误。2 秒是合作检查预算，不能中止卡住的内核文件系统调用。
+`list_dir` 最多扫描 2000 个条目、32 层子目录，并在遍历检查点执行 2 秒预算；达到深度边界的目录仍可能列出，但不会继续遍历。最终 pretty JSON 连同路径、外层字段、转义和缩进不得超过 64 KiB。本轮与 tree 共用 walker 后，路径预算按完整工作区相对路径计算，而不是只计算相对所选目录的名称；超过 1024 字节或 64 组件的条目不返回，并标记截断，避免给出其他文件工具无法引用的路径。达到条目、扫描、深度、路径长度、输出或时间预算时设置 `truncated=true`；截断结果不能当作完整清单。list_dir 仍在收集后按完整条目名称排序，但扫描被截断时不保证是全目录字典序的前 N 项。非 UTF-8 文件名无法无损表达时明确报错；遍历期间目录消失或访问失败也可返回错误。2 秒是合作检查预算，不能中止卡住的内核文件系统调用。
 
-上述九个主工具、四个兼容名称与记忆工具的异步入口共用全进程 8 个阻塞 I/O 许可，忙时立即返回错误，没有无限等待队列。取消调用方等待不会提前释放仍在工作的许可，也不会强制终止阻塞任务。原生模型工具参数 JSON 另受 16 KiB 上限、工具结果另受 256 KiB 上限；因此文件总量可通过小次追加达到边界，读取大文本时应请求合适行范围。工具结果编码超限不表示操作未发生，见[原生工具合同](native-tools.md)。
+上述十一个主工具、四个兼容名称与记忆工具的异步入口共用全进程 8 个阻塞 I/O 许可，忙时立即返回错误，没有无限等待队列。取消调用方等待不会提前释放仍在工作的许可，也不会强制终止阻塞任务。原生模型工具参数 JSON 另受 16 KiB 上限、工具结果另受 256 KiB 上限；因此文件总量可通过小次追加达到边界，读取大文本时应请求合适行范围。工具结果编码超限不表示操作未发生，见[原生工具合同](native-tools.md)。
 
 ## grep / glob 扫描合同
 
@@ -91,6 +93,33 @@ KiB 为 1024 字节。返回的 `path` 是工作区相对路径，目录条目�
 | 输出 | 最终 pretty JSON 连同原始查询/路径、结构、转义和缩进最多 64 KiB；不把 JSON 截成无法解析的字节片段 |
 
 搜索因结果数、扫描、深度、路径、字节、输出或合作时间预算提前结束时返回 `truncated=true`。grep 在恰好达到 `max_matches` 时也保守标记截断；glob 若完整扫描且恰好达到 `max_results`，可以保持 false。该标记说明结果完整性受限，不证明未处理部分一定还有匹配。grep 保留目录深度优先顺序，每层只对已收集的候选排序；glob 最多保留 500 个候选，再按完整相对路径排序并应用请求条数和输出预算。在扫描中止时，glob 也不保证是整个目录的字典序前 N 项；两工具的空结果或少量结果都不能当作完整无匹配结论。收窄 `path` 或过滤条件后可发起新的显式查询，应用不会自动遍历剩余树。
+
+## stat / tree 元数据与目录树合同
+
+这两个工具只读取目录条目和元数据，不读取文件正文，也不取得 mutation 锁。它们与其他文件/记忆工具共用八槽阻塞 I/O 容量；结果不是跨文件的一致快照，外部编辑或扫描时目录消失仍可导致错误。只读能力不会加入持久渠道或 cron/interval 的固定工具白名单；管理员独立 HEARTBEAT 与 `/hooks/inbound` 的注册工具范围见前述授权说明。
+
+| 工具 | 参数与默认值 | 成功 JSON |
+|---|---|---|
+| `stat` | `path` 省略时为 `.`；显式空白、null 或非字符串拒绝 | `path, type, size_bytes?, modified_unix_ms?` |
+| `tree` | `path` 省略时为 `.`；`max_depth=3`，仅接受 1–32 的整数；`max_entries=200`，仅接受 1–1000 的整数 | `path, max_depth, max_entries, truncated, entries`；条目含 `name, type, size?` |
+
+stat/tree 输出的 `path` 规范化为工作区相对路径，例如 `./a//b` 输出为 `a/b`，根输出为 `.`。参数对象严格拒绝未知字段和错误类型，不把越界数值静默收窄。两个配置开关均默认 true，例如只关闭元数据查询而保留目录树：
+
+```toml
+[tools.stat]
+enabled = false
+
+[tools.tree]
+enabled = true
+```
+
+stat 通过父目录句柄查询叶子自身的元数据，不跟随叶子符号链接。单链接普通文件为 `file`，目录为 `dir`，符号链接为 `symlink`，硬链接普通文件及 FIFO/socket/设备等为 `unsupported`。仅普通单链接文件返回 `size_bytes`；普通文件/目录在可取得修改时间时返回有符号 Unix 毫秒 `modified_unix_ms`，epoch 前的亚毫秒向下取整；不存在的可选字段完全省略，不返回 null。链接和 unsupported 仅返回路径与类型，不暴露链接目标、目标大小或修改时间。缺失路径报错；超大或二进制普通文件可以查询元数据，不受文本读取 256 KiB 上限限制。
+
+tree 返回相对所选目录的平面名称，例如 `src`、`src/main.rs`，按每层已收集的候选排序后深度优先遍历，可由名称还原层次；不会在最后对全路径重新排序。包含隐藏条目与 `.git`，显示链接/unsupported 类型但不进入它们；仅普通单链接文件带 `size`。所选根目录不作为 entries 中的一项，其直接子条目为第 1 层。遇到请求的 max_depth 层上的目录即停止深入并保守设置 truncated，即使该目录实际上为空也如此，不为证明空目录额外扫描一层。
+
+tree 最多扫描 2000 个目录条目，所有类型均计数；遍历检查点执行 2 秒合作时间预算，完整 pretty JSON 连同外层字段、路径、转义及缩进最多 64 KiB。每项完整工作区相对路径最多 1024 UTF-8 字节、64 个组件，不能用深层起点规避；超长项不返回并标记截断。因请求条数、扫描、深度、路径、输出或时间预算不能继续完整扫描时，truncated=true；这不表示未扫描部分必然还有条目。截断后的排序只针对已扫描候选，不保证是整棵目录树的前 N 项；缩小 path 或显式调整预算后可再次查询，没有自动补扫。非 UTF-8 文件名和访问失败明确报错，不使用有损名称；2 秒也不能强制终止挂起的内核文件系统调用。
+
+`list_dir` 保留既有 recursive 参数、最多 32 层子目录下降和收集后的完整名称排序；tree 使用请求的 max_depth 与每层排序 DFS。两者共享目录扫描与完整路径约束，但不能互换顺序或深度语义。
 
 ## mkdir / move 原子变更合同
 
@@ -133,6 +162,10 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 
 Rust 单独验证精确条目/深度/期限计数、metadata 检查后文件增长时最多读取 limit+1 字节并计入总预算、父目录改名后保留目录能力、叶子替换拒绝和动态规划匹配。非 UTF-8 文件名专项在 Linux 执行，APFS 不允许构造该测试名称，不能把本机通过当作该专项通过。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/jiawenyao401/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器；详见[验证记录](validation.md)。该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商请求，不以协议 fixture 代替断电硬件持久性认证。
 
-本轮 mkdir/move 最终本机 875 项 Rust 通过（library 364、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI；fmt、Clippy correctness/suspicious 与锁定 host 构建通过，保留既有 style/pedantic warnings。`memory_io` 定向 24 项通过，含 10 项新增本机 mutation 测试。最终生产二进制 `tests/workspace_mutations.py` 六组、`workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 和 `memory_io.py` 四组全部通过。
+PR #78 的 mkdir/move 最终本机 875 项 Rust 通过（library 364、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI；fmt、Clippy correctness/suspicious 与锁定 host 构建通过，保留既有 style/pedantic warnings。`memory_io` 定向 24 项通过，含 10 项新增本机 mutation 测试。最终生产二进制 `tests/workspace_mutations.py` 六组、`workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 和 `memory_io.py` 四组全部通过。
 
-本机 macOS 证据包含真实内核原子不覆盖竞争，以及 EXDEV / ENOSYS / EACCES 注入后不回退且保留两端；没有把它记为真实跨卷实测。Linux 另设 `/dev/shm` 与临时目录不同设备的真实 EXDEV 专项，CI 缺少该前提会失败，非 CI 仅允许显式跳过。Linux/macOS、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #77 结果。完整证据见[验证记录](validation.md)。
+本机 macOS 证据包含真实内核原子不覆盖竞争，以及 EXDEV / ENOSYS / EACCES 注入后不回退且保留两端；没有把它记为真实跨卷实测。Linux 另设 `/dev/shm` 与临时目录不同设备的真实 EXDEV 专项，CI 缺少该前提会失败，非 CI 仅允许显式跳过。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/jiawenyao401/JiaClaw/actions/runs/37107782116)，含 Linux/macOS、Chromium、真实容器及 Linux 真实 EXDEV 专项。完整证据见[验证记录](validation.md)。
+
+本轮 stat/tree 最终本机全量 Rust 884 项通过（library 372、core 123、host 389），1 项真实 Docker 专项本地 ignored 由 Linux CI 执行；fmt、Clippy correctness/suspicious 与锁定 host 构建通过，仍有 style/pedantic warnings。最终二进制 `tests/filesystem_info.py` 六组通过，验证元数据字段/时间、二进制与超大稀疏文件、相对 DFS/隐藏条目、链接与特殊类型、持写锁时只读可完成、严格参数及深度/条目/输出预算、独立配置和整批授权。`workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py`、`mcp.py`、`memory_io.py` 四组、`e2e.py`、`workspace_mutations.py` 六组共七套本批进程回归全部通过、退出码 0。
+
+父目录能力保留、叶子替换、精确 deadline、完整工作区路径预算及取消后的许可由 Rust 确定性测试覆盖；非 UTF-8 文件名专项仅在 Linux 执行，不记为本机 APFS 实测。跨平台、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #78 结果；本机模型均为协议 fixture，没有真实模型或平台请求。

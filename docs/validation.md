@@ -277,6 +277,19 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - 进程 fixture 不挂载第二个文件系统，本机 macOS 没有真实跨卷验收。Linux Rust 新增真实 EXDEV 专项，要求 `/dev/shm` 可写且与临时目录为不同设备，CI 缺少前提直接失败，非 CI 仅允许明确报告跳过；其通过状态以本批最终 CI 为准。
 - 同一最终生产二进制的 `workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 与 `memory_io.py` 四组回归全部通过、退出码 0。本批未单独重跑通用 `e2e.py`，由最终 CI 执行，不沿用上批本机结果。
 
-只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。Linux/macOS、Chromium 与真实容器以本批 draft PR 最终 head CI 为准，不沿用 PR #77 结果。
+只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/jiawenyao401/JiaClaw/actions/runs/37107782116)，Ubuntu、macOS 与 container 均成功，含 Chromium、真实容器和 Linux 真实 EXDEV 专项。
 
-此批不增加后台文件工具授权、非协作编辑器快照、操作收据或取消后回滚；copy 保留独立实现，stat/tree 与 durable 工作流仍不记为完成。配置与恢复步骤见[工作区文件指南](workspace-files.md)。
+此批不增加后台文件工具授权、非协作编辑器快照、操作收据或取消后回滚；copy 保留独立实现，该批没有新增 stat/tree 或 durable 工作流。配置与恢复步骤见[工作区文件指南](workspace-files.md)。
+
+## stat / tree 文件信息批次
+
+本轮增加 WorkspaceStat/WorkspaceTree 与独立配置开关，并将 list_dir 共享 walker 的路径预算收紧到完整工作区相对路径。最终本机全量 Rust 884 项通过（library 372、core 123、host 389），1 项真实 Docker 专项本地 ignored 由 Linux CI 执行；fmt、Clippy correctness/suspicious 和锁定 host 构建通过，仍有 style/pedantic warnings。
+
+- 最终含严格 JSON object 检查的二进制运行 `tests/filesystem_info.py`，六组全部通过、退出码 0：默认根/精确可选字段与固定毫秒 mtime、文本/二进制和 64 MiB+3 稀疏文件元数据；所选目录相对名称、每层排序 DFS、隐藏/`.git`、条数/深度及空目录边界保守截断；叶子符号链接/损坏链接/硬链接/FIFO 仅显示类型、链接父目录与非法根拒绝、不跟随外部目标，持有写锁时只读查询仍可完成。
+- 同一新 fixture 验证严格参数类型/未知字段/范围、64 组件和 32 层边界；2005 个空目录及含大量转义名称的完整 pretty JSON ≤64 KiB；stat/tree 独立开关、HTTP/native 工具目录一致、显式白名单与伪造混合批次零先前写入效果，非法调用方授权零模型请求。它不以耗时观察代替精确 deadline 或计数证明。
+- Rust 测试验证规范路径、epoch 前时间向下取整、父目录能力保留和叶子替换不跟随、完整工作区路径 1024 字节/64 组件在 lstat 前限制及 list_dir 同步收紧、tree DFS/深度和完整输出预算；既有共享 I/O 取消/许可与精确扫描/deadline 回归同样通过。非 UTF-8 文件名专项仅在 Linux 执行，本机 APFS 不允许构造该名称，不将其算作本机覆盖。
+- 本批七套既有真实进程回归 `workspace_files.py`（四组）、`file_search.py`（六组）、`native_tools.py`、`mcp.py`、`memory_io.py`（四组）、`e2e.py`、`workspace_mutations.py`（六组）全部通过、退出码 0。
+
+测试只使用本机模型协议、一次性凭据和临时文件，没有真实模型或平台请求。跨平台、Chromium 与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #78 的检查结果。
+
+验收范围为本机文件元数据、目录扫描、参数/配置授权及资源边界；持久渠道和 cron/interval 继续拒绝这些工具，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 则受现有注册工具与配置开关控制。不据此承诺一致快照、持久文件操作收据、工具循环恢复或完整 OS 沙箱。
