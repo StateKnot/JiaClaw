@@ -751,6 +751,7 @@ struct MemorySearchOutput {
 pub struct MemorySearchTool {
     workspace_path: PathBuf,
     default_paths: Vec<String>,
+    semantic: Option<std::sync::Arc<crate::SemanticMemory>>,
 }
 
 impl MemorySearchTool {
@@ -763,6 +764,7 @@ impl MemorySearchTool {
         let canonical_workspace = canonicalize_existing_or_clone(workspace_path);
         Self {
             workspace_path: canonical_workspace,
+            semantic: None,
             default_paths: unique_relative_paths(
                 default_paths
                     .into_iter()
@@ -771,6 +773,11 @@ impl MemorySearchTool {
                     .filter(|p| !p.is_empty()),
             ),
         }
+    }
+
+    pub(crate) fn with_semantic(mut self, semantic: std::sync::Arc<crate::SemanticMemory>) -> Self {
+        self.semantic = Some(semantic);
+        self
     }
 
     fn search_targets(&self, override_paths: Option<Vec<String>>) -> Vec<String> {
@@ -788,17 +795,27 @@ impl Tool for MemorySearchTool {
     }
 
     fn description(&self) -> &str {
-        "在工作区记忆类文件中按关键词检索相关片段（大小写不敏感子串 + 行窗）。默认扫描配置的 MEMORY / SOUL / USER；可选 paths 指定工作区相对路径。返回 {path, line, excerpt}。单文件超过 512KiB 截断；最多16个路径、query最多1024字节、每条摘录最多1024字节。禁止链接、特殊文件和路径穿越。"
+        if self.semantic.is_some() {
+            "检索记忆。mode=keyword（默认）按有界子串检索；mode=semantic 用授权embedding模型检索已刷新的索引。semantic paths只能缩小配置上传白名单；索引过期或请求未知时停止并要求本地维护。query最多1024字节，默认5最多20条，每条摘录最多1024字节。"
+        } else {
+            "在工作区记忆类文件中按关键词检索相关片段（大小写不敏感子串 + 行窗）。默认扫描配置的 MEMORY / SOUL / USER；可选 paths 指定工作区相对路径。返回 {path, line, excerpt}。单文件超过 512KiB 截断；最多16个路径、query最多1024字节、每条摘录最多1024字节。禁止链接、特殊文件和路径穿越。"
+        }
     }
 
     fn parameters_schema(&self) -> Value {
+        let modes = if self.semantic.is_some() {
+            vec!["keyword", "semantic"]
+        } else {
+            vec!["keyword"]
+        };
         serde_json::json!({
             "type": "object",
             "properties": {
+                "mode": {"type":"string", "enum":modes, "default":"keyword"},
                 "query": {
                     "type": "string",
                     "maxLength": 1024,
-                    "description": "检索关键词或子串（必填，最多1024 UTF-8字节）"
+                    "description": "检索文本（keyword 为子串，semantic 为语义查询；最多1024 UTF-8字节）"
                 },
                 "max_results": {
                     "type": "integer",
@@ -809,7 +826,7 @@ impl Tool for MemorySearchTool {
                 },
                 "paths": {
                     "type": "array",
-                    "description": "要扫描的工作区相对路径（可选；缺省为配置的 MEMORY / SOUL / USER）",
+                    "description": "工作区相对路径；keyword 缺省 MEMORY / SOUL / USER，semantic 缺省上传白名单且只能收窄",
                     "maxItems": 16,
                     "items": { "type": "string", "maxLength": 1024 }
                 }
@@ -819,6 +836,25 @@ impl Tool for MemorySearchTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        let mode = match args.get("mode") {
+            None => "keyword",
+            Some(Value::String(mode)) if mode == "keyword" || mode == "semantic" => mode.as_str(),
+            _ => {
+                return Err(JiaClawError::ToolExecution(
+                    "mode 必须是 keyword 或 semantic".into(),
+                ))
+            }
+        };
+        if mode == "semantic" {
+            let service = self
+                .semantic
+                .as_ref()
+                .ok_or_else(|| JiaClawError::ToolExecution("semantic memory 未启用".into()))?;
+            let (query, count, paths) = parse_memory_search_args(&args)?;
+            let result = service.search(query, count, paths).await?;
+            return serde_json::to_string(&result)
+                .map_err(|e| JiaClawError::ToolExecution(e.to_string()));
+        }
         // Validate bounded user inputs before queuing any blocking work.
         parse_memory_search_args(&args)?;
         let tool = self.clone();

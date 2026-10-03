@@ -1,6 +1,6 @@
 # 记忆文件与 I/O 边界
 
-MEMORY、SOUL、USER 与 HEARTBEAT 仍是工作区中的 UTF-8 文本文件。本批统一这些文件的受限读写路径，修复链接越界、固定临时文件、无限读入和并发追加丢失更新的边界；没有实现 embeddings、向量索引或语义检索。真实二进制 fixture 与跨平台 CI 的本批验收状态见[验证记录](validation.md)。
+MEMORY、SOUL、USER 与 HEARTBEAT 仍是工作区中的 UTF-8 文本文件。本批统一这些文件的受限读写路径，修复链接越界、固定临时文件、无限读入和并发追加丢失更新的边界。可选的 embeddings 与向量索引另见[语义记忆](semantic-memory.md)，沿用本页的来源文件访问边界。真实二进制 fixture 与跨平台 CI 的本批验收状态见[验证记录](validation.md)。
 
 ## 配置与授权
 

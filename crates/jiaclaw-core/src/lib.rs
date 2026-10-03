@@ -15,6 +15,9 @@ pub use mcp::{McpConfig, McpServerConfig, McpToolConfig, McpToolEffect};
 mod routing;
 pub use routing::{ModelPurpose, ModelRoute, ModelRoutingConfig, ModelSelection};
 
+mod semantic;
+pub use semantic::SemanticMemoryConfig;
+
 /// 外部依赖
 extern crate dirs;
 
@@ -304,12 +307,17 @@ pub struct MemoryConfig {
     /// 记忆文件路径（相对于 `workspace_path`，默认 `MEMORY.md`）
     #[serde(default = "default_memory_path")]
     pub path: String,
+
+    /// 默认关闭的语义检索与持久化向量索引。
+    #[serde(default)]
+    pub semantic: SemanticMemoryConfig,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             path: default_memory_path(),
+            semantic: SemanticMemoryConfig::default(),
         }
     }
 }
