@@ -3,20 +3,15 @@
 
 //! 工作区文件工具：`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move`。
 //!
-//! 前七项使用目录句柄与有界 blocking I/O；mkdir / move 沿用路径解析与各自限制。
+//! 九项工具使用目录句柄与有界 blocking I/O；写入共享工作区协作锁。
 //! 不调用 LLM，不执行 shell。
 
-use crate::memory::{
-    canonicalize_existing_or_clone, ensure_existing_within_workspace,
-    resolve_workspace_relative_path,
-};
+use crate::memory::canonicalize_existing_or_clone;
 use crate::tools::Tool;
 use async_trait::async_trait;
 use jiaclaw_core::JiaClawError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// `read_file` 单文件读取上限（字节）。超过则明确报错，不截断返回。
@@ -772,82 +767,6 @@ pub fn parse_move_args(args: &Value) -> Result<MoveArgs, JiaClawError> {
     })
 }
 
-/// 解析工作区相对创建目标。
-///
-/// 已存在路径 canonicalize 后必须落在工作区内；不存在时沿已存在祖先
-/// canonicalize，再拼回剩余组件（可随后创建中间目录）。
-///
-/// 返回 `(path, existed)`：`existed` 表示目标路径本身已存在。
-fn prepare_workspace_create_path(
-    workspace: &Path,
-    rel_path: &str,
-) -> Result<(PathBuf, bool), JiaClawError> {
-    let joined = resolve_workspace_relative_path(workspace, rel_path)?;
-    let ws = canonicalize_existing_or_clone(workspace);
-
-    let mut ancestor = joined.clone();
-    let mut suffix: Vec<OsString> = Vec::new();
-    loop {
-        if fs::symlink_metadata(&ancestor).is_ok() {
-            break;
-        }
-        match ancestor.file_name() {
-            Some(name) => {
-                suffix.push(name.to_os_string());
-                match ancestor.parent() {
-                    Some(parent) => ancestor = parent.to_path_buf(),
-                    None => break,
-                }
-            }
-            None => break,
-        }
-        if ancestor == ws {
-            break;
-        }
-    }
-
-    if fs::symlink_metadata(&ancestor).is_err() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "无法解析路径 {rel_path}"
-        )));
-    }
-    if !ancestor.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向无效或损坏的链接"
-        )));
-    }
-
-    ensure_existing_within_workspace(workspace, &ancestor)?;
-    let mut current = ancestor
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析路径 {rel_path}: {e}")))?;
-    if !current.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向工作空间外部"
-        )));
-    }
-
-    if suffix.is_empty() {
-        return Ok((current, true));
-    }
-
-    if !current.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径的父级不是目录: {rel_path}"
-        )));
-    }
-
-    for name in suffix.iter().rev() {
-        current.push(name);
-    }
-    if !current.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向工作空间外部"
-        )));
-    }
-    Ok((current, false))
-}
-
 /// 写入工作区相对路径下的常规文件（覆盖或追加）。可创建中间目录。
 ///
 /// # Errors
@@ -1089,409 +1008,41 @@ pub fn glob_workspace(workspace: &Path, args: &GlobArgs) -> Result<GlobOutput, J
     Ok(output)
 }
 
-fn mkdir_existing_dir_result(
-    workspace: &Path,
-    dest: &Path,
-    rel_path: &str,
-    recursive: bool,
-) -> Result<MkdirOutput, JiaClawError> {
-    ensure_existing_within_workspace(workspace, dest)?;
-    let canon = dest
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析目录 {rel_path}: {e}")))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向工作空间外部"
-        )));
-    }
-    if !canon.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径已存在且不是目录: {rel_path}"
-        )));
-    }
-    Ok(MkdirOutput {
-        path: rel_path.to_string(),
-        created: false,
-        existed: true,
-        recursive,
-    })
-}
-
-/// 在工作区相对路径创建目录。默认 `recursive=true`（等价 `mkdir -p`）。
-///
-/// 目标已存在且为目录时幂等成功（`created=false`，`existed=true`）。
-/// 已存在且为文件时报错。创建后 canonicalize 仍须落在工作区内。
+/// 在工作区相对路径创建目录；既有普通目录幂等成功。父目录与叶子不得为链接。
+/// 递归创建逐级同步；失败可能留下已创建的父目录，不构成整体事务。
 ///
 /// # Errors
 ///
-/// 路径非法、越出工作空间、symlink 逃逸、目标是文件、非递归时父目录不存在，或 IO 失败时返回错误。
+/// 路径非法、链接/特殊目标、非递归时父目录不存在、写入锁忙或 IO 失败时返回错误。
 pub fn mkdir_workspace(
     workspace: &Path,
     rel_path: &str,
     recursive: bool,
 ) -> Result<MkdirOutput, JiaClawError> {
-    let (dest, existed) = prepare_workspace_create_path(workspace, rel_path)?;
-    if existed {
-        return mkdir_existing_dir_result(workspace, &dest, rel_path, recursive);
-    }
-
-    if recursive {
-        fs::create_dir_all(&dest).map_err(|err| {
-            if dest.exists() && !dest.is_dir() {
-                JiaClawError::ToolExecution(format!("路径已存在且不是目录: {rel_path}"))
-            } else {
-                JiaClawError::ToolExecution(format!("无法创建目录 {rel_path}: {err}"))
-            }
-        })?;
-    } else {
-        let parent = dest
-            .parent()
-            .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的目录路径: {rel_path}")))?;
-        if !parent.exists() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "父目录不存在（recursive/parents=false，需先创建上级或使用默认 mkdir -p）: {rel_path}"
-            )));
-        }
-        if !parent.is_dir() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径的父级不是目录: {rel_path}"
-            )));
-        }
-        match fs::create_dir(&dest) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                return mkdir_existing_dir_result(workspace, &dest, rel_path, recursive);
-            }
-            Err(err) => {
-                return Err(JiaClawError::ToolExecution(format!(
-                    "无法创建目录 {rel_path}: {err}"
-                )));
-            }
-        }
-    }
-
-    ensure_existing_within_workspace(workspace, &dest)?;
-    let canon = dest
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析目录 {rel_path}: {e}")))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向工作空间外部"
-        )));
-    }
-    if !canon.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是目录: {rel_path}"
-        )));
-    }
-
+    let created = crate::memory_io::mkdir_directory(workspace, rel_path, recursive)?;
     Ok(MkdirOutput {
         path: rel_path.to_string(),
-        created: true,
-        existed: false,
+        created,
+        existed: !created,
         recursive,
     })
 }
 
-/// Unix `EXDEV`（跨设备）。
-#[cfg(unix)]
-const EXDEV_ERRNO: i32 = 18;
-/// Windows `ERROR_NOT_SAME_DEVICE`。
-#[cfg(windows)]
-const ERROR_NOT_SAME_DEVICE: i32 = 17;
-
-fn is_cross_device(err: &std::io::Error) -> bool {
-    // `ErrorKind::CrossesDevices` 在当前 MSRV 上仍不稳定。
-    match err.raw_os_error() {
-        #[cfg(unix)]
-        Some(EXDEV_ERRNO) => true,
-        #[cfg(windows)]
-        Some(ERROR_NOT_SAME_DEVICE) => true,
-        _ => false,
-    }
-}
-
-fn directory_is_empty(path: &Path) -> Result<bool, JiaClawError> {
-    let mut entries = fs::read_dir(path).map_err(|err| {
-        JiaClawError::ToolExecution(format!("无法读取目录 {}: {err}", path.display()))
-    })?;
-    match entries.next() {
-        None => Ok(true),
-        Some(Ok(_)) => Ok(false),
-        Some(Err(err)) => Err(JiaClawError::ToolExecution(format!(
-            "无法读取目录条目 {}: {err}",
-            path.display()
-        ))),
-    }
-}
-
-fn resolve_move_source(
-    workspace: &Path,
-    from_rel: &str,
-) -> Result<(PathBuf, MoveKind), JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, from_rel)?;
-    let meta = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "源路径不存在: {from_rel}"
-            )));
-        }
-        Err(err) => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "无法读取源路径元数据 {from_rel}: {err}"
-            )));
-        }
-    };
-
-    let kind = if meta.file_type().is_dir() {
-        MoveKind::Dir
-    } else if meta.file_type().is_file() {
-        MoveKind::File
-    } else {
-        return Err(JiaClawError::ToolExecution(format!(
-            "源路径不是常规文件或目录: {from_rel}"
-        )));
-    };
-
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "源路径不存在: {from_rel}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析源路径 {from_rel}: {e}")))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 源路径 {from_rel} 指向工作空间外部"
-        )));
-    }
-    if canon == ws {
-        return Err(JiaClawError::ToolExecution(
-            "拒绝移动工作区根目录".to_string(),
-        ));
-    }
-    match kind {
-        MoveKind::Dir if !canon.is_dir() => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "源路径不是目录: {from_rel}"
-            )));
-        }
-        MoveKind::File if !canon.is_file() => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "源路径不是文件: {from_rel}"
-            )));
-        }
-        _ => {}
-    }
-    Ok((canon, kind))
-}
-
-fn resolve_move_destination(
-    workspace: &Path,
-    to_rel: &str,
-    source_canon: &Path,
-    kind: MoveKind,
-    overwrite: bool,
-) -> Result<(PathBuf, bool), JiaClawError> {
-    let (dest, dest_existed) = prepare_workspace_create_path(workspace, to_rel)?;
-    let ws = canonicalize_existing_or_clone(workspace);
-
-    if dest_existed {
-        ensure_existing_within_workspace(workspace, &dest)?;
-        let dest_canon = dest
-            .canonicalize()
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法解析目标路径 {to_rel}: {e}")))?;
-        if !dest_canon.starts_with(&ws) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 目标路径 {to_rel} 指向工作空间外部"
-            )));
-        }
-        if dest_canon == source_canon {
-            return Err(JiaClawError::ToolExecution(format!(
-                "源与目标是同一路径: {to_rel}"
-            )));
-        }
-        if !overwrite {
-            return Err(JiaClawError::ToolExecution(format!(
-                "目标已存在: {to_rel}（overwrite=false，拒绝覆盖）"
-            )));
-        }
-        let dest_meta = fs::symlink_metadata(&dest_canon).map_err(|err| {
-            JiaClawError::ToolExecution(format!("无法读取目标路径元数据 {to_rel}: {err}"))
-        })?;
-        match (
-            kind,
-            dest_meta.file_type().is_dir(),
-            dest_meta.file_type().is_file(),
-        ) {
-            (MoveKind::File, false, true) => {
-                fs::remove_file(&dest_canon).map_err(|err| {
-                    JiaClawError::ToolExecution(format!("无法覆盖目标文件 {to_rel}: {err}"))
-                })?;
-            }
-            (MoveKind::Dir, true, false) => {
-                if !directory_is_empty(&dest_canon)? {
-                    return Err(JiaClawError::ToolExecution(format!(
-                        "拒绝覆盖非空目录: {to_rel}"
-                    )));
-                }
-                fs::remove_dir(&dest_canon).map_err(|err| {
-                    JiaClawError::ToolExecution(format!("无法覆盖目标目录 {to_rel}: {err}"))
-                })?;
-            }
-            _ => {
-                return Err(JiaClawError::ToolExecution(format!(
-                    "源与目标类型不一致，拒绝覆盖: {to_rel}"
-                )));
-            }
-        }
-        return Ok((dest_canon, true));
-    }
-
-    let parent = dest
-        .parent()
-        .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的目标路径: {to_rel}")))?;
-    if !parent.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "目标父目录不存在: {to_rel}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, parent)?;
-    let parent_canon = parent
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析目标父目录 {to_rel}: {e}")))?;
-    if !parent_canon.starts_with(&ws) || !parent_canon.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 目标路径 {to_rel} 指向工作空间外部"
-        )));
-    }
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的目标文件名: {to_rel}")))?;
-    let dest_final = parent_canon.join(file_name);
-    if !dest_final.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 目标路径 {to_rel} 指向工作空间外部"
-        )));
-    }
-    Ok((dest_final, false))
-}
-
-fn copy_delete_across_device(
-    source: &Path,
-    dest: &Path,
-    from_rel: &str,
-    to_rel: &str,
-    kind: MoveKind,
-) -> Result<(), JiaClawError> {
-    match kind {
-        MoveKind::File => {
-            fs::copy(source, dest).map_err(|err| {
-                JiaClawError::ToolExecution(format!(
-                    "跨文件系统复制 {from_rel} -> {to_rel} 失败: {err}"
-                ))
-            })?;
-            fs::remove_file(source).map_err(|err| {
-                JiaClawError::ToolExecution(format!(
-                    "跨文件系统复制后无法删除源文件 {from_rel}: {err}"
-                ))
-            })?;
-        }
-        MoveKind::Dir => {
-            if !directory_is_empty(source)? {
-                return Err(JiaClawError::ToolExecution(format!(
-                    "跨文件系统移动非空目录仅支持同卷 rename: {from_rel} -> {to_rel}"
-                )));
-            }
-            fs::create_dir(dest).map_err(|err| {
-                JiaClawError::ToolExecution(format!("跨文件系统创建目标目录 {to_rel} 失败: {err}"))
-            })?;
-            fs::remove_dir(source).map_err(|err| {
-                JiaClawError::ToolExecution(format!(
-                    "跨文件系统复制后无法删除源目录 {from_rel}: {err}"
-                ))
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn rename_or_copy_delete(
-    source: &Path,
-    dest: &Path,
-    from_rel: &str,
-    to_rel: &str,
-    kind: MoveKind,
-) -> Result<(), JiaClawError> {
-    match fs::rename(source, dest) {
-        Ok(()) => Ok(()),
-        Err(err) if is_cross_device(&err) => {
-            copy_delete_across_device(source, dest, from_rel, to_rel, kind)
-        }
-        Err(err) => Err(JiaClawError::ToolExecution(format!(
-            "无法移动 {from_rel} -> {to_rel}: {err}"
-        ))),
-    }
-}
-
-/// 在工作区内移动或重命名文件 / 目录。优先同卷 [`std::fs::rename`]；文件与空目录在跨文件系统时回退复制后删除。
-///
-/// `from` 必须存在。`to` 已存在且 `overwrite=false`（默认）时报错。不创建中间目录。
-/// 非空目录仅同卷 rename；跨卷非空目录报错。
+/// 在工作区内通过目录句柄进行同卷原子重命名，不读取正文或创建父目录。
+/// 默认使用内核原子不覆盖；覆盖仅允许同类型常规文件或空目录，不提前删除目标。
+/// 跨文件系统或原子不覆盖不受支持时明确失败，不回退复制后删除。
 ///
 /// # Errors
 ///
-/// 路径非法、越出工作空间、symlink 逃逸、源不存在、目标已存在且未覆盖、类型不匹配，或 IO 失败时返回错误。
+/// 路径非法、链接/特殊目标、同一路径、类型不匹配、目标冲突、写入锁忙或 IO 失败。
+/// 提交后的目录同步失败不表示重命名未发生；核对两端后再决定下一步。
 pub fn move_workspace(
     workspace: &Path,
     from_rel: &str,
     to_rel: &str,
     overwrite: bool,
 ) -> Result<MoveOutput, JiaClawError> {
-    let (source_canon, kind) = resolve_move_source(workspace, from_rel)?;
-    let (dest_final, overwritten) =
-        resolve_move_destination(workspace, to_rel, &source_canon, kind, overwrite)?;
-
-    if dest_final == source_canon {
-        return Err(JiaClawError::ToolExecution(format!(
-            "源与目标是同一路径: {to_rel}"
-        )));
-    }
-    if kind == MoveKind::Dir && dest_final.starts_with(&source_canon) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "不能将目录移动到其自身或其子路径: {from_rel} -> {to_rel}"
-        )));
-    }
-
-    rename_or_copy_delete(&source_canon, &dest_final, from_rel, to_rel, kind)?;
-
-    if source_canon.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "移动后源路径仍存在: {from_rel}"
-        )));
-    }
-    if !dest_final.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "移动后目标路径不存在: {to_rel}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &dest_final)?;
-    let dest_canon = dest_final.canonicalize().map_err(|e| {
-        JiaClawError::ToolExecution(format!("无法解析移动后的目标路径 {to_rel}: {e}"))
-    })?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !dest_canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 目标路径 {to_rel} 指向工作空间外部"
-        )));
-    }
-
+    let (kind, overwritten) = crate::memory_io::move_entry(workspace, from_rel, to_rel, overwrite)?;
     Ok(MoveOutput {
         from: from_rel.to_string(),
         to: to_rel.to_string(),
@@ -1725,9 +1276,9 @@ pub struct MoveOutput {
     pub to: String,
     /// 实际使用的 overwrite 值
     pub overwrite: bool,
-    /// 是否因 overwrite 删除了已存在的目标
+    /// 覆盖前检查时目标是否已存在（协作写入锁范围内的观测）
     pub overwritten: bool,
-    /// 移动的是文件还是目录
+    /// 源路径在持锁检查时是文件还是目录
     pub kind: MoveKind,
 }
 
@@ -2249,7 +1800,7 @@ impl Tool for WorkspaceMkdirTool {
     }
 
     fn description(&self) -> &str {
-        "创建工作区相对路径下的目录。path 必填；可选 recursive / parents（默认 true，等价 mkdir -p）。目录已存在则幂等成功（created=false, existed=true）。若路径已存在且为文件则报错。禁止 .. / 绝对路径 / symlink 逃逸。创建后 canonicalize 必须仍落在工作区。不执行 shell，不调用 LLM。"
+        "创建工作区相对路径下的目录。path 必填；可选 recursive / parents（默认 true，等价 mkdir -p）。目录已存在则幂等成功（created=false, existed=true）。若路径已存在且为文件则报错。禁止 .. / 绝对路径 / symlink 逃逸。目录句柄访问，禁止链接，最多 1024 字节/64 个路径组件。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2277,7 +1828,11 @@ impl Tool for WorkspaceMkdirTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_mkdir_args(&args)?;
-        let output = mkdir_workspace(&self.workspace_path, &parsed.path, parsed.recursive)?;
+        let workspace = self.workspace_path.clone();
+        let output = crate::memory_io::run_blocking(move || {
+            mkdir_workspace(&workspace, &parsed.path, parsed.recursive)
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化 mkdir 结果失败: {e}")))
     }
@@ -2305,7 +1860,7 @@ impl Tool for WorkspaceMoveTool {
     }
 
     fn description(&self) -> &str {
-        "在工作区内移动或重命名文件或目录。文档主名 from / to（source / destination 为别名，同时给出时必须一致）。from 必须存在；to 已存在且 overwrite=false（默认）则报错。支持常规文件、空目录与非空目录（非空目录优先同卷 rename；跨文件系统的非空目录报错，文件与空目录回退复制后删除）。禁止 .. / 绝对路径 / symlink 逃逸。canonicalize 后两端必须仍落在工作区。不创建中间目录。不执行 shell，不调用 LLM。"
+        "在工作区内移动或重命名文件或目录。文档主名 from / to（source / destination 为别名，同时给出时必须一致）。from 必须存在；to 已存在且 overwrite=false（默认）则报错。支持常规单链接文件和目录的同卷原子重命名，跨文件系统拒绝。默认原子不覆盖；overwrite=true 仅替换同类型文件或空目录，不提前删除目标。禁止 .. / 绝对路径 / 符号链接 / 硬链接 / 特殊文件。目录句柄访问，最多 1024 字节/64 个路径组件。不创建中间目录。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2334,18 +1889,20 @@ impl Tool for WorkspaceMoveTool {
                     "default": false
                 }
             },
-            "required": ["from", "to"]
+            "allOf": [
+                {"anyOf": [{"required": ["from"]}, {"required": ["source"]}]},
+                {"anyOf": [{"required": ["to"]}, {"required": ["destination"]}]}
+            ]
         })
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_move_args(&args)?;
-        let output = move_workspace(
-            &self.workspace_path,
-            &parsed.from,
-            &parsed.to,
-            parsed.overwrite,
-        )?;
+        let workspace = self.workspace_path.clone();
+        let output = crate::memory_io::run_blocking(move || {
+            move_workspace(&workspace, &parsed.from, &parsed.to, parsed.overwrite)
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化 move 结果失败: {e}")))
     }
@@ -2354,6 +1911,7 @@ impl Tool for WorkspaceMoveTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     // Parallel semantic tests share the production eight-slot I/O pool. A busy
     // rejection happens before spawn_blocking and has no effect to replay.
@@ -4039,6 +3597,29 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("overwrite"), "{err}");
+    }
+
+    #[test]
+    fn move_schema_accepts_each_alias_combination_and_rejects_missing_paths() {
+        let tool = WorkspaceMoveTool::new(Path::new("."));
+        let schema = tool.parameters_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for source in ["from", "source"] {
+            for destination in ["to", "destination"] {
+                let value = serde_json::json!({(source): "a", (destination): "b"});
+                assert!(validator.is_valid(&value), "{value}");
+                assert_eq!(parse_move_args(&value).unwrap().from, "a");
+            }
+        }
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"from": "a"}),
+            serde_json::json!({"destination": "b"}),
+            serde_json::json!({"source": null, "to": "b"}),
+            serde_json::json!({"from": "a", "to": "b", "overwrite": "true"}),
+        ] {
+            assert!(!validator.is_valid(&value), "{value}");
+        }
     }
 
     #[tokio::test]
