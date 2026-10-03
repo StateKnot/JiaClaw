@@ -25,3 +25,5 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 5. 完成上游 README 所列生产 qualification，再将默认运行路径切换到框架。尚未达到这些门槛时，文档不得标记整个运行栈 production-ready。
 
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
+
+独立用户 Telegram 的 registry 准入、私有 inbox/outbox 与人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。本次 main/release/#140 无变化，不能将此渠道切片计为上游运行时认证。

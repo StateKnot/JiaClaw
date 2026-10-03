@@ -21,6 +21,8 @@ const MAX_USERS: i64 = 32;
 const MAX_ACTIVE_KEYS: i64 = 8;
 const MAX_KEYS: i64 = 1024;
 const MAX_AUDIT_EVENTS: i64 = 4096;
+const MAX_TELEGRAM_BINDINGS: i64 = 32;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -35,6 +37,19 @@ pub struct Principal {
 pub struct ScheduledUser {
     pub user_id: Uuid,
     pub backend_id: String,
+}
+
+/// Permanent administrator binding. Revocation never frees its user or bot identity.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct TelegramBindingSummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub backend_id: String,
+    pub bot_id: String,
+    pub sender_id: String,
+    pub enabled: bool,
 }
 
 /// A credential has ceased to authorize admission, or an earlier write needs resolution.
@@ -185,13 +200,18 @@ impl Registry {
                 "refusing to adopt an unrelated gateway registry database"
             );
             tx.execute_batch(SCHEMA)?;
+            tx.execute_batch(SCHEMA_V2)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", 1)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             ensure!(
-                version == 1 && application == APPLICATION_ID,
+                (version == 1 || version == SCHEMA_VERSION) && application == APPLICATION_ID,
                 "unsupported gateway registry schema or database identity"
             );
+            if version == 1 {
+                tx.execute_batch(SCHEMA_V2)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
         }
         let corrupt = tx
             .prepare("PRAGMA foreign_key_check")?
@@ -239,7 +259,7 @@ impl Registry {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         let application: i32 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
         ensure!(
-            version == 1 && application == APPLICATION_ID,
+            version == SCHEMA_VERSION && application == APPLICATION_ID,
             "unsupported gateway registry schema or database identity"
         );
         Ok(conn)
@@ -466,16 +486,8 @@ impl Registry {
         if !authorized {
             return Err(WriteAdmissionError::Unauthorized.into());
         }
-        let held: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
-            [user_id.to_string()],
-            |row| row.get(0),
-        )?;
-        if held {
-            return Err(WriteAdmissionError::Held.into());
-        }
         let now = now_ms();
-        tx.execute("INSERT INTO write_holds(user_id,request_id,state,reason,admitted_ms,updated_ms) VALUES(?1,?2,'in_flight','request_in_flight',?3,?3)",params![user_id.to_string(),request_id.to_string(),now])?;
+        insert_hold(&tx, user_id, request_id, now)?;
         audit(
             &tx,
             user_id,
@@ -487,6 +499,155 @@ impl Registry {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Bind one enabled user's permanent backend to a private Telegram sender and bot.
+    pub fn add_telegram_binding(
+        &self,
+        user_id: Uuid,
+        bot_id: &str,
+        sender_id: &str,
+    ) -> Result<TelegramBindingSummary> {
+        positive_telegram_id(bot_id)?;
+        positive_telegram_id(sender_id)?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let backend_id: String = tx
+            .query_row(
+                "SELECT backend_id FROM users WHERE id=?1 AND enabled=1",
+                [user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("enabled gateway user not found")?;
+        let count: i64 = tx.query_row("SELECT count(*) FROM telegram_bindings", [], |row| {
+            row.get(0)
+        })?;
+        ensure!(
+            count < MAX_TELEGRAM_BINDINGS,
+            "gateway Telegram lifetime binding limit reached"
+        );
+        let reserved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM telegram_bindings WHERE user_id=?1 OR bot_id=?2)",
+            params![user_id.to_string(), bot_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !reserved,
+            "gateway Telegram user or bot is permanently reserved, including revoked bindings"
+        );
+        let summary = TelegramBindingSummary {
+            id: Uuid::new_v4(),
+            user_id,
+            backend_id,
+            bot_id: bot_id.into(),
+            sender_id: sender_id.into(),
+            enabled: true,
+        };
+        let now = now_ms();
+        tx.execute("INSERT INTO telegram_bindings(id,user_id,backend_id,bot_id,sender_id,enabled,created_ms,updated_ms) VALUES(?1,?2,?3,?4,?5,1,?6,?6)",
+            params![summary.id.to_string(),user_id.to_string(),summary.backend_id,bot_id,sender_id,now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            None,
+            "telegram_binding_added",
+            Some(&summary.id.to_string()),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    /// Bounded administrative history, including permanently revoked bindings.
+    pub fn list_telegram_bindings(&self) -> Result<Vec<TelegramBindingSummary>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,user_id,backend_id,bot_id,sender_id,enabled FROM telegram_bindings ORDER BY created_ms,id LIMIT 32")?;
+        let rows = statement.query_map([], telegram_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Permanently revoke future admissions; already admitted work and its hold remain.
+    pub fn revoke_telegram_binding(&self, binding_id: Uuid) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user, enabled): (String, bool) = tx
+            .query_row(
+                "SELECT user_id,enabled FROM telegram_bindings WHERE id=?1",
+                [binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("gateway Telegram binding not found")?;
+        if enabled {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE telegram_bindings SET enabled=0,updated_ms=MAX(updated_ms,?2) WHERE id=?1",
+                params![binding_id.to_string(), now],
+            )?;
+            audit(
+                &tx,
+                uuid(user)?,
+                None,
+                None,
+                "telegram_binding_revoked",
+                Some(&binding_id.to_string()),
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Live ingress identity only; this short read does not grant write admission.
+    pub fn telegram_authorized(&self, binding_id: Uuid) -> Result<Option<TelegramBindingSummary>> {
+        telegram_on(&self.connection()?, binding_id)
+    }
+
+    /// Recheck binding/user ownership and acquire the shared write hold atomically.
+    /// No prompt, event body, token or caller-selected backend is persisted here.
+    pub fn admit_telegram(
+        &self,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+    ) -> Result<TelegramBindingSummary> {
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "Telegram request ID must be RFC4122 UUIDv7"
+        );
+        ensure!(
+            matches!(operation, "telegram_execute" | "telegram_send"),
+            "invalid Telegram admission operation"
+        );
+        let object =
+            Uuid::parse_str(object_id).context("Telegram object ID must be a canonical UUID")?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "Telegram object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let binding = telegram_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, binding.user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        audit(
+            &tx,
+            binding.user_id,
+            None,
+            Some(request_id),
+            operation,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
     }
 
     /// Read live key/user state for every request. No successful-authentication cache exists.
@@ -523,16 +684,8 @@ impl Registry {
         if !authorized {
             return Err(WriteAdmissionError::Unauthorized.into());
         }
-        let held: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
-            [principal.user_id.to_string()],
-            |row| row.get(0),
-        )?;
-        if held {
-            return Err(WriteAdmissionError::Held.into());
-        }
         let now = now_ms();
-        tx.execute("INSERT INTO write_holds(user_id,request_id,state,reason,admitted_ms,updated_ms) VALUES(?1,?2,'in_flight','request_in_flight',?3,?3)", params![principal.user_id.to_string(), request_id.to_string(), now])?;
+        insert_hold(&tx, principal.user_id, request_id, now)?;
         audit(
             &tx,
             principal.user_id,
@@ -645,6 +798,58 @@ impl Registry {
     }
 }
 
+fn positive_telegram_id(value: &str) -> Result<()> {
+    ensure!(
+        value.len() <= 19
+            && value
+                .parse::<i64>()
+                .ok()
+                .is_some_and(|number| number > 0 && number.to_string() == value),
+        "Telegram numeric IDs must be canonical positive i64 values"
+    );
+    Ok(())
+}
+
+fn telegram_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelegramBindingSummary> {
+    let id = |index| -> rusqlite::Result<Uuid> {
+        let text: String = row.get(index)?;
+        Uuid::parse_str(&text).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                index,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    };
+    Ok(TelegramBindingSummary {
+        id: id(0)?,
+        user_id: id(1)?,
+        backend_id: row.get(2)?,
+        bot_id: row.get(3)?,
+        sender_id: row.get(4)?,
+        enabled: row.get(5)?,
+    })
+}
+
+fn telegram_on(conn: &Connection, binding_id: Uuid) -> Result<Option<TelegramBindingSummary>> {
+    Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.bot_id,b.sender_id,b.enabled FROM telegram_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
+        [binding_id.to_string()],telegram_row).optional()?)
+}
+
+fn insert_hold(tx: &Transaction<'_>, user_id: Uuid, request_id: Uuid, now: i64) -> Result<()> {
+    let held: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
+        [user_id.to_string()],
+        |row| row.get(0),
+    )?;
+    if held {
+        return Err(WriteAdmissionError::Held.into());
+    }
+    tx.execute("INSERT INTO write_holds(user_id,request_id,state,reason,admitted_ms,updated_ms) VALUES(?1,?2,'in_flight','request_in_flight',?3,?3)",
+        params![user_id.to_string(),request_id.to_string(),now])?;
+    Ok(())
+}
+
 fn enabled_user(tx: &Transaction<'_>, user_id: Uuid) -> Result<()> {
     let enabled: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND enabled=1)",
@@ -711,6 +916,26 @@ CREATE TABLE write_holds(user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) 
  admitted_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
 CREATE TABLE audit_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
  key_id TEXT, request_id TEXT, action TEXT NOT NULL, note TEXT CHECK(note IS NULL OR length(CAST(note AS BLOB)) BETWEEN 1 AND 512), created_ms INTEGER NOT NULL);
+";
+
+// A user and a bot remain reserved for their original binding for the registry's
+// lifetime. Database constraints also prevent accidental future update/delete code
+// from weakening that ownership or reactivating a revoked binding.
+const SCHEMA_V2: &str = "
+CREATE UNIQUE INDEX users_identity_backend ON users(id,backend_id);
+CREATE TABLE telegram_bindings(
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL UNIQUE, backend_id TEXT NOT NULL,
+ bot_id TEXT NOT NULL UNIQUE CHECK(length(bot_id) BETWEEN 1 AND 19 AND CAST(bot_id AS INTEGER)>0 AND bot_id=CAST(CAST(bot_id AS INTEGER) AS TEXT)),
+ sender_id TEXT NOT NULL CHECK(length(sender_id) BETWEEN 1 AND 19 AND CAST(sender_id AS INTEGER)>0 AND sender_id=CAST(CAST(sender_id AS INTEGER) AS TEXT)),
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+ FOREIGN KEY(user_id,backend_id) REFERENCES users(id,backend_id) ON DELETE RESTRICT);
+CREATE TRIGGER telegram_binding_immutable BEFORE UPDATE OF id,user_id,backend_id,bot_id,sender_id ON telegram_bindings
+ WHEN NEW.id<>OLD.id OR NEW.user_id<>OLD.user_id OR NEW.backend_id<>OLD.backend_id OR NEW.bot_id<>OLD.bot_id OR NEW.sender_id<>OLD.sender_id
+ BEGIN SELECT RAISE(ABORT,'Telegram binding ownership is immutable'); END;
+CREATE TRIGGER telegram_binding_no_reactivate BEFORE UPDATE OF enabled ON telegram_bindings WHEN OLD.enabled=0 AND NEW.enabled<>0
+ BEGIN SELECT RAISE(ABORT,'Telegram binding revocation is permanent'); END;
+CREATE TRIGGER telegram_binding_no_delete BEFORE DELETE ON telegram_bindings
+ BEGIN SELECT RAISE(ABORT,'Telegram binding reservations are permanent'); END;
 ";
 
 #[cfg(test)]
@@ -1049,7 +1274,7 @@ mod tests {
         let fixture = Fixture::new();
         assert!(Registry::open(Path::new("relative.sqlite3")).is_err());
         let conn = fixture.registry.connection().unwrap();
-        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
         assert!(Registry::open(&fixture.registry.path).is_err());
         assert!(fixture.registry.list().is_err());
         drop(conn);
@@ -1209,5 +1434,447 @@ mod tests {
             1
         );
         assert!(registry.scheduled_users().unwrap().is_empty());
+    }
+
+    #[test]
+    fn telegram_schema_one_migration_preserves_users_keys_audit_and_unresolved_writes() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        registry.revoke(bob.key_id).unwrap();
+        registry.set_enabled(bob.user_id, false).unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_scheduled(alice.user_id, "alice", request)
+            .unwrap();
+        let before = serde_json::to_value(registry.list().unwrap()).unwrap();
+        let conn = registry.connection().unwrap();
+        let audit_before: i64 = conn
+            .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
+            .unwrap();
+        // No bindings exist. Removing only the v2 objects reconstructs the exact
+        // v1 schema with genuine keys, revoked state, audit and pending work.
+        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; PRAGMA user_version=1;").unwrap();
+        drop(conn);
+        assert!(
+            registry.list().is_err(),
+            "normal operations must not silently use v1"
+        );
+        let migrated = Registry::open(&registry.path).unwrap();
+        assert_eq!(
+            serde_json::to_value(migrated.list().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(principal(&migrated, &alice).backend_id, "alice");
+        assert!(migrated.authenticate(&bob.token).unwrap().is_none());
+        assert!(migrated.list_telegram_bindings().unwrap().is_empty());
+        let conn = migrated.connection().unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            audit_before
+        );
+        drop(conn);
+        let binding = migrated
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        assert_eq!(binding.backend_id, "alice");
+        assert_eq!(
+            migrated
+                .admit_telegram(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "telegram_execute",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        assert_eq!(
+            Registry::open(&registry.path)
+                .unwrap()
+                .list_telegram_bindings()
+                .unwrap(),
+            vec![binding]
+        );
+    }
+
+    #[test]
+    fn telegram_ownership_and_revocation_are_permanent_and_independent_of_keys() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = registry
+            .add_telegram_binding(alice.user_id, "101", "9223372036854775807")
+            .unwrap();
+        let rotated = registry.rotate(alice.key_id).unwrap();
+        registry.revoke(rotated.key_id).unwrap();
+        assert_eq!(
+            registry.telegram_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        assert!(registry
+            .add_telegram_binding(alice.user_id, "102", "202")
+            .is_err());
+        assert!(registry
+            .add_telegram_binding(bob.user_id, "101", "202")
+            .is_err());
+        let conn = registry.connection().unwrap();
+        for sql in [
+            "UPDATE telegram_bindings SET sender_id='300'",
+            "UPDATE telegram_bindings SET bot_id='300'",
+            "UPDATE telegram_bindings SET backend_id='bob'",
+            "DELETE FROM telegram_bindings",
+            "UPDATE users SET backend_id='changed' WHERE backend_id='alice'",
+        ] {
+            assert!(conn.execute(sql, []).is_err(), "{sql}");
+        }
+        registry.revoke_telegram_binding(binding.id).unwrap();
+        registry.revoke_telegram_binding(binding.id).unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        registry.set_enabled(alice.user_id, true).unwrap();
+        registry.add_key(alice.user_id).unwrap();
+        assert!(registry.telegram_authorized(binding.id).unwrap().is_none());
+        assert!(conn
+            .execute("UPDATE telegram_bindings SET enabled=1", [])
+            .is_err());
+        assert!(registry
+            .add_telegram_binding(alice.user_id, "102", "202")
+            .is_err());
+        assert!(registry
+            .add_telegram_binding(bob.user_id, "101", "202")
+            .is_err());
+        let history = registry.list_telegram_bindings().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, binding.id);
+        assert!(!history[0].enabled);
+        let encoded = serde_json::to_string(&history).unwrap();
+        assert!(!encoded.contains(&alice.token) && !encoded.contains("verifier"));
+    }
+
+    #[test]
+    fn telegram_disable_and_unknown_holds_cannot_be_bypassed_by_revocation_or_restart() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let object = binding.id.to_string();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.telegram_authorized(binding.id).unwrap().is_none());
+        assert_eq!(
+            registry
+                .admit_telegram(binding.id, Uuid::now_v7(), "telegram_execute", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        registry.set_enabled(alice.user_id, true).unwrap();
+        let request = Uuid::now_v7();
+        assert_eq!(
+            registry
+                .admit_telegram(binding.id, request, "telegram_execute", &object)
+                .unwrap(),
+            binding
+        );
+        // A read snapshot is allowed during a hold but grants no new admission.
+        assert!(registry.telegram_authorized(binding.id).unwrap().is_some());
+        assert!(registry
+            .admit_telegram(binding.id, Uuid::now_v7(), "telegram_send", &object)
+            .is_err());
+        assert!(registry
+            .admit_write(&principal(registry, &alice), Uuid::new_v4())
+            .is_err());
+        assert!(registry
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        let bob_request = Uuid::new_v4();
+        registry
+            .admit_write(&principal(registry, &bob), bob_request)
+            .unwrap();
+        registry
+            .finish_write(bob.user_id, bob_request, true)
+            .unwrap();
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.recover_writes().unwrap(), 1);
+        reopened.finish_write(alice.user_id, request, true).unwrap();
+        assert!(reopened
+            .admit_telegram(binding.id, Uuid::now_v7(), "telegram_send", &object)
+            .is_err());
+        reopened.revoke_telegram_binding(binding.id).unwrap();
+        reopened.set_enabled(alice.user_id, false).unwrap();
+        reopened.set_enabled(alice.user_id, true).unwrap();
+        let holds = reopened.list().unwrap();
+        assert_eq!(
+            holds
+                .iter()
+                .find(|user| user.user_id == alice.user_id)
+                .unwrap()
+                .hold
+                .as_ref()
+                .unwrap()
+                .state,
+            "needs_review"
+        );
+        reopened
+            .clear_review(
+                alice.user_id,
+                "Stopped workers and reconciled recorded delivery",
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .admit_telegram(binding.id, Uuid::now_v7(), "telegram_send", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn telegram_rejects_noncanonical_ids_and_untrusted_audit_values_before_admission() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        for bad in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            "01",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e2",
+            "9223372036854775808",
+            "１",
+        ] {
+            assert!(
+                registry
+                    .add_telegram_binding(alice.user_id, bad, "201")
+                    .is_err(),
+                "bot {bad}"
+            );
+            assert!(
+                registry
+                    .add_telegram_binding(alice.user_id, "101", bad)
+                    .is_err(),
+                "sender {bad}"
+            );
+        }
+        assert!(registry
+            .add_telegram_binding(Uuid::new_v4(), "101", "201")
+            .is_err());
+        assert!(registry.list_telegram_bindings().unwrap().is_empty());
+        let binding = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let object = binding.id.to_string();
+        assert!(registry
+            .admit_telegram(binding.id, Uuid::new_v4(), "telegram_send", &object)
+            .is_err());
+        let variant = Uuid::parse_str("12345678-1234-7234-1234-123456789012").unwrap();
+        assert!(registry
+            .admit_telegram(binding.id, variant, "telegram_send", &object)
+            .is_err());
+        for bad in [
+            "not-uuid".to_owned(),
+            Uuid::nil().to_string(),
+            "ABCDEF01-2345-4678-9ABC-DEF012345678".into(),
+            "abcdef01-2345-4678-1abc-def012345678".into(),
+        ] {
+            assert!(registry
+                .admit_telegram(binding.id, Uuid::now_v7(), "telegram_send", &bad)
+                .is_err());
+        }
+        assert!(registry
+            .admit_telegram(binding.id, Uuid::now_v7(), "prompt/secret-body", &object)
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert!(registry
+            .telegram_authorized(Uuid::new_v4())
+            .unwrap()
+            .is_none());
+        let conn = registry.connection().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM audit_events WHERE action LIKE 'telegram_%'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(conn.query_row("SELECT count(*) FROM audit_events WHERE action LIKE '%secret%' OR note LIKE '%secret%'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    }
+
+    #[test]
+    fn telegram_audit_failure_rolls_back_binding_revoke_and_hold() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;").unwrap();
+        assert!(registry
+            .add_telegram_binding(bob.user_id, "102", "202")
+            .is_err());
+        assert!(registry.revoke_telegram_binding(binding.id).is_err());
+        assert!(registry
+            .admit_telegram(
+                binding.id,
+                Uuid::now_v7(),
+                "telegram_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert_eq!(
+            registry.list_telegram_bindings().unwrap(),
+            vec![binding.clone()]
+        );
+        assert!(registry
+            .list()
+            .unwrap()
+            .iter()
+            .all(|user| user.hold.is_none()));
+        conn.execute_batch("DROP TRIGGER fail_audit").unwrap();
+        assert!(registry
+            .add_telegram_binding(bob.user_id, "102", "202")
+            .is_ok());
+        let request = Uuid::now_v7();
+        registry
+            .admit_telegram(
+                binding.id,
+                request,
+                "telegram_send",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        registry.finish_write(alice.user_id, request, true).unwrap();
+        assert!(registry
+            .list()
+            .unwrap()
+            .iter()
+            .all(|user| user.hold.is_none()));
+    }
+
+    #[test]
+    fn telegram_foreground_and_scheduled_admissions_have_one_transactional_winner() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let owner = principal(registry, &alice);
+        let binding = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let handles: Vec<_> = (0..3)
+            .map(|index| {
+                let registry = registry.clone();
+                let barrier = barrier.clone();
+                let owner = owner.clone();
+                let binding = binding.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    match index {
+                        0 => registry.admit_write(&owner, Uuid::new_v4()),
+                        1 => registry.admit_scheduled(
+                            owner.user_id,
+                            &owner.backend_id,
+                            Uuid::now_v7(),
+                        ),
+                        _ => registry
+                            .admit_telegram(
+                                binding.id,
+                                Uuid::now_v7(),
+                                "telegram_execute",
+                                &binding.id.to_string(),
+                            )
+                            .map(|_| ()),
+                    }
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.as_ref().err().is_some_and(|error| error
+                    .downcast_ref::<WriteAdmissionError>(
+                ) == Some(
+                    &WriteAdmissionError::Held
+                )))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn telegram_lifetime_capacity_and_admission_audit_are_bounded_without_secrets() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let mut first = None;
+        for index in 1..=MAX_TELEGRAM_BINDINGS {
+            let user = registry.add_user(&format!("backend-{index}")).unwrap();
+            let binding = registry
+                .add_telegram_binding(user.user_id, &index.to_string(), "123")
+                .unwrap();
+            if index == 1 {
+                first = Some(binding);
+            } else {
+                registry.revoke_telegram_binding(binding.id).unwrap();
+            }
+        }
+        let first = first.unwrap();
+        assert_eq!(
+            registry.list_telegram_bindings().unwrap().len(),
+            MAX_TELEGRAM_BINDINGS as usize
+        );
+        assert!(registry
+            .add_telegram_binding(first.user_id, "1000", "123")
+            .unwrap_err()
+            .to_string()
+            .contains("lifetime binding limit"));
+        let conn = registry.connection().unwrap();
+        conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1) INSERT INTO audit_events(user_id,action,note,created_ms) SELECT ?2,'seed','fixture',0 FROM n",
+            params![MAX_AUDIT_EVENTS,first.user_id.to_string()]).unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_telegram(first.id, request, "telegram_send", &first.id.to_string())
+            .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            MAX_AUDIT_EVENTS
+        );
+        let (user,key,recorded,action,note):(String,Option<String>,String,String,String)=conn.query_row("SELECT user_id,key_id,request_id,action,note FROM audit_events ORDER BY seq DESC LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).unwrap();
+        assert_eq!(user, first.user_id.to_string());
+        assert!(key.is_none());
+        assert_eq!(recorded, request.to_string());
+        assert_eq!(action, "telegram_send");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&note).unwrap(),
+            serde_json::json!({"binding_id":first.id.to_string(),"object_id":first.id.to_string()})
+        );
+        assert!(note.len() <= 512);
     }
 }

@@ -84,6 +84,15 @@ impl SessionStore {
             db_options.open(path)?;
             Some(file)
         };
+        Self::open_with_ownership(path, ownership)
+    }
+
+    /// Continue opening only after the caller has acquired the database lifetime lock.
+    /// Gateway channel stores validate their private file identity under that same lock.
+    pub(super) fn open_with_ownership(
+        path: &Path,
+        ownership: Option<std::fs::File>,
+    ) -> Result<Self> {
         let mut conn = Connection::open(path).context("open session SQLite database")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch(

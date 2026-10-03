@@ -47,3 +47,5 @@
 后续 M4/M5 包已交付扫描后受控 MP4 下载，不能再把历史 M4.2 的“无下载接口”当作当前能力。但生成终态 `output_pending` 不代表可交付：作业创建时必须绑定独立受信控制面建立的 turn，最长一小时、不可补绑或续期；产物经当前扫描/策略及必要真人审批后，逐块重新授权并验证整文件 SHA-256。JiaClaw 尚无这一身份链，媒体接线不在本批范围。[交付合同](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m4-output-delivery.md)、[隔离 MP4 审阅](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m5-isolated-media-review.md)。
 
 媒体创建须持久保存原幂等键、正文和 turn 绑定；已提交后的取消只是意图，不保证供应商停止或退款。未知提交不能重新生成，模型费用、检测费用及存储/流量费用分别核对。固定连接器、真实费用与产物源、S3、IdP 和检测质量仍在上游 LIVE-10/11/12/13/20 发布闸门内；离线 fixture 只能证明消费者协议和恢复行为，不能代替这些认证。[上游验收清单](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/acceptance-backlog.md)。
+
+本轮独立用户 Telegram 复用既有受限 channel 逻辑模型和专属后端虚拟 Key，不新增网关模型合同，也不把应用的持久 inbox/outbox 解释为工具循环恢复。main/#31/#41/PR #40 本次核对未变化；没有据此新增上游 issue。范围见[独立用户 Telegram](tenant-telegram.md)。

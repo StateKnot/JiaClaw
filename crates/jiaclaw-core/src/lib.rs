@@ -1393,6 +1393,9 @@ fn default_channel_timeout() -> u64 {
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
+    /// Enable the private gateway channel chat protocol with fixed read-only tools.
+    #[serde(default)]
+    pub gateway_channel_chat: bool,
     /// Channels are closed until an explicit installation and identity policy exists.
     #[serde(default)]
     pub channels: Vec<ChannelBinding>,
@@ -1541,6 +1544,7 @@ fn default_max_body_bytes() -> u64 {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
+            gateway_channel_chat: false,
             channels: vec![],
             bind: default_http_bind(),
             api_token: None,

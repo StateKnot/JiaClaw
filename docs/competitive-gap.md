@@ -6,6 +6,8 @@
 
 单实例管理员的 [Web 发件箱审计](web-outbox.md)已通过 PR #74 的 Chromium 与跨平台验收；确认送达和整来源取消保留持久状态边界，普通网关用户不能获得渠道管理权限。PR #76–78 依次修复五个主文件工具/四个兼容名称、grep/glob 有界搜索及 mkdir/move 的同卷原子变更，均已通过各自最终 head 的跨平台 CI。copy 保留独立合同，这些修复不提供 durable 文件操作恢复。
 
-本轮新增可选的 [stat/tree](workspace-files.md#stat--tree-元数据与目录树合同)：叶子自身元数据查询、可调深度的有界 DFS 目录树、严格参数与独立配置开关。本机 884 项 Rust、fmt/Clippy/锁定构建、新工具六组与七套既有进程回归通过，跨平台以本轮 draft PR 最终 head CI 为准；持久渠道/cron 白名单不扩大，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 仍遵循现有注册工具策略。
+本轮新增可选的 [stat/tree](workspace-files.md#stat--tree-元数据与目录树合同)：叶子自身元数据查询、可调深度的有界 DFS 目录树、严格参数与独立配置开关。本机 884 项 Rust、fmt/Clippy/锁定构建、新工具六组与七套既有进程回归通过，PR #79 最终 head 已通过 Linux/macOS 与真实容器 CI；持久渠道/cron 白名单不扩大，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 仍遵循现有注册工具策略。
+
+本轮进一步接入默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)：一个 Bot/人绑定一个独立后端，持久准入与业务关联、受限工具和离线未知核对。本机 918 项 Rust、七组新整机与七套既有回归通过，跨平台 CI 以本批最终 head 为准；共享网关队列盘、其他渠道、定时外发及真实安装仍有各自范围，不能据此将完整多用户后台能力标记完成。
 
 能力、框架支持状态与可落地验收条件统一维护在 [roadmap](roadmap.md)，不再在多份文档中复制相互矛盾的完成勾选。框架生产资格与实际应用集成是两个独立门槛，见 [StateKnot](stateknot-gaps.md)、[Brokerrouter](brokerrouter-gaps.md)。

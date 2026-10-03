@@ -715,6 +715,7 @@ mod tests {
                 timeout: Duration::from_secs(10),
                 control: Arc::new(tokio::sync::Semaphore::new(8)),
                 scheduled_jobs: false,
+                telegram: None,
             });
             let (release, receiver) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();

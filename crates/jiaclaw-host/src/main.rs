@@ -66,6 +66,7 @@ mod outbound;
 mod schedule;
 mod scheduler;
 mod store;
+mod tenant_channel;
 mod tenant_scheduler;
 mod ui;
 mod wecom;
@@ -535,6 +536,7 @@ struct AppState {
     metrics: Arc<Metrics>,
     metrics_require_auth: bool,
     scheduler_health: Arc<std::sync::atomic::AtomicU8>,
+    gateway_channel_permit: Arc<tokio::sync::Semaphore>,
     tenant_dispatch_permit: Arc<tokio::sync::Semaphore>,
     tenant_control_permits: Arc<tokio::sync::Semaphore>,
 }
@@ -1013,6 +1015,14 @@ fn build_router_with_body_limit(
         .route(
             "/api/channels/deliveries/:id/resolve",
             post(channels::resolve),
+        )
+        .route(
+            "/internal/gateway/channel/status",
+            get(tenant_channel::status),
+        )
+        .route(
+            "/internal/gateway/channel/chat",
+            post(tenant_channel::chat).layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
         )
         .route("/internal/scheduler/status", get(tenant_scheduler::status))
         .route(
@@ -1817,6 +1827,7 @@ where
     shutdown.await;
     tracing::info!("收到关闭信号，停止接受新连接，等待进行中请求结束");
     let shutdown_deadline = Instant::now() + shutdown_timeout;
+    state.gateway_channel_permit.close();
     let _ = shutdown_tx.send(());
     background.abort();
     if let Some(channels) = &background.channels {
@@ -1857,6 +1868,14 @@ where
         }
     }
 
+    // Detached internal channel turns may outlive their HTTP caller. Drain them
+    // within the same shutdown grace; unfinished work remains unknown upstream.
+    let _ = tokio::time::timeout_at(shutdown_deadline, async {
+        while state.gateway_channel_permit.available_permits() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     if !flush_sessions_on_shutdown(&state) {
         tracing::warn!("关闭时 sessions 刷盘失败，仍继续退出");
     }
@@ -1945,6 +1964,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         anyhow::bail!("启用 MCP 必须设置 API Token");
     }
 
+    tenant_channel::validate_config(&config, api_token.as_deref())?;
     config.scheduler.validate()?;
     if config.scheduler.enabled {
         if !config.http.persist || api_token.is_none() {
@@ -1962,7 +1982,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     }
 
     let channel_runtime = channels::ChannelRuntime::configure(&config, api_token.as_deref())?;
-    if config.scheduler.gateway_driven
+    if (config.scheduler.gateway_driven || config.http.gateway_channel_chat)
         && (channel_runtime.is_some()
             || config
                 .http
@@ -1972,7 +1992,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             || std::env::var("JIACLAW_WEBHOOK_SECRET").is_ok_and(|s| !s.trim().is_empty()))
     {
         anyhow::bail!(
-            "gateway-driven scheduler requires all channel and webhook entry points disabled"
+            "gateway-driven backends require all standalone channel and webhook entry points disabled"
         );
     }
 
@@ -1984,6 +2004,8 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
             .context("创建 JiaClawAgent 失败")?,
         &metrics,
     );
+
+    tenant_channel::validate_tools(&agent)?;
 
     // 读取 webhook secret（环境变量优先于配置文件）
     let webhook_secret = std::env::var("JIACLAW_WEBHOOK_SECRET")
@@ -2042,6 +2064,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         metrics_require_auth,
         channel_runtime,
         scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
         tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
         tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
     };
@@ -5256,6 +5279,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -5313,6 +5337,7 @@ mod tests {
             metrics_require_auth,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -5350,6 +5375,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -5396,6 +5422,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         }
@@ -6448,6 +6475,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -6651,6 +6679,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -6701,6 +6730,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         }
@@ -7034,6 +7064,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7395,6 +7426,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7450,6 +7482,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7506,6 +7539,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7576,6 +7610,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7645,6 +7680,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7701,6 +7737,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7757,6 +7794,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7817,6 +7855,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7877,6 +7916,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -7941,6 +7981,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -8009,6 +8050,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -8077,6 +8119,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -8141,6 +8184,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };
@@ -8906,6 +8950,7 @@ mod tests {
             metrics_require_auth: false,
             channel_runtime: None,
             scheduler_health: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            gateway_channel_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_dispatch_permit: Arc::new(tokio::sync::Semaphore::new(1)),
             tenant_control_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         };

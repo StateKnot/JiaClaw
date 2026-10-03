@@ -1619,6 +1619,7 @@ dependencies = [
  "hmac 0.12.1",
  "jiaclaw",
  "jiaclaw-core",
+ "libc",
  "minreq",
  "quick-xml",
  "reqwest 0.12.28",
