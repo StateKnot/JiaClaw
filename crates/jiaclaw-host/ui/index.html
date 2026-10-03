@@ -6,7 +6,7 @@
 </head>
 <body>
 <header><a class="brand" href="/">JiaClaw<span>个人 Agent 工作台</span></a><form id="connect-form"><label for="api-token">API Token</label><input id="api-token" type="password" autocomplete="off" placeholder="输入服务的 API Token"><button type="submit">连接</button></form></header>
-<div class="workspace"><aside aria-label="会话管理"><div class="aside-head"><h1>会话</h1><button id="new-session" disabled>＋ 新建</button></div><button id="refresh" class="subtle" disabled>刷新列表</button><div id="workspace-tabs" hidden><button id="chat-tab" class="subtle" aria-pressed="true">会话</button><button id="jobs-tab" class="subtle" aria-pressed="false">定时任务</button></div><nav id="sessions" aria-label="会话列表"></nav><p class="aside-note">会话由服务器保存。密钥仅留在当前页面内存中，关闭页面后清除。</p></aside>
+<div class="workspace"><aside aria-label="会话管理"><div class="aside-head"><h1>会话</h1><button id="new-session" disabled>＋ 新建</button></div><button id="refresh" class="subtle" disabled>刷新列表</button><div id="workspace-tabs" hidden><button id="chat-tab" class="subtle" aria-pressed="true">会话</button><button id="jobs-tab" class="subtle" aria-pressed="false" hidden>定时任务</button><button id="outbox-tab" class="subtle" aria-pressed="false" hidden>发件箱</button></div><nav id="sessions" aria-label="会话列表"></nav><p class="aside-note">会话由服务器保存。密钥仅留在当前页面内存中，关闭页面后清除。</p></aside>
 <main><p id="status" role="status" aria-live="polite">输入 API Token 并连接。未设置鉴权的本机服务可直接连接。</p><div id="chat-view"><div class="conversation-head"><div><p class="eyebrow">WORKSPACE</p><h2 id="session-title">开始一段对话</h2></div><button id="delete-session" class="subtle danger" disabled>删除会话</button></div><section id="messages" aria-label="对话消息" aria-live="polite"><div class="welcome"><h3>让想法成为行动。</h3><p>连接服务后，选择已有会话或创建新会话。可用工具由服务配置决定。</p></div></section><form id="chat-form"><label for="message">消息</label><textarea id="message" rows="3" placeholder="输入消息… Ctrl / ⌘ + Enter 发送" required disabled maxlength="65536"></textarea><div class="composer-bottom"><span>回复完成后显示；支持工具调用。</span><button id="send" type="submit" disabled>发送 ↑</button></div></form></div><section id="jobs-view" hidden aria-label="定时任务管理">
 <div class="conversation-head"><div><p class="eyebrow">SCHEDULE</p><h2>定时任务</h2></div><button id="jobs-refresh" class="subtle">刷新任务</button></div>
 <p class="jobs-note">任务在服务端定时运行，可能产生模型费用。结果保存在这里；暂停与删除阻止后续运行，已提交的运行可能继续。</p>
@@ -20,5 +20,16 @@
 <div class="jobs-toolbar"><label><input id="jobs-deleted" type="checkbox">显示已删除任务</label><span id="jobs-count"></span></div>
 <div id="jobs-list" aria-label="任务列表"></div><div class="pager"><button id="jobs-prev" class="subtle">上一页</button><button id="jobs-next" class="subtle">下一页</button></div>
 <section id="job-detail" hidden aria-label="任务详情"><h3 id="job-title"></h3><p id="job-summary"></p><pre id="job-detail-prompt"></pre><div class="job-actions"><button id="job-toggle">暂停任务</button><button id="job-delete" class="subtle danger">删除任务</button><button id="runs-refresh" class="subtle">刷新运行结果</button></div><div id="job-runs" aria-label="运行结果"></div><div class="pager"><button id="runs-prev" class="subtle">上一页结果</button><button id="runs-next" class="subtle">下一页结果</button></div></section>
-</section></main></div>
+</section><section id="outbox-view" hidden aria-label="渠道发件箱审计">
+<div class="conversation-head"><div><p class="eyebrow">DELIVERY AUDIT</p><h2>渠道发件箱</h2></div><button id="outbox-refresh" class="subtle">刷新发件箱</button></div>
+<p class="jobs-note">管理员可查看入站回复与定时通知。未知结果必须先在渠道平台核实；人工核对不会重发原消息，也不会恢复已暂停的任务。</p>
+<form id="outbox-lookup"><label for="outbox-id">按投递 ID 查找</label><div><input id="outbox-id" placeholder="粘贴完整 UUID" maxlength="36" required><button type="submit">查看记录</button></div></form>
+<p id="outbox-health" class="jobs-note"></p><p id="outbox-count" class="jobs-note"></p>
+<div id="outbox-list" aria-label="投递记录"></div><div class="pager"><button id="outbox-prev" class="subtle">上一页投递</button><button id="outbox-next" class="subtle">下一页投递</button></div>
+<section id="delivery-detail" hidden aria-label="投递详情"><div class="conversation-head"><h3 id="delivery-title"></h3><button id="delivery-refresh" class="subtle">刷新此记录</button></div>
+<pre id="delivery-summary"></pre><h4>消息片段</h4><pre id="delivery-content"></pre><h4>回执 / 人工证据</h4><pre id="delivery-receipt"></pre><h4>错误记录</h4><pre id="delivery-error"></pre>
+<form id="delivery-form"><label for="delivery-evidence">已在平台核实的送达证据</label><textarea id="delivery-evidence" rows="3" maxlength="4096" placeholder="平台消息 ID 或人工核对依据；最多 4096 UTF-8 字节，不允许换行或控制字符。"></textarea>
+<p class="jobs-note">仅“结果未知”可标记送达。确认后可能释放同来源的后续片段或其他被阻挡的投递。请核对记录 ID、目的地及消息内容。</p><button id="delivery-resolve" type="submit">确认已送达</button></form>
+<div class="cancel-plan"><p class="jobs-note">取消会停止同一入站事件或任务运行的全部未送达片段；已经送达的消息不会撤回。操作不恢复已暂停的任务。</p><button id="delivery-cancel" type="button" class="subtle danger">取消此来源的剩余投递</button></div>
+</section></section></main></div>
 </body></html>

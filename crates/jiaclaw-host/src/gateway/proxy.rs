@@ -787,6 +787,19 @@ mod tests {
         }
     }
     #[test]
+    fn outbox_audit_routes_are_never_forwarded_to_tenant_backends() {
+        let id = "abcdef01-2345-4678-9abc-def012345678";
+        for path in [
+            "/api/channels/deliveries".to_owned(),
+            format!("/api/channels/deliveries/{id}"),
+            format!("/api/channels/deliveries/{id}/resolve"),
+        ] {
+            for method in [Method::GET, Method::HEAD, Method::POST, Method::DELETE] {
+                assert!(!allowed(&method, &path.parse().unwrap()), "{method} {path}");
+            }
+        }
+    }
+    #[test]
     fn tenant_job_routes_only_expose_canonical_bounded_public_operations() {
         let id = "abcdef01-2345-4678-9abc-def012345678".to_owned();
         for (method, path) in [

@@ -1580,6 +1580,62 @@
         ]
       }
     },
+    "/api/channels/deliveries/{id}": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "operationId": "getChannelDelivery",
+        "summary": "Inspect one outbound delivery",
+        "description": "Administrator audit remains available with channel workers disabled. Requires a configured API Token and SQLite persistence. Returns the public delivery record without sealed interaction credentials. This endpoint does not send, retry or resolve messages and is not exposed by the tenant gateway.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public delivery record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDelivery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid delivery ID; expected a canonical nonzero UUID"
+          },
+          "401": {
+            "description": "API Token required"
+          },
+          "404": {
+            "description": "Missing record or persistence disabled"
+          },
+          "500": {
+            "description": "Persistent storage unavailable"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      ]
+    },
     "/api/channels/deliveries/{id}/resolve": {
       "post": {
         "tags": [

@@ -1009,6 +1009,7 @@ fn build_router_with_body_limit(
         )
         .route("/api/channels/events/:id/cancel", post(channels::cancel))
         .route("/api/channels/deliveries", get(channels::deliveries))
+        .route("/api/channels/deliveries/:id", get(channels::delivery))
         .route(
             "/api/channels/deliveries/:id/resolve",
             post(channels::resolve),
@@ -10448,6 +10449,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn outbox_detail_requires_admin_and_persistence_and_survives_channel_shutdown() {
+        let mut state = create_test_state_from_config(offline_test_config());
+        state.api_token = Some("outbox-admin-fixture".into());
+        state.persist_enabled = true;
+        state.sessions = Arc::new(Mutex::new(
+            SessionStore::open(std::path::Path::new(":memory:")).unwrap(),
+        ));
+        assert!(state.channel_runtime.is_none());
+        let sealed = "sealed-interaction-must-not-be-public";
+        let (event_id, delivery_id) = {
+            let mut store = state.sessions.lock().unwrap();
+            let event = store
+                .accept_channel_event(
+                    channel_types::EventSpec {
+                        event_id: "outbox-audit-event".into(),
+                        session_id: "channel:audit".into(),
+                        sender_id: "fixture-user".into(),
+                        prompt: "private prompt".into(),
+                        enabled_tools: vec!["datetime_now".into()],
+                        timeout_secs: 30,
+                        destination: channel_types::Destination {
+                            channel: channel_types::Channel::Discord,
+                            installation_id: "123456789012345678".into(),
+                            conversation_id: "234567890123456789".into(),
+                            thread_id: None,
+                            interaction_id: Some("345678901234567890".into()),
+                            expires_ms: Some(channels::now_ms() + 60_000),
+                        },
+                        sealed_token: Some(sealed.into()),
+                        fingerprint: "a".repeat(64),
+                    },
+                    1,
+                )
+                .unwrap();
+            store.claim_channel_event(1).unwrap().unwrap();
+            assert!(store
+                .complete_channel_event(
+                    &event.id,
+                    None,
+                    "completed",
+                    vec!["audit reply".into()],
+                    None,
+                    2
+                )
+                .unwrap());
+            let row = store
+                .list_channel_deliveries(Some(&event.id), 1, 0)
+                .unwrap()
+                .remove(0);
+            assert_eq!(row.sealed_token.as_deref(), Some(sealed));
+            (event.id, row.id)
+        };
+        let path = format!("/api/channels/deliveries/{delivery_id}");
+        let app = build_router(state.clone());
+        for token in [None, Some("wrong-token")] {
+            let mut request = Request::builder().uri(&path);
+            if let Some(token) = token {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        for header in ["authorization", "x-api-token"] {
+            let token = if header == "authorization" {
+                "Bearer outbox-admin-fixture"
+            } else {
+                "outbox-admin-fixture"
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&path)
+                        .header(header, token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let public: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(public["id"], delivery_id);
+            assert_eq!(public["event_id"], event_id);
+            assert_eq!(public["text"], "audit reply");
+            assert_eq!(public["state"], "pending");
+            assert!(public.get("sealed_token").is_none());
+            assert!(!String::from_utf8_lossy(&bytes).contains(sealed));
+        }
+        let malformed = [
+            "not-a-uuid".to_owned(),
+            uuid::Uuid::nil().to_string(),
+            "ABCDEF01-2345-4678-9ABC-DEF012345678".to_owned(),
+            delivery_id.replace('-', ""),
+        ];
+        for id in malformed {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/channels/deliveries/{id}"))
+                        .header("authorization", "Bearer outbox-admin-fixture")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "accepted {id}");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/channels/deliveries/{}", uuid::Uuid::new_v4()))
+                    .header("authorization", "Bearer outbox-admin-fixture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let mut no_token = state.clone();
+        no_token.api_token = None;
+        let response = build_router(no_token)
+            .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "audit must never become anonymous"
+        );
+        state.persist_enabled = false;
+        state.sessions = Arc::new(Mutex::new(SessionStore::memory()));
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .header("authorization", "Bearer outbox-admin-fixture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn test_openapi_endpoint_returns_paths() {
         let app = create_test_app();
 
@@ -10484,6 +10639,7 @@ mod tests {
             "/api/tools",
             "/api/skills",
             "/api/skills/reload",
+            "/api/channels/deliveries/{id}",
             "/api/jobs/{id}/runs/{run_id}/deliveries",
             "/api/jobs/{id}/runs/{run_id}/deliveries/cancel",
             "/hooks/inbound",
@@ -10499,6 +10655,15 @@ mod tests {
                 "OpenAPI paths 缺少 {required}"
             );
         }
+        let detail = &paths["/api/channels/deliveries/{id}"];
+        assert_eq!(detail["get"]["operationId"], "getChannelDelivery");
+        assert_eq!(
+            detail["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ChannelDelivery"
+        );
+        assert_eq!(detail["parameters"][0]["schema"]["format"], "uuid");
+        assert!(detail["get"]["responses"].get("400").is_some());
+        assert_eq!(detail["get"]["security"].as_array().unwrap().len(), 2);
         assert!(paths["/api/sessions"].get("get").is_some());
         assert!(paths["/api/sessions"].get("post").is_some());
         assert!(paths["/api/sessions/{id}"].get("get").is_some());
