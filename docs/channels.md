@@ -126,7 +126,7 @@ SQLite 或后台 worker 的致命错误使渠道健康状态变为 failed，停�
 
 ## 管理和恢复 API
 
-所有 `/api/channels/*` 接口都要求 `Authorization: Bearer <JIACLAW_API_TOKEN>`。列表直接返回数组，默认 limit=50，范围 1–100，offset 范围 0–10000。
+所有 `/api/channels/*` 接口都要求非空管理员 Token、`Authorization: Bearer <JIACLAW_API_TOKEN>` 和已启用的 SQLite 持久化；渠道 worker 为 disabled 时仍可审计历史。独立用户网关拒绝这些管理路由。内置工作台通过 status 探测后显示“发件箱”，支持每页 5 条、单条详情及人工核对，见 [Web 发件箱操作指南](web-outbox.md)。列表直接返回数组，默认 limit=50，范围 1–100，offset 范围 0–10000。
 
 | 方法与路径 | 行为 |
 |---|---|
@@ -134,11 +134,12 @@ SQLite 或后台 worker 的致命错误使渠道健康状态变为 failed，停�
 | `GET /api/channels/events?limit=50&offset=0` | 最新优先列出入站事件和状态 |
 | `GET /api/channels/events/{id}` | 查看事件、目的地、授权快照和会话 ID |
 | `GET /api/channels/deliveries?event_id={id}&limit=50&offset=0` | 查看片段、attempts、next_attempt_ms、回执及错误代码；event_id 可省略 |
-| `POST /api/channels/deliveries/{id}/resolve` | 提交 `{"action":"delivered","receipt":"平台消息 ID 和核对说明"}`，仅将 unknown 标记为已送达；或 `{"action":"cancel"}` 取消所属事件余下片段 |
+| `GET /api/channels/deliveries/{id}` | 读取单条最新投递；须为规范非零小写 UUID，无效返回 400，不存在返回 404 |
+| `POST /api/channels/deliveries/{id}/resolve` | 提交 `{"action":"delivered","receipt":"平台消息 ID 和核对说明"}`，仅将 unknown 标记为已送达；或 `{"action":"cancel"}` 取消所属入站事件或定时运行的全部余下片段 |
 | `POST /api/channels/events/{id}/cancel` | 显式核对事件并取消余下投递；不接受仍在执行或发送中的事件 |
 | `DELETE /api/channels/events/{id}` | 删除已完成或已核对、且所有投递均已 delivered/cancelled 的事件和投递审计；保留去重墓碑 |
 
-手工 delivered 要求 1–4096 字节证据，操作只修改审计状态，不再调用平台。cancel 不会撤销先前的外部效果。成功的 resolve、cancel 和 DELETE 返回 204。取消或删除事件不会删除该事件的会话历史。TTL 清理会保留仍有待处理、未核查事件或未解决出站消息的会话；管理员显式删除会话也不会取消已持久化的出站计划，停止发送应使用事件 cancel。
+手工 delivered 只接受 unknown，要求 1–4096 UTF-8 字节的非空、非纯空白证据，禁止换行及其他控制字符。操作本身只修改审计状态，不重新调用平台；解除阻挡后可能继续已有的后续片段或其他投递。cancel 作用于所选记录的整个来源，不撤销先前的外部效果；同来源仍在执行或提交时返回 409。两项操作都不恢复暂停的任务。成功的 resolve、cancel 和 DELETE 返回 204。取消或删除事件不会删除该事件的会话历史。TTL 清理会保留仍有待处理、未核查事件或未解决出站消息的会话；管理员显式删除会话也不会取消已持久化的出站计划，停止发送应使用事件 cancel。
 
 当前最多保留 1,000 条事件、10,000 条投递和 10,000 条去重记录。没有自动删除不确定结果来腾出容量的策略；达到上限会拒绝新事件，要求管理员核对后显式清理。领取事件前，存储层为每个执行中的事件保守预留 100 条投递空间，与定时通知共享同一容量预算：四个入站事件和四个带通知的定时运行最多预留 800 条；容量不足时事件留在 received，不运行 Agent，完成事务释放未使用的预留。删除审计时去重墓碑至少再保留 7 天；墓碑过期之后的旧平台重投可能被当作新事件。数据库中的会话、提示词和回复是持久化明文业务数据；仅 Discord 交互 token 单独使用 AES-256-GCM 密文，API 和日志不会返回该密文或原始 token，过期时清除当前行的凭证字段。
 

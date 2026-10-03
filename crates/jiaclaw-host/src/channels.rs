@@ -1040,6 +1040,26 @@ pub(super) async fn event(
             .ok_or(AppError::NotFound)?,
     ))
 }
+/// Audit remains available when channel workers are disabled, but always needs
+/// an administrator token and persistent storage.
+pub(super) async fn delivery(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<super::channel_store::ChannelDelivery>, AppError> {
+    authorized_admin(&state, &headers)?;
+    if !uuid::Uuid::parse_str(&id).is_ok_and(|parsed| !parsed.is_nil() && parsed.to_string() == id)
+    {
+        return Err(AppError::BadRequest(
+            "delivery ID must be a canonical nonzero UUID".into(),
+        ));
+    }
+    Ok(Json(
+        channel_db(&state, move |store| store.get_channel_delivery(&id))
+            .await?
+            .ok_or(AppError::NotFound)?,
+    ))
+}
 pub(super) async fn deliveries(
     State(state): State<AppState>,
     headers: HeaderMap,

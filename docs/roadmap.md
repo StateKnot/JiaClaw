@@ -8,7 +8,7 @@
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
-| 5 | Web 工作台 | 实现 | 内置同源静态资源，鉴权后创建/选择/聊天/删除会话，无模型 HTML 执行、无浏览器持久密钥 |
+| 5 | Web 工作台 | 聊天/会话、受限任务管理及管理员发件箱已实现并本地验收 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
 | 6 | cron 多任务 | 实现；含 Telegram/Slack/Discord/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
 | 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现，真实渠道认证与新渠道待完成 | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/Discord/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；[Discord](discord.md) Bot 定时文字已接线（单 guild 普通频道，六组本机整机验收通过）；WhatsApp 仍待交付；进程 fixture 不能替代真实安装认证 |
@@ -36,4 +36,6 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 模型调用收据批次只补模型请求的身份、收据和人工核对入口；最终二进制 7 组整机验收与 815 项 Rust 测试已在本机通过，PR #72 最终 head `a841b026` 已通过 [CI 37093371689](https://github.com/jiawenyao401/JiaClaw/actions/runs/37093371689) 的 Linux/macOS 与容器验收；不能据此将真正流式、工具运行恢复或多模态标记完成。媒体上游已支持文生视频作业和受控 MP4 交付，但 JiaClaw 尚缺受信 turn、独立审批/审阅及下载身份链，不能将 `output_pending` 当作可交付视频；固定合同见[Brokerrouter 状态](brokerrouter-gaps.md)。
 
-Discord Bot 定时文字本批补齐独立目的地/guild 授权、每次发送前验证、持久冷却、401 凭据阻断和安装范围 unknown 核对；真实二进制 fixture 与最终 CI 结果见[验收记录](validation.md)，真实 Discord 安装认证仍独立。
+Discord Bot 定时文字补齐独立目的地/guild 授权、每次发送前验证、持久冷却、401 凭据阻断和安装范围 unknown 核对；PR #73 最终 head `b99e96690b6ec2ec0265fe68d2895a135cb9e8d5` 已通过 [CI 37095933677](https://github.com/jiawenyao401/JiaClaw/actions/runs/37095933677)，含 Linux/macOS、Chromium 与真实容器。真实 Discord 安装认证仍独立。
+
+本批补齐 [Web 发件箱审计](web-outbox.md)：单实例管理员通过既有 status 接口探测能力，渠道停用后仍可查看历史；独立用户网关不开放渠道权限。单条详情与人工核对保留服务端状态竞争、未知结果和整来源取消边界，浏览器超时不等于服务端停止。最终二进制的真实 Chromium 发件箱验收、旧工作台回归及 834 项 Rust 测试通过；fmt/Clippy/锁定构建通过，跨平台与真实容器由本批 draft PR 最终 head CI 独立验证。不将该 UI 扩展记为多用户渠道授权或自动恢复。

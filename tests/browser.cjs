@@ -61,8 +61,9 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   assert.strictEqual(await page.locator('#message').inputValue(),'chat draft requiring review');
   assert.strictEqual(await page.locator('#messages .message').count(),4);assert.strictEqual(reviewedChatCalls,1);
   await page.unroute('**/api/chat');
-  // Standalone has no gateway capability: jobs must stay hidden without breaking login.
-  assert.strictEqual(await page.locator('#workspace-tabs').isVisible(),false);
+  // Standalone offers outbox audit but no gateway jobs capability.
+  assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);
+  assert.strictEqual(await page.locator('#outbox-tab').isVisible(),true);
   const taskId=crypto.randomUUID(), runId=crypto.randomUUID();
   let job={id:taskId,spec:{name:'<img src=x onerror="window.JOB_XSS=1">',prompt:'private task prompt',schedule:{kind:'interval',seconds:3600},enabled_tools:['datetime_now'],timeout_secs:120},enabled:true,deleted:false,next_due_ms:Date.now()+3600000,session_id:'job:'+taskId};
   let created=false, heldRun=null, delayRun=false;

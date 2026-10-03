@@ -212,4 +212,15 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 
 2026-10-03，macOS arm64，最终二进制的 `tests/discord_scheduled.py` 六组真实进程验收全部通过。测试只使用本机模型/Discord HTTP fixture、临时 SQLite 和一次性凭据，覆盖配置与精确授权、应用/guild/type 前置核验零 POST、超过六片的 Unicode 结果与完整 UUID nonce、可信 429/成功耗尽预算的持久安装冷却、401 跨重启与环境新 Token、错回执安装阻断、实际 POST 后 SIGKILL 及人工核查后不重放。既有 `tests/channels.py` 独立回归交互凭据路径。
 
-数据库迁移至 schema v9；全量 Rust 832 项通过（library 334、core 122、host 376），Clippy correctness/suspicious、fmt/diff-check 与锁定构建通过。最终二进制既有 channels、scheduled_delivery 与 model_calls（7 组）回归全部通过；Docker 专项保留独立 CI 验收。fixture 同时检查 API、日志及停服后数据库/保留 sidecar 不含一次性凭据与上游私有错误标记。Token 轮换验收保留原 permanent_failed，并通过人工取消同目标旧失败计划后才发送未来结果，未放宽目标 FIFO。Linux/macOS/Chromium/真实 Docker 与镜像以本批 PR 最终 head checks 为准。没有真实 Discord 或付费供应商调用，正式 Bot 安装、guild/频道权限和限流认证仍需独立完成。
+数据库迁移至 schema v9；全量 Rust 832 项通过（library 334、core 122、host 376），Clippy correctness/suspicious、fmt/diff-check 与锁定构建通过。最终二进制既有 channels、scheduled_delivery 与 model_calls（7 组）回归全部通过；Docker 专项保留独立 CI 验收。fixture 同时检查 API、日志及停服后数据库/保留 sidecar 不含一次性凭据与上游私有错误标记。Token 轮换验收保留原 permanent_failed，并通过人工取消同目标旧失败计划后才发送未来结果，未放宽目标 FIFO。PR #73 最终 head `b99e96690b6ec2ec0265fe68d2895a135cb9e8d5` 已通过 [CI 37095933677](https://github.com/jiawenyao401/JiaClaw/actions/runs/37095933677)：Ubuntu、macOS、container 均成功，覆盖 Chromium、真实 Docker 与镜像。没有真实 Discord 或付费供应商调用，正式 Bot 安装、guild/频道权限和限流认证仍需独立完成。
+
+## Web 发件箱审计批次
+
+2026-10-03，macOS arm64，最终二进制的本机验收完成。全量 Rust 834 项通过（library 334、core 122、host 378），fmt、Clippy correctness/suspicious 与锁定构建通过；真实 Docker 专项仍由独立 CI 执行。
+
+- `tests/outbox_browser.cjs` 真实 Chromium 全流程通过、退出码 0：真实 webhook/调度与本地模型/Telegram fixture 生成入站及定时多片 outbox，不直接写入产品数据库伪造审计状态。实际平台 POST 后 SIGKILL，重启并禁用 channels/scheduler 后，原投递仍可审计和核对。
+- 列表固定 5 条；offset=5 的断网失败保留原页，下一次仍请求 offset=5。UUID 直接定位、记录不存在的 404、submitting/delivered 状态禁写通过。空白、换行或超过 4096 UTF-8 字节的证据在浏览器拒绝，不弹确认、不 POST，并保留草稿。
+- 409、提交前断网均触发 GET 核对且不自动重发 POST；GET 失败时禁止修改，直至成功刷新。真实 resolve 在服务端完成并返回 204 后丢失浏览器响应，页面通过 GET 发现 delivered，保留证据而不再次 POST。实际 204 的确认及整来源取消后，原有模型 12 次、平台 6 次请求均未增加。
+- 恶意 HTML 纯文本显示，移动端列表行高至少 30 px 且无横向溢出；403/404 隐藏能力，身份切换、401 和迟到响应清空隔离，Token 仅保留在页面内存。既有 `tests/browser.cjs` 的聊天、会话与受限任务回归通过。单条详情 API 鉴权/持久化/UUID/不存在边界和独立用户网关拒绝访问由 Rust 回归验证。
+
+本批没有真实渠道或付费模型请求，不更改平台发送合同，不增加未知消息自动重放，不将人工核对解释为工具或任务恢复。跨平台、真实容器和最终嵌入静态资源由本批 draft PR 最终 head CI 独立验证；操作与权限说明见 [Web 发件箱指南](web-outbox.md)。
