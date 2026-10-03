@@ -223,4 +223,16 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 - 409、提交前断网均触发 GET 核对且不自动重发 POST；GET 失败时禁止修改，直至成功刷新。真实 resolve 在服务端完成并返回 204 后丢失浏览器响应，页面通过 GET 发现 delivered，保留证据而不再次 POST。实际 204 的确认及整来源取消后，原有模型 12 次、平台 6 次请求均未增加。
 - 恶意 HTML 纯文本显示，移动端列表行高至少 30 px 且无横向溢出；403/404 隐藏能力，身份切换、401 和迟到响应清空隔离，Token 仅保留在页面内存。既有 `tests/browser.cjs` 的聊天、会话与受限任务回归通过。单条详情 API 鉴权/持久化/UUID/不存在边界和独立用户网关拒绝访问由 Rust 回归验证。
 
-本批没有真实渠道或付费模型请求，不更改平台发送合同，不增加未知消息自动重放，不将人工核对解释为工具或任务恢复。跨平台、真实容器和最终嵌入静态资源由本批 draft PR 最终 head CI 独立验证；操作与权限说明见 [Web 发件箱指南](web-outbox.md)。
+本批没有真实渠道或付费模型请求，不更改平台发送合同，不增加未知消息自动重放，不将人工核对解释为工具或任务恢复。PR #74 最终 head `e22965dd9dc2488c9433d0a93f7b9e1bf59304a5` 已通过 [CI 37098122253](https://github.com/jiawenyao401/JiaClaw/actions/runs/37098122253)：Ubuntu、macOS 与 container 均成功，包含 Chromium 和真实容器。操作与权限说明见 [Web 发件箱指南](web-outbox.md)。
+
+## 单实例定时任务工作台批次
+
+2026-10-03，全量 Rust 845 项通过（library 334、core 122、host 389），1 项真实容器测试在本机保持 ignored，由独立 CI 执行。fmt、Clippy correctness/suspicious、Node 语法检查及锁定构建通过。
+
+- 含最后筛选修复的最终二进制通过三套真实 Chromium：`tests/scheduler_browser.cjs`、`tests/browser.cjs`、`tests/outbox_browser.cjs`，均退出码 0。新脚本通过本机模型、实际 host 和 SQLite 验证创建/运行/暂停恢复/删除/purge/重启、原生 interval 工具循环、含时区的未来 cron，以及已有 600 秒和渠道目的地等高级授权字段的展示。
+- 创建的实际 201 响应丢失后，GET 核对保留已暂停状态；创建后软删除且 GET 失败，再以同 ID/快照 PUT 返回已删除状态，不复活任务。真实 purge 后 PUT409，再 GET404，页面继续显示永久退役原因、保留 ID/草稿并禁用重试；查询不自动 PUT 或更换 ID，只有显式放弃才解除本页跟踪。
+- 任务每页 5 项、运行每页 1 项；翻页失败不提交新 offset。更改“显示已删除”筛选的请求失败时，复选框、旧列表和分页保持原值，下一页继续使用原筛选。近 990 KiB 的响应可读，超过 2 MiB 的页面拒绝且不换页；gateway false、200/null、204 和旧 status 无协议均不触发 standalone 回退。
+- 实际模型 503 产生的 failed run 同时显示保存响应和错误；浏览器 failed/stopping 健康状态、响应体积等边界使用协议注入，不能描述为真实数据库故障。XSS 纯文本、身份切换/401/迟到响应、移动布局及旧网关任务/发件箱流程通过。
+- 同批 schema 10 后端的 `tests/scheduled_delivery.py` 和 `tests/discord_scheduled.py`（六组）进程回归均退出码 0；这两项使用最后 UI 筛选修复前的二进制，之后后端未改动。Rust 回归覆盖规范 UUIDv4、typed 指纹、异体与旧任务/遗留会话拒绝认领、同 ID 并发、创建事务回滚、重启及 purge 墓碑、永久容量和模式/权限边界。
+
+本批只使用一次性本地凭据与协议 fixture，没有付费模型或真实平台请求。跨平台与真实容器由本批 draft PR 最终 head CI 验证；配置、备份和恢复边界见[单实例工作台](standalone-scheduler.md)。

@@ -71,7 +71,7 @@ POST 已开始后的超时、断线、无法证实的 HTTP 错误、错位回执
 
 ## 升级与验收
 
-会话库迁移至 schema v9：保留既有入站/定时来源、回执、冷却和 v8 网关派发摘要，新增 Discord Bot 凭据阻断记录。升级前停止服务并备份完整 SQLite 状态与交互加密密钥；旧二进制不能直接降级。不要删除阻断记录或恢复旧备份来绕过核对；恢复旧状态不提供拒重放保证。
+Discord Bot 批次引入 schema v9：保留既有入站/定时来源、回执、冷却和 v8 网关派发摘要，新增 Discord Bot 凭据阻断记录。当前会话库版本为 v10，另新增[任务创建身份收据](standalone-scheduler.md#数据库容量和备份)，不改变 Discord 凭据阻断合同。升级前停止服务并备份完整 SQLite 状态与交互加密密钥；旧二进制不能直接降级。不要删除阻断记录或恢复旧备份来绕过核对；恢复旧状态不提供拒重放保证。
 
 ```sh
 python3 tests/discord_scheduled.py target/debug/jiaclaw

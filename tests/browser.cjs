@@ -71,6 +71,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:true})}));
   await page.route('**/api/jobs**',async route=>{
    const req=route.request(), u=new URL(req.url()), method=req.method();calls.push([method,u.pathname,u.search]);
+   if(u.pathname==='/api/jobs/status')return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({state:'running'})});
    if(u.pathname==='/api/jobs'&&method==='POST'){const spec=req.postDataJSON();assert.deepStrictEqual(spec.enabled_tools,['datetime_now']);job={...job,spec};created=true;return route.fulfill({status:201,contentType:'application/json',headers:spec.name==='review-required-draft'?{'x-jiaclaw-write-review':'required'}:{},body:JSON.stringify(job)});}
    if(u.pathname==='/api/jobs'&&method==='GET'){assert.strictEqual(u.searchParams.get('limit'),'5');return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:created&&(!job.deleted||u.searchParams.get('include_deleted')==='true')?[job]:[],next_offset:null})});}
    if(u.pathname.endsWith('/runs')){if(delayRun){delayRun=false;await new Promise(r=>heldRun=r);}return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{id:runId,job_id:taskId,status:'completed',scheduled_for_ms:Date.now(),response:{message:{content:'<img src=x onerror="window.RUN_XSS=1">'+ 'x'.repeat(20000)}}}],next_offset:null})});}

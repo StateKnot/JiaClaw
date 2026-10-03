@@ -91,7 +91,7 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 9 {
+        if version > 10 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
         if version < 1 {
@@ -120,6 +120,9 @@ impl SessionStore {
         }
         if version < 9 {
             tx.execute_batch(super::channel_store::SCHEMA_V9)?;
+        }
+        if version < 10 {
+            tx.execute_batch(super::jobs::SCHEMA_V10)?;
         }
         let violation = tx
             .prepare("PRAGMA foreign_key_check")?
@@ -402,14 +405,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=10;").unwrap();
+        conn.execute_batch("PRAGMA user_version=11;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();

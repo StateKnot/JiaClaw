@@ -11,9 +11,11 @@ use anyhow::{bail, Context, Result};
 use jiaclaw_core::{ChatResponse, RunStatus};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 pub(super) const MAX_JOBS: usize = 100;
+const MAX_JOB_CREATION_RECEIPTS: usize = 10_000;
 pub(super) const MAX_RUNS: usize = 10_000;
 pub(super) const MAX_RUNS_PER_JOB: usize = 100;
 const MAX_CONCURRENT_RUNS: usize = 4;
@@ -62,6 +64,66 @@ CREATE UNIQUE INDEX job_one_running ON job_runs(job_id) WHERE status='running';
 CREATE INDEX job_runs_history ON job_runs(job_id,scheduled_for_ms DESC,id);
 PRAGMA user_version=2;
 ";
+
+// Deliberately not a foreign key: explicit job purge must not revive a creation ID.
+// Receipts contain no prompt and are never automatically evicted.
+pub(super) const SCHEMA_V10: &str = "
+CREATE TABLE job_creation_receipts (
+    id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36 AND substr(id,15,1)='4'),
+    spec_hash TEXT NOT NULL CHECK(length(spec_hash)=64 AND spec_hash NOT GLOB '*[^0-9a-f]*')
+);
+PRAGMA user_version=10;
+";
+
+pub(super) fn valid_creation_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|parsed| {
+        parsed.get_version_num() == 4
+            && parsed.get_variant() == uuid::Variant::RFC4122
+            && !parsed.is_nil()
+            && parsed.to_string() == id
+    })
+}
+
+fn creation_hash(spec: &JobSpec) -> Result<String> {
+    // Typed serialization normalizes object keys and defaulted fields; tool order
+    // is intentionally preserved as part of the authorized specification.
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(spec)?)))
+}
+
+fn job_creation_on(conn: &Connection, id: &str, fingerprint: &str) -> Result<Option<Job>> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT spec_hash FROM job_creation_receipts WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match stored {
+        Some(stored) if stored != fingerprint => {
+            Err(JobConflict("creation ID already belongs to a different job specification").into())
+        }
+        Some(_) => lookup_job(conn, id)?.map(Some).ok_or_else(|| {
+            JobConflict("job was purged; this creation ID is permanently retired").into()
+        }),
+        None if lookup_job(conn, id)?.is_some() => {
+            Err(JobConflict("job ID exists without a matching creation receipt").into())
+        }
+        None => {
+            let retained: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                [format!("job:{id}")],
+                |row| row.get(0),
+            )?;
+            if retained {
+                return Err(JobConflict(
+                    "job session ID is already retained; use a fresh creation ID",
+                )
+                .into());
+            }
+            Ok(None)
+        }
+    }
+}
 
 fn default_timeout() -> u64 {
     120
@@ -512,6 +574,71 @@ impl SessionStore {
             Self::Sqlite { conn, .. } => Ok(conn),
             Self::Memory(_) => bail!("scheduler requires SQLite persistence"),
         }
+    }
+
+    /// Read a known creation without changing the job or its next occurrence.
+    pub(super) fn get_job_creation(&self, id: &str, spec: &JobSpec) -> Result<Option<Job>> {
+        anyhow::ensure!(
+            valid_creation_id(id),
+            "creation ID must be a canonical UUIDv4"
+        );
+        job_creation_on(self.job_conn()?, id, &creation_hash(spec)?)
+    }
+
+    /// Bind identity, specification and enabled job in one durable transaction.
+    /// A retry reads the current record, including paused or deleted state.
+    pub(super) fn create_job_with_id(
+        &mut self,
+        id: &str,
+        spec: JobSpec,
+        now: i64,
+    ) -> Result<(Job, bool)> {
+        anyhow::ensure!(
+            valid_creation_id(id),
+            "creation ID must be a canonical UUIDv4"
+        );
+        let fingerprint = creation_hash(&spec)?;
+        let tx = self
+            .job_conn_mut()?
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(job) = job_creation_on(&tx, id, &fingerprint)? {
+            tx.commit()?;
+            return Ok((job, false));
+        }
+        spec.validate()?;
+        let next_due_ms = spec.schedule.next_after(now)?;
+        anyhow::ensure!(
+            next_due_ms > now,
+            "schedule did not advance to a future occurrence"
+        );
+        let receipts: usize =
+            tx.query_row("SELECT count(*) FROM job_creation_receipts", [], |row| {
+                row.get(0)
+            })?;
+        if receipts >= MAX_JOB_CREATION_RECEIPTS {
+            return Err(JobConflict("job creation receipt capacity reached (10000 lifetime identities); retained identities cannot be forgotten safely").into());
+        }
+        let count: usize = tx.query_row("SELECT count(*) FROM jobs", [], |row| row.get(0))?;
+        if count >= MAX_JOBS {
+            return Err(JobConflict("job quota reached (100 including deleted jobs); explicitly purge deleted jobs to free capacity").into());
+        }
+        let job = Job {
+            id: id.to_owned(),
+            session_id: format!("job:{id}"),
+            spec,
+            enabled: true,
+            deleted: false,
+            next_due_ms,
+            created_ms: now,
+        };
+        tx.execute(
+            "INSERT INTO job_creation_receipts(id,spec_hash) VALUES(?1,?2)",
+            params![id, fingerprint],
+        )?;
+        tx.execute("INSERT INTO jobs(id,spec,enabled,deleted,next_due_ms,created_ms,session_id) VALUES(?1,?2,1,0,?3,?4,?5)",
+            params![job.id, serde_json::to_string(&job.spec)?, job.next_due_ms, job.created_ms, job.session_id])?;
+        tx.commit()?;
+        Ok((job, true))
     }
 
     pub(super) fn create_job(&mut self, spec: JobSpec, now: i64) -> Result<Job> {
@@ -1632,6 +1759,305 @@ mod tests {
     }
 
     #[test]
+    fn job_creation_identity_survives_restart_recovery_and_purge() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-create-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut db = SessionStore::open(&path).unwrap();
+        let (created, fresh) = db.create_job_with_id(&id, spec(), 0).unwrap();
+        assert!(fresh);
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        assert_eq!(db.recover_jobs(60_010).unwrap(), 1);
+        let before = db.get_job(&id).unwrap().unwrap();
+        let (repeated, fresh) = db.create_job_with_id(&id, spec(), 90_000).unwrap();
+        assert!(!fresh);
+        assert!(!repeated.enabled);
+        assert_eq!(repeated.next_due_ms, before.next_due_ms);
+        assert_eq!(repeated.created_ms, created.created_ms);
+        assert_eq!(
+            db.get_job_run(&run.id).unwrap().unwrap().status,
+            "interrupted"
+        );
+        assert!(db.delete_job(&id).unwrap());
+        assert!(db.get_job_creation(&id, &spec()).unwrap().unwrap().deleted);
+        assert!(db.purge_job(&id).unwrap());
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        for error in [
+            db.get_job_creation(&id, &spec()).unwrap_err(),
+            db.create_job_with_id(&id, spec(), 100_000).unwrap_err(),
+        ] {
+            assert!(error.downcast_ref::<JobConflict>().is_some());
+            assert!(error.to_string().contains("permanently retired"));
+        }
+        assert!(db.get_job(&id).unwrap().is_none());
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            1
+        );
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn job_creation_identity_is_atomic_and_conflicts_without_replacing_legacy_jobs() {
+        let mut db = store();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.job_conn().unwrap().execute_batch("CREATE TRIGGER fail_creation BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fixture rollback'); END;").unwrap();
+        assert!(db.create_job_with_id(&id, spec(), 0).is_err());
+        assert!(db.get_job_creation(&id, &spec()).unwrap().is_none());
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        db.job_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_creation")
+            .unwrap();
+        let (original, _) = db.create_job_with_id(&id, spec(), 0).unwrap();
+        let mut other = spec();
+        other.prompt = "different authorized work".into();
+        assert!(db
+            .create_job_with_id(&id, other, 1)
+            .unwrap_err()
+            .downcast_ref::<JobConflict>()
+            .is_some());
+        assert_eq!(
+            db.get_job(&id).unwrap().unwrap().spec.prompt,
+            original.spec.prompt
+        );
+        let legacy = db.create_job(spec(), 0).unwrap();
+        assert!(db
+            .create_job_with_id(&legacy.id, spec(), 1)
+            .unwrap_err()
+            .downcast_ref::<JobConflict>()
+            .is_some());
+        assert_eq!(db.list_jobs(100, 0).unwrap().len(), 2);
+        for invalid in [
+            "not-a-uuid".to_owned(),
+            uuid::Uuid::nil().to_string(),
+            uuid::Uuid::now_v7().to_string(),
+            "abcdef01-2345-4678-1abc-def012345678".to_owned(),
+            "ABCDEF01-2345-4678-9ABC-DEF012345678".to_owned(),
+            id.replace('-', ""),
+        ] {
+            assert!(db.create_job_with_id(&invalid, spec(), 1).is_err());
+        }
+    }
+
+    #[test]
+    fn job_creation_identity_rejects_retained_or_imported_session_context() {
+        let mut db = store();
+        let old = db.create_job(spec(), 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        db.finish_job_run(
+            &run.id,
+            Some((
+                old.session_id.clone(),
+                SessionRecord::new(vec![reply().message]),
+            )),
+            "completed",
+            Some(reply()),
+            None,
+            60_001,
+        )
+        .unwrap();
+        db.delete_job(&old.id).unwrap();
+        db.purge_job(&old.id).unwrap();
+        assert!(db.get(&old.session_id).unwrap().is_some());
+        assert!(db
+            .create_job_with_id(&old.id, spec(), 90_000)
+            .unwrap_err()
+            .to_string()
+            .contains("session ID is already retained"));
+        let imported = uuid::Uuid::new_v4().to_string();
+        db.insert(
+            format!("job:{imported}"),
+            SessionRecord::new(vec![reply().message]),
+        )
+        .unwrap();
+        assert!(db.get_job_creation(&imported, &spec()).is_err());
+        assert!(db.create_job_with_id(&imported, spec(), 0).is_err());
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        assert!(db.list_jobs(100, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn job_creation_identity_hash_normalizes_json_defaults_but_preserves_tool_order() {
+        let omitted: JobSpec = serde_json::from_str(r#"{"prompt":"Report the current time.","enabled_tools":["datetime_now"],"schedule":{"seconds":60,"kind":"interval"},"name":"daily check"}"#).unwrap();
+        assert_eq!(
+            creation_hash(&omitted).unwrap(),
+            creation_hash(&spec()).unwrap()
+        );
+        let mut both = spec();
+        both.enabled_tools.push("json_query".into());
+        let first = creation_hash(&both).unwrap();
+        both.enabled_tools.reverse();
+        assert_ne!(creation_hash(&both).unwrap(), first);
+        let mut db = store();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.create_job_with_id(&id, spec(), 0).unwrap();
+        assert!(!db.create_job_with_id(&id, omitted, 1).unwrap().1);
+    }
+
+    #[test]
+    fn job_creation_identity_concurrent_callers_create_exactly_one_job() {
+        let db = Arc::new(Mutex::new(store()));
+        let gate = Arc::new(Barrier::new(8));
+        let id = uuid::Uuid::new_v4().to_string();
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let (db, gate, id) = (db.clone(), gate.clone(), id.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    db.lock()
+                        .unwrap()
+                        .create_job_with_id(&id, spec(), 0)
+                        .unwrap()
+                        .1
+                })
+            })
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|worker| usize::from(worker.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        let db = db.lock().unwrap();
+        assert_eq!(db.list_jobs(100, 0).unwrap().len(), 1);
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn job_creation_identity_capacity_is_lifetime_bounded_and_known_receipts_still_read() {
+        let mut db = store();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.create_job_with_id(&id, spec(), 0).unwrap();
+        db.job_conn().unwrap().execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<9999) INSERT INTO job_creation_receipts(id,spec_hash) SELECT printf('%08x-0000-4000-8000-%012x',x,x),?1 FROM n", ["a".repeat(64)]).unwrap();
+        let new_id = uuid::Uuid::new_v4().to_string();
+        assert!(db
+            .create_job_with_id(&new_id, spec(), 0)
+            .unwrap_err()
+            .to_string()
+            .contains("10000 lifetime"));
+        assert!(!db.create_job_with_id(&id, spec(), 9_999).unwrap().1);
+        assert!(db.get_job(&new_id).unwrap().is_none());
+        // Legacy POST has no receipt guarantee or receipt quota consumption.
+        assert!(db.create_job(spec(), 0).is_ok());
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            10_000
+        );
+        let mut full = store();
+        for _ in 0..MAX_JOBS {
+            full.create_job(spec(), 0).unwrap();
+        }
+        assert!(full.create_job_with_id(&new_id, spec(), 0).is_err());
+        assert!(full.get_job_creation(&new_id, &spec()).unwrap().is_none());
+    }
+
+    #[test]
+    fn schema9_creation_identity_migration_retains_running_work_and_existing_auth() {
+        let directory =
+            std::env::temp_dir().join(format!("jiaclaw-create-migrate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let mut db = SessionStore::open(&path).unwrap();
+        let job = db.create_job(spec(), 0).unwrap();
+        let run = db.claim_due_jobs(60_000, 1).unwrap().remove(0);
+        db.job_conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO discord_bot_auth(id,credential_hash,blocked) VALUES(1,?1,1)",
+                ["f".repeat(64)],
+            )
+            .unwrap();
+        db.job_conn()
+            .unwrap()
+            .execute_batch("DROP TABLE job_creation_receipts; PRAGMA user_version=9;")
+            .unwrap();
+        drop(db);
+        let db = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            db.get_job(&job.id).unwrap().unwrap().spec.prompt,
+            job.spec.prompt
+        );
+        assert_eq!(db.get_job_run(&run.id).unwrap().unwrap().status, "running");
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT blocked FROM discord_bot_auth WHERE id=1",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.job_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM job_creation_receipts", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn job_input_is_bounded_and_does_not_accept_caller_sessions_or_implicit_tools() {
         let mut input = serde_json::to_value(spec()).unwrap();
         input.as_object_mut().unwrap().remove("timeout_secs");
@@ -1722,7 +2148,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);
