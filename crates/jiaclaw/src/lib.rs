@@ -25,6 +25,7 @@ pub use jiaclaw_core::{
 mod copy;
 mod exec;
 mod files;
+mod glob_pattern;
 pub use copy::{copy_workspace, CopyOutput, WorkspaceCopyTool, COPY_MAX_BYTES};
 pub use exec::{validate_exec_config, ControlledExecTool};
 mod heartbeat;

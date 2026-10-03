@@ -3,7 +3,7 @@
 
 //! 工作区文件工具：`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move`。
 //!
-//! 前五项使用目录句柄与有界 blocking I/O；其余工具沿用路径解析与各自限制。
+//! 前七项使用目录句柄与有界 blocking I/O；mkdir / move 沿用路径解析与各自限制。
 //! 不调用 LLM，不执行 shell。
 
 use crate::memory::{
@@ -40,9 +40,6 @@ pub const GREP_MAX_MATCHES: usize = 200;
 /// `grep` 返回 snippet 的最大字符数（按 Unicode 标量，超出截断）
 pub const GREP_SNIPPET_MAX_CHARS: usize = 200;
 
-/// `grep` 一次扫描的最大常规文件数（含 glob 未命中的文件）
-pub const GREP_MAX_FILES_SCANNED: usize = 2000;
-
 /// `grep` 字面量 `pattern` 最大字节数
 pub const GREP_PATTERN_MAX_BYTES: usize = 512;
 
@@ -54,9 +51,6 @@ pub const GLOB_DEFAULT_MAX_RESULTS: usize = 100;
 
 /// `glob` 的 `max_results` 上限（含）
 pub const GLOB_MAX_RESULTS: usize = 500;
-
-/// `glob` 一次扫描的最大常规文件数（含 pattern 未命中的文件）
-pub const GLOB_MAX_FILES_SCANNED: usize = 2000;
 
 /// `glob` `pattern` 最大字节数
 pub const GLOB_PATTERN_MAX_BYTES: usize = 256;
@@ -935,89 +929,7 @@ pub fn str_replace_workspace_file(
 /// 不含 `/` 的模式只对文件名生效（`*.rs` 可匹配 `src/lib.rs`）。
 #[must_use]
 pub fn glob_matches(pattern: &str, rel_path: &str) -> bool {
-    let pattern = pattern.replace('\\', "/");
-    let rel_path = rel_path.replace('\\', "/");
-    if pattern.is_empty() {
-        return true;
-    }
-    let pattern = pattern.trim_start_matches("./");
-    let rel_path = rel_path.trim_start_matches("./");
-    if !pattern.contains('/') {
-        let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
-        return glob_match_segment(pattern, name);
-    }
-    let glob_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let file_segs: Vec<&str> = rel_path.split('/').filter(|s| !s.is_empty()).collect();
-    glob_match_parts(&glob_segs, &file_segs)
-}
-
-fn glob_match_parts(glob_segs: &[&str], file_segs: &[&str]) -> bool {
-    match (glob_segs.split_first(), file_segs.split_first()) {
-        (None, None) => true,
-        (None, Some(_)) => false,
-        (Some((&"**", rest)), None) => glob_match_parts(rest, file_segs),
-        (Some((&"**", rest)), Some((_, remaining))) => {
-            glob_match_parts(rest, file_segs) || glob_match_parts(glob_segs, remaining)
-        }
-        (Some((segment, rest)), Some((name, remaining))) => {
-            glob_match_segment(segment, name) && glob_match_parts(rest, remaining)
-        }
-        (Some((segment, rest)), None) => *segment == "**" && glob_match_parts(rest, file_segs),
-    }
-}
-
-fn glob_match_segment(glob: &str, text: &str) -> bool {
-    let glob_chars: Vec<char> = glob.chars().collect();
-    let text_chars: Vec<char> = text.chars().collect();
-    let mut glob_idx = 0;
-    let mut text_idx = 0;
-    let mut star_glob: Option<usize> = None;
-    let mut star_text = 0;
-    while text_idx < text_chars.len() {
-        if glob_idx < glob_chars.len()
-            && glob_chars[glob_idx] != '*'
-            && (glob_chars[glob_idx] == '?' || glob_chars[glob_idx] == text_chars[text_idx])
-        {
-            glob_idx += 1;
-            text_idx += 1;
-        } else if glob_idx < glob_chars.len() && glob_chars[glob_idx] == '*' {
-            star_glob = Some(glob_idx);
-            star_text = text_idx;
-            glob_idx += 1;
-        } else if let Some(star_at) = star_glob {
-            glob_idx = star_at + 1;
-            star_text += 1;
-            text_idx = star_text;
-        } else {
-            return false;
-        }
-    }
-    while glob_idx < glob_chars.len() && glob_chars[glob_idx] == '*' {
-        glob_idx += 1;
-    }
-    glob_idx == glob_chars.len()
-}
-
-fn workspace_rel_display(workspace: &Path, abs: &Path) -> String {
-    match abs.strip_prefix(workspace) {
-        Ok(rel) => {
-            let text = rel.to_string_lossy().replace('\\', "/");
-            if text.is_empty() {
-                ".".to_string()
-            } else {
-                text
-            }
-        }
-        Err(_) => ".".to_string(),
-    }
-}
-
-fn join_rel(prefix: &str, name: &str) -> String {
-    if prefix.is_empty() || prefix == "." {
-        name.to_string()
-    } else {
-        format!("{prefix}/{name}")
-    }
+    crate::glob_pattern::matches(pattern, rel_path)
 }
 
 fn truncate_snippet(line: &str) -> String {
@@ -1031,398 +943,150 @@ fn truncate_snippet(line: &str) -> String {
     }
 }
 
-fn line_contains_literal(line: &str, pattern: &str, case_insensitive: bool) -> bool {
-    if case_insensitive {
-        line.to_lowercase().contains(&pattern.to_lowercase())
-    } else {
-        line.contains(pattern)
-    }
+fn search_json_size(value: &impl Serialize) -> Result<usize, JiaClawError> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| JiaClawError::ToolExecution(format!("序列化搜索结果失败: {e}")))?;
+    // Each entry is nested at four-space indent. Include comma/newline.
+    Ok(json.len() + json.lines().count() * 4 + 2)
 }
 
-fn glob_allows(glob: Option<&str>, rel_path: &str) -> bool {
-    glob.is_none_or(|pattern| glob_matches(pattern, rel_path))
-}
-
-fn read_text_file_for_grep(
-    path: &Path,
-    rel_path: &str,
-    file_max_bytes: usize,
-    fail_on_skip: bool,
-) -> Result<Option<String>, JiaClawError> {
-    let size_bytes = fs::metadata(path)
-        .map(|m| m.len())
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件元数据 {rel_path}: {e}")))?;
-    let limit_bytes = u64::try_from(file_max_bytes).unwrap_or(u64::MAX);
-    if size_bytes > limit_bytes {
-        if fail_on_skip {
-            return Err(JiaClawError::ToolExecution(format!(
-                "文件超过上限 {file_max_bytes} 字节（实际 {size_bytes} 字节）: {rel_path}"
-            )));
-        }
-        return Ok(None);
-    }
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if fail_on_skip => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "无法读取文件 {rel_path}: {err}"
-            )));
-        }
-        Err(_) => return Ok(None),
-    };
-    match String::from_utf8(bytes) {
-        Ok(text) if !text.contains('\0') => Ok(Some(text)),
-        _ if fail_on_skip => Err(JiaClawError::ToolExecution(format!(
-            "二进制文件，跳过搜索: {rel_path}（检测到 NUL 或非 UTF-8）"
-        ))),
-        _ => Ok(None),
-    }
-}
-
-fn collect_line_matches(
-    rel_path: &str,
-    content: &str,
-    pattern: &str,
-    case_insensitive: bool,
-    remaining: usize,
-    out: &mut Vec<GrepMatch>,
-) -> bool {
-    if remaining == 0 {
-        return true;
-    }
-    let mut added = 0;
-    for (idx, line) in content.lines().enumerate() {
-        if line_contains_literal(line, pattern, case_insensitive) {
-            out.push(GrepMatch {
-                path: rel_path.to_string(),
-                line: idx + 1,
-                snippet: truncate_snippet(line),
-            });
-            added += 1;
-            if added >= remaining {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn grep_one_regular_file(
-    path: &Path,
-    rel_path: &str,
-    args: &GrepArgs,
-    file_max_bytes: usize,
-    fail_on_skip: bool,
-    files_scanned: &mut usize,
-    out: &mut Vec<GrepMatch>,
-) -> Result<bool, JiaClawError> {
-    if *files_scanned >= GREP_MAX_FILES_SCANNED {
-        return Ok(true);
-    }
-    *files_scanned += 1;
-    if !glob_allows(args.glob.as_deref(), rel_path) {
-        return Ok(false);
-    }
-    let Some(content) = read_text_file_for_grep(path, rel_path, file_max_bytes, fail_on_skip)?
-    else {
-        return Ok(false);
-    };
-    let remaining = args.max_matches.saturating_sub(out.len());
-    Ok(collect_line_matches(
-        rel_path,
-        &content,
-        &args.pattern,
-        args.case_insensitive,
-        remaining,
-        out,
-    ))
-}
-
-fn walk_grep_dir(
-    dir: &Path,
-    rel_prefix: &str,
-    args: &GrepArgs,
-    file_max_bytes: usize,
-    files_scanned: &mut usize,
-    out: &mut Vec<GrepMatch>,
-) -> Result<bool, JiaClawError> {
-    if out.len() >= args.max_matches || *files_scanned >= GREP_MAX_FILES_SCANNED {
-        return Ok(true);
-    }
-
-    let mut children: Vec<(String, PathBuf, fs::Metadata)> = Vec::new();
-    let iter = fs::read_dir(dir)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录 {}: {e}", dir.display())))?;
-    for entry in iter {
-        let entry =
-            entry.map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录条目: {e}")))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "." || name == ".." || name == ".git" {
-            continue;
-        }
-        let child_path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&child_path) else {
-            continue;
-        };
-        children.push((name.into_owned(), child_path, meta));
-    }
-    children.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut truncated = false;
-    for (name, child_path, meta) in children {
-        if out.len() >= args.max_matches || *files_scanned >= GREP_MAX_FILES_SCANNED {
-            truncated = true;
-            break;
-        }
-        let rel_name = join_rel(rel_prefix, &name);
-        let file_type = meta.file_type();
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            if walk_grep_dir(
-                &child_path,
-                &rel_name,
-                args,
-                file_max_bytes,
-                files_scanned,
-                out,
-            )? {
-                truncated = true;
-                break;
-            }
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if grep_one_regular_file(
-            &child_path,
-            &rel_name,
-            args,
-            file_max_bytes,
-            false,
-            files_scanned,
-            out,
-        )? {
-            truncated = true;
-            break;
-        }
-    }
-    Ok(truncated || out.len() >= args.max_matches || *files_scanned >= GREP_MAX_FILES_SCANNED)
-}
-
-/// 在工作区内按**字面量**子串搜索文本（非正则，避免 `ReDoS`）。
-///
-/// `path` 可为相对目录或文件（默认 `.`）。目录默认递归；不跟随 symlink。
-/// 二进制与超过 `file_max_bytes` 的文件在目录扫描时跳过；若 `path` 指向单个此类文件则报错。
+/// 工作区字面量搜索；目录内跳过二进制/超大文件，显式目标则报错。
 ///
 /// # Errors
-///
-/// 路径非法、越出工作空间、symlink 逃逸、目标不存在，或无法读取搜索根时返回错误。
+/// 非法或链接路径、特殊目标、无效参数、无法完整读取搜索条目时返回错误。
+/// 扫描、时间、读取总量与输出预算耗尽返回 `truncated=true`。
 pub fn grep_workspace(
     workspace: &Path,
     args: &GrepArgs,
     file_max_bytes: usize,
 ) -> Result<GrepOutput, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, &args.path)?;
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不存在: {}",
-            args.path
-        )));
+    if args.path.len() > crate::memory_io::MAX_PATH_BYTES
+        || args.pattern.is_empty()
+        || args.pattern.len() > GREP_PATTERN_MAX_BYTES
+        || args
+            .glob
+            .as_ref()
+            .is_some_and(|g| g.len() > GREP_GLOB_MAX_BYTES)
+    {
+        return Err(JiaClawError::ToolExecution(
+            "搜索 pattern/glob 为空或超过长度上限".into(),
+        ));
     }
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析路径 {}: {e}", args.path)))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {} 指向工作空间外部",
-            args.path
-        )));
-    }
-
-    let mut matches = Vec::new();
-    let mut files_scanned = 0;
-    let truncated = if canon.is_file() {
-        let rel = workspace_rel_display(&ws, &canon);
-        grep_one_regular_file(
-            &canon,
-            &rel,
-            args,
-            file_max_bytes,
-            true,
-            &mut files_scanned,
-            &mut matches,
-        )?
-    } else if canon.is_dir() {
-        let rel = workspace_rel_display(&ws, &canon);
-        walk_grep_dir(
-            &canon,
-            &rel,
-            args,
-            file_max_bytes,
-            &mut files_scanned,
-            &mut matches,
-        )?
-    } else {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件或目录: {}",
-            args.path
-        )));
-    };
-
-    Ok(GrepOutput {
+    let mut output = GrepOutput {
         pattern: args.pattern.clone(),
         path: args.path.clone(),
         glob: args.glob.clone(),
         case_insensitive: args.case_insensitive,
-        max_matches: args.max_matches,
-        truncated,
-        match_count: matches.len(),
-        matches,
-    })
-}
-
-fn glob_one_regular_file(rel_path: &str, pattern: &str, out: &mut Vec<String>) -> bool {
-    if !glob_matches(pattern, rel_path) {
-        return false;
-    }
-    if out.len() >= GLOB_MAX_RESULTS {
-        return true;
-    }
-    out.push(rel_path.to_string());
-    false
-}
-
-fn walk_glob_dir(
-    dir: &Path,
-    rel_prefix: &str,
-    pattern: &str,
-    files_scanned: &mut usize,
-    out: &mut Vec<String>,
-) -> Result<bool, JiaClawError> {
-    if *files_scanned >= GLOB_MAX_FILES_SCANNED {
-        return Ok(true);
-    }
-
-    let mut children: Vec<(String, PathBuf, fs::Metadata)> = Vec::new();
-    let iter = fs::read_dir(dir)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录 {}: {e}", dir.display())))?;
-    for entry in iter {
-        let entry =
-            entry.map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录条目: {e}")))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "." || name == ".." || name == ".git" {
-            continue;
+        max_matches: args.max_matches.clamp(1, GREP_MAX_MATCHES),
+        truncated: false,
+        match_count: 0,
+        matches: Vec::new(),
+    };
+    // Reserve array formatting and the later match_count's additional digits.
+    let mut used = search_json_size(&output)? + 32;
+    let needle = if args.case_insensitive {
+        args.pattern.to_lowercase()
+    } else {
+        args.pattern.clone()
+    };
+    output.truncated = crate::memory_io::search_files(workspace, &args.path, |file, budget| {
+        if args
+            .glob
+            .as_deref()
+            .is_some_and(|g| !glob_matches(g, file.path))
+        {
+            return Ok(false);
         }
-        let child_path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&child_path) else {
-            continue;
+        let text = match file.read_text(budget, file_max_bytes)? {
+            crate::memory_io::SearchText::Text(text) => text,
+            crate::memory_io::SearchText::Skipped => return Ok(false),
+            crate::memory_io::SearchText::Exhausted => return Ok(true),
         };
-        children.push((name.into_owned(), child_path, meta));
-    }
-    children.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut truncated = false;
-    for (name, child_path, meta) in children {
-        if *files_scanned >= GLOB_MAX_FILES_SCANNED {
-            truncated = true;
-            break;
-        }
-        let rel_name = join_rel(rel_prefix, &name);
-        let file_type = meta.file_type();
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            if walk_glob_dir(&child_path, &rel_name, pattern, files_scanned, out)? {
-                truncated = true;
-                break;
+        for (index, line) in text.lines().enumerate() {
+            if budget.expired() {
+                return Ok(true);
             }
-            continue;
+            let found = if args.case_insensitive {
+                line.to_lowercase().contains(&needle)
+            } else {
+                line.contains(&needle)
+            };
+            if !found {
+                continue;
+            }
+            let item = GrepMatch {
+                path: file.path.into(),
+                line: index + 1,
+                snippet: truncate_snippet(line),
+            };
+            let size = search_json_size(&item)?;
+            if used + size > crate::memory_io::SEARCH_OUTPUT_BYTES {
+                return Ok(true);
+            }
+            used += size;
+            output.matches.push(item);
+            if output.matches.len() >= output.max_matches {
+                return Ok(true);
+            }
         }
-        if !file_type.is_file() {
-            continue;
-        }
-        *files_scanned += 1;
-        if glob_one_regular_file(&rel_name, pattern, out) {
-            truncated = true;
-            break;
-        }
-    }
-    Ok(truncated)
+        Ok(false)
+    })?;
+    output.match_count = output.matches.len();
+    Ok(output)
 }
 
-/// 按 glob 模式列出工作区内匹配的**常规文件**路径（不含目录）。
-///
-/// `path` 可为相对目录或文件（默认 `.`）。目录默认递归；不跟随 symlink。
-/// 结果按路径排序；超过 `max_results` 或扫描上限时截断并设置 `truncated`。
+/// 按 glob 列出已扫描集合内的常规单链接文件；不读取文件正文。
 ///
 /// # Errors
-///
-/// 路径非法、越出工作空间、symlink 逃逸、目标不存在，或无法读取搜索根时返回错误。
+/// 非法或链接路径、特殊目标、无效参数或目录访问失败时返回错误。
+/// 结果按路径排序；达到扫描或输出预算时返回 `truncated=true`。
 pub fn glob_workspace(workspace: &Path, args: &GlobArgs) -> Result<GlobOutput, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, &args.path)?;
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不存在: {}",
-            args.path
-        )));
+    if args.path.len() > crate::memory_io::MAX_PATH_BYTES
+        || args.pattern.is_empty()
+        || args.pattern.len() > GLOB_PATTERN_MAX_BYTES
+    {
+        return Err(JiaClawError::ToolExecution(
+            "glob path/pattern 为空或超过长度上限".into(),
+        ));
     }
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析路径 {}: {e}", args.path)))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {} 指向工作空间外部",
-            args.path
-        )));
-    }
-
-    let mut matches = Vec::new();
-    let mut files_scanned = 0;
-    let scan_truncated = if canon.is_file() {
-        let rel = workspace_rel_display(&ws, &canon);
-        glob_one_regular_file(&rel, &args.pattern, &mut matches)
-    } else if canon.is_dir() {
-        let rel = workspace_rel_display(&ws, &canon);
-        walk_glob_dir(
-            &canon,
-            &rel,
-            &args.pattern,
-            &mut files_scanned,
-            &mut matches,
-        )?
-    } else {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件或目录: {}",
-            args.path
-        )));
-    };
-
-    matches.sort();
-    let truncated = scan_truncated || matches.len() > args.max_results;
-    if matches.len() > args.max_results {
-        matches.truncate(args.max_results);
-    }
-
-    Ok(GlobOutput {
+    let mut output = GlobOutput {
         pattern: args.pattern.clone(),
         path: args.path.clone(),
-        max_results: args.max_results,
-        truncated,
-        match_count: matches.len(),
-        matches,
-    })
+        max_results: args.max_results.clamp(1, GLOB_MAX_RESULTS),
+        truncated: false,
+        match_count: 0,
+        matches: Vec::new(),
+    };
+    let mut used = search_json_size(&output)? + 32;
+    output.truncated = crate::memory_io::search_files(workspace, &args.path, |file, budget| {
+        if budget.expired() {
+            return Ok(true);
+        }
+        if !glob_matches(&args.pattern, file.path) {
+            return Ok(false);
+        }
+        // Retain the existing collect/sort/truncate semantics: directory DFS
+        // order is not full-path lexical order (a.rs precedes a/b.rs).
+        if output.matches.len() >= GLOB_MAX_RESULTS {
+            return Ok(true);
+        }
+        output.matches.push(file.path.into());
+        Ok(false)
+    })?;
+    output.matches.sort();
+    for item in std::mem::take(&mut output.matches) {
+        let size = search_json_size(&item)?;
+        if output.matches.len() >= output.max_results
+            || used + size > crate::memory_io::SEARCH_OUTPUT_BYTES
+        {
+            output.truncated = true;
+            break;
+        }
+        used += size;
+        output.matches.push(item);
+    }
+    output.match_count = output.matches.len();
+    Ok(output)
 }
 
 fn mkdir_existing_dir_result(
@@ -2014,7 +1678,7 @@ pub struct GrepOutput {
     pub case_insensitive: bool,
     /// 生效的匹配上限
     pub max_matches: usize,
-    /// 是否因 `max_matches` 或扫描文件数上限截断
+    /// 是否因匹配、扫描条目、深度、路径、时间、读取或输出预算截断
     pub truncated: bool,
     /// 本次返回的匹配条数
     pub match_count: usize,
@@ -2031,7 +1695,7 @@ pub struct GlobOutput {
     pub path: String,
     /// 生效的结果上限
     pub max_results: usize,
-    /// 是否因 `max_results` 或扫描文件数上限截断
+    /// 是否因结果、候选、扫描条目、深度、路径、时间或输出预算截断
     pub truncated: bool,
     /// 本次返回的路径条数
     pub match_count: usize,
@@ -2456,7 +2120,7 @@ impl Tool for WorkspaceGrepTool {
     }
 
     fn description(&self) -> &str {
-        "在工作区内按字面量搜索文本（非正则，避免 ReDoS）。pattern 必填；可选 path（相对目录或文件，默认 .）、glob（如 *.rs）、case_insensitive（默认 false）、max_matches（默认 50，钳制 1..=200）。禁止 .. / 绝对路径 / symlink 逃逸。不跟随 symlink；跳过二进制与超过 256KiB 的文件。返回 {path, line, snippet} 列表。不执行 shell，不调用 LLM。"
+        "在工作区内按字面量搜索文本（非正则，避免 ReDoS）。pattern 必填；可选 path（相对目录或文件，默认 .）、glob（如 *.rs）、case_insensitive（默认 false）、max_matches（默认 50，钳制 1..=200）。禁止 .. / 绝对路径 / symlink 逃逸。直接路径拒绝链接/特殊文件，目录跳过链接、硬链接、特殊文件、二进制及超过 256KiB 的文件。全条目/深度/时间/总读取及 64KiB JSON 预算耗尽时 truncated=true。返回 {path, line, snippet} 列表。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2494,7 +2158,11 @@ impl Tool for WorkspaceGrepTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_grep_args(&args)?;
-        let output = grep_workspace(&self.workspace_path, &parsed, self.file_max_bytes)?;
+        let workspace = self.workspace_path.clone();
+        let maximum = self.file_max_bytes;
+        let output =
+            crate::memory_io::run_blocking(move || grep_workspace(&workspace, &parsed, maximum))
+                .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化搜索结果失败: {e}")))
     }
@@ -2522,7 +2190,7 @@ impl Tool for WorkspaceGlobTool {
     }
 
     fn description(&self) -> &str {
-        "按 glob 模式列出工作区内匹配的常规文件路径（不含目录）。pattern 必填（如 **/*.rs、src/**/*.toml）；可选 path（相对搜索根，默认 .）、max_results（默认 100，钳制 1..=500）。结果按路径排序；超限截断并注明 truncated。禁止 .. / 绝对路径 / symlink 逃逸。不跟随 symlink。不执行 shell，不调用 LLM。"
+        "按 glob 模式列出工作区内匹配的常规文件路径（不含目录）。pattern 必填（如 **/*.rs、src/**/*.toml）；可选 path（相对搜索根，默认 .）、max_results（默认 100，钳制 1..=500）。结果按路径排序；超限截断并注明 truncated。禁止 .. / 绝对路径 / symlink 逃逸。不跟随链接或返回硬链接/特殊文件，不读取正文。全条目/深度/时间及 64KiB JSON 预算耗尽时 truncated=true。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2551,7 +2219,9 @@ impl Tool for WorkspaceGlobTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_glob_args(&args)?;
-        let output = glob_workspace(&self.workspace_path, &parsed)?;
+        let workspace = self.workspace_path.clone();
+        let output =
+            crate::memory_io::run_blocking(move || glob_workspace(&workspace, &parsed)).await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化 glob 结果失败: {e}")))
     }
@@ -2684,6 +2354,29 @@ impl Tool for WorkspaceMoveTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Parallel semantic tests share the production eight-slot I/O pool. A busy
+    // rejection happens before spawn_blocking and has no effect to replay.
+    // Capacity/cancellation tests separately exercise immediate rejection.
+    #[async_trait]
+    trait TestToolCall {
+        async fn execute_admitted(&self, args: Value) -> Result<String, JiaClawError>;
+    }
+    #[async_trait]
+    impl<T: Tool + Sync> TestToolCall for T {
+        async fn execute_admitted(&self, args: Value) -> Result<String, JiaClawError> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let result = self.execute(args.clone()).await;
+                let busy = matches!(&result, Err(JiaClawError::ToolExecution(message))
+                    if message == "memory file: 安全/IO 错误: I/O capacity busy");
+                if !busy || std::time::Instant::now() >= deadline {
+                    return result;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        }
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp(prefix: &str) -> PathBuf {
@@ -2761,7 +2454,7 @@ mod tests {
         assert_eq!(tool.name(), "read_file");
 
         let result = tool
-            .execute(serde_json::json!({"path": "notes.md"}))
+            .execute_admitted(serde_json::json!({"path": "notes.md"}))
             .await
             .unwrap();
         assert!(result.contains("alpha"), "{result}");
@@ -2769,7 +2462,7 @@ mod tests {
         assert!(result.contains("\"total_lines\": 3"), "{result}");
 
         let sliced = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes.md",
                 "offset": 2,
                 "limit": 1
@@ -2789,14 +2482,14 @@ mod tests {
         let tool = WorkspaceReadFileTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({"path": "../secret.md"}))
+            .execute_admitted(serde_json::json!({"path": "../secret.md"}))
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({"path": "/etc/passwd"}))
+            .execute_admitted(serde_json::json!({"path": "/etc/passwd"}))
             .await
             .unwrap_err()
             .to_string();
@@ -2816,7 +2509,9 @@ mod tests {
         std::os::unix::fs::symlink(&outside, ws.join("leak.md")).unwrap();
 
         let tool = WorkspaceReadFileTool::new(&ws);
-        let result = tool.execute(serde_json::json!({"path": "leak.md"})).await;
+        let result = tool
+            .execute_admitted(serde_json::json!({"path": "leak.md"}))
+            .await;
         assert!(result.is_err(), "symlink 逃逸应被拒绝: {result:?}");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("安全") || err.contains("工作空间"), "{err}");
@@ -2831,7 +2526,7 @@ mod tests {
         let tool = WorkspaceReadFileTool::with_max_bytes(&ws, 16);
         fs::write(ws.join("big.md"), "abcdefghijklmnopqrstuvwxyz").unwrap();
         let err = tool
-            .execute(serde_json::json!({"path": "big.md"}))
+            .execute_admitted(serde_json::json!({"path": "big.md"}))
             .await
             .unwrap_err()
             .to_string();
@@ -2840,7 +2535,7 @@ mod tests {
 
         fs::write(ws.join("bin.dat"), [0_u8, 1, 2, 3, 255]).unwrap();
         let err = WorkspaceReadFileTool::new(&ws)
-            .execute(serde_json::json!({"path": "bin.dat"}))
+            .execute_admitted(serde_json::json!({"path": "bin.dat"}))
             .await
             .unwrap_err()
             .to_string();
@@ -2857,7 +2552,7 @@ mod tests {
         let tool = WorkspaceListDirTool::new(&ws);
         assert_eq!(tool.name(), "list_dir");
 
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute_admitted(serde_json::json!({})).await.unwrap();
         assert!(result.contains("MEMORY.md"), "{result}");
         assert!(result.contains("notes"), "{result}");
         assert!(result.contains("\"type\": \"file\""), "{result}");
@@ -2868,7 +2563,7 @@ mod tests {
         );
 
         let nested = tool
-            .execute(serde_json::json!({"path": "notes"}))
+            .execute_admitted(serde_json::json!({"path": "notes"}))
             .await
             .unwrap();
         assert!(nested.contains("a.md"), "{nested}");
@@ -2881,14 +2576,14 @@ mod tests {
         fs::create_dir_all(&ws).unwrap();
         let tool = WorkspaceListDirTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({"path": "../"}))
+            .execute_admitted(serde_json::json!({"path": "../"}))
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({"path": "/tmp"}))
+            .execute_admitted(serde_json::json!({"path": "/tmp"}))
             .await
             .unwrap_err()
             .to_string();
@@ -2909,7 +2604,9 @@ mod tests {
         std::os::unix::fs::symlink(&outside, ws.join("escape")).unwrap();
 
         let tool = WorkspaceListDirTool::new(&ws);
-        let result = tool.execute(serde_json::json!({"path": "escape"})).await;
+        let result = tool
+            .execute_admitted(serde_json::json!({"path": "escape"}))
+            .await;
         assert!(result.is_err(), "symlink 逃逸应被拒绝: {result:?}");
         let _ = fs::remove_dir_all(&outside);
         let _ = fs::remove_dir_all(&ws);
@@ -2923,7 +2620,7 @@ mod tests {
         }
         let tool = WorkspaceListDirTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({"max_entries": 2}))
+            .execute_admitted(serde_json::json!({"max_entries": 2}))
             .await
             .unwrap();
         assert!(result.contains("\"truncated\": true"), "{result}");
@@ -2978,7 +2675,7 @@ mod tests {
         assert_eq!(tool.name(), "write_file");
 
         let created = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes/hello.md",
                 "content": "alpha"
             }))
@@ -2992,7 +2689,7 @@ mod tests {
         );
 
         let overwritten = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes/hello.md",
                 "content": "beta",
                 "mode": "overwrite"
@@ -3006,7 +2703,7 @@ mod tests {
         );
 
         let appended = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes/hello.md",
                 "content": "gamma",
                 "mode": "append"
@@ -3027,7 +2724,7 @@ mod tests {
         let tool = WorkspaceWriteFileTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "../secret.md",
                 "content": "nope"
             }))
@@ -3038,7 +2735,7 @@ mod tests {
         assert!(!ws.parent().unwrap().join("secret.md").exists());
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "/etc/passwd",
                 "content": "nope"
             }))
@@ -3062,7 +2759,7 @@ mod tests {
 
         let tool = WorkspaceWriteFileTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "leak.md",
                 "content": "pwned"
             }))
@@ -3079,7 +2776,7 @@ mod tests {
         fs::create_dir_all(&outside_dir).unwrap();
         std::os::unix::fs::symlink(&outside_dir, ws.join("escape")).unwrap();
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "escape/pwned.md",
                 "content": "nope"
             }))
@@ -3099,7 +2796,7 @@ mod tests {
         fs::write(ws.join("keep.md"), "old").unwrap();
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "keep.md",
                 "content": "abcdefghijk"
             }))
@@ -3111,7 +2808,7 @@ mod tests {
 
         fs::write(ws.join("log.md"), "12345").unwrap();
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "log.md",
                 "content": "67890",
                 "mode": "append"
@@ -3148,7 +2845,7 @@ mod tests {
         assert_eq!(tool.name(), "delete_file");
 
         let result = tool
-            .execute(serde_json::json!({"path": "notes.md"}))
+            .execute_admitted(serde_json::json!({"path": "notes.md"}))
             .await
             .unwrap();
         assert!(result.contains("notes.md"), "{result}");
@@ -3168,14 +2865,14 @@ mod tests {
         let tool = WorkspaceDeleteFileTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({"path": "../jiaclaw_should_not_delete.md"}))
+            .execute_admitted(serde_json::json!({"path": "../jiaclaw_should_not_delete.md"}))
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({"path": "/etc/passwd"}))
+            .execute_admitted(serde_json::json!({"path": "/etc/passwd"}))
             .await
             .unwrap_err()
             .to_string();
@@ -3197,7 +2894,9 @@ mod tests {
         std::os::unix::fs::symlink(&outside, ws.join("leak.md")).unwrap();
 
         let tool = WorkspaceDeleteFileTool::new(&ws);
-        let result = tool.execute(serde_json::json!({"path": "leak.md"})).await;
+        let result = tool
+            .execute_admitted(serde_json::json!({"path": "leak.md"}))
+            .await;
         assert!(result.is_err(), "symlink 逃逸应被拒绝: {result:?}");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("安全") || err.contains("工作空间"), "{err}");
@@ -3216,7 +2915,7 @@ mod tests {
         let tool = WorkspaceDeleteFileTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({"path": "notes"}))
+            .execute_admitted(serde_json::json!({"path": "notes"}))
             .await
             .unwrap_err()
             .to_string();
@@ -3234,7 +2933,7 @@ mod tests {
         let ws = unique_temp("jiaclaw_delete_file_missing");
         let tool = WorkspaceDeleteFileTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({"path": "no-such.md"}))
+            .execute_admitted(serde_json::json!({"path": "no-such.md"}))
             .await;
         assert!(result.is_err(), "缺文件不得静默成功: {result:?}");
         let err = result.unwrap_err().to_string();
@@ -3311,7 +3010,7 @@ mod tests {
         assert_eq!(tool.name(), "str_replace");
 
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes.md",
                 "old_str": "beta",
                 "new_str": "BETA"
@@ -3335,7 +3034,7 @@ mod tests {
         let tool = WorkspaceStrReplaceTool::new(&ws);
 
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes.md",
                 "old_str": "foo",
                 "new_str": "qux",
@@ -3359,7 +3058,7 @@ mod tests {
         let tool = WorkspaceStrReplaceTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes.md",
                 "old_str": "missing",
                 "new_str": "x"
@@ -3374,7 +3073,7 @@ mod tests {
         );
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes.md",
                 "old_str": "two",
                 "new_str": "TWO"
@@ -3402,7 +3101,7 @@ mod tests {
         let tool = WorkspaceStrReplaceTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "../secret.md",
                 "old_str": "keep",
                 "new_str": "pwned"
@@ -3414,7 +3113,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&outside).unwrap(), "keep-me");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "/etc/passwd",
                 "old_str": "root",
                 "new_str": "pwned"
@@ -3440,7 +3139,7 @@ mod tests {
 
         let tool = WorkspaceStrReplaceTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "leak.md",
                 "old_str": "secret",
                 "new_str": "pwned"
@@ -3461,7 +3160,7 @@ mod tests {
         let tool = WorkspaceStrReplaceTool::with_max_bytes(&ws, 8);
         fs::write(ws.join("big.md"), "abcdefghijk").unwrap();
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "big.md",
                 "old_str": "abc",
                 "new_str": "xyz"
@@ -3477,7 +3176,7 @@ mod tests {
 
         fs::write(ws.join("keep.md"), "ab").unwrap();
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "keep.md",
                 "old_str": "ab",
                 "new_str": "abcdefghijk"
@@ -3495,7 +3194,7 @@ mod tests {
         let ws = unique_temp("jiaclaw_str_replace_bin");
         fs::write(ws.join("bin.dat"), [0_u8, 1, 2, 3, 255]).unwrap();
         let err = WorkspaceStrReplaceTool::new(&ws)
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "bin.dat",
                 "old_str": "\u{0}",
                 "new_str": "x"
@@ -3590,7 +3289,7 @@ mod tests {
         assert_eq!(tool.name(), "grep");
 
         let result = tool
-            .execute(serde_json::json!({"pattern": "beta"}))
+            .execute_admitted(serde_json::json!({"pattern": "beta"}))
             .await
             .unwrap();
         let parsed: GrepOutput = serde_json::from_str(&result).unwrap();
@@ -3614,7 +3313,7 @@ mod tests {
         let tool = WorkspaceGrepTool::new(&ws);
 
         let globbed = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "Needle",
                 "glob": "*.md"
             }))
@@ -3625,7 +3324,7 @@ mod tests {
         assert_eq!(parsed.matches[0].path, "keep.md");
 
         let insensitive = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "needle",
                 "case_insensitive": true,
                 "glob": "*.md"
@@ -3636,7 +3335,7 @@ mod tests {
         assert_eq!(parsed.match_count, 3);
 
         let limited = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "needle",
                 "case_insensitive": true,
                 "max_matches": 1
@@ -3656,7 +3355,7 @@ mod tests {
         fs::write(ws.join("notes.md"), format!("{long}\nnope\n")).unwrap();
         let tool = WorkspaceGrepTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "FOUND",
                 "path": "notes.md"
             }))
@@ -3679,7 +3378,7 @@ mod tests {
         let tool = WorkspaceGrepTool::new(&ws);
 
         let tree = tool
-            .execute(serde_json::json!({"pattern": "needle"}))
+            .execute_admitted(serde_json::json!({"pattern": "needle"}))
             .await
             .unwrap();
         let parsed: GrepOutput = serde_json::from_str(&tree).unwrap();
@@ -3687,7 +3386,7 @@ mod tests {
         assert_eq!(parsed.matches[0].path, "ok.md");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "needle",
                 "path": "bin.dat"
             }))
@@ -3705,7 +3404,7 @@ mod tests {
         let tool = WorkspaceGrepTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "inside",
                 "path": "../secret.md"
             }))
@@ -3715,7 +3414,7 @@ mod tests {
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "root",
                 "path": "/etc/passwd"
             }))
@@ -3740,7 +3439,7 @@ mod tests {
 
         let tool = WorkspaceGrepTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "needle",
                 "path": "leak.md"
             }))
@@ -3750,7 +3449,7 @@ mod tests {
         assert!(err.contains("安全") || err.contains("工作空间"), "{err}");
 
         let tree = tool
-            .execute(serde_json::json!({"pattern": "needle"}))
+            .execute_admitted(serde_json::json!({"pattern": "needle"}))
             .await
             .unwrap();
         let parsed: GrepOutput = serde_json::from_str(&tree).unwrap();
@@ -3769,7 +3468,7 @@ mod tests {
         fs::write(outside_dir.join("secret.txt"), "needle-dir").unwrap();
         std::os::unix::fs::symlink(&outside_dir, ws.join("escape")).unwrap();
         let dir_result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "needle",
                 "path": "escape"
             }))
@@ -3789,7 +3488,7 @@ mod tests {
         let ws = unique_temp("jiaclaw_grep_missing");
         let tool = WorkspaceGrepTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "x",
                 "path": "no-such.md"
             }))
@@ -3870,7 +3569,7 @@ mod tests {
         assert_eq!(tool.name(), "glob");
 
         let result = tool
-            .execute(serde_json::json!({"pattern": "**/*.rs"}))
+            .execute_admitted(serde_json::json!({"pattern": "**/*.rs"}))
             .await
             .unwrap();
         let parsed: GlobOutput = serde_json::from_str(&result).unwrap();
@@ -3886,14 +3585,14 @@ mod tests {
         );
 
         let nested_toml = tool
-            .execute(serde_json::json!({"pattern": "src/**/*.toml"}))
+            .execute_admitted(serde_json::json!({"pattern": "src/**/*.toml"}))
             .await
             .unwrap();
         let parsed: GlobOutput = serde_json::from_str(&nested_toml).unwrap();
         assert_eq!(parsed.match_count, 0);
 
         let by_name = tool
-            .execute(serde_json::json!({"pattern": "*.md"}))
+            .execute_admitted(serde_json::json!({"pattern": "*.md"}))
             .await
             .unwrap();
         let parsed: GlobOutput = serde_json::from_str(&by_name).unwrap();
@@ -3916,7 +3615,7 @@ mod tests {
         let tool = WorkspaceGlobTool::new(&ws);
 
         let scoped = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.rs",
                 "path": "src"
             }))
@@ -3930,7 +3629,7 @@ mod tests {
         );
 
         let limited = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "**/*.rs",
                 "max_results": 1
             }))
@@ -3951,7 +3650,7 @@ mod tests {
         let tool = WorkspaceGlobTool::new(&ws);
 
         let hit = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.md",
                 "path": "notes.md"
             }))
@@ -3961,7 +3660,7 @@ mod tests {
         assert_eq!(parsed.matches, vec!["notes.md".to_string()]);
 
         let miss = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.rs",
                 "path": "notes.md"
             }))
@@ -3980,7 +3679,7 @@ mod tests {
         let tool = WorkspaceGlobTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.md",
                 "path": "../secret.md"
             }))
@@ -3990,7 +3689,7 @@ mod tests {
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*",
                 "path": "/etc"
             }))
@@ -4015,7 +3714,7 @@ mod tests {
 
         let tool = WorkspaceGlobTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.md",
                 "path": "leak.md"
             }))
@@ -4025,7 +3724,7 @@ mod tests {
         assert!(err.contains("安全") || err.contains("工作空间"), "{err}");
 
         let tree = tool
-            .execute(serde_json::json!({"pattern": "*.md"}))
+            .execute_admitted(serde_json::json!({"pattern": "*.md"}))
             .await
             .unwrap();
         let parsed: GlobOutput = serde_json::from_str(&tree).unwrap();
@@ -4043,7 +3742,7 @@ mod tests {
         fs::write(outside_dir.join("secret.txt"), "nope").unwrap();
         std::os::unix::fs::symlink(&outside_dir, ws.join("escape")).unwrap();
         let dir_result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "**/*",
                 "path": "escape"
             }))
@@ -4063,7 +3762,7 @@ mod tests {
         let ws = unique_temp("jiaclaw_glob_missing");
         let tool = WorkspaceGlobTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "pattern": "*.md",
                 "path": "no-such"
             }))
@@ -4140,7 +3839,7 @@ mod tests {
         assert_eq!(tool.name(), "mkdir");
 
         let created = tool
-            .execute(serde_json::json!({"path": "notes/deep"}))
+            .execute_admitted(serde_json::json!({"path": "notes/deep"}))
             .await
             .unwrap();
         let parsed: MkdirOutput = serde_json::from_str(&created).unwrap();
@@ -4151,7 +3850,7 @@ mod tests {
         assert!(ws.join("notes").join("deep").is_dir());
 
         let again = tool
-            .execute(serde_json::json!({"path": "notes/deep"}))
+            .execute_admitted(serde_json::json!({"path": "notes/deep"}))
             .await
             .unwrap();
         let parsed: MkdirOutput = serde_json::from_str(&again).unwrap();
@@ -4167,7 +3866,7 @@ mod tests {
         fs::write(ws.join("notes.md"), "not-a-dir").unwrap();
         let tool = WorkspaceMkdirTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({"path": "notes.md"}))
+            .execute_admitted(serde_json::json!({"path": "notes.md"}))
             .await
             .unwrap_err()
             .to_string();
@@ -4182,7 +3881,7 @@ mod tests {
         let tool = WorkspaceMkdirTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "missing/child",
                 "recursive": false
             }))
@@ -4193,7 +3892,7 @@ mod tests {
         assert!(!ws.join("missing").exists());
 
         let created = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes",
                 "parents": false
             }))
@@ -4205,7 +3904,7 @@ mod tests {
         assert!(ws.join("notes").is_dir());
 
         let nested = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "path": "notes/leaf",
                 "recursive": false
             }))
@@ -4223,7 +3922,7 @@ mod tests {
         let tool = WorkspaceMkdirTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({"path": "../secret-dir"}))
+            .execute_admitted(serde_json::json!({"path": "../secret-dir"}))
             .await
             .unwrap_err()
             .to_string();
@@ -4231,7 +3930,7 @@ mod tests {
         assert!(!ws.parent().unwrap().join("secret-dir").exists());
 
         let err = tool
-            .execute(serde_json::json!({"path": "/tmp/jiaclaw-mkdir-escape"}))
+            .execute_admitted(serde_json::json!({"path": "/tmp/jiaclaw-mkdir-escape"}))
             .await
             .unwrap_err()
             .to_string();
@@ -4251,13 +3950,15 @@ mod tests {
         std::os::unix::fs::symlink(&outside_dir, ws.join("escape")).unwrap();
 
         let tool = WorkspaceMkdirTool::new(&ws);
-        let result = tool.execute(serde_json::json!({"path": "escape"})).await;
+        let result = tool
+            .execute_admitted(serde_json::json!({"path": "escape"}))
+            .await;
         assert!(result.is_err(), "symlink 目录逃逸应被拒绝: {result:?}");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("安全") || err.contains("工作空间"), "{err}");
 
         let nested = tool
-            .execute(serde_json::json!({"path": "escape/pwned"}))
+            .execute_admitted(serde_json::json!({"path": "escape/pwned"}))
             .await;
         assert!(nested.is_err(), "经 symlink 创建子目录应被拒绝: {nested:?}");
         assert!(!outside_dir.join("pwned").exists());
@@ -4348,7 +4049,7 @@ mod tests {
         assert_eq!(tool.name(), "move");
 
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "old.md",
                 "to": "new.md"
             }))
@@ -4372,7 +4073,7 @@ mod tests {
         fs::write(ws.join("notes").join("a.md"), "x").unwrap();
         let tool = WorkspaceMoveTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "source": "notes/a.md",
                 "destination": "notes/b.md"
             }))
@@ -4395,7 +4096,7 @@ mod tests {
         let tool = WorkspaceMoveTool::new(&ws);
 
         let empty = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "empty",
                 "to": "empty-renamed"
             }))
@@ -4407,7 +4108,7 @@ mod tests {
         assert!(ws.join("empty-renamed").is_dir());
 
         let full = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "full",
                 "to": "full-renamed"
             }))
@@ -4430,7 +4131,7 @@ mod tests {
         fs::write(ws.join("b.md"), "dst").unwrap();
         let tool = WorkspaceMoveTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "a.md",
                 "to": "b.md"
             }))
@@ -4450,7 +4151,7 @@ mod tests {
         fs::write(ws.join("b.md"), "dst").unwrap();
         let tool = WorkspaceMoveTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "a.md",
                 "to": "b.md",
                 "overwrite": true
@@ -4470,7 +4171,7 @@ mod tests {
         let ws = unique_temp("jiaclaw_move_missing");
         let tool = WorkspaceMoveTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "no-such.md",
                 "to": "out.md"
             }))
@@ -4487,7 +4188,7 @@ mod tests {
         fs::write(ws.join("a.md"), "x").unwrap();
         let tool = WorkspaceMoveTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "a.md",
                 "to": "missing/a.md"
             }))
@@ -4506,7 +4207,7 @@ mod tests {
         fs::write(ws.join("notes").join("a.md"), "x").unwrap();
         let tool = WorkspaceMoveTool::new(&ws);
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "notes",
                 "to": "notes/nested"
             }))
@@ -4525,7 +4226,7 @@ mod tests {
         let tool = WorkspaceMoveTool::new(&ws);
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "../secret.md",
                 "to": "ok.md"
             }))
@@ -4535,7 +4236,7 @@ mod tests {
         assert!(err.contains("穿越") || err.contains("安全"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "ok.md",
                 "to": "../escaped.md"
             }))
@@ -4546,7 +4247,7 @@ mod tests {
         assert!(ws.join("ok.md").is_file());
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "/etc/passwd",
                 "to": "stolen.md"
             }))
@@ -4556,7 +4257,7 @@ mod tests {
         assert!(err.contains("绝对路径"), "{err}");
 
         let err = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "ok.md",
                 "to": "/tmp/jiaclaw-move-escape"
             }))
@@ -4581,7 +4282,7 @@ mod tests {
 
         let tool = WorkspaceMoveTool::new(&ws);
         let result = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "leak.md",
                 "to": "copied.md"
             }))
@@ -4594,7 +4295,7 @@ mod tests {
         );
 
         let dest_link = tool
-            .execute(serde_json::json!({
+            .execute_admitted(serde_json::json!({
                 "from": "ok.md",
                 "to": "leak.md",
                 "overwrite": true
@@ -4608,5 +4309,56 @@ mod tests {
 
         let _ = fs::remove_file(&outside);
         let _ = fs::remove_dir_all(&ws);
+    }
+    #[test]
+    fn glob_sorts_full_paths_before_request_limit_and_grep_preserves_dfs() {
+        let ws = tempfile::tempdir().unwrap();
+        fs::create_dir(ws.path().join("a")).unwrap();
+        fs::write(ws.path().join("a/b.rs"), "needle\n").unwrap();
+        fs::write(ws.path().join("a/c.rs"), "needle\n").unwrap();
+        fs::write(ws.path().join("a.rs"), "needle\n").unwrap();
+        let args =
+            parse_glob_args(&serde_json::json!({"pattern":"*.rs", "max_results":1})).unwrap();
+        let result = glob_workspace(ws.path(), &args).unwrap();
+        assert_eq!(result.matches, ["a.rs"]);
+        assert!(result.truncated);
+        let args =
+            parse_glob_args(&serde_json::json!({"pattern":"*.rs", "path":"a.rs", "max_results":1}))
+                .unwrap();
+        assert!(!glob_workspace(ws.path(), &args).unwrap().truncated);
+        let args =
+            parse_grep_args(&serde_json::json!({"pattern":"needle", "max_matches":1})).unwrap();
+        let result = grep_workspace(ws.path(), &args, GREP_FILE_MAX_BYTES).unwrap();
+        assert_eq!(result.matches[0].path, "a/b.rs");
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn search_outputs_bound_actual_pretty_json_with_escaped_names_and_snippets() {
+        let ws = tempfile::tempdir().unwrap();
+        for i in 0..400 {
+            fs::write(
+                ws.path().join(format!("{i:04}{}", "\"".repeat(150))),
+                format!("needle{}", "\u{0001}".repeat(300)),
+            )
+            .unwrap();
+        }
+        let args =
+            parse_grep_args(&serde_json::json!({"pattern":"needle", "max_matches":200})).unwrap();
+        let result = grep_workspace(ws.path(), &args, GREP_FILE_MAX_BYTES).unwrap();
+        assert!(result.truncated && result.match_count > 0 && result.match_count < 200);
+        assert_eq!(result.match_count, result.matches.len());
+        assert!(
+            serde_json::to_string_pretty(&result).unwrap().len()
+                <= crate::memory_io::SEARCH_OUTPUT_BYTES
+        );
+        let args = parse_glob_args(&serde_json::json!({"pattern":"*", "max_results":500})).unwrap();
+        let result = glob_workspace(ws.path(), &args).unwrap();
+        assert!(result.truncated && result.match_count > 0 && result.match_count < 400);
+        assert_eq!(result.match_count, result.matches.len());
+        assert!(
+            serde_json::to_string_pretty(&result).unwrap().len()
+                <= crate::memory_io::SEARCH_OUTPUT_BYTES
+        );
     }
 }
