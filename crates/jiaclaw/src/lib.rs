@@ -106,15 +106,19 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
     let workspace = &config.workspace_path;
     if config.tools.read_file.enabled {
         tools.register(Box::new(WorkspaceReadFileTool::new(workspace)));
+        tools.register(Box::new(FileReadTool::new(workspace)));
     }
     if config.tools.list_dir.enabled {
         tools.register(Box::new(WorkspaceListDirTool::new(workspace)));
+        tools.register(Box::new(FileListTool::new(workspace)));
     }
     if config.tools.write_file.enabled {
         tools.register(Box::new(WorkspaceWriteFileTool::new(workspace)));
+        tools.register(Box::new(FileWriteTool::new(workspace)));
     }
     if config.tools.delete_file.enabled {
         tools.register(Box::new(WorkspaceDeleteFileTool::new(workspace)));
+        tools.register(Box::new(FileDeleteTool::new(workspace)));
     }
     if config.tools.str_replace.enabled {
         tools.register(Box::new(WorkspaceStrReplaceTool::new(workspace)));
@@ -266,12 +270,6 @@ impl JiaClawAgent {
             &config.workspace_path,
             config.identity.user_path.clone(),
         )));
-
-        // 文件操作工具
-        tools.register(Box::new(FileReadTool::new(&config.workspace_path)));
-        tools.register(Box::new(FileWriteTool::new(&config.workspace_path)));
-        tools.register(Box::new(FileListTool::new(&config.workspace_path)));
-        tools.register(Box::new(FileDeleteTool::new(&config.workspace_path)));
 
         // 网络和数据工具
         tools.register(Box::new(HttpGetTool::new()));
@@ -1565,6 +1563,111 @@ mod tests {
         mock.assert();
     }
 
+    #[tokio::test]
+    async fn disabled_file_operations_cannot_be_restored_through_legacy_aliases() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = stub_config();
+        config.workspace_path = workspace.path().to_owned();
+        config.tools.read_file.enabled = false;
+        config.tools.write_file.enabled = false;
+        config.tools.list_dir.enabled = false;
+        config.tools.delete_file.enabled = false;
+        let agent = JiaClawAgent::new(config).unwrap();
+        let prompt = agent.build_system_prompt(&sample_request());
+        for name in [
+            "read_file",
+            "file_read",
+            "write_file",
+            "file_write",
+            "list_dir",
+            "file_list",
+            "delete_file",
+            "file_delete",
+        ] {
+            assert!(agent.tools().get(name).is_none(), "{name}");
+            assert!(!prompt.contains(&format!("### {name}\n")), "{name}");
+            let call = ToolCall {
+                tool_name: name.into(),
+                arguments: serde_json::json!({"path":"blocked.txt", "content":"must not write"}),
+                result: None,
+            };
+            assert!(agent
+                .tools()
+                .execute(&call)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("工具不存在"));
+            let mut request = sample_request();
+            request.enabled_tools = vec![name.into()];
+            let error = agent.chat(&request).await.unwrap_err();
+            assert!(
+                matches!(error, JiaClawError::InvalidRequest(_)),
+                "{name}: {error}"
+            );
+        }
+        assert!(!workspace.path().join("blocked.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn native_model_cannot_forge_a_disabled_or_unlisted_file_alias() {
+        for disabled in [false, true] {
+            let workspace = tempfile::tempdir().unwrap();
+            let key = format!("file-alias-permission-{}", uuid::Uuid::new_v4());
+            let mock = mockito::mock("POST", "/v1/chat/completions")
+                .match_header("Authorization", format!("Bearer {key}").as_str())
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_header("x-brokerrouter-request-id", &uuid::Uuid::new_v4().to_string())
+                .with_body(serde_json::json!({
+                    "choices":[{"index":0,"finish_reason":"tool_calls","message":{
+                        "role":"assistant", "content":null, "tool_calls":[
+                            {"id":"first", "type":"function", "function":{"name":"count_execution", "arguments":"{}"}},
+                            {"id":"forged", "type":"function", "function":{"name":"file_write", "arguments":"{\"path\":\"forged.txt\",\"content\":\"must not write\"}"}}
+                        ]
+                    }}]
+                }).to_string())
+                .expect(1)
+                .create();
+            let mut config = AgentConfig {
+                workspace_path: workspace.path().to_owned(),
+                provider: ProviderConfig {
+                    provider_type: "brokerrouter".into(),
+                    base_url: mockito::server_url(),
+                    api_key: Some(key.clone()),
+                    ..ProviderConfig::default()
+                },
+                ..AgentConfig::default()
+            };
+            config.tools.write_file.enabled = !disabled;
+            let mut agent = JiaClawAgent::new(config).unwrap();
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            agent.register_tool_for_test(Box::new(CountExecutionTool(counter.clone())));
+            let mut request = sample_request();
+            if !disabled {
+                // The canonical name's permission does not grant its alias.
+                request.enabled_tools = vec!["count_execution".into(), "write_file".into()];
+            }
+            let selection = agent
+                .config
+                .routing
+                .select(&agent.config.provider, ModelPurpose::Chat);
+            let error = agent
+                .execute_brokerrouter_loop(&request, "fixture", &key, &selection)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("outside this request's allowlist"),
+                "{error}"
+            );
+            assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(!workspace.path().join("forged.txt").exists());
+            mock.assert();
+        }
+    }
+
     #[test]
     fn test_agent_creation() {
         let config = AgentConfig::default();
@@ -1931,6 +2034,7 @@ mod tests {
         };
         let agent = JiaClawAgent::new(config).unwrap();
         assert!(agent.tools().get("read_file").is_none());
+        assert!(agent.tools().get("file_read").is_none());
         assert!(agent.tools().get("list_dir").is_some());
         let prompt = agent.build_system_prompt(&ChatRequest {
             messages: vec![],
@@ -2002,6 +2106,7 @@ mod tests {
         };
         let agent = JiaClawAgent::new(config).unwrap();
         assert!(agent.tools().get("list_dir").is_none());
+        assert!(agent.tools().get("file_list").is_none());
         assert!(agent.tools().get("read_file").is_some());
         let prompt = agent.build_system_prompt(&ChatRequest {
             messages: vec![],
@@ -2073,6 +2178,7 @@ mod tests {
         };
         let agent = JiaClawAgent::new(config).unwrap();
         assert!(agent.tools().get("write_file").is_none());
+        assert!(agent.tools().get("file_write").is_none());
         assert!(agent.tools().get("read_file").is_some());
         assert!(agent.tools().get("list_dir").is_some());
         let prompt = agent.build_system_prompt(&ChatRequest {
@@ -2148,6 +2254,7 @@ mod tests {
         };
         let agent = JiaClawAgent::new(config).unwrap();
         assert!(agent.tools().get("delete_file").is_none());
+        assert!(agent.tools().get("file_delete").is_none());
         assert!(agent.tools().get("write_file").is_some());
         assert!(agent.tools().get("read_file").is_some());
         let prompt = agent.build_system_prompt(&ChatRequest {

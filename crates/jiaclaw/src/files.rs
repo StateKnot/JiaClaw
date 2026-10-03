@@ -3,11 +3,11 @@
 
 //! 工作区文件工具：`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move`。
 //!
-//! 路径解析复用 [`crate::memory::resolve_workspace_relative_path`]（禁 `..`、绝对路径、symlink 逃逸）。
+//! 前五项使用目录句柄与有界 blocking I/O；其余工具沿用路径解析与各自限制。
 //! 不调用 LLM，不执行 shell。
 
 use crate::memory::{
-    atomic_write_bytes, canonicalize_existing_or_clone, ensure_existing_within_workspace,
+    canonicalize_existing_or_clone, ensure_existing_within_workspace,
     resolve_workspace_relative_path,
 };
 use crate::tools::Tool;
@@ -854,60 +854,6 @@ fn prepare_workspace_create_path(
     Ok((current, false))
 }
 
-/// 解析写入目标：已存在路径 canonicalize 后必须落在工作区内且为常规文件；
-/// 不存在时沿已存在祖先 canonicalize，再拼回剩余组件（可随后创建中间目录）。
-fn prepare_workspace_write_path(workspace: &Path, rel_path: &str) -> Result<PathBuf, JiaClawError> {
-    let (current, existed) = prepare_workspace_create_path(workspace, rel_path)?;
-    if existed && !current.is_file() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件: {rel_path}"
-        )));
-    }
-    Ok(current)
-}
-
-fn atomic_write_regular_file(
-    workspace: &Path,
-    dest: &Path,
-    rel_path: &str,
-    contents: &[u8],
-) -> Result<(), JiaClawError> {
-    let parent = dest
-        .parent()
-        .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的文件路径: {rel_path}")))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法创建中间目录 {rel_path}: {e}")))?;
-    ensure_existing_within_workspace(workspace, parent)?;
-    let parent_canon = parent
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析父目录 {rel_path}: {e}")))?;
-    let ws = canonicalize_existing_or_clone(workspace);
-    if !parent_canon.starts_with(&ws) || !parent_canon.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 路径 {rel_path} 指向工作空间外部"
-        )));
-    }
-
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| JiaClawError::ToolExecution(format!("无效的文件名: {rel_path}")))?;
-    let final_path = parent_canon.join(file_name);
-    if final_path.exists() {
-        ensure_existing_within_workspace(workspace, &final_path)?;
-        let canon = final_path
-            .canonicalize()
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法解析文件 {rel_path}: {e}")))?;
-        if !canon.is_file() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径不是文件: {rel_path}"
-            )));
-        }
-        return atomic_write_bytes(&canon, contents);
-    }
-
-    atomic_write_bytes(&final_path, contents)
-}
-
 /// 写入工作区相对路径下的常规文件（覆盖或追加）。可创建中间目录。
 ///
 /// # Errors
@@ -921,45 +867,17 @@ pub fn write_workspace_regular_file(
     mode: WriteFileMode,
     max_bytes: usize,
 ) -> Result<WriteFileOutput, JiaClawError> {
-    let dest = prepare_workspace_write_path(workspace, rel_path)?;
-    let new_bytes = if mode == WriteFileMode::Append && dest.exists() {
-        ensure_existing_within_workspace(workspace, &dest)?;
-        let meta = fs::metadata(&dest).map_err(|e| {
-            JiaClawError::ToolExecution(format!("无法读取文件元数据 {rel_path}: {e}"))
-        })?;
-        if !meta.is_file() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径不是文件: {rel_path}"
-            )));
-        }
-        let existing_len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-        if existing_len.saturating_add(content.len()) > max_bytes {
-            return Err(JiaClawError::ToolExecution(format!(
-                "文件超过上限 {max_bytes} 字节（将写入 {} 字节）: {rel_path}",
-                existing_len.saturating_add(content.len())
-            )));
-        }
-        let mut existing = fs::read(&dest)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件 {rel_path}: {e}")))?;
-        existing.extend_from_slice(content.as_bytes());
-        existing
-    } else {
-        content.as_bytes().to_vec()
-    };
-
-    if new_bytes.len() > max_bytes {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件超过上限 {max_bytes} 字节（将写入 {} 字节）: {rel_path}",
-            new_bytes.len()
-        )));
-    }
-
-    atomic_write_regular_file(workspace, &dest, rel_path, &new_bytes)?;
-
+    let bytes_written = crate::memory_io::write_file_bytes(
+        workspace,
+        rel_path,
+        content,
+        mode == WriteFileMode::Append,
+        max_bytes,
+    )?;
     Ok(WriteFileOutput {
         path: rel_path.to_string(),
         mode,
-        bytes_written: new_bytes.len(),
+        bytes_written,
     })
 }
 
@@ -973,54 +891,7 @@ pub fn delete_workspace_regular_file(
     workspace: &Path,
     rel_path: &str,
 ) -> Result<DeleteFileOutput, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, rel_path)?;
-
-    let meta = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "文件不存在: {rel_path}"
-            )));
-        }
-        Err(err) => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "无法读取文件元数据 {rel_path}: {err}"
-            )));
-        }
-    };
-
-    if meta.file_type().is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件（拒绝删除目录）: {rel_path}"
-        )));
-    }
-
-    // 跟随解析以拦截 symlink 逃逸；目标必须落在工作区内。
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件不存在: {rel_path}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析文件 {rel_path}: {e}")))?;
-    if !canon.is_file() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件: {rel_path}"
-        )));
-    }
-
-    if !meta.file_type().is_file() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件: {rel_path}"
-        )));
-    }
-
-    let size_bytes = meta.len();
-    fs::remove_file(&path)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法删除文件 {rel_path}: {e}")))?;
-
+    let size_bytes = crate::memory_io::delete_file(workspace, rel_path)?;
     Ok(DeleteFileOutput {
         path: rel_path.to_string(),
         deleted: true,
@@ -1044,83 +915,19 @@ pub fn str_replace_workspace_file(
     replace_all: bool,
     max_bytes: usize,
 ) -> Result<StrReplaceOutput, JiaClawError> {
-    if old_str.is_empty() {
-        return Err(JiaClawError::ToolExecution(
-            "参数 'old_str' 不能为空".to_string(),
-        ));
-    }
-
-    let path = resolve_workspace_relative_path(workspace, rel_path)?;
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件不存在: {rel_path}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析文件 {rel_path}: {e}")))?;
-    if !canon.is_file() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件: {rel_path}"
-        )));
-    }
-
-    let size_bytes = fs::metadata(&canon)
-        .map(|m| m.len())
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件元数据 {rel_path}: {e}")))?;
-    let limit_bytes = u64::try_from(max_bytes).unwrap_or(u64::MAX);
-    if size_bytes > limit_bytes {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件超过上限 {max_bytes} 字节（实际 {size_bytes} 字节）: {rel_path}"
-        )));
-    }
-
-    let bytes = fs::read(&canon)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件 {rel_path}: {e}")))?;
-    let content = match String::from_utf8(bytes) {
-        Ok(text) if !text.contains('\0') => text,
-        _ => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "二进制文件，拒绝替换: {rel_path}（检测到 NUL 或非 UTF-8）"
-            )));
-        }
-    };
-
-    let match_count = content.matches(old_str).count();
-    if match_count == 0 {
-        return Err(JiaClawError::ToolExecution(format!(
-            "old_str 在文件中未找到（匹配 0 次）: {rel_path}"
-        )));
-    }
-    if !replace_all && match_count != 1 {
-        return Err(JiaClawError::ToolExecution(format!(
-            "old_str 在文件中匹配 {match_count} 次，默认必须恰好 1 次（或设置 replace_all=true）: {rel_path}"
-        )));
-    }
-
-    let replacements = if replace_all { match_count } else { 1 };
-    let updated = if replace_all {
-        content.replace(old_str, new_str)
-    } else {
-        content.replacen(old_str, new_str, 1)
-    };
-
-    if updated.len() > max_bytes {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件超过上限 {max_bytes} 字节（将写入 {} 字节）: {rel_path}",
-            updated.len()
-        )));
-    }
-
-    atomic_write_regular_file(workspace, &canon, rel_path, updated.as_bytes())?;
-
+    let (replacements, bytes_written) = crate::memory_io::replace_file_text(
+        workspace,
+        rel_path,
+        old_str,
+        new_str,
+        replace_all,
+        max_bytes,
+    )?;
     Ok(StrReplaceOutput {
         path: rel_path.to_string(),
         replacements,
+        bytes_written,
         replace_all,
-        bytes_written: updated.len(),
     })
 }
 
@@ -2055,44 +1862,16 @@ pub fn read_workspace_file(
     limit: Option<usize>,
     max_bytes: usize,
 ) -> Result<ReadFileOutput, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, rel_path)?;
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件不存在: {rel_path}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析文件 {rel_path}: {e}")))?;
-    if !canon.is_file() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是文件: {rel_path}"
-        )));
-    }
-
-    let size_bytes = fs::metadata(&canon)
-        .map(|m| m.len())
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件元数据 {rel_path}: {e}")))?;
-    let limit_bytes = u64::try_from(max_bytes).unwrap_or(u64::MAX);
-    if size_bytes > limit_bytes {
-        return Err(JiaClawError::ToolExecution(format!(
-            "文件超过上限 {max_bytes} 字节（实际 {size_bytes} 字节）: {rel_path}"
-        )));
-    }
-
-    let bytes = fs::read(&canon)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件 {rel_path}: {e}")))?;
+    let bytes = crate::memory_io::read_file_bytes(workspace, rel_path, max_bytes)?;
+    let size_bytes = bytes.len() as u64;
     let content = match String::from_utf8(bytes) {
         Ok(text) if !text.contains('\0') => text,
         _ => {
             return Err(JiaClawError::ToolExecution(format!(
                 "二进制文件，拒绝读取: {rel_path}（检测到 NUL 或非 UTF-8）"
-            )));
+            )))
         }
     };
-
     let (text, total_lines, returned_lines, truncated) = slice_lines(&content, offset, limit);
     Ok(ReadFileOutput {
         path: rel_path.to_string(),
@@ -2117,96 +1896,14 @@ pub fn list_workspace_dir(
     max_entries: usize,
     recursive: bool,
 ) -> Result<ListDirOutput, JiaClawError> {
-    let path = resolve_workspace_relative_path(workspace, rel_path)?;
-    if !path.exists() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "目录不存在: {rel_path}"
-        )));
-    }
-    ensure_existing_within_workspace(workspace, &path)?;
-
-    let canon = path
-        .canonicalize()
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法解析目录 {rel_path}: {e}")))?;
-    if !canon.is_dir() {
-        return Err(JiaClawError::ToolExecution(format!(
-            "路径不是目录: {rel_path}"
-        )));
-    }
-
-    let mut entries = Vec::new();
-    let truncated = collect_dir_entries(&canon, "", recursive, max_entries, &mut entries)?;
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    if entries.len() > max_entries {
-        entries.truncate(max_entries);
-    }
-
+    let (entries, truncated) =
+        crate::memory_io::list_directory(workspace, rel_path, max_entries, recursive)?;
     Ok(ListDirOutput {
         path: rel_path.to_string(),
         recursive,
         truncated,
         entries,
     })
-}
-
-fn collect_dir_entries(
-    dir: &Path,
-    prefix: &str,
-    recursive: bool,
-    max_entries: usize,
-    out: &mut Vec<DirEntryInfo>,
-) -> Result<bool, JiaClawError> {
-    let mut truncated = false;
-    let mut children: Vec<(String, PathBuf, fs::Metadata)> = Vec::new();
-
-    let iter = fs::read_dir(dir)
-        .map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录 {}: {e}", dir.display())))?;
-    for entry in iter {
-        let entry =
-            entry.map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录条目: {e}")))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "." || name == ".." {
-            continue;
-        }
-        let child_path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&child_path) else {
-            continue;
-        };
-        children.push((name.into_owned(), child_path, meta));
-    }
-    children.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (name, child_path, meta) in children {
-        if out.len() >= max_entries {
-            truncated = true;
-            break;
-        }
-        let rel_name = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let is_dir = meta.file_type().is_dir();
-        let kind = if is_dir { "dir" } else { "file" };
-        let size = if is_dir { None } else { Some(meta.len()) };
-        out.push(DirEntryInfo {
-            name: rel_name.clone(),
-            kind: kind.to_string(),
-            size,
-        });
-
-        if recursive && is_dir && out.len() < max_entries {
-            let nested_truncated =
-                collect_dir_entries(&child_path, &rel_name, true, max_entries, out)?;
-            if nested_truncated {
-                truncated = true;
-                break;
-            }
-        }
-    }
-
-    Ok(truncated)
 }
 
 /// `read_file` 的 JSON 返回体。
@@ -2236,10 +1933,10 @@ pub struct ReadFileOutput {
 pub struct DirEntryInfo {
     /// 条目名称（递归时为相对所列目录的路径）
     pub name: String,
-    /// `file` 或 `dir`（不跟随 symlink 判断类型）
+    /// `file`、`dir`、`symlink` 或 `unsupported`（不跟随链接）
     #[serde(rename = "type")]
     pub kind: String,
-    /// 文件大小（字节）；目录为 `None`
+    /// 常规单链接文件大小（字节）；其他类型为 `None`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
 }
@@ -2251,7 +1948,7 @@ pub struct ListDirOutput {
     pub path: String,
     /// 是否递归
     pub recursive: bool,
-    /// 是否因 `max_entries` 截断
+    /// 是否因条目、扫描、深度、路径、时间或 JSON 字节预算截断
     pub truncated: bool,
     /// 目录条目
     pub entries: Vec<DirEntryInfo>,
@@ -2432,13 +2129,18 @@ impl Tool for WorkspaceReadFileTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_read_file_args(&args)?;
-        let output = read_workspace_file(
-            &self.workspace_path,
-            &parsed.path,
-            parsed.offset,
-            parsed.limit,
-            self.max_bytes,
-        )?;
+        let workspace = self.workspace_path.clone();
+        let maximum = self.max_bytes;
+        let output = crate::memory_io::run_blocking(move || {
+            read_workspace_file(
+                &workspace,
+                &parsed.path,
+                parsed.offset,
+                parsed.limit,
+                maximum,
+            )
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化读取结果失败: {e}")))
     }
@@ -2466,7 +2168,7 @@ impl Tool for WorkspaceListDirTool {
     }
 
     fn description(&self) -> &str {
-        "列出工作区相对目录中的条目。path 默认 . ；禁止 .. / 绝对路径 / symlink 逃逸。默认不递归（recursive=false）。可选 max_entries（默认 200，钳制 1..=1000）。返回 {path, recursive, truncated, entries:[{name, type, size?}]}。不执行 shell。"
+        "列出工作区相对目录中的条目。path 默认 . ；禁止 .. / 绝对路径 / symlink 逃逸。默认不递归（recursive=false）。可选 max_entries（默认 200，钳制 1..=1000）；另有扫描/深度/时间预算和 64KiB JSON 上限，超限 truncated=true。链接和特殊文件只报告类型，不跟随。返回 {path, recursive, truncated, entries:[{name, type, size?}]}。不执行 shell。"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2496,12 +2198,16 @@ impl Tool for WorkspaceListDirTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_list_dir_args(&args)?;
-        let output = list_workspace_dir(
-            &self.workspace_path,
-            &parsed.path,
-            parsed.max_entries,
-            parsed.recursive,
-        )?;
+        let workspace = self.workspace_path.clone();
+        let output = crate::memory_io::run_blocking(move || {
+            list_workspace_dir(
+                &workspace,
+                &parsed.path,
+                parsed.max_entries,
+                parsed.recursive,
+            )
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化目录列表失败: {e}")))
     }
@@ -2568,13 +2274,18 @@ impl Tool for WorkspaceWriteFileTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_write_file_args(&args)?;
-        let output = write_workspace_regular_file(
-            &self.workspace_path,
-            &parsed.path,
-            &parsed.content,
-            parsed.mode,
-            self.max_bytes,
-        )?;
+        let workspace = self.workspace_path.clone();
+        let maximum = self.max_bytes;
+        let output = crate::memory_io::run_blocking(move || {
+            write_workspace_regular_file(
+                &workspace,
+                &parsed.path,
+                &parsed.content,
+                parsed.mode,
+                maximum,
+            )
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化写入结果失败: {e}")))
     }
@@ -2620,7 +2331,11 @@ impl Tool for WorkspaceDeleteFileTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_delete_file_args(&args)?;
-        let output = delete_workspace_regular_file(&self.workspace_path, &parsed.path)?;
+        let workspace = self.workspace_path.clone();
+        let output = crate::memory_io::run_blocking(move || {
+            delete_workspace_regular_file(&workspace, &parsed.path)
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化删除结果失败: {e}")))
     }
@@ -2690,14 +2405,19 @@ impl Tool for WorkspaceStrReplaceTool {
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
         let parsed = parse_str_replace_args(&args)?;
-        let output = str_replace_workspace_file(
-            &self.workspace_path,
-            &parsed.path,
-            &parsed.old_str,
-            &parsed.new_str,
-            parsed.replace_all,
-            self.max_bytes,
-        )?;
+        let workspace = self.workspace_path.clone();
+        let maximum = self.max_bytes;
+        let output = crate::memory_io::run_blocking(move || {
+            str_replace_workspace_file(
+                &workspace,
+                &parsed.path,
+                &parsed.old_str,
+                &parsed.new_str,
+                parsed.replace_all,
+                maximum,
+            )
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化替换结果失败: {e}")))
     }

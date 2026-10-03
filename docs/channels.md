@@ -54,7 +54,7 @@ enabled_tools = ["datetime_now", "json_query"]
 
 除加密密钥外，平台密钥也可沿用 `http.telegram_secret`、`telegram_bot_token`、`slack_signing_secret`、`slack_bot_token`、`discord_public_key`、`discord_bot_token` 配置；对应环境变量优先。Discord 交互回复使用 webhook token；独立的定时发送使用 Bot Token 并限定获准 guild 普通文字频道，见[Discord 配置](discord.md)。加密密钥应在首次部署时生成并通过受保护的密钥存储长期保存；重启时必须保持一致。数据库备份与密钥需分别保护，当前没有在线轮换或批量重加密接口。
 
-`allowed_senders` 和 `allowed_conversations` 必须各有 1–100 个不重复的精确 ID，不支持通配符。`enabled_tools` 必须有 1–32 个已注册工具；当前允许 `datetime_now`、`json_query`、受控容器 `exec` / `shell_exec` 及经过审核的 `mcp_` 工具。旧文件和 HTTP 工具缺少可靠的取消边界，不能进入后台渠道任务。自动 skill 选择关闭。`timeout_secs` 为 1–600 秒，默认 120 秒，覆盖等待会话锁、准备消息和 Agent 调用；取消本地等待不能证明外部副作用没有发生。
+`allowed_senders` 和 `allowed_conversations` 必须各有 1–100 个不重复的精确 ID，不支持通配符。`enabled_tools` 必须有 1–32 个已注册工具；当前允许 `datetime_now`、`json_query`、受控容器 `exec` / `shell_exec` 及经过审核的 `mcp_` 工具。通用文件与 HTTP 工具仍不能进入后台渠道任务；文件工具的[有界 I/O](workspace-files.md)不代表取消后的回滚或后台持久执行身份。自动 skill 选择关闭。`timeout_secs` 为 1–600 秒，默认 120 秒，覆盖等待会话锁、准备消息和 Agent 调用；取消本地等待不能证明外部副作用没有发生。
 
 入站文本最多 32 KiB。会话身份由平台、安装、会话、线程和发送者共同确定，不将同一群聊里所有人的历史混在一起。这是会话隔离和显式工具授权，底层工作空间仍由服务配置共享，不等同于每用户操作系统隔离或独立 API Key。
 
