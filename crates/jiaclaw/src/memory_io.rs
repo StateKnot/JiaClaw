@@ -668,6 +668,228 @@ pub(crate) fn list_directory(
     Ok((listing.entries, listing.truncated))
 }
 
+// Search has its own walker: listing's output/entry limits must not silently
+// remove candidates before grep/glob can examine them.
+pub(crate) const SEARCH_OUTPUT_BYTES: usize = 64 * 1024;
+const SEARCH_READ_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) struct SearchBudget {
+    scanned: usize,
+    read_bytes: usize,
+    deadline: std::time::Instant,
+    truncated: bool,
+}
+impl SearchBudget {
+    pub(crate) fn expired(&mut self) -> bool {
+        if self.deadline <= std::time::Instant::now() {
+            self.truncated = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+pub(crate) enum SearchText {
+    Text(String),
+    Skipped,
+    Exhausted,
+}
+
+pub(crate) struct SearchFile<'a> {
+    dir: &'a Dir,
+    name: &'a OsStr,
+    pub(crate) path: &'a str,
+    explicit: bool,
+}
+impl SearchFile<'_> {
+    fn skipped(&self, reason: &str) -> Result<SearchText, JiaClawError> {
+        if self.explicit {
+            Err(failure(reason))
+        } else {
+            Ok(SearchText::Skipped)
+        }
+    }
+
+    pub(crate) fn read_text(
+        &self,
+        budget: &mut SearchBudget,
+        limit: usize,
+    ) -> Result<SearchText, JiaClawError> {
+        let limit = limit.min(FILE_LIMIT);
+        let file =
+            open_regular(self.dir, self.name)?.ok_or_else(|| failure("扫描期间文件已消失"))?;
+        if file.metadata().map_err(failure)?.len() > limit as u64 {
+            return self.skipped(&format!("文件超过上限 {limit} 字节"));
+        }
+        self.read_admitted(file, budget, limit)
+    }
+
+    // Metadata admission is separate from this bounded stream read so a file
+    // growing immediately after its size check cannot evade either budget.
+    fn read_admitted(
+        &self,
+        mut file: impl Read,
+        budget: &mut SearchBudget,
+        limit: usize,
+    ) -> Result<SearchText, JiaClawError> {
+        let limit = limit.min(FILE_LIMIT);
+        let mut bytes = Vec::with_capacity(limit.min(8192));
+        let mut chunk = [0_u8; 8192];
+        loop {
+            if budget.expired() || budget.read_bytes >= SEARCH_READ_BYTES {
+                budget.truncated = true;
+                return Ok(SearchText::Exhausted);
+            }
+            let size = chunk
+                .len()
+                .min(limit + 1 - bytes.len())
+                .min(SEARCH_READ_BYTES - budget.read_bytes);
+            let n = file.read(&mut chunk[..size]).map_err(failure)?;
+            budget.read_bytes += n;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..n]);
+            if bytes.len() > limit {
+                return self.skipped(&format!("读取期间文件超过上限 {limit} 字节"));
+            }
+        }
+        match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => Ok(SearchText::Text(text)),
+            _ => self.skipped("二进制文件，跳过搜索（NUL 或非 UTF-8）"),
+        }
+    }
+}
+
+fn walk_search(
+    dir: &Dir,
+    prefix: &str,
+    depth: usize,
+    budget: &mut SearchBudget,
+    visit: &mut impl FnMut(SearchFile<'_>, &mut SearchBudget) -> Result<bool, JiaClawError>,
+) -> Result<bool, JiaClawError> {
+    let mut children = Vec::new();
+    for entry in dir.entries().map_err(failure)? {
+        if budget.expired() || budget.scanned >= DIRECTORY_SCAN_LIMIT {
+            budget.truncated = true;
+            break;
+        }
+        budget.scanned += 1;
+        let name = entry
+            .map_err(failure)?
+            .file_name()
+            .into_string()
+            .map_err(|_| failure("目录含非 UTF-8 文件名，无法无损表示"))?;
+        if name != ".git" {
+            children.push(name);
+        }
+    }
+    children.sort();
+    for name in children {
+        if budget.expired() {
+            return Ok(true);
+        }
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if rel.len() > MAX_PATH_BYTES || Path::new(&rel).components().count() > 64 {
+            budget.truncated = true;
+            continue;
+        }
+        let metadata = dir.symlink_metadata(&name).map_err(failure)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            if depth >= DIRECTORY_DEPTH_LIMIT || budget.scanned >= DIRECTORY_SCAN_LIMIT {
+                budget.truncated = true;
+                continue;
+            }
+            let child = descend(dir, Path::new(&name), false)?
+                .ok_or_else(|| failure("扫描期间目录已消失"))?;
+            if walk_search(&child, &rel, depth + 1, budget, visit)? {
+                return Ok(true);
+            }
+        } else if regular(&metadata).is_ok()
+            && visit(
+                SearchFile {
+                    dir,
+                    name: OsStr::new(&name),
+                    path: &rel,
+                    explicit: false,
+                },
+                budget,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn search_files(
+    workspace: &Path,
+    raw: &str,
+    mut visit: impl FnMut(SearchFile<'_>, &mut SearchBudget) -> Result<bool, JiaClawError>,
+) -> Result<bool, JiaClawError> {
+    if raw.len() > MAX_PATH_BYTES {
+        return Err(failure("搜索路径最多 1024 字节"));
+    }
+    let path = if raw.trim().is_empty() || raw.trim() == "." {
+        Path::new(".")
+    } else {
+        relative(raw)?
+    };
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let mut budget = SearchBudget {
+        scanned: 0,
+        read_bytes: 0,
+        truncated: false,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+    };
+    let stopped = if path == Path::new(".") {
+        walk_search(&root, "", 0, &mut budget, &mut visit)?
+    } else {
+        let dir = parent(&root, path, false)?.ok_or_else(|| failure("路径不存在"))?;
+        let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
+        let metadata = dir.symlink_metadata(name).map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                failure("路径不存在")
+            } else {
+                failure(e)
+            }
+        })?;
+        let rel = path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => name.to_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            let child =
+                descend(&dir, Path::new(name), false)?.ok_or_else(|| failure("目录不存在"))?;
+            walk_search(&child, &rel, 0, &mut budget, &mut visit)?
+        } else {
+            regular(&metadata)?;
+            visit(
+                SearchFile {
+                    dir: &dir,
+                    name,
+                    path: &rel,
+                    explicit: true,
+                },
+                &mut budget,
+            )?
+        }
+    };
+    Ok(stopped || budget.truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,5 +1219,226 @@ mod tests {
         assert!(replace_file_text(ws.path(), "a", "[", &"x".repeat(32), true, 256).is_err());
         assert_eq!(std::fs::read_to_string(ws.path().join("a")).unwrap(), text);
         assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 1);
+    }
+    fn search_budget() -> SearchBudget {
+        SearchBudget {
+            scanned: 0,
+            read_bytes: 0,
+            truncated: false,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        }
+    }
+
+    #[test]
+    fn search_counts_directories_and_skipped_entries_before_collecting() {
+        let ws = tempfile::tempdir().unwrap();
+        for i in 0..2001 {
+            std::fs::create_dir(ws.path().join(format!("d{i:04}"))).unwrap();
+        }
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let mut budget = search_budget();
+        let mut visited = 0;
+        walk_search(&dir, "", 0, &mut budget, &mut |_, _| {
+            visited += 1;
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(budget.scanned, DIRECTORY_SCAN_LIMIT);
+        assert!(budget.truncated);
+        assert_eq!(visited, 0);
+
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ws.path().join(".git")).unwrap();
+        std::fs::write(ws.path().join(".git/hidden"), "needle").unwrap();
+        std::fs::write(ws.path().join("visible"), "needle").unwrap();
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let mut budget = search_budget();
+        let mut paths = Vec::new();
+        walk_search(&dir, "", 0, &mut budget, &mut |f, _| {
+            paths.push(f.path.to_string());
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(budget.scanned, 2); // .git still consumes an entry.
+        assert_eq!(paths, ["visible"]);
+    }
+
+    #[test]
+    fn search_depth_path_and_deadline_are_checked_before_more_work() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut path = ws.path().to_path_buf();
+        for _ in 0..35 {
+            path.push("d");
+            std::fs::create_dir(&path).unwrap();
+        }
+        std::fs::write(path.join("beyond"), b"needle").unwrap();
+        let mut visited = 0;
+        assert!(search_files(ws.path(), ".", |_, _| {
+            visited += 1;
+            Ok(false)
+        })
+        .unwrap());
+        assert_eq!(visited, 0);
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let mut budget = search_budget();
+        budget.deadline = std::time::Instant::now();
+        walk_search(&dir, "", 0, &mut budget, &mut |_, _| {
+            panic!("expired walk called visitor")
+        })
+        .unwrap();
+        assert_eq!(budget.scanned, 0);
+        assert!(budget.truncated);
+
+        let ws = tempfile::tempdir().unwrap();
+        let mut dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        for _ in 0..4 {
+            let name = "d".repeat(250);
+            dir.create_dir(&name).unwrap();
+            dir = dir.open_dir(&name).unwrap();
+        }
+        dir.create("x".repeat(30))
+            .unwrap()
+            .write_all(b"needle")
+            .unwrap();
+        assert!(search_files(ws.path(), ".", |_, _| panic!("overlong candidate visited")).unwrap());
+    }
+
+    #[test]
+    fn search_reads_charge_actual_bytes_and_never_search_partial_files() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a"), b"needle").unwrap();
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let file = SearchFile {
+            dir: &dir,
+            name: OsStr::new("a"),
+            path: "a",
+            explicit: false,
+        };
+        let mut budget = search_budget();
+        assert!(
+            matches!(file.read_text(&mut budget, FILE_LIMIT).unwrap(), SearchText::Text(s) if s == "needle")
+        );
+        assert_eq!(budget.read_bytes, 6);
+        budget.read_bytes = SEARCH_READ_BYTES - 3;
+        assert!(matches!(
+            file.read_text(&mut budget, FILE_LIMIT).unwrap(),
+            SearchText::Exhausted
+        ));
+        assert_eq!(budget.read_bytes, SEARCH_READ_BYTES);
+        assert!(budget.truncated);
+
+        let mut budget = search_budget();
+        std::fs::write(ws.path().join("a"), [0_u8, 255, 1]).unwrap();
+        assert!(matches!(
+            file.read_text(&mut budget, FILE_LIMIT).unwrap(),
+            SearchText::Skipped
+        ));
+        assert_eq!(budget.read_bytes, 3); // Rejected binary bytes count too.
+        std::fs::write(ws.path().join("a"), b"oversized").unwrap();
+        assert!(matches!(
+            file.read_text(&mut budget, 2).unwrap(),
+            SearchText::Skipped
+        ));
+        assert_eq!(budget.read_bytes, 3); // Oversize metadata needs no body read.
+        budget.deadline = std::time::Instant::now();
+        assert!(matches!(
+            file.read_text(&mut budget, FILE_LIMIT).unwrap(),
+            SearchText::Exhausted
+        ));
+        assert_eq!(budget.read_bytes, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_retains_parent_capability_and_rejects_leaf_replacement() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("a"), b"outside secret").unwrap();
+        std::fs::create_dir(ws.path().join("nested")).unwrap();
+        std::fs::write(ws.path().join("nested/a"), b"inside").unwrap();
+        let truncated = search_files(ws.path(), "nested", |file, budget| {
+            std::fs::rename(ws.path().join("nested"), ws.path().join("retained")).unwrap();
+            symlink(outside.path(), ws.path().join("nested")).unwrap();
+            assert!(
+                matches!(file.read_text(budget, FILE_LIMIT)?, SearchText::Text(s) if s == "inside")
+            );
+            Ok(false)
+        })
+        .unwrap();
+        assert!(!truncated);
+        let result = search_files(ws.path(), "retained/a", |file, budget| {
+            std::fs::remove_file(ws.path().join("retained/a")).unwrap();
+            symlink(outside.path().join("a"), ws.path().join("retained/a")).unwrap();
+            file.read_text(budget, FILE_LIMIT)?;
+            panic!("replaced leaf must not be followed");
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(outside.path().join("a")).unwrap(),
+            b"outside secret"
+        );
+    }
+
+    // APFS rejects such names at creation; Linux exercises the rejection path.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn search_never_lossily_rewrites_invalid_names() {
+        use std::os::unix::ffi::OsStringExt;
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join(std::ffi::OsString::from_vec(vec![0xff])),
+            b"x",
+        )
+        .unwrap();
+        let error =
+            search_files(ws.path(), ".", |_, _| panic!("invalid name visited")).unwrap_err();
+        assert!(error.to_string().contains("UTF-8"));
+    }
+    #[test]
+    fn search_growth_after_metadata_is_bounded_and_charged() {
+        struct GrowOnRead {
+            file: File,
+            writer: std::fs::File,
+            first: bool,
+        }
+        impl Read for GrowOnRead {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if self.first {
+                    self.writer.write_all(&[b'x'; 4096])?;
+                    self.first = false;
+                }
+                self.file.read(bytes)
+            }
+        }
+        let ws = tempfile::tempdir().unwrap();
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        for explicit in [false, true] {
+            std::fs::write(ws.path().join("a"), b"seed").unwrap();
+            let opened = open_regular(&dir, OsStr::new("a")).unwrap().unwrap();
+            assert_eq!(opened.metadata().unwrap().len(), 4);
+            let reader = GrowOnRead {
+                file: opened,
+                writer: std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(ws.path().join("a"))
+                    .unwrap(),
+                first: true,
+            };
+            let file = SearchFile {
+                dir: &dir,
+                name: OsStr::new("a"),
+                path: "a",
+                explicit,
+            };
+            let mut budget = search_budget();
+            let result = file.read_admitted(reader, &mut budget, 8);
+            if explicit {
+                assert!(result.err().unwrap().to_string().contains("读取期间"));
+            } else {
+                assert!(matches!(result.unwrap(), SearchText::Skipped));
+            }
+            assert_eq!(budget.read_bytes, 9);
+        }
     }
 }

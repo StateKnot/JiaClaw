@@ -251,4 +251,19 @@ PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 3710063403
 
 测试只使用本机模型协议、一次性凭据和临时文件，没有真实平台或付费模型调用。跨平台与真实容器以本批 draft PR 最终 head CI 为准，不以单机协议验收代替断电硬件持久性或完整个人 Agent 生产认证。
 
-此次目录句柄迁移限于 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir` 及四个兼容名称。`grep`、`glob`、`mkdir`、`move` 未迁移，`copy` 保留独立合同；没有新增 `stat` / `tree` 或后台文件工具授权。操作与兼容边界见[工作区文件指南](workspace-files.md)。
+PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 37103576477](https://github.com/jiawenyao401/JiaClaw/actions/runs/37103576477)：Ubuntu、macOS、container 均成功，覆盖 Chromium 与真实容器。
+
+该批目录句柄迁移限于 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir` 及四个兼容名称。`grep`、`glob`、`mkdir`、`move` 未迁移，`copy` 保留独立合同；没有新增 `stat` / `tree` 或后台文件工具授权。操作与兼容边界见[工作区文件指南](workspace-files.md)。
+
+## grep / glob 有界搜索批次
+
+最终本机全量 Rust 864 项通过（library 353、core 122、host 389），1 项真实 Docker 专项本地 ignored 交 CI；fmt、Clippy correctness/suspicious、锁定构建与 diff-check 通过，保留既有 style/pedantic warnings。
+
+- 最终二进制新增 `tests/file_search.py` 六组通过、退出码 0：字面量/Unicode 小写匹配、行号和路径、glob 排序/过滤及 `.git` 排除；精确 256 KiB、目录中超大/二进制跳过与显式拒绝、glob 不读取正文；内部/外部/父目录/损坏链接、硬链接与 FIFO 拒绝，外部哨兵不泄露；禁用搜索工具从 HTTP/native 目录移除，伪造批次不执行前面的获准工具，非法请求白名单零模型请求。
+- 真实进程通过 2005 个空目录、34 层目录树和 65 个各 256 KiB 文件触发对应截断；glob 过滤后不读取正文，80 个小文件完整搜索。400 个带大量引号的路径及 Unicode snippet 保持最终 pretty JSON ≤64 KiB；20 个 `**` 对 22 层路径的失败匹配结束。上述结果验证实际链路，不用完成耗时代替精确资源计数。
+- Rust 确定性测试另验证条目计数覆盖目录和被跳过项、深度/路径/过期 deadline、实际字节预算和不搜索半文件、metadata 检查后真实文件增长最多读取 limit+1 字节并计入总预算、父目录改名后仍使用所持目录能力、叶子替换拒绝。glob 最终全路径排序后才应用请求上限，grep 保留 DFS；动态规划有受限最大模式与独立小输入参考比对。
+- 非 UTF-8 名称拒绝专项在 Linux 执行；本机 APFS 不允许构造该名称，因此未把 macOS 通过列为此专项证据。最终二进制的 `workspace_files.py` 四组、`native_tools.py`、`memory_io.py` 四组及 `e2e.py` 全部通过、退出码 0。
+
+本轮只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。跨平台与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #76 的结果。
+
+本轮仅迁移 grep/glob 的工作区访问和资源边界，不新增后台授权、跨编辑器快照或取消后回滚。`mkdir` / `move` 和可选 `stat` / `tree` 不记为完成，copy 保留原独立合同；详见[工作区文件指南](workspace-files.md)。
