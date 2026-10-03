@@ -272,6 +272,49 @@ enum MemoryCommands {
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
+    /// 管理显式启用的语义索引；须先停止使用同一索引的 serve
+    Semantic {
+        #[command(subcommand)]
+        action: SemanticMemoryCommands,
+        /// 配置文件路径
+        #[arg(short, long, value_name = "FILE", global = true)]
+        config: Option<PathBuf>,
+    },
+}
+
+/// 语义记忆管理命令，不经过聊天模型或 HTTP 管理端点。
+#[derive(Subcommand)]
+enum SemanticMemoryCommands {
+    /// 显示本地索引和待核对操作状态，不请求模型
+    Status,
+    /// 为当前允许的源文件建立索引；可能产生 embedding 费用，不自动重试
+    Refresh,
+    /// 检索已同步的索引；查询 embedding 也会持久记录
+    Search {
+        /// 非空查询文本
+        query: String,
+        /// 返回条数（1–20）
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u8).range(1..=20))]
+        max_results: u8,
+    },
+    /// 通过网关 GET 回执核对未知操作；不会重新 POST embedding
+    Recover {
+        /// status 返回的操作 ID
+        operation_id: String,
+    },
+    /// 经管理员核对后解除未知操作 hold，保留审计说明
+    ReviewClear {
+        /// status 返回的操作 ID
+        operation_id: String,
+        /// 已完成的供应商/账务核对说明
+        #[arg(long)]
+        note: String,
+        /// 确认已经独立核对该操作与费用；本命令不替管理员完成核对
+        #[arg(long, required = true)]
+        confirm_reconciled: bool,
+    },
+    /// 清除派生索引；保留操作账本和 hold，随后须显式 refresh
+    Rebuild,
 }
 
 /// 人格 / 用户画像子命令
@@ -339,6 +382,9 @@ async fn main() -> Result<()> {
         Commands::Memory { action } => match action {
             MemoryCommands::Show { config } => {
                 memory_show_command(config)?;
+            }
+            MemoryCommands::Semantic { action, config } => {
+                semantic_memory_command(config, action).await?;
             }
         },
         Commands::Soul { action } => match action {
@@ -4130,6 +4176,45 @@ async fn import_session_into_persist_file(
     sessions.insert(session_id.clone(), compacted);
     save_sessions(&persist_path.to_path_buf(), &sessions)?;
     Ok(session_id)
+}
+
+async fn semantic_memory_command(
+    config_path: Option<PathBuf>,
+    action: SemanticMemoryCommands,
+) -> Result<()> {
+    if let SemanticMemoryCommands::ReviewClear {
+        confirm_reconciled,
+        note,
+        ..
+    } = &action
+    {
+        anyhow::ensure!(
+            *confirm_reconciled,
+            "review-clear requires --confirm-reconciled"
+        );
+        anyhow::ensure!(
+            !note.trim().is_empty(),
+            "review-clear requires a nonempty --note"
+        );
+    }
+    let config = load_agent_config(config_path)?;
+    let memory = jiaclaw::SemanticMemory::open(&config)
+        .await?
+        .context("semantic_memory_disabled: explicitly enable [memory.semantic] first")?;
+    let output = match action {
+        SemanticMemoryCommands::Status => memory.status().await?,
+        SemanticMemoryCommands::Refresh => memory.refresh().await?,
+        SemanticMemoryCommands::Search { query, max_results } => {
+            memory.search(query, usize::from(max_results), None).await?
+        }
+        SemanticMemoryCommands::Recover { operation_id } => memory.recover(operation_id).await?,
+        SemanticMemoryCommands::ReviewClear {
+            operation_id, note, ..
+        } => memory.review_clear(operation_id, note).await?,
+        SemanticMemoryCommands::Rebuild => memory.rebuild().await?,
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
 }
 
 fn memory_show_command(config_path: Option<PathBuf>) -> Result<()> {

@@ -35,7 +35,9 @@ mod memory_io;
 mod native_agent;
 pub use mcp::inspect_mcp_server;
 mod provider;
+mod semantic;
 mod session;
+pub use semantic::SemanticMemory;
 mod skills;
 mod tools;
 mod workspace;
@@ -159,25 +161,41 @@ impl JiaClawAgent {
     /// # 当前限制
     ///
     /// 当前对话循环不使用 `StateKnot` 的持久化运行时。
-    /// 已发布的 alpha 版本仍待生产认证；SQLite 仅持久化会话历史。
+    /// 已发布的 alpha 版本仍待生产认证；会话、后台任务和专用操作账本的
+    /// 持久化不等价于通用工具循环恢复。
     ///
     /// 参见 `docs/stateknot-gaps.md` 了解详情。
     pub fn new(config: AgentConfig) -> Result<Self, JiaClawError> {
-        if !config.mcp.servers.is_empty() {
+        if !config.mcp.servers.is_empty() || config.memory.semantic.enabled {
             return Err(JiaClawError::Configuration(
-                "MCP requires JiaClawAgent::connect(...).await; synchronous construction does not omit configured tools".into(),
+                "MCP/semantic memory requires JiaClawAgent::connect(...).await; synchronous construction does not omit configured tools".into(),
             ));
         }
         Self::new_local(config)
     }
 
-    /// Construct an agent and validate all reviewed MCP bindings before use.
+    /// Construct an agent, validate reviewed MCP bindings, and open configured
+    /// semantic storage before use. No embedding requests occur at startup.
     ///
     /// # Errors
-    /// Local initialization, policy, discovery, pin or schema validation failures.
+    /// Local initialization, private storage, policy, discovery, pin or schema validation failures.
     pub async fn connect(config: AgentConfig) -> Result<Self, JiaClawError> {
+        let semantic = SemanticMemory::open(&config).await?;
         let mut agent = Self::new_local(config)?;
         mcp::initialize(&agent.config.mcp, &mut agent.tools).await?;
+        if let Some(semantic) = semantic {
+            agent.tools.register(Box::new(
+                MemorySearchTool::new(
+                    &agent.config.workspace_path,
+                    [
+                        agent.config.memory.path.clone(),
+                        agent.config.identity.soul_path.clone(),
+                        agent.config.identity.user_path.clone(),
+                    ],
+                )
+                .with_semantic(semantic),
+            ));
+        }
         Ok(agent)
     }
 
@@ -1658,6 +1676,7 @@ mod tests {
             workspace_path: temp.path().to_path_buf(),
             memory: MemoryConfig {
                 path: "notes/facts.md".into(),
+                ..MemoryConfig::default()
             },
             ..AgentConfig::default()
         };
@@ -3000,6 +3019,7 @@ mod tests {
             workspace_path: dir.clone(),
             memory: MemoryConfig {
                 path: "notes/keep.md".to_string(),
+                ..MemoryConfig::default()
             },
             ..AgentConfig::default()
         };
