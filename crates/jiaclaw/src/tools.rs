@@ -311,22 +311,17 @@ impl Tool for MemoryReadTool {
     }
 }
 
-/// File Read 工具（读取工作空间文件）
+/// `file_read`：`read_file` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileReadTool {
-    workspace_path: PathBuf,
+    inner: crate::files::WorkspaceReadFileTool,
 }
 
 impl FileReadTool {
-    /// 创建新的文件读取工具
+    /// 创建兼容名称工具。
     #[must_use]
     pub fn new(workspace_path: &Path) -> Self {
-        // 规范化工作空间路径，确保沙箱检查在所有平台上一致
-        let canonical_workspace = workspace_path
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_path.to_path_buf());
-
         Self {
-            workspace_path: canonical_workspace,
+            inner: crate::files::WorkspaceReadFileTool::new(workspace_path),
         }
     }
 }
@@ -338,78 +333,29 @@ impl Tool for FileReadTool {
     }
 
     fn description(&self) -> &str {
-        "读取工作空间中的文件内容（相对路径，沙箱化到工作空间）"
+        self.inner.description()
     }
 
     fn parameters_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "文件相对路径（相对于工作空间根目录）"
-                }
-            },
-            "required": ["path"]
-        })
+        self.inner.parameters_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let relative_path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'path'".to_string()))?;
-
-        // 规范化路径以防止目录遍历攻击
-        let file_path = self.workspace_path.join(relative_path);
-        let canonical_path = file_path.canonicalize().unwrap_or(file_path.clone());
-
-        // 确保文件在工作空间内
-        if !canonical_path.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 文件 {relative_path} 在工作空间外部"
-            )));
-        }
-
-        if !canonical_path.exists() {
-            return Ok(format!("文件不存在: {relative_path}"));
-        }
-
-        if !canonical_path.is_file() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径 {relative_path} 不是文件"
-            )));
-        }
-
-        let content = std::fs::read_to_string(&canonical_path)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法读取文件: {e}")))?;
-
-        Ok(format!(
-            "文件: {}\n路径: {}\n大小: {} 字节\n\n{}",
-            relative_path,
-            canonical_path.display(),
-            content.len(),
-            content
-        ))
+        self.inner.execute(args).await
     }
 }
 
-/// File Write 工具（写入工作空间文件）
+/// `file_write`：`write_file` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileWriteTool {
-    workspace_path: PathBuf,
+    inner: crate::files::WorkspaceWriteFileTool,
 }
 
 impl FileWriteTool {
-    /// 创建新的文件写入工具
+    /// 创建兼容名称工具。
     #[must_use]
     pub fn new(workspace_path: &Path) -> Self {
-        // 规范化工作空间路径，确保沙箱检查在所有平台上一致
-        let canonical_workspace = workspace_path
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_path.to_path_buf());
-
         Self {
-            workspace_path: canonical_workspace,
+            inner: crate::files::WorkspaceWriteFileTool::new(workspace_path),
         }
     }
 }
@@ -421,74 +367,15 @@ impl Tool for FileWriteTool {
     }
 
     fn description(&self) -> &str {
-        "在工作空间中写入或创建文件（相对路径，沙箱化到工作空间）"
+        self.inner.description()
     }
 
     fn parameters_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "文件相对路径（相对于工作空间根目录）"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要写入的文件内容"
-                }
-            },
-            "required": ["path", "content"]
-        })
+        self.inner.parameters_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let relative_path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'path'".to_string()))?;
-
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'content'".to_string()))?;
-
-        // 构建文件路径
-        let file_path = self.workspace_path.join(relative_path);
-
-        // 确保目标路径在工作空间内（before creating file)
-        let parent = file_path
-            .parent()
-            .ok_or_else(|| JiaClawError::ToolExecution("无效的文件路径".to_string()))?;
-
-        // 规范化父目录路径（如果存在）进行安全检查
-        let canonical_parent = if parent.exists() {
-            parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf())
-        } else {
-            parent.to_path_buf()
-        };
-
-        if !canonical_parent.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 文件 {relative_path} 在工作空间外部"
-            )));
-        }
-
-        // 创建父目录（如果不存在）
-        std::fs::create_dir_all(parent)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法创建目录: {e}")))?;
-
-        // 写入文件
-        std::fs::write(&file_path, content)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法写入文件: {e}")))?;
-
-        Ok(format!(
-            "✅ 文件已写入: {}\n路径: {}\n大小: {} 字节",
-            relative_path,
-            file_path.display(),
-            content.len()
-        ))
+        self.inner.execute(args).await
     }
 }
 
@@ -1644,22 +1531,17 @@ impl Tool for JsonQueryTool {
     }
 }
 
-/// File List 工具（列出目录内容）
+/// `file_list`：`list_dir` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileListTool {
-    workspace_path: PathBuf,
+    inner: crate::files::WorkspaceListDirTool,
 }
 
 impl FileListTool {
-    /// 创建新的文件列表工具
+    /// 创建兼容名称工具。
     #[must_use]
     pub fn new(workspace_path: &Path) -> Self {
-        // 规范化工作空间路径，确保沙箱检查在所有平台上一致
-        let canonical_workspace = workspace_path
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_path.to_path_buf());
-
         Self {
-            workspace_path: canonical_workspace,
+            inner: crate::files::WorkspaceListDirTool::new(workspace_path),
         }
     }
 }
@@ -1671,126 +1553,29 @@ impl Tool for FileListTool {
     }
 
     fn description(&self) -> &str {
-        "列出工作空间目录中的文件和子目录"
+        self.inner.description()
     }
 
     fn parameters_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "目录相对路径（可选，默认为根目录）"
-                }
-            },
-            "required": []
-        })
+        self.inner.parameters_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let relative_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-
-        let dir_path = if relative_path.is_empty() {
-            self.workspace_path.clone()
-        } else {
-            self.workspace_path.join(relative_path)
-        };
-
-        // 安全检查
-        let canonical_path = dir_path.canonicalize().unwrap_or(dir_path.clone());
-
-        if !canonical_path.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 路径 {relative_path} 在工作空间外部"
-            )));
-        }
-
-        if !canonical_path.exists() {
-            return Ok(format!("目录不存在: {relative_path}"));
-        }
-
-        if !canonical_path.is_dir() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径 {relative_path} 不是目录"
-            )));
-        }
-
-        let entries = std::fs::read_dir(&canonical_path)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录: {e}")))?;
-
-        let mut result = format!(
-            "目录: {}\n\n",
-            if relative_path.is_empty() {
-                "/"
-            } else {
-                relative_path
-            }
-        );
-
-        let mut files = Vec::new();
-        let mut dirs = Vec::new();
-
-        for entry in entries {
-            let entry =
-                entry.map_err(|e| JiaClawError::ToolExecution(format!("无法读取目录条目: {e}")))?;
-
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            if path.is_dir() {
-                dirs.push(name);
-            } else {
-                let metadata = entry.metadata().ok();
-                let size = metadata.map_or(0, |m| m.len());
-                files.push((name, size));
-            }
-        }
-
-        // 排序
-        dirs.sort();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-
-        // 输出目录
-        if !dirs.is_empty() {
-            result.push_str("📁 目录:\n");
-            for dir in &dirs {
-                result.push_str(&format!("  {dir}/\n"));
-            }
-            result.push('\n');
-        }
-
-        // 输出文件
-        if !files.is_empty() {
-            result.push_str("📄 文件:\n");
-            for (name, size) in &files {
-                result.push_str(&format!("  {name} ({size} bytes)\n"));
-            }
-        }
-
-        if dirs.is_empty() && files.is_empty() {
-            result.push_str("(空目录)\n");
-        }
-
-        Ok(result)
+        self.inner.execute(args).await
     }
 }
 
-/// File Delete 工具（删除文件）
+/// `file_delete`：`delete_file` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileDeleteTool {
-    workspace_path: PathBuf,
+    inner: crate::files::WorkspaceDeleteFileTool,
 }
 
 impl FileDeleteTool {
-    /// 创建新的文件删除工具
+    /// 创建兼容名称工具。
     #[must_use]
     pub fn new(workspace_path: &Path) -> Self {
-        // 规范化工作空间路径，确保沙箱检查在所有平台上一致
-        let canonical_workspace = workspace_path
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_path.to_path_buf());
-
         Self {
-            workspace_path: canonical_workspace,
+            inner: crate::files::WorkspaceDeleteFileTool::new(workspace_path),
         }
     }
 }
@@ -1802,58 +1587,15 @@ impl Tool for FileDeleteTool {
     }
 
     fn description(&self) -> &str {
-        "删除工作空间中的文件（不可恢复，谨慎使用）"
+        self.inner.description()
     }
 
     fn parameters_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要删除的文件相对路径"
-                }
-            },
-            "required": ["path"]
-        })
+        self.inner.parameters_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let relative_path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JiaClawError::ToolExecution("缺少参数 'path'".to_string()))?;
-
-        let file_path = self.workspace_path.join(relative_path);
-        let canonical_path = file_path.canonicalize().unwrap_or(file_path.clone());
-
-        // 安全检查
-        if !canonical_path.starts_with(&self.workspace_path) {
-            return Err(JiaClawError::ToolExecution(format!(
-                "安全错误: 文件 {relative_path} 在工作空间外部"
-            )));
-        }
-
-        if !canonical_path.exists() {
-            return Ok(format!("文件不存在: {relative_path}"));
-        }
-
-        if canonical_path.is_dir() {
-            return Err(JiaClawError::ToolExecution(format!(
-                "路径 {relative_path} 是目录，请使用专门的目录删除工具"
-            )));
-        }
-
-        // 获取文件大小用于确认消息
-        let size = std::fs::metadata(&canonical_path)
-            .ok()
-            .map_or(0, |m| m.len());
-
-        // 删除文件
-        std::fs::remove_file(&canonical_path)
-            .map_err(|e| JiaClawError::ToolExecution(format!("无法删除文件: {e}")))?;
-
-        Ok(format!("✅ 文件已删除: {relative_path}\n大小: {size} 字节"))
+        self.inner.execute(args).await
     }
 }
 
@@ -2257,7 +1999,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.contains("已写入"));
+        let output: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(output["path"], "output.txt");
+        assert_eq!(output["mode"], "overwrite");
+        assert_eq!(output["bytes_written"], test_content.len());
 
         // 验证文件确实被写入
         let file_path = temp_workspace.join("output.txt");
@@ -2266,6 +2011,104 @@ mod tests {
         assert_eq!(content, test_content);
 
         let _ = fs::remove_dir_all(&temp_workspace);
+    }
+
+    #[test]
+    fn file_aliases_share_canonical_schemas_and_descriptions() {
+        let workspace = tempfile::tempdir().unwrap();
+        let pairs: Vec<(Box<dyn Tool>, Box<dyn Tool>)> = vec![
+            (
+                Box::new(FileReadTool::new(workspace.path())),
+                Box::new(crate::WorkspaceReadFileTool::new(workspace.path())),
+            ),
+            (
+                Box::new(FileWriteTool::new(workspace.path())),
+                Box::new(crate::WorkspaceWriteFileTool::new(workspace.path())),
+            ),
+            (
+                Box::new(FileListTool::new(workspace.path())),
+                Box::new(crate::WorkspaceListDirTool::new(workspace.path())),
+            ),
+            (
+                Box::new(FileDeleteTool::new(workspace.path())),
+                Box::new(crate::WorkspaceDeleteFileTool::new(workspace.path())),
+            ),
+        ];
+        for (alias, canonical) in pairs {
+            assert_ne!(alias.name(), canonical.name());
+            assert_eq!(alias.parameters_schema(), canonical.parameters_schema());
+            assert_eq!(alias.description(), canonical.description());
+        }
+    }
+
+    #[tokio::test]
+    async fn file_aliases_share_bounded_outputs_and_failure_semantics() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(workspace.path().join("note.txt"), "first\nsecond\nthird").unwrap();
+        let args = serde_json::json!({"path":"note.txt", "offset":2, "limit":1});
+        let legacy = FileReadTool::new(workspace.path())
+            .execute(args.clone())
+            .await
+            .unwrap();
+        let canonical = crate::WorkspaceReadFileTool::new(workspace.path())
+            .execute(args)
+            .await
+            .unwrap();
+        assert_eq!(legacy, canonical);
+        let output: Value = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(output["content"], "second");
+        assert_eq!(output["returned_lines"], 1);
+
+        let oversized = "x".repeat(crate::WRITE_FILE_MAX_BYTES + 1);
+        assert!(FileWriteTool::new(workspace.path())
+            .execute(serde_json::json!({
+                "path":"note.txt", "content":oversized,
+            }))
+            .await
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("note.txt")).unwrap(),
+            "first\nsecond\nthird"
+        );
+        assert!(FileReadTool::new(workspace.path())
+            .execute(serde_json::json!({"path":"missing"}))
+            .await
+            .is_err());
+        assert!(FileListTool::new(workspace.path())
+            .execute(serde_json::json!({"path":"missing"}))
+            .await
+            .is_err());
+        assert!(FileDeleteTool::new(workspace.path())
+            .execute(serde_json::json!({"path":"missing"}))
+            .await
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_alias_never_follows_leaf_or_missing_parent_symlinks() {
+        use std::os::unix::fs::symlink;
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel.txt");
+        fs::write(&sentinel, "outside unchanged").unwrap();
+        symlink(&sentinel, workspace.path().join("leaf.txt")).unwrap();
+        symlink(outside.path(), workspace.path().join("directory")).unwrap();
+        let tool = FileWriteTool::new(workspace.path());
+        for path in ["leaf.txt", "directory/missing/escape.txt"] {
+            assert!(
+                tool.execute(serde_json::json!({"path":path, "content":"escaped"}))
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "outside unchanged");
+        assert!(!outside.path().join("missing").exists());
+        assert!(fs::symlink_metadata(workspace.path().join("leaf.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[tokio::test]
@@ -2349,7 +2192,12 @@ mod tests {
 
         assert!(result.contains("file1.txt"));
         assert!(result.contains("file2.txt"));
-        assert!(result.contains("subdir/"));
+        let output: Value = serde_json::from_str(&result).unwrap();
+        assert!(output["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "subdir" && entry["type"] == "dir"));
 
         let _ = fs::remove_dir_all(&temp_workspace);
     }
@@ -2374,7 +2222,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.contains("已删除"));
+        let output: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(output["path"], "to_delete.txt");
+        assert_eq!(output["deleted"], true);
         assert!(!test_file.exists());
 
         let _ = fs::remove_dir_all(&temp_workspace);

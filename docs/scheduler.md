@@ -84,7 +84,7 @@ cron 固定为五字段“分钟 小时 日 月 星期”，时区必须是 IANA
 
 pause 和软删除阻止后续调度；已经领取的工作以该运行的最终状态为准。软删除任务不能 resume。当前没有原地编辑接口；需要改动计划或授权时，暂停/删除旧任务并创建新任务。`purge=true` 是管理员主动删除审计记录，调用前应完成必要核对或备份；它不会自动删除该任务的会话消息。
 
-JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabled_tools` 为 1–32 个不重复工具名，`timeout_secs` 为 1–600 秒，默认 120。后台工具必须已注册，且属于 `datetime_now`、`json_query`、受控 Docker `exec` / `shell_exec` 或经过审核的 `mcp_` 工具。当前不允许 `file_write`、`file_read`、`http_get` 等缺少可靠取消边界的旧工具进入后台任务；未知或不允许的工具在创建时拒绝。
+JobSpec 的 `name` 为 1–128 字节，`prompt` 非空且最多 32 KiB，`enabled_tools` 为 1–32 个不重复工具名，`timeout_secs` 为 1–600 秒，默认 120。后台工具必须已注册，且属于 `datetime_now`、`json_query`、受控 Docker `exec` / `shell_exec` 或经过审核的 `mcp_` 工具。当前不允许通用文件工具（含 `file_write` / `file_read`）和 `http_get` 进入后台任务；文件工具的[有界 I/O](workspace-files.md)不提供取消后的回滚或后台持久执行身份；未知或不允许的工具在创建时拒绝。
 
 `/api/jobs/status` 的 `state` 为 running、failed、stopping 或 disabled；配置完全关闭 scheduler 时，管理接口返回 404。后台存储/worker 致命错误会停止准入并报告 failed，新建和 resume 返回 HTTP 503；已记录的同 ID/正文 PUT 可只读返回现有任务，仍要求 enabled、管理员鉴权及 SQLite。管理者应检查日志、修复故障并重启 serve，不要把 HTTP 服务仍存活理解为调度器仍工作。
 

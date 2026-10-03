@@ -56,7 +56,7 @@ docker compose up --build -d
 
 ## 已实现的能力
 
-- 工作区文件读写、目录、grep/glob、mkdir/move，以及原子 `copy` / `file_copy`。
+- 工作区文件读写、目录、grep/glob、mkdir/move，以及原子 `copy` / `file_copy`；五个主文件工具与四个兼容名称的[权限和 I/O 边界](docs/workspace-files.md)分别说明。
 - 显式启用的 `exec` / `shell_exec`：白名单映射、固定镜像、无网络容器、非 root、时间与输出限制。默认关闭；没有宿主机 shell 回退。
 - SQLite WAL 会话存储、旧 JSON 一次性迁移、导入导出、TTL、同一会话并发串行提交。
 - StateKnot HTTP MCP：显式批准的只读工具、描述摘要固定、离线 schema 校验、有界 JSON/SSE 与取消；[配置与验收边界](docs/mcp.md)。
@@ -79,6 +79,7 @@ cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D cli
 cargo build --locked -p jiaclaw-host
 python3 tests/e2e.py target/debug/jiaclaw
 python3 tests/memory_io.py target/debug/jiaclaw
+python3 tests/workspace_files.py target/debug/jiaclaw
 python3 tests/installer.py
 ```
 

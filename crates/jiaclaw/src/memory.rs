@@ -309,10 +309,6 @@ pub(crate) fn ensure_existing_within_workspace(
     Ok(())
 }
 
-pub(crate) fn atomic_write_bytes(path: &Path, contents: &[u8]) -> Result<(), JiaClawError> {
-    crate::memory_io::atomic_replace_ambient(path, contents)
-}
-
 /// `memory_append` 工具：向约定 MEMORY 路径追加或覆盖 Markdown。
 pub struct MemoryAppendTool {
     workspace_path: PathBuf,

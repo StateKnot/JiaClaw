@@ -12,7 +12,7 @@ SQLite history -> JiaClawAgent -> BrokerrouterProvider -> Brokerrouter -> model
                  ToolRegistry
                /
        workspace tools      controlled exec
-       cap-std copy         digest-pinned Docker sandbox
+       directory handles    digest-pinned Docker sandbox
              |
    commit SQLite before completed response
 ```
@@ -46,7 +46,9 @@ SQLite 是服务/CLI 的权威会话存储，支持 WAL/FULL 同步与独占进�
 
 ## 文件与执行边界
 
-copy 使用目录能力与相对路径，拒绝链接/特殊文件，有界读取，临时文件 fsync 后 atomic publish；无覆盖使用 hard link，覆盖使用 rename。其他现有文件工具仍由各自实现处理路径与大小限制，不能推断为完整 OS 沙箱。
+`read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir` 及对应四个兼容名称通过目录句柄访问工作区，拒绝链接目标和特殊文件，执行有界读取、写入和目录遍历。异步入口与记忆工具共用 8 个阻塞 I/O 许可；协作 mutation 共用目录锁。写入同步暂存文件后原子发布，取消等待不会终止已受理写入。配置、兼容变化和准确范围见[工作区文件指南](workspace-files.md)。
+
+copy 保留独立的目录能力与原子复制实现；无覆盖使用 hard link，覆盖使用 rename。`grep`、`glob`、`mkdir`、`move` 本批未迁移，仍由各自实现处理路径与大小限制。不能把这些应用工具推断为完整 OS 沙箱。
 
 exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上限；模型只能选择已配置命令和有限参数。沙箱不继承宿主凭证或网络，仅挂载工作区。取消清理由独立线程完成；daemon 不可达或宿主被硬终止时需运维确认残留。容器部署不暴露 Docker socket。
 
@@ -62,6 +64,6 @@ exec 的可信配置固定 Docker CLI、镜像摘要、容器命令映射与上�
 
 ## 可靠渠道
 
-Telegram、Slack、Discord、飞书、企业微信和钉钉共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite v7 保存 inbox/outbox、去重记录及投递回执，并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)、[企业微信指南](wecom.md)和[钉钉指南](dingtalk.md)。
+Telegram、Slack、Discord、飞书、企业微信和钉钉共享经过授权的持久入站与统一异步出站。平台事件 ID 与内容摘要用于去重；验签、安装/发送者/会话校验和 SQLite 提交完成后才 ACK，模型执行由受监督 worker 承担。会话、事件终态与完整回复分片在同一事务写入；出站领取先持久化 submitting，再提交 HTTP 请求。发送结果不明进入 unknown，禁止自动重发及后续分片；429 冷却和基础发送间隔跨重启保存。SQLite 保存 inbox/outbox、去重记录及投递回执（v7 引入钉钉，当前 schema 10），并以外键和互斥约束区分入站事件与定时运行来源；企业微信另有跨审计清理保留的发送额度账本；详见[渠道运行合同](channels.md)、[企业微信指南](wecom.md)和[钉钉指南](dingtalk.md)。
 
 定时 Telegram/Slack/飞书/企业微信/钉钉通知使用独立的目的地与工具授权，复用同一发送器、容量预留和目的地顺序。任务运行、会话和所有消息分片一起提交；有未解决投递的任务不会产生下一轮执行，发送结果未知或永久失败会暂停任务。清理历史必须保留被发件箱引用的来源，显式核对后才可删除；详见[定时通知](scheduled-delivery.md)。

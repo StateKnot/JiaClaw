@@ -1,7 +1,7 @@
 // Copyright 2026 JiaClaw contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Bounded memory-file I/O through directory capabilities. The workspace root
+//! Bounded memory and workspace-file I/O through directory capabilities. The workspace root
 //! is administrator-owned. Never reopen a checked leaf by an ambient path.
 
 use cap_std::{
@@ -109,9 +109,12 @@ fn read_options(directory: bool) -> OpenOptions {
 // Open each parent separately with O_NOFOLLOW on supported Linux/macOS hosts.
 // cap-std additionally prevents escapes through substituted path components.
 fn parent(root: &Dir, path: &Path, create: bool) -> Result<Option<Dir>, JiaClawError> {
+    descend(root, path.parent().unwrap_or_else(|| Path::new("")), create)
+}
+
+fn descend(root: &Dir, path: &Path, create: bool) -> Result<Option<Dir>, JiaClawError> {
     let mut dir = root.try_clone().map_err(failure)?;
-    let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    for component in parent.components() {
+    for component in path.components() {
         let Component::Normal(name) = component else {
             continue;
         };
@@ -367,18 +370,302 @@ pub(crate) fn create_text_if_missing(
     publish(&dir, name, content.as_bytes(), false)
 }
 
-// Compatibility helper for existing general file tools. Their callers own path
-// authorization; this fixes unique staging/durability, not their path policy.
-pub(crate) fn atomic_replace_ambient(path: &Path, bytes: &[u8]) -> Result<(), JiaClawError> {
-    let parent = path.parent().ok_or_else(|| failure("无效父目录"))?;
-    let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(failure)?;
-    publish(
-        &dir,
-        path.file_name().ok_or_else(|| failure("无效文件名"))?,
-        bytes,
-        true,
-    )?;
-    Ok(())
+// General file tools share the directory capabilities and writer lock with
+// memory files, but retain their own byte limits and exact append semantics.
+const FILE_LIMIT: usize = crate::files::READ_FILE_MAX_BYTES;
+const DIRECTORY_SCAN_LIMIT: usize = 2000;
+const DIRECTORY_DEPTH_LIMIT: usize = 32;
+const DIRECTORY_JSON_BUDGET: usize = 64 * 1024;
+
+fn read_bytes(file: File, limit: usize) -> Result<Vec<u8>, JiaClawError> {
+    let limit = limit.min(FILE_LIMIT);
+    let metadata = file.metadata().map_err(failure)?;
+    regular(&metadata)?;
+    if metadata.len() > limit as u64 {
+        return Err(failure(format!("文件超过上限 {limit} 字节")));
+    }
+    read_bounded_bytes(file, limit)
+}
+
+fn read_bounded_bytes(reader: impl Read, limit: usize) -> Result<Vec<u8>, JiaClawError> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(failure)?;
+    if bytes.len() > limit {
+        return Err(failure(format!("读取期间文件超过上限 {limit} 字节")));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn read_file_bytes(
+    workspace: &Path,
+    raw: &str,
+    limit: usize,
+) -> Result<Vec<u8>, JiaClawError> {
+    let path = relative(raw)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let dir = parent(&root, path, false)?.ok_or_else(|| failure("文件不存在"))?;
+    let file = open_regular(&dir, path.file_name().ok_or_else(|| failure("无效文件名"))?)?
+        .ok_or_else(|| failure("文件不存在"))?;
+    read_bytes(file, limit)
+}
+
+fn edit_file<T>(
+    workspace: &Path,
+    raw: &str,
+    create_parents: bool,
+    limit: usize,
+    edit: impl FnOnce(Option<File>) -> Result<(Vec<u8>, T), JiaClawError>,
+) -> Result<T, JiaClawError> {
+    let path = relative(raw)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    let dir = parent(&root, path, create_parents)?.ok_or_else(|| failure("文件不存在"))?;
+    let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
+    let (bytes, result) = edit(open_regular(&dir, name)?)?;
+    if bytes.len() > limit.min(FILE_LIMIT) {
+        return Err(failure(format!(
+            "文件超过上限 {} 字节",
+            limit.min(FILE_LIMIT)
+        )));
+    }
+    publish(&dir, name, &bytes, true)?;
+    Ok(result)
+}
+
+pub(crate) fn write_file_bytes(
+    workspace: &Path,
+    raw: &str,
+    content: &str,
+    append: bool,
+    limit: usize,
+) -> Result<usize, JiaClawError> {
+    let limit = limit.min(FILE_LIMIT);
+    if content.len() > limit {
+        return Err(failure(format!("文件超过上限 {limit} 字节")));
+    }
+    edit_file(workspace, raw, true, limit, |existing| {
+        let mut bytes = if append {
+            existing
+                .map(|file| read_bytes(file, limit))
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if bytes.len().saturating_add(content.len()) > limit {
+            return Err(failure(format!("文件超过上限 {limit} 字节")));
+        }
+        bytes.extend_from_slice(content.as_bytes());
+        let length = bytes.len();
+        Ok((bytes, length))
+    })
+}
+
+pub(crate) fn replace_file_text(
+    workspace: &Path,
+    raw: &str,
+    old: &str,
+    new: &str,
+    all: bool,
+    limit: usize,
+) -> Result<(usize, usize), JiaClawError> {
+    let limit = limit.min(FILE_LIMIT);
+    if old.is_empty() {
+        return Err(failure("参数 'old_str' 不能为空"));
+    }
+    // A huge replacement is rejected before reading or creating any file.
+    if new.len() > limit {
+        return Err(failure(format!("文件超过上限 {limit} 字节")));
+    }
+    edit_file(workspace, raw, false, limit, |existing| {
+        let bytes = read_bytes(existing.ok_or_else(|| failure("文件不存在"))?, limit)?;
+        let text = String::from_utf8(bytes).map_err(|_| failure("二进制文件，拒绝替换"))?;
+        if text.contains('\0') {
+            return Err(failure("二进制文件，拒绝替换"));
+        }
+        let count = text.matches(old).count();
+        if count == 0 {
+            return Err(failure("old_str 在文件中未找到（匹配 0 次）"));
+        }
+        if !all && count != 1 {
+            return Err(failure(format!(
+                "old_str 在文件中匹配 {count} 次，默认必须恰好 1 次"
+            )));
+        }
+        let removed = old
+            .len()
+            .checked_mul(count)
+            .ok_or_else(|| failure("替换大小溢出"))?;
+        let inserted = new
+            .len()
+            .checked_mul(count)
+            .ok_or_else(|| failure("替换大小溢出"))?;
+        let size = text
+            .len()
+            .checked_sub(removed)
+            .and_then(|n| n.checked_add(inserted))
+            .ok_or_else(|| failure("替换大小溢出"))?;
+        if size > limit {
+            return Err(failure(format!("文件超过上限 {limit} 字节")));
+        }
+        let result = text.replace(old, new).into_bytes();
+        Ok((result, (count, size)))
+    })
+}
+
+pub(crate) fn delete_file(workspace: &Path, raw: &str) -> Result<u64, JiaClawError> {
+    let path = relative(raw)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    let dir = parent(&root, path, false)?.ok_or_else(|| failure("文件不存在"))?;
+    let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
+    let file = open_regular(&dir, name)?.ok_or_else(|| failure("文件不存在"))?;
+    let size = file.metadata().map_err(failure)?.len();
+    drop(file);
+    // Unlink only this directory entry. A replaced leaf can never redirect the
+    // unlink to its symlink target; cooperating mutations retain the root lock.
+    dir.remove_file(name).map_err(failure)?;
+    sync_dir(&dir).map_err(|e| {
+        failure(format!(
+            "文件已删除但目录同步失败，请核对后再决定是否重试: {e}"
+        ))
+    })?;
+    Ok(size)
+}
+
+struct Listing {
+    entries: Vec<crate::files::DirEntryInfo>,
+    scanned: usize,
+    bytes: usize,
+    limit: usize,
+    truncated: bool,
+    deadline: std::time::Instant,
+}
+impl Listing {
+    fn exhausted(&mut self) -> bool {
+        if self.scanned >= DIRECTORY_SCAN_LIMIT
+            || self.entries.len() >= self.limit
+            || self.deadline <= std::time::Instant::now()
+        {
+            self.truncated = true;
+            true
+        } else {
+            false
+        }
+    }
+    fn walk(
+        &mut self,
+        dir: &Dir,
+        prefix: &str,
+        recursive: bool,
+        depth: usize,
+    ) -> Result<(), JiaClawError> {
+        let mut children = Vec::new();
+        for entry in dir.entries().map_err(failure)? {
+            if self.exhausted() {
+                break;
+            }
+            self.scanned += 1;
+            let entry = entry.map_err(failure)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| failure("目录含非 UTF-8 文件名，无法无损表示"))?;
+            children.push(name);
+        }
+        children.sort();
+        for name in children {
+            if self.entries.len() >= self.limit || self.deadline <= std::time::Instant::now() {
+                self.truncated = true;
+                break;
+            }
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if rel.len() > MAX_PATH_BYTES {
+                self.truncated = true;
+                continue;
+            }
+            let meta = dir.symlink_metadata(&name).map_err(failure)?;
+            let kind = if meta.file_type().is_symlink() {
+                "symlink"
+            } else if meta.is_dir() {
+                "dir"
+            } else if meta.is_file() && regular(&meta).is_ok() {
+                "file"
+            } else {
+                "unsupported"
+            };
+            let item = crate::files::DirEntryInfo {
+                name: rel.clone(),
+                kind: kind.into(),
+                size: (kind == "file").then_some(meta.len()),
+            };
+            // The final response pretty-prints each item at four-space indent.
+            // Include separators; the envelope reserves its extra array lines.
+            let json = serde_json::to_string_pretty(&item).map_err(failure)?;
+            let encoded = json.len() + json.lines().count() * 4 + 2;
+            if self.bytes.saturating_add(encoded) > DIRECTORY_JSON_BUDGET {
+                self.truncated = true;
+                break;
+            }
+            self.bytes += encoded;
+            self.entries.push(item);
+            if recursive && kind == "dir" {
+                if depth >= DIRECTORY_DEPTH_LIMIT || self.exhausted() {
+                    self.truncated = true;
+                    continue;
+                }
+                let child = descend(dir, Path::new(&name), false)?
+                    .ok_or_else(|| failure("扫描期间目录已消失"))?;
+                self.walk(&child, &rel, true, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn list_directory(
+    workspace: &Path,
+    raw: &str,
+    maximum: usize,
+    recursive: bool,
+) -> Result<(Vec<crate::files::DirEntryInfo>, bool), JiaClawError> {
+    if raw.len() > MAX_PATH_BYTES {
+        return Err(failure("目录路径最多 1024 字节"));
+    }
+    let path = if raw == "." || raw.is_empty() {
+        Path::new(".")
+    } else {
+        relative(raw)?
+    };
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let dir = descend(&root, path, false)?.ok_or_else(|| failure("目录不存在"))?;
+    let envelope = crate::files::ListDirOutput {
+        path: raw.into(),
+        recursive,
+        truncated: false,
+        entries: Vec::new(),
+    };
+    let mut listing = Listing {
+        entries: Vec::new(),
+        scanned: 0,
+        bytes: serde_json::to_string_pretty(&envelope)
+            .map_err(failure)?
+            .len()
+            + 8,
+        limit: maximum.clamp(1, crate::files::LIST_DIR_MAX_ENTRIES),
+        truncated: false,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+    };
+    listing.walk(&dir, "", recursive, 0)?;
+    listing.entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok((listing.entries, listing.truncated))
 }
 
 #[cfg(test)]
@@ -523,5 +810,192 @@ mod tests {
         assert!(write_text(ws.path(), "a", "denied", false, 32768).is_err());
         drop(lock);
         write_text(ws.path(), "a", "after", false, 32768).unwrap();
+    }
+
+    #[test]
+    fn workspace_read_growth_consumes_only_limit_plus_one_bytes() {
+        struct GrowingReader<'a> {
+            file: std::fs::File,
+            path: PathBuf,
+            consumed: &'a mut usize,
+        }
+        impl Read for GrowingReader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if *self.consumed == 0 {
+                    // Growth occurs after metadata admission, before the first read.
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&self.path)?
+                        .write_all(&vec![b'x'; 4096])?;
+                }
+                let n = self.file.read(bytes)?;
+                *self.consumed += n;
+                Ok(n)
+            }
+        }
+        let ws = tempfile::tempdir().unwrap();
+        let path = ws.path().join("growing");
+        std::fs::write(&path, b"seed").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 4);
+        let mut consumed = 0;
+        let error = read_bounded_bytes(
+            GrowingReader {
+                file,
+                path,
+                consumed: &mut consumed,
+            },
+            8,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("读取期间"));
+        assert_eq!(consumed, 9);
+    }
+
+    #[test]
+    fn workspace_listing_budgets_cover_escaped_json_scan_depth_and_deadline() {
+        let ws = tempfile::tempdir().unwrap();
+        for i in 0..400 {
+            std::fs::write(
+                ws.path().join(format!("{i:04}-{}", "\"\n\\".repeat(60))),
+                b"x",
+            )
+            .unwrap();
+        }
+        let output = crate::files::list_workspace_dir(ws.path(), ".", 1000, false).unwrap();
+        assert!(output.truncated);
+        assert!(!output.entries.is_empty());
+        assert!(serde_json::to_string_pretty(&output).unwrap().len() <= DIRECTORY_JSON_BUDGET);
+        assert!(list_directory(ws.path(), &" ".repeat(1025), 1000, false).is_err());
+
+        let flat = tempfile::tempdir().unwrap();
+        for i in 0..DIRECTORY_SCAN_LIMIT + 1 {
+            std::fs::write(flat.path().join(format!("f{i:04}")), b"").unwrap();
+        }
+        let dir = Dir::open_ambient_dir(flat.path(), ambient_authority()).unwrap();
+        let mut listing = Listing {
+            entries: Vec::new(),
+            scanned: 0,
+            bytes: 0,
+            limit: 1000,
+            truncated: false,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        };
+        listing.walk(&dir, "", false, 0).unwrap();
+        assert_eq!(listing.scanned, DIRECTORY_SCAN_LIMIT);
+        assert!(listing.truncated);
+        assert!(listing.entries.len() <= 1000);
+        let mut expired = Listing {
+            entries: Vec::new(),
+            scanned: 0,
+            bytes: 0,
+            limit: 1000,
+            truncated: false,
+            deadline: std::time::Instant::now(),
+        };
+        expired.walk(&dir, "", false, 0).unwrap();
+        assert!(expired.truncated);
+        assert_eq!(expired.scanned, 0);
+        assert!(expired.entries.is_empty());
+
+        let deep = tempfile::tempdir().unwrap();
+        let mut path = deep.path().to_path_buf();
+        for _ in 0..DIRECTORY_DEPTH_LIMIT + 3 {
+            path.push("d");
+            std::fs::create_dir(&path).unwrap();
+        }
+        std::fs::write(path.join("not-scanned"), b"x").unwrap();
+        let (entries, truncated) = list_directory(deep.path(), ".", 1000, true).unwrap();
+        assert!(truncated);
+        assert_eq!(entries.len(), DIRECTORY_DEPTH_LIMIT + 1);
+        assert!(!entries.iter().any(|e| e.name.contains("not-scanned")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_files_reject_links_and_special_files_without_following_targets() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, b"untouched").unwrap();
+        symlink(&secret, ws.path().join("symlink")).unwrap();
+        std::fs::hard_link(&secret, ws.path().join("hardlink")).unwrap();
+        symlink(outside.path(), ws.path().join("linked-dir")).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(ws.path().join("fifo"))
+            .status()
+            .unwrap()
+            .success());
+        for name in ["symlink", "hardlink", "fifo"] {
+            assert!(read_file_bytes(ws.path(), name, 32).is_err(), "{name}");
+            assert!(
+                write_file_bytes(ws.path(), name, "bad", false, 32).is_err(),
+                "{name}"
+            );
+            assert!(
+                write_file_bytes(ws.path(), name, "bad", true, 32).is_err(),
+                "{name}"
+            );
+            assert!(
+                replace_file_text(ws.path(), name, "untouched", "bad", false, 32).is_err(),
+                "{name}"
+            );
+            assert!(delete_file(ws.path(), name).is_err(), "{name}");
+            assert!(list_directory(ws.path(), name, 10, true).is_err(), "{name}");
+        }
+        assert!(write_file_bytes(ws.path(), "linked-dir/missing/leaf", "bad", false, 32).is_err());
+        assert!(!outside.path().join("missing").exists());
+        let (entries, truncated) = list_directory(ws.path(), ".", 20, true).unwrap();
+        assert!(!truncated);
+        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().all(|e| e.size.is_none()));
+        assert!(entries
+            .iter()
+            .all(|e| e.kind == "symlink" || e.kind == "unsupported"));
+        assert_eq!(std::fs::read(&secret).unwrap(), b"untouched");
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 4);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_mutations_share_memory_lock_and_append_without_lost_bytes() {
+        let ws = tempfile::tempdir().unwrap();
+        write_file_bytes(ws.path(), "a", "original", false, 256).unwrap();
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let lock = writer_lock(&root).unwrap();
+        assert!(write_file_bytes(ws.path(), "a", "bad", false, 256).is_err());
+        assert!(write_file_bytes(ws.path(), "a", "bad", true, 256).is_err());
+        assert!(replace_file_text(ws.path(), "a", "original", "bad", false, 256).is_err());
+        assert!(delete_file(ws.path(), "a").is_err());
+        assert_eq!(std::fs::read(ws.path().join("a")).unwrap(), b"original");
+        drop(lock);
+        std::thread::scope(|scope| {
+            for i in 0..12 {
+                let path = ws.path();
+                scope.spawn(move || {
+                    let text = format!("[{i:02}]");
+                    for _ in 0..200 {
+                        match write_file_bytes(path, "a", &text, true, 256) {
+                            Ok(_) => return,
+                            Err(e) if e.to_string().contains("lock busy") => {
+                                std::thread::sleep(std::time::Duration::from_millis(2))
+                            }
+                            Err(e) => panic!("{e}"),
+                        }
+                    }
+                    panic!("lock did not release");
+                });
+            }
+        });
+        let text = std::fs::read_to_string(ws.path().join("a")).unwrap();
+        assert_eq!(text.len(), 8 + 12 * 4);
+        assert!(!text.contains('\n'));
+        for i in 0..12 {
+            assert_eq!(text.matches(&format!("[{i:02}]")).count(), 1);
+        }
+        assert!(replace_file_text(ws.path(), "a", "[", &"x".repeat(32), true, 256).is_err());
+        assert_eq!(std::fs::read_to_string(ws.path().join("a")).unwrap(), text);
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 1);
     }
 }

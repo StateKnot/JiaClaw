@@ -239,4 +239,16 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 
 PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 37100634034](https://github.com/jiawenyao401/JiaClaw/actions/runs/37100634034) 在 Linux 的 `tests/tenant_cron.py:307` 遇到 `GET /api/sessions` 返回 429（`user request already in progress`）。运行状态属于控制请求，可先读到后端 completed；此时网关尚未完成 `finish_write` 收据提交，仍持有执行许可，会话查询使用执行容量，因此该 429 是正常的在途保护，不能以 completed 状态推定执行许可已经释放。
 
-修正仅限 fixture 的两处会话列表断言：遇到精确匹配的 busy 429 时，对只读 GET 作有界轮询，其他错误仍直接失败；另通过暂停模型响应确定性验证在途期间仍返回该 429。不自动重放写入，不提前释放生产执行许可，也不放宽后端准入。生产代码无需修改；修正后的真实双租户进程验收四组通过、退出码 0，原 SIGKILL/持久 hold/Key 轮换/其他用户继续及零模型重发断言保留。修正后最终 head 的完整 CI 仍待确认，首轮失败不记为验收通过。
+修正仅限 fixture 的两处会话列表断言：遇到精确匹配的 busy 429 时，对只读 GET 作有界轮询，其他错误仍直接失败；另通过暂停模型响应确定性验证在途期间仍返回该 429。不自动重放写入，不提前释放生产执行许可，也不放宽后端准入。生产代码无需修改；修正后的真实双租户进程验收四组通过、退出码 0，原 SIGKILL/持久 hold/Key 轮换/其他用户继续及零模型重发断言保留。修正后 PR #75 最终 head `0c9900a75a8f5a3a1c980c8ba98b18c3430b12d2` 的 [CI 37101387934](https://github.com/jiawenyao401/JiaClaw/actions/runs/37101387934) 已通过 Ubuntu、macOS 和 container 三项检查，覆盖 Chromium 与真实容器；首轮失败记录保留用于追踪。
+
+## 工作区文件权限与 I/O 批次
+
+最终本机全量 Rust 854 项通过（library 343、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI；fmt、Clippy correctness/suspicious、锁定构建与 diff-check 通过，保留既有 style/pedantic warnings。
+
+- 新 `tests/workspace_files.py` 已接入 Linux/macOS CI，最终真实二进制四组全部通过：主名称/别名 schema 和 JSON、一致的 UTF-8 落盘字节、真实创建/追加/读取/替换/目录/删除；通过小参数追加达到精确 262144 字节，行范围读取和追加/替换超限拒绝保留原文件；内外部符号链接、损坏链接、硬链接、FIFO、路径穿越及缺失父目录外逸均拒绝，外部哨兵文件不变；四个配置开关同时从 HTTP/native 目录移除八个名称，禁用名称与伪造别名在整批执行前被拒绝。
+- 文件增长的进程测试是在读取前向文件追加后再验证拒绝；读取过程最多消耗 limit+1 字节由 Rust 的受控 reader 测试验证。Rust 还验证最终 pretty JSON ≤64 KiB（含转义名称）、扫描 2000 条、递归 32 层、过期遍历预算、共享目录锁/并发追加及取消后的阻塞容量，不把这些证据归到 Python fixture。
+- 最终二进制的 `tests/native_tools.py`、`tests/memory_io.py`（四组）和 `tests/e2e.py` 回归全部通过、退出码 0；记忆回归继续覆盖旧临时文件守护、锁竞争、配置路径与超大 HEARTBEAT 零模型调用。
+
+测试只使用本机模型协议、一次性凭据和临时文件，没有真实平台或付费模型调用。跨平台与真实容器以本批 draft PR 最终 head CI 为准，不以单机协议验收代替断电硬件持久性或完整个人 Agent 生产认证。
+
+此次目录句柄迁移限于 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir` 及四个兼容名称。`grep`、`glob`、`mkdir`、`move` 未迁移，`copy` 保留独立合同；没有新增 `stat` / `tree` 或后台文件工具授权。操作与兼容边界见[工作区文件指南](workspace-files.md)。
