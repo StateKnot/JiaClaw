@@ -536,6 +536,248 @@ pub(crate) fn delete_file(workspace: &Path, raw: &str) -> Result<u64, JiaClawErr
     Ok(size)
 }
 
+/// Idempotent directory creation under the same lock as file mutations.
+pub(crate) fn mkdir_directory(
+    workspace: &Path,
+    raw: &str,
+    recursive: bool,
+) -> Result<bool, JiaClawError> {
+    if raw.len() > MAX_PATH_BYTES {
+        return Err(failure("目录路径最多 1024 字节"));
+    }
+    let trimmed = raw.trim();
+    let candidate = Path::new(trimmed);
+    let is_root =
+        !trimmed.is_empty() && candidate.components().all(|part| part == Component::CurDir);
+    let path = if is_root { candidate } else { relative(raw)? };
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    if is_root {
+        return Ok(false);
+    }
+    let dir = parent(&root, path, recursive)
+        .map_err(|e| {
+            if recursive {
+                failure(format!("创建父目录失败，可能已创建部分目录，请核对: {e}"))
+            } else {
+                e
+            }
+        })?
+        .ok_or_else(|| failure("父目录不存在（recursive/parents=false）"))?;
+    let name = path.file_name().ok_or_else(|| failure("无效目录名"))?;
+    let created = match dir.create_dir(name) {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            let metadata = dir.symlink_metadata(name).map_err(failure)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(failure("路径已存在且不是目录，禁止符号链接和特殊文件"));
+            }
+            false
+        }
+        Err(e) => return Err(failure(e)),
+    };
+    // This also rejects a static leaf symlink, including an internal one. An
+    // O_NOFOLLOW directory open rejects substitution before acquiring the fd.
+    let opened = descend(&dir, Path::new(name), false)?
+        .ok_or_else(|| failure("创建期间目录已消失，请核对"))?;
+    if created {
+        sync_dir(&opened)
+            .and_then(|()| sync_dir(&dir))
+            .map_err(|e| failure(format!("目录已创建但同步失败，请核对后决定是否重试: {e}")))?;
+    }
+    Ok(created)
+}
+
+fn normalized_entry_path(raw: &str) -> Result<PathBuf, JiaClawError> {
+    Ok(relative(raw)?
+        .components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect())
+}
+
+fn entry_kind(metadata: &Metadata) -> Result<crate::files::MoveKind, JiaClawError> {
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        Ok(crate::files::MoveKind::Dir)
+    } else {
+        regular(metadata)?;
+        Ok(crate::files::MoveKind::File)
+    }
+}
+
+fn same_entry(left: &Metadata, right: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (left, right);
+        false // move is unsupported on these targets, before any mutation.
+    }
+}
+
+// Names must be individual validated path components. These safe OS wrappers
+// use the held parents directly; never downgrade NOREPLACE to check + rename.
+fn rename_entry(
+    source: &Dir,
+    source_name: &OsStr,
+    destination: &Dir,
+    destination_name: &OsStr,
+    overwrite: bool,
+) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        if overwrite {
+            rustix::fs::renameat(source, source_name, destination, destination_name)
+        } else {
+            rustix::fs::renameat_with(
+                source,
+                source_name,
+                destination,
+                destination_name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+        }
+        .map_err(io::Error::from)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (
+            source,
+            source_name,
+            destination,
+            destination_name,
+            overwrite,
+        );
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "原子移动仅支持 Linux/macOS",
+        ))
+    }
+}
+
+fn move_error(error: io::Error) -> JiaClawError {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::EXDEV) {
+        return failure("跨文件系统移动被拒绝（EXDEV）；未复制或删除源/目标");
+    }
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        return failure("目标已存在或目录非空，原子移动被拒绝");
+    }
+    if error.kind() == io::ErrorKind::Unsupported
+        || error.raw_os_error() == Some(libc::ENOSYS)
+        || error.raw_os_error() == Some(libc::EINVAL)
+    {
+        return failure(format!(
+            "原子移动不受支持或参数被系统拒绝；未使用复制/删除回退: {error}"
+        ));
+    }
+    failure(format!("原子移动失败，未预先删除目标: {error}"))
+}
+
+/// Single-filesystem atomic rename; no destination removal or copy fallback.
+pub(crate) fn move_entry(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+) -> Result<(crate::files::MoveKind, bool), JiaClawError> {
+    move_entry_with(workspace, from, to, overwrite, rename_entry)
+}
+
+fn move_entry_with(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    rename: impl FnOnce(&Dir, &OsStr, &Dir, &OsStr, bool) -> io::Result<()>,
+) -> Result<(crate::files::MoveKind, bool), JiaClawError> {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Err(failure("原子移动仅支持 Linux/macOS；不使用非原子回退"));
+    }
+    let from = normalized_entry_path(from)?;
+    let to = normalized_entry_path(to)?;
+    if from == to {
+        return Err(failure("源与目标是同一路径"));
+    }
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    let source =
+        parent(&root, &from, false)?.ok_or_else(|| failure("源路径不存在（父目录不存在）"))?;
+    let source_name = from.file_name().ok_or_else(|| failure("无效源文件名"))?;
+    let source_metadata = source.symlink_metadata(source_name).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            failure("源路径不存在")
+        } else {
+            failure(e)
+        }
+    })?;
+    let kind = entry_kind(&source_metadata)?;
+    if kind == crate::files::MoveKind::Dir && to.starts_with(&from) {
+        return Err(failure("拒绝将目录移动到自身子路径"));
+    }
+    // Compare every destination ancestor's actual identity, also covering
+    // case-insensitive filesystem aliases that lexical prefixes cannot detect.
+    let mut destination = root.try_clone().map_err(failure)?;
+    for component in to.parent().unwrap_or_else(|| Path::new("")).components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        destination = descend(&destination, Path::new(name), false)?
+            .ok_or_else(|| failure("目标父目录不存在"))?;
+        if kind == crate::files::MoveKind::Dir
+            && same_entry(
+                &source_metadata,
+                &destination.dir_metadata().map_err(failure)?,
+            )
+        {
+            return Err(failure("拒绝将目录移动到自身子路径"));
+        }
+    }
+    let destination_name = to.file_name().ok_or_else(|| failure("无效目标文件名"))?;
+    let destination_metadata = match destination.symlink_metadata(destination_name) {
+        Ok(metadata) => Some(metadata),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(failure(e)),
+    };
+    if let Some(metadata) = &destination_metadata {
+        let destination_kind = entry_kind(metadata)?;
+        if same_entry(&source_metadata, metadata) {
+            return Err(failure("源与目标是同一路径或同一 inode"));
+        }
+        if !overwrite {
+            return Err(failure("目标已存在（overwrite=false，拒绝覆盖）"));
+        }
+        if kind != destination_kind {
+            return Err(failure("源与目标类型不一致，拒绝覆盖"));
+        }
+        // The kernel, not a traversal, decides whether a destination dir is empty.
+    }
+    let overwritten = destination_metadata.is_some();
+    rename(
+        &source,
+        source_name,
+        &destination,
+        destination_name,
+        overwrite,
+    )
+    .map_err(move_error)?;
+    // The namespace change has committed. Sync both parents even if the first
+    // sync fails, then report uncertainty without undoing or retrying the move.
+    let source_sync = sync_dir(&source);
+    let destination_sync = sync_dir(&destination);
+    source_sync.and(destination_sync).map_err(|e| {
+        failure(format!(
+            "移动已提交但父目录同步失败，源/目标可能已改变，请核对后决定是否重试: {e}"
+        ))
+    })?;
+    Ok((kind, overwritten))
+}
+
 struct Listing {
     entries: Vec<crate::files::DirEntryInfo>,
     scanned: usize,
@@ -1440,5 +1682,429 @@ mod tests {
             }
             assert_eq!(budget.read_bytes, 9);
         }
+    }
+
+    #[test]
+    fn mkdir_mutation_is_idempotent_and_bounded() {
+        let ws = tempfile::tempdir().unwrap();
+        assert!(!mkdir_directory(ws.path(), ".", false).unwrap());
+        assert!(!mkdir_directory(ws.path(), "./", true).unwrap());
+        assert!(mkdir_directory(ws.path(), "parent/leaf", false)
+            .unwrap_err()
+            .to_string()
+            .contains("父目录不存在"));
+        assert!(!ws.path().join("parent").exists());
+        assert!(mkdir_directory(ws.path(), "parent/leaf", true).unwrap());
+        assert!(!mkdir_directory(ws.path(), "./parent/./leaf", true).unwrap());
+        std::fs::write(ws.path().join("file"), b"preserved").unwrap();
+        assert!(mkdir_directory(ws.path(), "file", false)
+            .unwrap_err()
+            .to_string()
+            .contains("不是目录"));
+        assert_eq!(std::fs::read(ws.path().join("file")).unwrap(), b"preserved");
+        for raw in ["", "..", "../escape", "/absolute"] {
+            assert!(mkdir_directory(ws.path(), raw, true).is_err(), "{raw}");
+        }
+        assert!(mkdir_directory(ws.path(), &"x".repeat(MAX_PATH_BYTES + 1), true).is_err());
+        assert!(mkdir_directory(ws.path(), &vec!["a"; 65].join("/"), true).is_err());
+        assert!(!ws.path().join("a").exists());
+        // A valid bounded relative path may still exceed the filesystem's
+        // single-name limit after ordinary parents have already been created.
+        let partial = format!("partial/{}", "x".repeat(256));
+        assert!(mkdir_directory(ws.path(), &partial, true).is_err());
+        assert!(ws.path().join("partial").is_dir());
+        assert_eq!(
+            std::fs::read_dir(ws.path().join("partial"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(mkdir_directory(ws.path(), "partial/reconciled", false).unwrap());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn move_mutation_preserves_entries_on_rejection_and_renames_whole_directories() {
+        use crate::files::MoveKind;
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"new").unwrap();
+        std::fs::write(ws.path().join("target"), b"old").unwrap();
+        for (from, to, overwrite) in [
+            ("source", "target", false),
+            ("source", "./source", true),
+            ("source", "missing/target", true),
+            (".", "target", true),
+        ] {
+            assert!(move_entry(ws.path(), from, to, overwrite).is_err());
+            assert_eq!(std::fs::read(ws.path().join("source")).unwrap(), b"new");
+            assert_eq!(std::fs::read(ws.path().join("target")).unwrap(), b"old");
+        }
+        assert!(move_entry(ws.path(), "missing", "new", false)
+            .unwrap_err()
+            .to_string()
+            .contains("源路径不存在"));
+        let before = std::fs::metadata(ws.path().join("source")).unwrap();
+        assert_eq!(
+            move_entry(ws.path(), "source", "target", true).unwrap(),
+            (MoveKind::File, true)
+        );
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(ws.path().join("target")).unwrap().ino(),
+            before.ino()
+        );
+        assert!(!ws.path().join("source").exists());
+        assert_eq!(std::fs::read(ws.path().join("target")).unwrap(), b"new");
+        std::fs::create_dir_all(ws.path().join("tree/nested")).unwrap();
+        std::fs::write(ws.path().join("tree/nested/a"), b"tree content").unwrap();
+        std::fs::create_dir(ws.path().join("empty")).unwrap();
+        std::fs::create_dir(ws.path().join("nonempty")).unwrap();
+        std::fs::write(ws.path().join("nonempty/b"), b"retain").unwrap();
+        for target in ["nonempty", "target", "tree/nested/dest"] {
+            assert!(move_entry(ws.path(), "tree", target, true).is_err());
+        }
+        assert_eq!(
+            std::fs::read(ws.path().join("tree/nested/a")).unwrap(),
+            b"tree content"
+        );
+        assert_eq!(
+            std::fs::read(ws.path().join("nonempty/b")).unwrap(),
+            b"retain"
+        );
+        // Moving a directory does not read or interpret its descendants.
+        std::os::unix::fs::symlink("nested/a", ws.path().join("tree/link")).unwrap();
+        assert_eq!(
+            move_entry(ws.path(), "tree", "empty", true).unwrap(),
+            (MoveKind::Dir, true)
+        );
+        assert!(!ws.path().join("tree").exists());
+        assert_eq!(
+            std::fs::read_link(ws.path().join("empty/link")).unwrap(),
+            Path::new("nested/a")
+        );
+        assert_eq!(
+            std::fs::read(ws.path().join("empty/nested/a")).unwrap(),
+            b"tree content"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mutations_reject_static_links_hardlinks_and_special_entries() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"outside").unwrap();
+        std::fs::write(ws.path().join("source"), b"inside").unwrap();
+        std::fs::create_dir(ws.path().join("directory")).unwrap();
+        symlink(outside.path(), ws.path().join("parent_link")).unwrap();
+        symlink("directory", ws.path().join("internal_link")).unwrap();
+        symlink(outside.path().join("secret"), ws.path().join("leaf_link")).unwrap();
+        symlink("absent", ws.path().join("dangling")).unwrap();
+        std::fs::hard_link(outside.path().join("secret"), ws.path().join("hard")).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(ws.path().join("fifo"))
+            .status()
+            .unwrap()
+            .success());
+        for path in [
+            "parent_link/new",
+            "internal_link/new",
+            "leaf_link",
+            "dangling",
+            "hard",
+            "fifo",
+        ] {
+            assert!(
+                mkdir_directory(ws.path(), path, true).is_err(),
+                "mkdir {path}"
+            );
+            assert!(
+                move_entry(ws.path(), "source", path, true).is_err(),
+                "dest {path}"
+            );
+            assert!(
+                move_entry(ws.path(), path, "new", true).is_err(),
+                "source {path}"
+            );
+        }
+        assert_eq!(std::fs::read(ws.path().join("source")).unwrap(), b"inside");
+        assert_eq!(
+            std::fs::read(outside.path().join("secret")).unwrap(),
+            b"outside"
+        );
+        assert!(!outside.path().join("new").exists());
+        assert!(!ws.path().join("directory/new").exists());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn directory_mutations_share_the_file_writer_lock() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a"), b"source").unwrap();
+        std::fs::write(ws.path().join("b"), b"target").unwrap();
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let lock = writer_lock(&dir).unwrap();
+        assert!(mkdir_directory(ws.path(), "new/leaf", true)
+            .unwrap_err()
+            .to_string()
+            .contains("write lock busy"));
+        assert!(move_entry(ws.path(), "a", "b", true)
+            .unwrap_err()
+            .to_string()
+            .contains("write lock busy"));
+        assert!(!ws.path().join("new").exists());
+        assert_eq!(std::fs::read(ws.path().join("a")).unwrap(), b"source");
+        assert_eq!(std::fs::read(ws.path().join("b")).unwrap(), b"target");
+        drop(lock);
+        assert!(mkdir_directory(ws.path(), "new/leaf", true).unwrap());
+        assert!(move_entry(ws.path(), "a", "b", true).unwrap().1);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn move_noreplace_rejects_a_destination_created_after_preflight() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"source").unwrap();
+        let result = move_entry_with(
+            ws.path(),
+            "source",
+            "target",
+            false,
+            |src, from, dst, to, overwrite| {
+                std::fs::write(ws.path().join("target"), b"competitor").unwrap();
+                rename_entry(src, from, dst, to, overwrite)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("目标已存在"));
+        assert_eq!(std::fs::read(ws.path().join("source")).unwrap(), b"source");
+        assert_eq!(
+            std::fs::read(ws.path().join("target")).unwrap(),
+            b"competitor"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn atomic_noreplace_syscall_has_one_winner_and_preserves_loser() {
+        let ws = tempfile::tempdir().unwrap();
+        let dir = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        std::fs::write(ws.path().join("a"), b"a").unwrap();
+        std::fs::write(ws.path().join("b"), b"b").unwrap();
+        // Exercise the kernel race without our cooperative workspace lock
+        // serializing the contestants and concealing a check/rename bug.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                let barrier = barrier.clone();
+                let dir = dir.try_clone().unwrap();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (
+                        name,
+                        rename_entry(&dir, OsStr::new(name), &dir, OsStr::new("winner"), false),
+                    )
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(
+            outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        let winner = outcomes
+            .iter()
+            .find(|(_, result)| result.is_ok())
+            .unwrap()
+            .0;
+        let (loser, error) = outcomes.iter().find(|(_, result)| result.is_err()).unwrap();
+        assert_eq!(
+            error.as_ref().unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            std::fs::read(ws.path().join("winner")).unwrap(),
+            winner.as_bytes()
+        );
+        assert!(!ws.path().join(winner).exists());
+        assert_eq!(
+            std::fs::read(ws.path().join(loser)).unwrap(),
+            loser.as_bytes()
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn move_syscall_failures_never_delete_source_or_destination() {
+        for (error, expected) in [
+            (io::Error::from_raw_os_error(libc::EXDEV), "EXDEV"),
+            (
+                io::Error::new(io::ErrorKind::Unsupported, "fixture"),
+                "不受支持",
+            ),
+            (io::Error::from_raw_os_error(libc::ENOSYS), "不受支持"),
+            (io::Error::from_raw_os_error(libc::EACCES), "未预先删除"),
+        ] {
+            let ws = tempfile::tempdir().unwrap();
+            std::fs::write(ws.path().join("a"), b"source").unwrap();
+            std::fs::write(ws.path().join("b"), b"destination").unwrap();
+            let mut calls = 0;
+            let result = move_entry_with(ws.path(), "a", "b", true, |_, _, _, _, overwrite| {
+                assert!(overwrite);
+                calls += 1;
+                Err(error)
+            });
+            assert_eq!(calls, 1);
+            assert!(result.unwrap_err().to_string().contains(expected));
+            assert_eq!(std::fs::read(ws.path().join("a")).unwrap(), b"source");
+            assert_eq!(std::fs::read(ws.path().join("b")).unwrap(), b"destination");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn move_retains_parent_capabilities_when_ambient_parents_are_replaced() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ws.path().join("src")).unwrap();
+        std::fs::create_dir(ws.path().join("dst")).unwrap();
+        std::fs::write(ws.path().join("src/a"), b"inside source").unwrap();
+        std::fs::write(ws.path().join("dst/b"), b"inside destination").unwrap();
+        std::fs::write(outside.path().join("a"), b"outside a").unwrap();
+        std::fs::write(outside.path().join("b"), b"outside b").unwrap();
+        let result = move_entry_with(
+            ws.path(),
+            "src/a",
+            "dst/b",
+            true,
+            |src, from, dst, to, overwrite| {
+                std::fs::rename(ws.path().join("src"), ws.path().join("held_src")).unwrap();
+                std::fs::rename(ws.path().join("dst"), ws.path().join("held_dst")).unwrap();
+                symlink(outside.path(), ws.path().join("src")).unwrap();
+                symlink(outside.path(), ws.path().join("dst")).unwrap();
+                rename_entry(src, from, dst, to, overwrite)
+            },
+        );
+        assert!(result.unwrap().1);
+        assert!(!ws.path().join("held_src/a").exists());
+        assert_eq!(
+            std::fs::read(ws.path().join("held_dst/b")).unwrap(),
+            b"inside source"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("a")).unwrap(),
+            b"outside a"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("b")).unwrap(),
+            b"outside b"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn move_leaf_replacement_race_does_not_follow_a_symlink() {
+        use std::os::unix::fs::symlink;
+        for replace_source in [false, true] {
+            let ws = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(ws.path().join("a"), b"source").unwrap();
+            std::fs::write(ws.path().join("b"), b"destination").unwrap();
+            std::fs::write(outside.path().join("secret"), b"outside").unwrap();
+            move_entry_with(
+                ws.path(),
+                "a",
+                "b",
+                true,
+                |src, from, dst, to, overwrite| {
+                    let name = if replace_source { "a" } else { "b" };
+                    std::fs::remove_file(ws.path().join(name)).unwrap();
+                    symlink(outside.path().join("secret"), ws.path().join(name)).unwrap();
+                    rename_entry(src, from, dst, to, overwrite)
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(outside.path().join("secret")).unwrap(),
+                b"outside"
+            );
+            assert!(!ws.path().join("a").exists());
+            if replace_source {
+                assert_eq!(
+                    std::fs::read_link(ws.path().join("b")).unwrap(),
+                    outside.path().join("secret")
+                );
+            } else {
+                assert_eq!(std::fs::read(ws.path().join("b")).unwrap(), b"source");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn move_rejects_case_aliases_of_same_inode_and_descendant() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join("Mixed/child")).unwrap();
+        if !ws.path().join("mixed").exists() {
+            eprintln!("case-sensitive filesystem: alias cases not applicable");
+            return;
+        }
+        assert!(move_entry(ws.path(), "Mixed", "mixed", true)
+            .unwrap_err()
+            .to_string()
+            .contains("同一"));
+        assert!(move_entry(ws.path(), "Mixed", "mixed/child/new", true)
+            .unwrap_err()
+            .to_string()
+            .contains("子路径"));
+        assert!(ws.path().join("Mixed/child").is_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn atomic_move_real_cross_volume_error_preserves_both_entries() {
+        use cap_std::fs::MetadataExt;
+        let source_tmp = tempfile::tempdir().unwrap();
+        let Ok(destination_tmp) = tempfile::tempdir_in("/dev/shm") else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI requires writable /dev/shm for real EXDEV evidence"
+            );
+            eprintln!("cross-volume fixture skipped: /dev/shm unavailable");
+            return;
+        };
+        let source = Dir::open_ambient_dir(source_tmp.path(), ambient_authority()).unwrap();
+        let destination =
+            Dir::open_ambient_dir(destination_tmp.path(), ambient_authority()).unwrap();
+        if source.dir_metadata().unwrap().dev() == destination.dir_metadata().unwrap().dev() {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI requires /dev/shm on a different filesystem for real EXDEV evidence"
+            );
+            eprintln!("cross-volume fixture skipped: /dev/shm shares temporary filesystem");
+            return;
+        }
+        std::fs::write(source_tmp.path().join("a"), b"source").unwrap();
+        std::fs::write(destination_tmp.path().join("b"), b"destination").unwrap();
+        let error = rename_entry(
+            &source,
+            OsStr::new("a"),
+            &destination,
+            OsStr::new("b"),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EXDEV));
+        assert!(move_error(error).to_string().contains("EXDEV"));
+        assert_eq!(
+            std::fs::read(source_tmp.path().join("a")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(destination_tmp.path().join("b")).unwrap(),
+            b"destination"
+        );
     }
 }

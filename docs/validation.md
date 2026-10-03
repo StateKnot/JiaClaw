@@ -264,6 +264,19 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - Rust 确定性测试另验证条目计数覆盖目录和被跳过项、深度/路径/过期 deadline、实际字节预算和不搜索半文件、metadata 检查后真实文件增长最多读取 limit+1 字节并计入总预算、父目录改名后仍使用所持目录能力、叶子替换拒绝。glob 最终全路径排序后才应用请求上限，grep 保留 DFS；动态规划有受限最大模式与独立小输入参考比对。
 - 非 UTF-8 名称拒绝专项在 Linux 执行；本机 APFS 不允许构造该名称，因此未把 macOS 通过列为此专项证据。最终二进制的 `workspace_files.py` 四组、`native_tools.py`、`memory_io.py` 四组及 `e2e.py` 全部通过、退出码 0。
 
-本轮只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。跨平台与真实容器以本轮 draft PR 最终 head CI 为准，不沿用 PR #76 的结果。
+该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/jiawenyao401/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器。
 
 本轮仅迁移 grep/glob 的工作区访问和资源边界，不新增后台授权、跨编辑器快照或取消后回滚。`mkdir` / `move` 和可选 `stat` / `tree` 不记为完成，copy 保留原独立合同；详见[工作区文件指南](workspace-files.md)。
+
+## mkdir / move 原子变更批次
+
+最终本机全量 Rust 875 项通过（library 364、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI。fmt、Clippy correctness/suspicious 与锁定 host 构建通过，保留既有 style/pedantic warnings；`memory_io` 定向 24 项通过，含 10 项新增本机 mutation 测试。
+
+- 最终生产二进制 `tests/workspace_mutations.py` 六组通过、退出码 0：mkdir 递归/parents 别名、普通目录和 `.` 幂等 inode、缺失父目录及冲突参数拒绝；move 的主名/别名四种组合、超过 1 MiB 的二进制和非空目录同卷 rename 保留 dev/inode/字节，源目录内链接与 FIFO 原样移动且不被跟随；默认不覆盖、同类型文件/空目录覆盖、非空目的地/类型不符/同源/自身子目录/缺失父目录失败保留两端；静态链接/硬链接/FIFO/越界拒绝；64 组件与 1024 字节边界、真实工作区锁争用及释放后继续；禁用配置从目录移除工具，伪造混合批次零工具效果、非法显式白名单零模型请求。
+- Rust 本机测试覆盖真实内核 NO_REPLACE：在预检后创建目标，单次 rename 仍拒绝覆盖；EXDEV / ENOSYS / EACCES 受控错误注入不触发 copy/delete 回退并保留两端；已打开父目录在宿主路径替换后继续受句柄约束；叶子替换竞争不跟随链接目标；同 inode 和 macOS 大小写别名的自身子路径拒绝。追加的定向 mkdir 回归也通过：总路径合法但后续单个文件名超过文件系统上限时，先创建的 `partial` 父目录保留且为空；人工核对后显式继续创建可成功。这里验证的是后续创建失败，不是目录 fsync 故障注入。该证据不提供非协作编辑器的 inode compare-and-swap 保证。
+- 进程 fixture 不挂载第二个文件系统，本机 macOS 没有真实跨卷验收。Linux Rust 新增真实 EXDEV 专项，要求 `/dev/shm` 可写且与临时目录为不同设备，CI 缺少前提直接失败，非 CI 仅允许明确报告跳过；其通过状态以本批最终 CI 为准。
+- 同一最终生产二进制的 `workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 与 `memory_io.py` 四组回归全部通过、退出码 0。本批未单独重跑通用 `e2e.py`，由最终 CI 执行，不沿用上批本机结果。
+
+只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。Linux/macOS、Chromium 与真实容器以本批 draft PR 最终 head CI 为准，不沿用 PR #77 结果。
+
+此批不增加后台文件工具授权、非协作编辑器快照、操作收据或取消后回滚；copy 保留独立实现，stat/tree 与 durable 工作流仍不记为完成。配置与恢复步骤见[工作区文件指南](workspace-files.md)。

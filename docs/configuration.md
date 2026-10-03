@@ -80,7 +80,7 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 容器无网络、只读根文件系统、移除 capabilities、no-new-privileges、非 root、限制内存/CPU/PID，只有 `/workspace` 与受限 `/tmp`。超时和 future 取消会请求删除整个容器；daemon 不可达时不能声称清理成功，需按日志检查。宿主服务被 SIGKILL/断电时无法执行取消清理，这是容器 exec 生命周期的已知边界。服务宿主接入 Docker daemon 是高权限操作，容器部署示例因此禁用 exec。
 
-`read_file` / `write_file` / `delete_file` / `list_dir` 的配置开关也分别控制 `file_read` / `file_write` / `file_delete` / `file_list`。兼容名称共用主名称 schema 和 JSON 结果；请求白名单仍按确切名称授权。七个主文件工具（另含 `str_replace` / `grep` / `glob`）的目录句柄、字节/扫描预算和取消边界见[工作区文件指南](workspace-files.md)。grep/glob 默认递归但最多扫描 2000 条目、32 层子目录、2 秒合作预算及 64 KiB 最终 JSON；grep 单文件 256 KiB、累计实际读取 16 MiB，glob 不读正文。`mkdir` / `move` 尚未迁移，不继承该合同，copy 保留独立实现。
+`read_file` / `write_file` / `delete_file` / `list_dir` 的配置开关也分别控制 `file_read` / `file_write` / `file_delete` / `file_list`。兼容名称共用主名称 schema 和 JSON 结果；请求白名单仍按确切名称授权。九个主文件工具（另含 `str_replace` / `grep` / `glob` / `mkdir` / `move`）的目录句柄、字节/扫描预算和取消边界见[工作区文件指南](workspace-files.md)。grep/glob 默认递归但最多扫描 2000 条目、32 层子目录、2 秒合作预算及 64 KiB 最终 JSON；grep 单文件 256 KiB、累计实际读取 16 MiB，glob 不读正文。`mkdir` / `move` 也受协作工作区锁与同一八槽 I/O 容量限制；mkdir 递归创建不提供整体回滚，move 只提供同卷原子 rename，不跨卷复制后删除。`overwrite=false` 原子不覆盖，true 也不预删目标；未知结果须核对两端。copy 保留独立实现。
 
 其他 `tools.<name>.enabled` 默认 true：`read_file`, `list_dir`, `write_file`, `delete_file`, `str_replace`, `grep`, `glob`, `mkdir`, `move`, `memory_search`, `memory_write`, `web_search`, `web_fetch`。`web_search.brave_api_key` 可由 `JIACLAW_BRAVE_API_KEY` 覆盖；未配置调用报错。`web_fetch.allow_private` 默认 false。`tools.memory_write.enabled` 同时控制 `memory_write` 与 `memory_append`；通用文件写工具的权限需另外限制。记忆检索缺省按关键词，文件/查询/结果上限与提交边界见[记忆文件指南](memory-files.md)。显式启用 `memory.semantic` 后可请求 `memory_search` 的 semantic 模式；索引需管理员刷新，不在搜索期间自动生成源向量或重发未知请求。
 

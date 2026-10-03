@@ -292,23 +292,6 @@ fn ensure_path_within_workspace(workspace: &Path, target: &Path) -> Result<(), J
     )))
 }
 
-pub(crate) fn ensure_existing_within_workspace(
-    workspace: &Path,
-    path: &Path,
-) -> Result<(), JiaClawError> {
-    let ws = canonicalize_existing_or_clone(workspace);
-    let canon = path.canonicalize().map_err(|e| {
-        JiaClawError::ToolExecution(format!("无法解析文件 {}: {e}", path.display()))
-    })?;
-    if !canon.starts_with(&ws) {
-        return Err(JiaClawError::ToolExecution(format!(
-            "安全错误: 文件 {} 指向工作空间外部",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
 /// `memory_append` 工具：向约定 MEMORY 路径追加或覆盖 Markdown。
 pub struct MemoryAppendTool {
     workspace_path: PathBuf,

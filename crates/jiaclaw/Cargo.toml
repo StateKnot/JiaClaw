@@ -32,6 +32,7 @@ indexmap = { workspace = true }
 libc = "0.2"
 cap-std = "=3.4.5"
 fs2 = "=0.4.3"
+rustix = { version = "=1.1.5", features = ["fs"] }
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 sha2 = "0.10"
 

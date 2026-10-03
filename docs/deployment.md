@@ -65,6 +65,15 @@ docker compose ps
 
 超时/future 取消会执行 `docker rm --force`，失败记录容器名。宿主 SIGKILL 或断电时清理代码无法运行；恢复后先停止 JiaClaw，检查 `docker ps -a --filter label=jiaclaw.sandbox=true`，确认属于该实例再删除残留。不要在服务运行时无差别删除其他实例的容器。需要跨进程自动恢复租约/执行清理时，应接 StateKnot durable 生命周期后再启用该承诺。
 
+
+## 工作区目录与移动
+
+工作区根及其祖先目录须由管理员控制，预设服务用户的所有权、权限和 umask。九个主文件工具通过目录句柄操作，协作 mutation 使用同一工作区 inode 锁；这不能阻止外部进程更换根目录、移动其祖先或绕过协作锁。copy 使用独立实现，exec/MCP 的文件权限也需单独审核。
+
+`move` 只允许同卷原子 rename。即使源与目标看起来都在 workspace 下，分别挂载的文件系统也可能返回 EXDEV；本版移除了旧的跨卷 copy/delete 回退，不会自动迁移字节后删除来源。默认不覆盖依赖 Linux/macOS 的原子独占 rename，文件系统不支持时明确失败；覆盖失败不预先删除目的地。上线前验证实际挂载的目录锁、rename 与目录 fsync 支持，网络文件系统不能仅凭本机测试视作已认证。
+
+mkdir 中途失败可能留下已创建目录；move 报同步错误、超时或取消时可能已经提交。先停止新写入并等待/停止服务，核对实际目录及源/目标两端，再决定是否继续迁移；不要自动重试或依赖恢复旧会话数据库撤销工作区变更。完整参数、竞争与故障边界见[工作区文件指南](workspace-files.md)。
+
 ## 备份、迁移、回滚
 
 最简单可靠的备份：先停止 JiaClaw，复制整个 state 目录（含 sqlite3 与可能的 WAL/SHM）和 workspace，再启动服务。在线文件复制单个 `.sqlite3` 会遗漏 WAL，不可靠；如需在线备份，使用 SQLite backup API/官方 `.backup` 路径，并额外备份工作区。备份包含聊天与记忆，按 Secret 数据保护。

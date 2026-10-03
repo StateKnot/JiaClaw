@@ -1431,7 +1431,7 @@ fn move_status_line(config: &AgentConfig) -> String {
     if !config.tools.r#move.enabled {
         return "已关闭（[tools.move] enabled = false，未注册）".to_string();
     }
-    "已启用（工作区相对路径移动/重命名；默认不覆盖；禁穿越/symlink 逃逸）".to_string()
+    "已启用（工作区内同卷原子移动/重命名；默认原子不覆盖；拒绝跨卷与链接）".to_string()
 }
 
 fn session_summarize_status_line(config: &AgentConfig) -> String {
