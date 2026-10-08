@@ -64,6 +64,8 @@ URL verification 按官方协议豁免普通事件签名，仍须解密、核对
 
 消息专页明确要求 `message_id` 去重，不能用通用事件 FAQ 的 event_id 建议替代。[消息身份合同](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/receive)
 
+`503 ingress_deadline` 或连接丢失不能证明消息未被接纳；在途阻塞 SQL 可能在 HTTP 截止后完成，250 ms SQLite busy timeout 也不是整条回调的时限。平台重投应保留同一 `message_id` 和原消息身份，由持久去重核对，不以新 ID 绕过原记录、放弃未知操作或重跑模型/工具。已有 hold 不因回调失败解除，未知执行/发送继续要求人工核对；可信管理员须停机排空、inspect 原事件/operation UUID 并核对既定后端收据，按前述明确流程处置后再清 hold。
+
 HTTP API Key 的轮换、撤销或只读权限不取消另行授权的飞书后台工作；用户 disable 或 feishu-revoke 才阻止以后准入。enable 不清 hold、不复活已撤销 App；已提交模型或平台请求仍需核对。入站内容不能选择用户、后端、模型、工具或通知目标。
 
 ## 状态、发送与容量
@@ -112,6 +114,6 @@ review-clear 必须检查该用户全部保留渠道，包括撤销或已移除 
 
 ## 验收状态
 
-首版本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套通过，使用同一生产二进制。PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 容量准入用例收到未记录具体状态的 429 后失败；测试增加明确 busy 的有界同签名重试、SQL 锁的停机排空和精确容量/身份断言，修订后的完整 11 组一次通过，同一生产二进制哈希不变，生产期限与限额未改。具体证据见[验证记录](validation.md)；最终 exact-head 三项 CI 仍待核对，不标记完整跨平台验收。
+首版本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套通过，使用同一生产二进制。PR #85 两轮 CI 的 Ubuntu/容器成功；macOS 首轮容量准入收到未知具体状态的 429，第二轮写锁用例收到 `503 ingress_deadline`（908 ms）后分别未满足测试断言。第一次测试修订的本地 11 组已通过；当前最小修订只允许 admission_failed/ingress_deadline 两种 503，强调保持真实写锁至停止排空、核对最终持久状态，而非强求整体回调在单次 SQL 250 ms 内返回。生产期限、容量和有界 busy 重试未改，当前完整 11 组一次通过且生产二进制哈希不变。本提交准备时第三轮 exact-head 三项 CI 待核对，最终固定提交结果见 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85)。本地与历轮证据见[验证记录](validation.md)，旧 head 局部成功不代替最终验收。
 
 协议 fixture 使用一次性凭据，不触发真实平台消息或付费供应商。正常 7200 秒 token mint 的启动 HTTP 取消/截止、明确失效后的 terminal/no resend 与离线核对已作进程验证；Sender 单元覆盖 cache 失效/退避/取消，不能外推运行期正常到期刷新认证。真实飞书安装、权限可用范围、事件字段、终端消息、TLS 总预算、平台 token/限额、共享网关卷及容器渠道 runtime 压力、供应商联合认证仍另行完成。

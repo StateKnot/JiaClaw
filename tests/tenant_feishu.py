@@ -1077,26 +1077,36 @@ def main():
             webhook("alice", payload("alice", 117, "CAPACITY_HOLD"))
             original_hold = pending_review("alice")
             before_model, before_send = model_count("alice"), send_count("alice")
-            count = len(events("alice"))
+            initial_queue = events("alice")
+            count = len(initial_queue)
+
+            def busy_effects_unchanged():
+                return (events("alice") == initial_queue and event("alice", 4001) is None
+                        and hold("alice") == original_hold and model_count("alice") == before_model
+                        and send_count("alice") == before_send)
+
             busy = payload("alice", 4001, "STORAGE_BUSY")
             queue_lock = sqlite3.connect(channel_db("alice").as_uri() + "?mode=rw", uri=True, timeout=2)
             try:
                 queue_lock.execute("BEGIN IMMEDIATE")
                 # A deadline response does not prove the blocking SQL operation
-                # has finished. Keep the writer lock until a known failure and
-                # process exit have drained every task; never release it early
+                # has finished. Keep the writer lock until process exit drains
+                # every task, for either SQL failure or timeout; never release it early
                 # and accidentally admit this request after its 503 response.
-                webhook("alice", busy, expected=503, expected_code="admission_failed", raw=encoded(busy))
-                assert len(events("alice")) == count and event("alice", 4001) is None
-                assert hold("alice") == original_hold and model_count("alice") == before_model and send_count("alice") == before_send
+                _, busy_reply = webhook("alice", busy, expected=503, raw=encoded(busy), return_status=True)
+                assert busy_reply in ({"status": "admission_failed"}, {"status": "ingress_deadline"}), "unexpected SQL-lock response code"
+                assert busy_effects_unchanged(), "SQL-lock response changed original queue, hold or effects"
                 stop(gateway)
-                assert len(events("alice")) == count and event("alice", 4001) is None
+                assert gateway.poll() is not None, "gateway writers were not drained under the retained lock"
+                assert busy_effects_unchanged(), "gateway exit changed original queue, hold or effects"
+                print("SQL_BUSY DIAGNOSTIC " + json.dumps({"code": busy_reply["status"],
+                                                         "process_exited": True, "queue_count": count,
+                                                         "effects_unchanged": True}, sort_keys=True), flush=True)
             finally:
                 queue_lock.rollback()
                 queue_lock.close()
             gateway = start_gateway()
-            assert len(events("alice")) == count and event("alice", 4001) is None
-            assert hold("alice") == original_hold
+            assert busy_effects_unchanged(), "drained SQL-lock request was admitted or changed effects after restart"
             baseline_ids = {item["event_id"] for item in events("alice")}
             count = len(baseline_ids)  # Count after the drain barrier, never before unknown work.
             admitted_ids = set()
