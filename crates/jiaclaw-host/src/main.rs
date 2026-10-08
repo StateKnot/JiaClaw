@@ -2047,6 +2047,13 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         );
     }
 
+    // Local policy validation precedes credential-bearing verification. Do not
+    // expose callbacks or start channel/job/heartbeat workers for an unverified
+    // WeCom application; token/agent reads never submit a platform message.
+    if let Some(runtime) = &channel_runtime {
+        runtime.verify_wecom_installation().await?;
+    }
+
     // Local authorization is checked before outbound MCP discovery.
     let metrics = Arc::new(Metrics::default());
     let agent = attach_tool_metrics(

@@ -389,6 +389,39 @@ impl ChannelRuntime {
         })))
     }
 
+    /// Verify the dedicated WeCom credential and explicit member scope before
+    /// accepting callbacks, running jobs or submitting any message.
+    pub(super) async fn verify_wecom_installation(&self) -> Result<()> {
+        let Some(binding) = self.installation(Channel::Wecom) else {
+            return Ok(());
+        };
+        let sender = binding
+            .wecom_sender
+            .as_ref()
+            .context("WeCom sender is unavailable")?;
+        // The inbound allowlists and scheduled authorization are independent.
+        // Require platform visibility for their whole bounded union rather than
+        // infer access from department/tag membership or an opaque token.
+        let mut members: Vec<String> = binding
+            .policy
+            .allowed_senders
+            .iter()
+            .chain(&binding.policy.allowed_conversations)
+            .chain(
+                binding
+                    .policy
+                    .scheduled_destinations
+                    .iter()
+                    .map(|destination| &destination.conversation_id),
+            )
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        members.sort();
+        sender.verify_installation(&members).await
+    }
+
     pub(super) fn installation(&self, channel: Channel) -> Option<&Installation> {
         self.installations
             .iter()

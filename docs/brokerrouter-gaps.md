@@ -1,6 +1,6 @@
 # Brokerrouter 消费方状态
 
-核对日期：2026-10-08；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
+核对时间：2026-10-08 11:35 UTC；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
@@ -31,6 +31,10 @@
 2026-10-08 06:32 UTC Discord 批次再次核对，上述 main、release、issues 和 draft PR head 均未变化，PR #40 Rust check `107571112146` 注释仍明确作业未启动。StateKnot 新源码 JWT/JWKS 身份没有改变这里的模型消费合同；当前没有新增可消费的 durable 原生 JSON Schema 路径。Discord 复用受限 channel 逻辑模型，不新增供应商认证或媒体身份能力。
 
 08:23 UTC 飞书批次再次读取官方 API：本文 main、无 release、#31/#41 与 PR #40 head 均未变化；PR #40 check `107571112146` 的 failure annotation 仍明确账户付款/额度导致作业未开始。没有新的 durable 原生输出合同；飞书复用独立后端 channel 模型，不认证供应商、路由降级或媒体身份，不重复提交 issue。
+
+11:35 UTC 企业微信启动校验批次复核上述 main、无 release、#31/#41 与 PR #40 head，均未变化。此次逐项读取 main 六项和 PR #40 六项 FAILURE 的全部 annotations：十二项均明确因账户付款/额度未启动，没有未分类失败或已执行测试失败的证据。不能因此宣称 SSE 修复已验收，也不能误报为代码测试失败。StateKnot #148 的 typed Tool Schema 方向修复已合并但未发布，不改变网关拒绝原生最终输出 Schema 的合同；#41 仍 OPEN、无回复。JiaClaw 本批复用既有 standalone channel 模型，只新增企业微信官方 token/应用身份/显式成员可见范围的启动校验，不新增模型、媒体或真实供应商资格。
+
+本批默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套本地回归全部通过，保留未知发送和持久额度语义；没有真实供应商请求或上游模型合同变更，详见[验证记录](validation.md#企业微信启动校验批次)。本提交准备时最终跨平台 CI pending，以本批 draft PR 固定 head 为准；不据此关闭 #31/#41 或认证运行期 token 刷新、真实平台和容器渠道 runtime。
 
 ## 消费合同与下一步
 

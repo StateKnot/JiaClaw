@@ -56,6 +56,7 @@ jobs:
       - run: python3 tests/discord_scheduled.py target/debug/jiaclaw
       - run: python3 tests/feishu.py target/debug/jiaclaw
       - run: python3 tests/wecom.py target/debug/jiaclaw
+      - run: python3 tests/wecom_startup.py target/debug/jiaclaw
       - run: python3 tests/dingtalk.py target/debug/jiaclaw
       - run: python3 tests/installer.py
       - name: Browser acceptance
