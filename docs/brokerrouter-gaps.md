@@ -28,6 +28,8 @@
 
 2026-10-08 再次通过 GitHub 官方 API 核对：main、#31/#41 和未合并 draft PR #40 的提交均未变化；#31 只有原有一条认证进度回复，#41 仍无回复，仍无 Release。main 与 PR #40 当前均有六个 FAILURE 检查；重新读取 PR #40 Rust 检查注释，作业仍因账户付款/额度未启动，不能解释为已执行的代码测试失败。本批不重复报 issue、不把未认证合同标为完成。
 
+2026-10-08 06:32 UTC Discord 批次再次核对，上述 main、release、issues 和 draft PR head 均未变化，PR #40 Rust check `107571112146` 注释仍明确作业未启动。StateKnot 新源码 JWT/JWKS 身份没有改变这里的模型消费合同；当前没有新增可消费的 durable 原生 JSON Schema 路径。Discord 复用受限 channel 逻辑模型，不新增供应商认证或媒体身份能力。
+
 ## 消费合同与下一步
 
 `provider.provider_type="brokerrouter"`，`base_url` 是自己运行的网关，`model` 为授权逻辑模型，`JIACLAW_API_KEY` 是有限预算的虚拟 Key。JiaClaw 每次请求生成 Idempotency-Key，不启用 SDK 自动重试。完整合同见 [上游消费者指南](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/jiaclaw-consumer-guide.md)。

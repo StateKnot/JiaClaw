@@ -182,6 +182,133 @@ impl OutboundClient {
         }
         parse_receipt(destination, &body)
     }
+    /// Dedicated private tenant interactions: the original was deferred with
+    /// EPHEMERAL, and each of at most five followups sets EPHEMERAL explicitly.
+    /// The ordinary channel sender retains its existing visibility contract.
+    pub(super) async fn send_discord_private(
+        &self,
+        destination: &Destination,
+        part_index: usize,
+        text: &str,
+        token: &str,
+        api_base: &str,
+    ) -> DeliveryOutcome {
+        if destination.channel != Channel::Discord
+            || destination.interaction_id.is_none()
+            || destination.expires_ms.is_none()
+            || validate_destination(destination).is_err()
+        {
+            return rejected("invalid_destination");
+        }
+        if text.is_empty()
+            || text.len() > MAX_TEXT_BYTES
+            || text.encode_utf16().count() > MAX_PART_UTF16
+            || part_index >= 6
+        {
+            return rejected("invalid_text");
+        }
+        if !valid_credential(Channel::Discord, token) {
+            return rejected("invalid_credential");
+        }
+        if validate_api_base(Channel::Discord, api_base, self.allow_loopback).is_err() {
+            return rejected("invalid_api_base");
+        }
+        let remaining = destination
+            .expires_ms
+            .unwrap()
+            .saturating_sub(crate::scheduler::now_ms());
+        // Reserve settlement time. Dropping an in-flight request at the deadline
+        // is unknown, never proof that Discord rejected it.
+        if remaining <= 1000 {
+            return rejected("interaction_expired");
+        }
+        let budget = Duration::from_millis(u64::try_from((remaining - 1000).min(10_000)).unwrap());
+        let base = api_base.trim_end_matches('/');
+        let url = format!("{base}/webhooks/{}/{token}", destination.installation_id);
+        let mut payload =
+            json!({"content":text,"allowed_mentions":{"parse":[],"replied_user":false}});
+        let request = if part_index == 0 {
+            // Editing cannot change the original response's ephemeral state.
+            self.client.patch(format!("{url}/messages/@original"))
+        } else {
+            payload["flags"] = json!(64);
+            self.client.post(format!("{url}?wait=true"))
+        }
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!(
+                "DiscordBot (https://github.com/jiawenyao401/JiaClaw, ",
+                env!("CARGO_PKG_VERSION"),
+                ")"
+            ),
+        )
+        .timeout(budget)
+        .json(&payload);
+        let result = tokio::time::timeout(budget, async {
+            let response = request.send().await.map_err(|_| "transport_error")?;
+            let status = response.status();
+            if status.is_server_error() {
+                return Ok(unknown("http_server_error"));
+            }
+            if status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS {
+                return Ok(rejected("http_client_error"));
+            }
+            if !status.is_success() && status != StatusCode::TOO_MANY_REQUESTS {
+                return Ok(unknown("unexpected_http_status"));
+            }
+            if !response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+            {
+                return Ok(unknown("invalid_response_type"));
+            }
+            let headers = response.headers().clone();
+            let body = response_body(response).await?;
+            if !serde_json::from_slice::<serde_json::Value>(&body)
+                .is_ok_and(|value| value.is_object())
+            {
+                return Ok(unknown(if status == StatusCode::TOO_MANY_REQUESTS {
+                    "invalid_rate_limit"
+                } else {
+                    "invalid_private_receipt"
+                }));
+            }
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                return Ok(retry_delay(Channel::Discord, &headers, &body).map_or_else(
+                    || unknown("invalid_rate_limit"),
+                    |retry_after_ms| DeliveryOutcome::RateLimited { retry_after_ms },
+                ));
+            }
+            #[derive(Deserialize)]
+            struct PrivateMessage {
+                id: String,
+                channel_id: String,
+                flags: u64,
+            }
+            let message = serde_json::from_slice::<PrivateMessage>(&body);
+            Ok(match message {
+                Ok(message)
+                    if super::discord_outbound::snowflake(&message.id)
+                        && message.channel_id == destination.conversation_id
+                        && message.flags & 64 == 64 =>
+                {
+                    DeliveryOutcome::Delivered {
+                        receipt: message.id,
+                    }
+                }
+                _ => unknown("invalid_private_receipt"),
+            })
+        })
+        .await;
+        match result {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(code)) => unknown(code),
+            Err(_) => unknown("transport_deadline"),
+        }
+    }
 }
 
 pub(super) fn http_client() -> Result<Client> {
@@ -1353,5 +1480,148 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn private_discord_original_inherits_deferral_and_each_followup_is_ephemeral() {
+        for ordinal in 0..6 {
+            let server = fixture(Some(response(
+                200,
+                "",
+                r#"{"id":"123","channel_id":"234567890123456789","flags":64}"#,
+            )))
+            .await;
+            let mut destination = destination(Channel::Discord);
+            destination.expires_ms = Some(crate::scheduler::now_ms() + 60_000);
+            let outcome = OutboundClient::new_with_loopback(true)
+                .unwrap()
+                .send_discord_private(
+                    &destination,
+                    ordinal,
+                    "literal <@123>",
+                    "private_token",
+                    &server.base,
+                )
+                .await;
+            assert_eq!(
+                outcome,
+                DeliveryOutcome::Delivered {
+                    receipt: "123".into()
+                }
+            );
+            let bytes = server.request.await.unwrap();
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.starts_with(if ordinal == 0 {
+                "PATCH /webhooks/123456789012345678/private_token/messages/@original "
+            } else {
+                "POST /webhooks/123456789012345678/private_token?wait=true "
+            }));
+            let body: serde_json::Value =
+                serde_json::from_str(text.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(
+                body["allowed_mentions"],
+                json!({"parse":[],"replied_user":false})
+            );
+            if ordinal == 0 {
+                assert!(body.get("flags").is_none());
+            } else {
+                assert_eq!(body["flags"], 64);
+            }
+            server.task.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn private_discord_receipts_require_object_channel_and_ephemeral_flag() {
+        for body in [
+            r#"["123","234567890123456789",64]"#,
+            r#"{"id":"123","channel_id":"234567890123456789"}"#,
+            r#"{"id":"123","channel_id":"234567890123456789","flags":0}"#,
+            r#"{"id":"123","channel_id":"999","flags":64}"#,
+            r#"{"id":"123","id":"999","channel_id":"234567890123456789","flags":64}"#,
+            r#"{"id":"01","channel_id":"234567890123456789","flags":64}"#,
+        ] {
+            let server = fixture(Some(response(200, "", body))).await;
+            let mut destination = destination(Channel::Discord);
+            destination.expires_ms = Some(crate::scheduler::now_ms() + 60_000);
+            assert_eq!(
+                OutboundClient::new_with_loopback(true)
+                    .unwrap()
+                    .send_discord_private(&destination, 1, "text", "private_token", &server.base)
+                    .await,
+                unknown("invalid_private_receipt")
+            );
+            server.task.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn private_discord_expiry_and_followup_cap_reject_before_network() {
+        let client = OutboundClient::new().unwrap();
+        let mut destination = destination(Channel::Discord);
+        assert_eq!(
+            client
+                .send_discord_private(
+                    &destination,
+                    0,
+                    "text",
+                    "private_token",
+                    "https://discord.com/api/v10"
+                )
+                .await,
+            rejected("invalid_destination")
+        );
+        destination.expires_ms = Some(crate::scheduler::now_ms() - 1);
+        assert_eq!(
+            client
+                .send_discord_private(
+                    &destination,
+                    0,
+                    "text",
+                    "private_token",
+                    "https://discord.com/api/v10"
+                )
+                .await,
+            rejected("interaction_expired")
+        );
+        destination.expires_ms = Some(crate::scheduler::now_ms() + 60_000);
+        assert_eq!(
+            client
+                .send_discord_private(
+                    &destination,
+                    6,
+                    "text",
+                    "private_token",
+                    "https://discord.com/api/v10"
+                )
+                .await,
+            rejected("invalid_text")
+        );
+    }
+    #[tokio::test]
+    async fn private_discord_only_trusted_rate_limit_objects_allow_retry() {
+        for (body, expected) in [
+            (
+                r#"{"retry_after":0.1,"global":false}"#,
+                DeliveryOutcome::RateLimited {
+                    retry_after_ms: 100,
+                },
+            ),
+            (r#"[0.1,false]"#, unknown("invalid_rate_limit")),
+            (
+                r#"{"retry_after":0.1,"global":false,"global":true}"#,
+                unknown("invalid_rate_limit"),
+            ),
+            (r#"{"retry_after":0.1}"#, unknown("invalid_rate_limit")),
+        ] {
+            let server = fixture(Some(response(429, "", body))).await;
+            let mut destination = destination(Channel::Discord);
+            destination.expires_ms = Some(crate::scheduler::now_ms() + 60_000);
+            assert_eq!(
+                OutboundClient::new_with_loopback(true)
+                    .unwrap()
+                    .send_discord_private(&destination, 1, "text", "private_token", &server.base)
+                    .await,
+                expected
+            );
+            server.task.await.unwrap();
+        }
     }
 }

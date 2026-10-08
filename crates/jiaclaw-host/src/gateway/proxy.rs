@@ -726,6 +726,7 @@ mod tests {
                 scheduled_jobs: false,
                 telegram: None,
                 slack: None,
+                discord: None,
             });
             let (release, receiver) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();
@@ -810,6 +811,7 @@ mod tests {
             scheduled_jobs: true,
             telegram: None,
             slack: None,
+            discord: None,
         });
         let id = Uuid::new_v4();
         for (method, path) in [

@@ -15,7 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Compilation plus all mandatory process suites exceeded 20 minutes on macOS.
+    # Keep fixture/production deadlines intact and bound the complete job separately.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -47,6 +49,7 @@ jobs:
       - name: Select OpenSSL 3 for channel signature fixtures
         if: runner.os == 'macOS'
         run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+      - run: python3 tests/tenant_discord.py target/debug/jiaclaw
       - run: python3 tests/channels.py target/debug/jiaclaw
       - run: python3 tests/scheduled_delivery.py target/debug/jiaclaw
       - run: python3 tests/discord_scheduled.py target/debug/jiaclaw

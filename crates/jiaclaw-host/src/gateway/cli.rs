@@ -240,6 +240,82 @@ pub enum Commands {
         #[arg(long)]
         event: String,
     },
+    /// Permanently bind one user-installed Discord application and private bot DM to one user.
+    DiscordBind {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long)]
+        application_id: String,
+        #[arg(long)]
+        /// Public Ed25519 verification pin (64 lowercase hexadecimal characters).
+        verify_key: String,
+        #[arg(long)]
+        bot_user_id: String,
+        #[arg(long)]
+        sender_id: String,
+        #[arg(long)]
+        conversation_id: String,
+        #[arg(long)]
+        command_id: String,
+    },
+    /// List lifetime Discord bindings, including permanent revocations; no credentials.
+    DiscordBindings {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Permanently revoke a Discord installation without freeing its owner reservation.
+    DiscordRevoke {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+    },
+    /// Inspect private Discord queues after stopping gateway; no credentials are printed.
+    DiscordInspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long, value_parser = ["events", "deliveries", "operations"])]
+        kind: String,
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=16000))]
+        offset: u16,
+    },
+    /// Record a verified Discord receipt for an unknown send, without sending again.
+    DiscordResolve {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        receipt: String,
+    },
+    /// Cancel remaining Discord sends after external review; requires stopped gateway.
+    DiscordCancel {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
+    /// Purge only fully resolved Discord events, retaining dedup tombstones.
+    DiscordPurge {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
     /// Clear an uncertain write hold only after checking that its backend is idle.
     ReviewClear {
         #[arg(long)]
@@ -526,6 +602,93 @@ pub async fn run(command: Commands) -> Result<()> {
             binding,
             super::slack::AdminAction::Purge { event },
         )?),
+        Commands::DiscordBind {
+            config,
+            user,
+            application_id,
+            verify_key,
+            bot_user_id,
+            sender_id,
+            conversation_id,
+            command_id,
+        } => {
+            let (config, registry) = registry(&config)?;
+            let owner = registry
+                .list()?
+                .into_iter()
+                .find(|entry| entry.user_id == user)
+                .context("gateway user not found")?;
+            ensure!(
+                config
+                    .backends
+                    .iter()
+                    .any(|entry| entry.id == owner.backend_id),
+                "user backend is not configured"
+            );
+            output(&serde_json::to_value(registry.add_discord_binding(
+                user,
+                &application_id,
+                &verify_key,
+                &bot_user_id,
+                &sender_id,
+                &conversation_id,
+                &command_id,
+            )?)?)
+        }
+        Commands::DiscordBindings { config } => {
+            let (_, registry) = registry(&config)?;
+            output(&json!({"bindings":registry.list_discord_bindings()?}))
+        }
+        Commands::DiscordRevoke { config, binding } => {
+            let (_, registry) = registry(&config)?;
+            registry.revoke_discord_binding(binding)?;
+            output(&json!({"binding_id":binding.to_string(),"revoked":true}))
+        }
+        Commands::DiscordInspect {
+            config,
+            binding,
+            kind,
+            event,
+            limit,
+            offset,
+        } => output(&super::discord::admin(
+            &Config::load(&config)?,
+            binding,
+            super::discord::AdminAction::Inspect {
+                kind,
+                event,
+                limit: usize::from(limit),
+                offset: usize::from(offset),
+            },
+        )?),
+        Commands::DiscordResolve {
+            config,
+            binding,
+            delivery,
+            receipt,
+        } => output(&super::discord::admin(
+            &Config::load(&config)?,
+            binding,
+            super::discord::AdminAction::Resolve { delivery, receipt },
+        )?),
+        Commands::DiscordCancel {
+            config,
+            binding,
+            event,
+        } => output(&super::discord::admin(
+            &Config::load(&config)?,
+            binding,
+            super::discord::AdminAction::Cancel { event },
+        )?),
+        Commands::DiscordPurge {
+            config,
+            binding,
+            event,
+        } => output(&super::discord::admin(
+            &Config::load(&config)?,
+            binding,
+            super::discord::AdminAction::Purge { event },
+        )?),
         Commands::ReviewClear {
             config,
             user,
@@ -736,6 +899,168 @@ mod tests {
         assert!(Args::try_parse_from([
             "gateway",
             "slack-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "secrets"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn discord_commands_require_complete_explicit_ownership_and_never_accept_credentials() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "discord-bind",
+            "--config",
+            "c.json",
+            "--user",
+            user,
+            "--application-id",
+            "1",
+            "--verify-key",
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            "--bot-user-id",
+            "10",
+            "--command-id",
+            "13",
+            "--sender-id",
+            "11",
+            "--conversation-id",
+            "12",
+        ];
+        let Commands::DiscordBind {
+            user: actual,
+            application_id,
+            verify_key,
+            bot_user_id,
+            command_id,
+            sender_id,
+            conversation_id,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(actual.to_string(), user);
+        assert_eq!(
+            (
+                application_id.as_str(),
+                verify_key.as_str(),
+                bot_user_id.as_str(),
+                command_id.as_str(),
+                sender_id.as_str(),
+                conversation_id.as_str()
+            ),
+            (
+                "1",
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                "10",
+                "13",
+                "11",
+                "12"
+            )
+        );
+        for index in (2..base.len()).step_by(2) {
+            let mut missing = base.to_vec();
+            missing.drain(index..index + 2);
+            assert!(Args::try_parse_from(missing).is_err());
+        }
+        for flag in ["--token", "--bot-token", "--state-key", "--backend"] {
+            let mut supplied = base.to_vec();
+            supplied.extend([flag, "provided-secret"]);
+            assert!(Args::try_parse_from(supplied).is_err());
+        }
+        assert!(
+            Args::try_parse_from(["gateway", "discord-bindings", "--config", "c.json"]).is_ok()
+        );
+        for command in [
+            "discord-revoke",
+            "discord-inspect",
+            "discord-resolve",
+            "discord-cancel",
+            "discord-purge",
+        ] {
+            assert!(Args::try_parse_from(["gateway", command, "--config", "c.json"]).is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "discord-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            user
+        ])
+        .is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "discord-resolve",
+            "--config",
+            "c.json",
+            "--binding",
+            user,
+            "--delivery",
+            user,
+            "--receipt",
+            "discord:123456789012345678"
+        ])
+        .is_ok());
+        for command in ["discord-cancel", "discord-purge"] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                command,
+                "--config",
+                "c.json",
+                "--binding",
+                user,
+                "--event",
+                user
+            ])
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn discord_inspection_pages_and_kinds_are_bounded_before_dispatch() {
+        let binding = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "discord-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "operations",
+        ];
+        let Commands::DiscordInspect { limit, offset, .. } =
+            Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!((limit, offset), (20, 0));
+        for (limit, offset) in [("1", "0"), ("100", "16000")] {
+            let mut supplied = base.to_vec();
+            supplied.extend(["--limit", limit, "--offset", offset]);
+            assert!(Args::try_parse_from(supplied).is_ok());
+        }
+        for (limit, offset) in [
+            ("0", "0"),
+            ("101", "0"),
+            ("-1", "0"),
+            ("1", "16001"),
+            ("1", "-1"),
+        ] {
+            let mut supplied = base.to_vec();
+            supplied.extend(["--limit", limit, "--offset", offset]);
+            assert!(Args::try_parse_from(supplied).is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "discord-inspect",
             "--config",
             "c.json",
             "--binding",

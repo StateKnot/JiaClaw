@@ -146,12 +146,14 @@ Telegram/Slack/Discord/飞书/企业微信/钉钉每个安装可额外配置 `sc
 
 `jiaclaw gateway` 使用独立、严格校验的 JSON 配置与私有身份 SQLite，不读取上述 Agent 配置，也不创建共享 Agent。具体 `serve`、用户/Key 管理命令、限额、TLS/容器/磁盘隔离、未知写入恢复见[网关指南](gateway.md)。现有普通 `serve` 配置仍是一用户一实例。
 
-管理员可通过 `gateway user-add/key-add --read-only` 签发只读 Key；权限自 registry schema 3 引入，当前 schema 4 保留，轮换继承、不可原地修改。它只开放原有本用户 GET 白名单，不允许模型调用、会话修改或任务控制；不会脱敏历史，也不停止用户独立授权的后台任务。旧 schema 1/2 Key 迁移后保持完整权限，单实例 `http.api_token` 不受此功能影响。CLI 分页列表、工作台及维护写入边界见[Key 管理](gateway.md#只读-key)。
+管理员可通过 `gateway user-add/key-add --read-only` 签发只读 Key；权限自 registry schema 3 引入，当前 schema 5 保留，轮换继承、不可原地修改。它只开放原有本用户 GET 白名单，不允许模型调用、会话修改或任务控制；不会脱敏历史，也不停止用户独立授权的后台任务。旧 schema 1/2 Key 迁移后保持完整权限，单实例 `http.api_token` 不受此功能影响。CLI 分页列表、工作台及维护写入边界见[Key 管理](gateway.md#只读-key)。
 
-`http.gateway_channel_chat` 默认 false。显式启用时仅开放受后端 Token 保护的内部 Telegram protocol 1 status/chat 与 Slack protocol 2 status/binding/execute/metadata，固定 datetime_now/json_query、120 秒和 channel 路由；要求 SQLite、brokerrouter（离线可 stub）、关闭 standalone channels/HEARTBEAT/旧 inbound hook，scheduler 只能关闭或 gateway_driven。网关 JSON 的 `telegram` 默认为空，最多 32 条；条目只含 binding_id、两个 Secret 文件路径与固定 API origin 选项，用户/backend/bot/sender 来自不可变 registry。此分支的配置、64 MiB 主文件限制、共享网关盘、人工核对及 opt-in 示例见[独立用户 Telegram](tenant-telegram.md)。
+`http.gateway_channel_chat` 默认 false。显式启用时仅开放受后端 Token 保护的内部 Telegram protocol 1 status/chat、Slack protocol 2 和 Discord protocol 3 status/binding/execute/metadata，固定 datetime_now/json_query、120 秒和 channel 路由；要求 SQLite、brokerrouter（离线可 stub）、关闭 standalone channels/HEARTBEAT/旧 inbound hook，scheduler 只能关闭或 gateway_driven。网关 JSON 的 `telegram` 默认为空，最多 32 条；条目只含 binding_id、两个 Secret 文件路径与固定 API origin 选项，用户/backend/bot/sender 来自不可变 registry。此分支的配置、64 MiB 主文件限制、共享网关盘、人工核对及 opt-in 示例见[独立用户 Telegram](tenant-telegram.md)。
 
 `[scheduler] gateway_driven` 默认 false；显式设为 true 时要求 `enabled=true`，后端只接受网关准入后的内部派发，不自主定时执行。网关 `scheduled_jobs` 默认 false；仅显式启用并通过后端模式检查后开放任务管理。此模式任务最长 120 秒，仅允许 datetime_now/json_query，禁止 delivery；完整配置和本批验收状态见[独立用户定时任务](tenant-cron.md)。
 
 Discord 定时文字必须同时配置 `discord_guild_id`、非空 `scheduled_destinations` 和 Bot Token；只允许指定 guild 的普通文字频道（type 0），thread_id 必须为空。仅交互回复的安装不配置 guild，也不需要 Bot Token。非 Discord 安装不能配置 guild 字段；每次 Bot 发送前核对应用、guild 与频道类型。401 持久阻断当前凭据，未知发送阻断同安装后续 Bot 投递；配置与人工恢复见[Discord 指南](discord.md)。
 
 网关 `slack` 默认空，最多 32 条；配置含 binding_id、bot_token_file、signing_secret_file、默认官方 api_base 与显式测试 allow_loopback。注册和 schema 4 永久身份、四次平台握手、2.8 秒 ACK、私有队列/后端账本容量和停机核对见[独立用户 Slack](tenant-slack.md)。不要将单实例 `http.channels` 策略放到独立后端扩大权限。
+
+网关 `discord` 默认空，最多 32 条；仅含 binding_id、bot_token_file、state_key_file、默认官方 `https://discord.com/api/v10` 和显式测试 allow_loopback。App/公开 verify_key/Bot/人/DM/全局 command_id 来自 schema 5 永久 registry；状态密钥为非零 32 字节的 64 个小写 hex 字符，原指纹永久保存，禁止在线换密钥。该私有 USER_INSTALL/BOT_DM 分支不读取单实例 `JIACLAW_CHANNEL_STATE_KEY`，不开放 guild 或主动 Bot 通知。配置、手动命令注册、PING bootstrap、短期 ephemeral 回复和无 Secret 停机维护见[独立用户 Discord](tenant-discord.md)。
