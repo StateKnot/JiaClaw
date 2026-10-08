@@ -415,4 +415,6 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 
 新 process fixture 首轮的 Unicode 数据为 25.9 KiB，超过既定 16 KiB 整条上限；程序正确保持 needs_review、无 outbox，未发送分片。测试数据改为小于 16 KiB 的 6/7 片边界，准确覆盖最多 original+五条 followup；这不是生产 split 修复，最终九组全部通过。
 
+首轮 [CI 37743578880](https://github.com/jiawenyao401/JiaClaw/actions/runs/37743578880) 对应 head `765965c69352dfe1d948bf7450e4e044cb91770d`。Ubuntu job `113199709450` 全部成功（1043 项默认并行 Rust，含 Linux 专属 EXDEV；九组 Discord、全部旧进程、Chromium 与独立真实 Docker 沙箱），container job `113199709161` 成功（限额卷 App 预留/撤销/重启、停机维护及真实 ENOSPC）。macOS job `113199709457` 的默认并行 Rust 及九组 Discord 等前序测试均成功，在钉钉阶段因整作业的 20 分钟上限被取消，installer 未执行；GitHub 注释明确为 `The job has exceeded the maximum execution time of 20m0s`，不是已识别的测试断言失败。编译与新增强制验收使原整作业预算不足，测试作业改为有界 30 分钟；保留默认并行、每个 fixture/生产期限、完整测试清单及 container 的 20 分钟预算。该修订只改变 CI 资源预算和记录，生产二进制及本地哈希不变；最终新 head 仍须重新完成三项 CI，不借首轮局部成功宣称全部通过。
+
 剩余：真实 Discord 安装/反代延迟/终端收发与供应商联合认证；其他独立用户渠道；StateKnot 固定版本 durable admission/driver/store、stdio、子 Agent，及逐 token 输出/媒体身份接线。应用 hold、加密 inbox/outbox 和元数据收据都没有赋予工具重放或自动恢复能力。
