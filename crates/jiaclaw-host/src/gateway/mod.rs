@@ -5,6 +5,8 @@ pub(crate) mod cli;
 mod config;
 mod discord;
 mod discord_store;
+mod feishu;
+mod feishu_store;
 mod keys;
 mod proxy;
 mod registry;
@@ -45,6 +47,7 @@ struct State {
     telegram: Option<Arc<telegram::Runtime>>,
     slack: Option<Arc<slack::Runtime>>,
     discord: Option<Arc<discord::Runtime>>,
+    feishu: Option<Arc<feishu::Runtime>>,
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -82,6 +85,10 @@ fn channel_review_guard(
             .list_discord_bindings()?
             .iter()
             .any(|b| b.user_id == user)
+        && !registry
+            .list_feishu_bindings()?
+            .iter()
+            .any(|b| b.user_id == user)
     {
         return Ok(None);
     }
@@ -93,6 +100,7 @@ fn channel_review_guard(
     telegram::review_pending(config, registry, user)?;
     slack::review_pending(config, registry, user)?;
     discord::review_pending(config, registry, user)?;
+    feishu::review_pending(config, registry, user)?;
     Ok(Some(guard))
 }
 fn review_queue(store: &crate::store::SessionStore) -> Result<()> {
@@ -242,6 +250,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let slack = slack::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     let discord =
         discord::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
+    let feishu = feishu::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     drop(unique_tokens);
     let capacity = u32::try_from(config.max_in_flight).context("gateway capacity overflow")?;
     let state = Arc::new(State {
@@ -255,6 +264,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         telegram,
         slack,
         discord,
+        feishu,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -279,6 +289,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             "/hooks/discord/:binding_id",
             axum::routing::post(discord::ingress),
         )
+        .route(
+            "/hooks/feishu/:binding_id",
+            axum::routing::post(feishu::ingress),
+        )
         .fallback(proxy::handle)
         .with_state(Arc::clone(&state));
     let scheduled = scheduler::start(Arc::clone(&state));
@@ -289,6 +303,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let stop_slack = slack.stopper();
     let discord = discord::start(Arc::clone(&state));
     let stop_discord = discord.stopper();
+    let feishu = feishu::start(Arc::clone(&state));
+    let stop_feishu = feishu.stopper();
     tracing::info!("isolated user gateway listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -297,12 +313,14 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             stop_telegram.stop();
             stop_slack.stop();
             stop_discord.stop();
+            stop_feishu.stop();
         })
         .await?;
     let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = telegram.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = slack.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = discord.shutdown(timeout + Duration::from_secs(5)).await;
+    let _ = feishu.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
     let _drain = tokio::time::timeout(

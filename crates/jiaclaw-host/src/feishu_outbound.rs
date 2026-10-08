@@ -18,6 +18,7 @@
 use anyhow::{ensure, Result};
 use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::{sync::Mutex, time::Instant};
@@ -56,6 +57,113 @@ struct TokenState {
 }
 
 impl FeishuSender {
+    /// Read-only startup identity evidence. Human/chat association is separately
+    /// established by each authenticated p2p callback, not a fabricated member list.
+    pub(super) async fn verify_installation(
+        &self,
+        bot_open_id: &str,
+        tenant_key: &str,
+        chat_id: &str,
+    ) -> Result<()> {
+        #[derive(Deserialize)]
+        struct BotEnvelope {
+            code: i64,
+            bot: Box<RawValue>,
+        }
+        #[derive(Deserialize)]
+        struct Bot {
+            activate_status: u8,
+            open_id: String,
+        }
+        #[derive(Deserialize)]
+        struct Envelope {
+            code: i64,
+            data: Box<RawValue>,
+        }
+        #[derive(Deserialize)]
+        struct TenantData {
+            tenant: Box<RawValue>,
+        }
+        #[derive(Deserialize)]
+        struct Tenant {
+            tenant_key: String,
+        }
+        #[derive(Deserialize)]
+        struct Chat {
+            chat_mode: String,
+            tenant_key: Option<String>,
+            external: Option<bool>,
+        }
+        let verified = tokio::time::timeout(Duration::from_secs(30), async {
+            ensure!(
+                feishu_id(bot_open_id, "ou_") && feishu_id(chat_id, "oc_"),
+                "invalid installation identity"
+            );
+            let token = self
+                .access_token()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("verification credential unavailable"))?;
+            let get = |path: String| {
+                self.client
+                    .get(format!("{}{}", self.api_base, path))
+                    .bearer_auth(&token)
+                    .timeout(Duration::from_secs(5))
+            };
+            let bot: BotEnvelope = self.verification_json(get("/bot/v3/info".into())).await?;
+            let identity: Bot = crate::feishu::decode_object(bot.bot.get().as_bytes())?;
+            ensure!(
+                bot.code == 0 && identity.activate_status == 2 && identity.open_id == bot_open_id,
+                "bot identity mismatch"
+            );
+            let tenant: Envelope = self
+                .verification_json(get("/tenant/v2/tenant/query".into()))
+                .await?;
+            let data: TenantData = crate::feishu::decode_object(tenant.data.get().as_bytes())?;
+            let identity: Tenant = crate::feishu::decode_object(data.tenant.get().as_bytes())?;
+            ensure!(
+                tenant.code == 0 && identity.tenant_key == tenant_key,
+                "tenant identity mismatch"
+            );
+            let chat: Envelope = self
+                .verification_json(get(format!("/im/v1/chats/{chat_id}")))
+                .await?;
+            let identity: Chat = crate::feishu::decode_object(chat.data.get().as_bytes())?;
+            ensure!(
+                chat.code == 0
+                    && identity.chat_mode == "p2p"
+                    && identity
+                        .tenant_key
+                        .as_deref()
+                        .is_none_or(|key| key == tenant_key)
+                    && identity.external != Some(true),
+                "private chat mismatch"
+            );
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+        // Keep response bodies, credentials and reqwest diagnostics out of errors.
+        ensure!(
+            matches!(verified, Ok(Ok(()))),
+            "Feishu installation verification failed"
+        );
+        Ok(())
+    }
+
+    async fn verification_json<T: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T> {
+        let response = request.send().await?;
+        ensure!(
+            response.status() == StatusCode::OK && json_mime(response.headers()),
+            "installation response rejected"
+        );
+        let bytes = response_body(response)
+            .await
+            .map_err(|_| anyhow::anyhow!("invalid installation response"))?;
+        crate::feishu::decode_object(&bytes)
+    }
+
     pub(super) fn new(
         installation_id: &str,
         app_secret: String,
@@ -130,8 +238,11 @@ impl FeishuSender {
         if response.status() != StatusCode::OK {
             return None;
         }
+        if !json_mime(response.headers()) {
+            return None;
+        }
         let body = response_body(response).await.ok()?;
-        let token: TokenEnvelope = serde_json::from_slice(&body).ok()?;
+        let token: TokenEnvelope = crate::feishu::decode_object(&body).ok()?;
         if token.code != 0
             || !(TOKEN_EXPIRY_MARGIN_SECS + 1..=7200).contains(&token.expire)
             || token.tenant_access_token.is_empty()
@@ -212,11 +323,14 @@ impl FeishuSender {
             return unknown("unexpected_http_status");
         }
         let headers = response.headers().clone();
+        if !json_mime(&headers) {
+            return unknown("invalid_response_type");
+        }
         let body = match response_body(response).await {
             Ok(body) => body,
             Err(code) => return unknown(code),
         };
-        if serde_json::from_slice::<ErrorCode>(&body)
+        if crate::feishu::decode_object::<ErrorCode>(&body)
             .is_ok_and(|error| matches!(error.code, 99_991_663 | 99_991_665))
         {
             self.invalidate_token(&token);
@@ -240,6 +354,16 @@ impl FeishuSender {
     }
 }
 
+fn json_mime(headers: &HeaderMap) -> bool {
+    let mut values = headers.get_all(reqwest::header::CONTENT_TYPE).iter();
+    values
+        .next()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
+        && values.next().is_none()
+}
+
 #[derive(Deserialize)]
 struct ErrorCode {
     code: i64,
@@ -255,7 +379,7 @@ struct TokenEnvelope {
 #[derive(Deserialize)]
 struct MessageEnvelope {
     code: i64,
-    data: Option<Value>,
+    data: Option<Box<RawValue>>,
 }
 
 #[derive(Deserialize)]
@@ -283,7 +407,7 @@ fn parse_response(
     headers: &HeaderMap,
     body: &[u8],
 ) -> DeliveryOutcome {
-    let Ok(envelope) = serde_json::from_slice::<MessageEnvelope>(body) else {
+    let Ok(envelope) = crate::feishu::decode_object::<MessageEnvelope>(body) else {
         return unknown("invalid_response");
     };
     if matches!(envelope.code, 230_049 | 18_121) {
@@ -296,10 +420,10 @@ fn parse_response(
                 StatusCode::TOO_MANY_REQUESTS | StatusCode::BAD_REQUEST
             ))
             || (envelope.code == 230_020 && status == StatusCode::BAD_REQUEST))
-            && envelope
-                .data
-                .as_ref()
-                .is_none_or(|data| data.as_object().is_some_and(serde_json::Map::is_empty));
+            && envelope.data.as_ref().is_none_or(|data| {
+                serde_json::from_str::<Value>(data.get())
+                    .is_ok_and(|value| value.as_object().is_some_and(serde_json::Map::is_empty))
+            });
         return if let Some(retry_after_ms) = supported.then(|| rate_limit_delay(headers)).flatten()
         {
             DeliveryOutcome::RateLimited { retry_after_ms }
@@ -316,7 +440,7 @@ fn parse_response(
     let Some(data) = envelope.data else {
         return unknown("invalid_receipt");
     };
-    let Ok(message) = serde_json::from_value::<MessageReceipt>(data) else {
+    let Ok(message) = crate::feishu::decode_object::<MessageReceipt>(data.get().as_bytes()) else {
         return unknown("invalid_receipt");
     };
     let thread_matches = match destination.thread_id.as_deref() {
@@ -476,7 +600,7 @@ mod tests {
                                             let (name,value)=line.split_once(':')?;
                                             name.eq_ignore_ascii_case("authorization").then(|| value.trim().to_owned())
                                         }),
-                                        body: serde_json::from_slice(&bytes[offset + 4..offset + 4 + length]).unwrap(),
+                                        body: if length == 0 { Value::Null } else { serde_json::from_slice(&bytes[offset + 4..offset + 4 + length]).unwrap() },
                                     };
                                     captured.lock().unwrap().push(request);
                                     let reply = replies.lock().unwrap().pop_front().expect("unexpected extra HTTP attempt");
@@ -1077,6 +1201,205 @@ mod tests {
                 assert!(matches!(outcome, DeliveryOutcome::Unknown { .. }));
             }
             assert_eq!(server.captured().len(), if token_stage { 1 } else { 2 });
+        }
+    }
+    fn verified_bot() -> Reply {
+        Reply::json(&json!({"code":0,"bot":{"activate_status":2,"open_id":"ou_testbot"}}))
+    }
+    fn verified_tenant() -> Reply {
+        Reply::json(&json!({"code":0,"data":{"tenant":{"tenant_key":"tenant-test"}}}))
+    }
+    fn verified_chat() -> Reply {
+        Reply::json(&json!({"code":0,"data":{"chat_mode":"p2p"}}))
+    }
+
+    #[tokio::test]
+    async fn startup_verifies_real_minimal_official_bot_tenant_and_p2p_shapes_with_empty_get_bodies(
+    ) {
+        let server = Server::new(vec![
+            token("t-verify"),
+            verified_bot(),
+            verified_tenant(),
+            verified_chat(),
+        ])
+        .await;
+        server
+            .sender()
+            .verify_installation("ou_testbot", "tenant-test", "oc_testchat")
+            .await
+            .unwrap();
+        let requests = server.captured();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[1].path, "/open-apis/bot/v3/info");
+        assert_eq!(requests[2].path, "/open-apis/tenant/v2/tenant/query");
+        assert_eq!(requests[3].path, "/open-apis/im/v1/chats/oc_testchat");
+        for request in &requests[1..] {
+            assert_eq!(request.body, Value::Null);
+            assert_eq!(request.authorization.as_deref(), Some("Bearer t-verify"));
+        }
+        // The official bot is top-level, enabled=2; tenant has no invented app
+        // identity and p2p chat omits group owner/member fields.
+        assert!(requests
+            .iter()
+            .all(|r| !r.path.contains("members") && !r.path.contains("batch_get")));
+    }
+
+    #[tokio::test]
+    async fn startup_wrong_nonobject_or_duplicate_identity_stops_before_later_identity_reads() {
+        let malformed: [(usize, &str); 14] = [
+            (
+                1,
+                r#"{"code":0,"bot":{"activate_status":1,"open_id":"ou_testbot"}}"#,
+            ),
+            (
+                1,
+                r#"{"code":0,"bot":{"activate_status":2,"open_id":"ou_other"}}"#,
+            ),
+            (
+                1,
+                r#"{"code":0,"data":{"bot":{"activate_status":2,"open_id":"ou_testbot"}}}"#,
+            ),
+            (1, r#"[0,{"activate_status":2,"open_id":"ou_testbot"}]"#),
+            (1, r#"{"code":0,"bot":[2,"ou_testbot"]}"#),
+            (
+                1,
+                r#"{"code":0,"bot":{"activate_status":2,"open_id":"ou_other","open_id":"ou_testbot"}}"#,
+            ),
+            (
+                1,
+                r#"{"code":1,"code":0,"bot":{"activate_status":2,"open_id":"ou_testbot"}}"#,
+            ),
+            (
+                2,
+                r#"{"code":0,"data":{"tenant":{"tenant_key":"other-tenant"}}}"#,
+            ),
+            (2, r#"{"code":0,"data":{"tenant":["tenant-test"]}}"#),
+            (
+                2,
+                r#"{"code":0,"data":{"tenant":{"tenant_key":"other-tenant","tenant_key":"tenant-test"}}}"#,
+            ),
+            (3, r#"{"code":0,"data":{"chat_mode":"group"}}"#),
+            (
+                3,
+                r#"{"code":0,"data":{"chat_mode":"p2p","external":true}}"#,
+            ),
+            (3, r#"{"code":0,"data":["p2p",null,null]}"#),
+            (
+                3,
+                r#"{"code":0,"data":{"chat_mode":"group","chat_mode":"p2p"}}"#,
+            ),
+        ];
+        for (index, body) in malformed {
+            let mut replies = vec![
+                token("t-verify"),
+                verified_bot(),
+                verified_tenant(),
+                verified_chat(),
+            ];
+            replies[index] = Reply::raw(200, "", body);
+            let server = Server::new(replies).await;
+            let error = server
+                .sender()
+                .verify_installation("ou_testbot", "tenant-test", "oc_testchat")
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), "Feishu installation verification failed");
+            assert_eq!(server.captured().len(), index + 1, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_token_duplicates_arrays_and_double_mime_never_admit_a_message_post() {
+        for bad in [
+            Reply::raw(200, "", r#"[0,7200,"t-unsafe"]"#),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":1,"code":0,"expire":7200,"tenant_access_token":"t-unsafe"}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"expire":7200,"expire":7200,"tenant_access_token":"t-unsafe"}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"expire":7200,"tenant_access_token":"t-first","tenant_access_token":"t-last"}"#,
+            ),
+            Reply::raw(
+                200,
+                "Content-Type: application/json\r\n",
+                r#"{"code":0,"expire":7200,"tenant_access_token":"t-unsafe"}"#,
+            ),
+        ] {
+            let server = Server::new(vec![bad]).await;
+            let sender = server.sender();
+            assert_eq!(
+                sender.send(&destination(None), DELIVERY, "hello").await,
+                rejected("credential_unavailable")
+            );
+            assert_eq!(
+                sender.send(&destination(None), DELIVERY, "again").await,
+                rejected("credential_unavailable")
+            );
+            assert_eq!(server.captured().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_receipt_objects_and_critical_duplicates_are_unknown_and_never_resubmitted() {
+        for bad in [
+            Reply::raw(
+                200,
+                "",
+                r#"[0,{"message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"text"}]"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"data":["om_receipt","oc_testchat","text",null,null]}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":1,"code":0,"data":{"message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"text"}}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"data":{"message_id":"om_other","message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"text"}}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"data":{"message_id":"om_receipt","chat_id":"oc_other","chat_id":"oc_testchat","msg_type":"text"}}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"data":{"message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"image","msg_type":"text"}}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"code":0,"data":{"message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"text","root_id":"om_wrong","root_id":""}}"#,
+            ),
+            Reply::raw(
+                200,
+                "Content-Type: application/json\r\n",
+                r#"{"code":0,"data":{"message_id":"om_receipt","chat_id":"oc_testchat","msg_type":"text"}}"#,
+            ),
+        ] {
+            let server = Server::new(vec![token("t-test"), bad]).await;
+            assert!(matches!(
+                server
+                    .sender()
+                    .send(&destination(None), DELIVERY, "hello")
+                    .await,
+                DeliveryOutcome::Unknown { .. }
+            ));
+            assert_eq!(server.captured().len(), 2);
         }
     }
 }

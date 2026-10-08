@@ -11,6 +11,7 @@ use anyhow::{anyhow, ensure, Result};
 use axum::http::HeaderMap;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -74,8 +75,8 @@ struct Envelope {
     token: Option<String>,
     challenge: Option<String>,
     schema: Option<String>,
-    header: Option<EventHeader>,
-    event: Option<serde_json::Value>,
+    header: Option<Box<RawValue>>,
+    event: Option<Box<RawValue>>,
 }
 
 #[derive(Deserialize)]
@@ -89,14 +90,14 @@ struct EventHeader {
 
 #[derive(Deserialize)]
 struct MessageEvent {
-    sender: Sender,
-    message: serde_json::Value,
+    sender: Box<RawValue>,
+    message: Box<RawValue>,
 }
 
 #[derive(Deserialize)]
 struct Sender {
     sender_type: String,
-    sender_id: Option<SenderId>,
+    sender_id: Option<Box<RawValue>>,
     tenant_key: Option<String>,
 }
 
@@ -148,7 +149,7 @@ fn parse_inner(
         "headers"
     );
     let (app_id, tenant_key) = validate_installation(installation)?;
-    let mut envelope: Envelope = serde_json::from_slice(body)?;
+    let mut envelope: Envelope = decode_object(body)?;
     if let Some(encrypted) = envelope.encrypt.take() {
         ensure!(
             envelope.kind.is_none()
@@ -159,7 +160,7 @@ fn parse_inner(
                 && envelope.event.is_none(),
             "mixed envelope"
         );
-        envelope = serde_json::from_slice(&decrypt(&encrypted, encrypt_key)?)?;
+        envelope = decode_object(&decrypt(&encrypted, encrypt_key)?)?;
         ensure!(envelope.encrypt.is_none(), "nested encryption");
     }
 
@@ -183,7 +184,13 @@ fn parse_inner(
 
     verify_signature(headers, body, encrypt_key, now_secs)?;
     ensure!(envelope.schema.as_deref() == Some("2.0"), "schema");
-    let header = envelope.header.ok_or_else(|| anyhow!("header"))?;
+    let header: EventHeader = decode_object(
+        envelope
+            .header
+            .ok_or_else(|| anyhow!("header"))?
+            .get()
+            .as_bytes(),
+    )?;
     ensure!(
         header.app_id == app_id
             && header.tenant_key == tenant_key
@@ -196,26 +203,34 @@ fn parse_inner(
     if header.event_type != "im.message.receive_v1" {
         return Ok(Inbound::Ignored);
     }
-    let event: MessageEvent =
-        serde_json::from_value(envelope.event.ok_or_else(|| anyhow!("event"))?)?;
+    let event: MessageEvent = decode_object(
+        envelope
+            .event
+            .ok_or_else(|| anyhow!("event"))?
+            .get()
+            .as_bytes(),
+    )?;
+    let sender: Sender = decode_object(event.sender.get().as_bytes())?;
     ensure!(
-        event
-            .sender
+        sender
             .tenant_key
             .as_deref()
             .is_none_or(|value| value == tenant_key),
         "sender tenant"
     );
-    if event.sender.sender_type != "user" {
+    if sender.sender_type != "user" {
         return Ok(Inbound::Ignored);
     }
-    let sender_id = event
-        .sender
-        .sender_id
-        .and_then(|id| id.open_id)
-        .ok_or_else(|| anyhow!("sender"))?;
+    let sender_id: SenderId = decode_object(
+        sender
+            .sender_id
+            .ok_or_else(|| anyhow!("sender"))?
+            .get()
+            .as_bytes(),
+    )?;
+    let sender_id = sender_id.open_id.ok_or_else(|| anyhow!("sender"))?;
     ensure!(identifier(&sender_id, "ou_"), "sender id");
-    let mut message: Message = serde_json::from_value(event.message)?;
+    let mut message: Message = decode_object(event.message.get().as_bytes())?;
     // Treat an explicitly empty optional root like an absent root. Do not trim:
     // whitespace or a native omt_ topic ID is not a valid om_ reply target.
     message.root_id = message.root_id.filter(|root| !root.is_empty());
@@ -240,7 +255,7 @@ fn parse_inner(
         ),
         _ => return Ok(Inbound::Ignored),
     };
-    let content: TextContent = serde_json::from_str(&message.content)?;
+    let content: TextContent = decode_object(message.content.as_bytes())?;
     ensure!(
         !content.text.trim().is_empty() && content.text.len() <= MAX_PROMPT_BYTES,
         "text"
@@ -254,6 +269,15 @@ fn parse_inner(
         thread_id,
         text: content.text,
     })
+}
+
+pub(super) fn decode_object<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    ensure!(
+        bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{'),
+        "object required"
+    );
+    // Decode the original bytes at every object boundary; Value would erase duplicates.
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 fn identifier(value: &str, prefix: &str) -> bool {
@@ -820,5 +844,179 @@ mod tests {
         );
         assert!(decrypt(&encrypt(&vec![b'a'; MAX_PLAINTEXT_BYTES + 1]), KEY).is_err());
         assert!(decrypt(&"A".repeat(MAX_ENCODED_BYTES + 4), KEY).is_err());
+    }
+    #[test]
+    fn critical_raw_duplicate_fields_are_rejected_in_plain_and_encrypted_events() {
+        let valid = message().to_string();
+        for (old, replacement) in [
+            (
+                "\"schema\":\"2.0\"",
+                "\"schema\":\"2.0\",\"schema\":\"2.0\"",
+            ),
+            (
+                "\"app_id\":\"cli_app123\"",
+                "\"app_id\":\"cli_other\",\"app_id\":\"cli_app123\"",
+            ),
+            (
+                "\"tenant_key\":\"tenant_123\"",
+                "\"tenant_key\":\"other_tenant\",\"tenant_key\":\"tenant_123\"",
+            ),
+            (
+                "\"event_type\":\"im.message.receive_v1\"",
+                "\"event_type\":\"im.message.receive_v1\",\"event_type\":\"im.message.receive_v1\"",
+            ),
+            ("\"sender\":{", "\"sender\":{},\"sender\":{"),
+            ("\"message\":{", "\"message\":{},\"message\":{"),
+            ("\"sender_id\":{", "\"sender_id\":{},\"sender_id\":{"),
+            (
+                "\"open_id\":\"ou_person1\"",
+                "\"open_id\":\"ou_other\",\"open_id\":\"ou_person1\"",
+            ),
+            (
+                "\"chat_id\":\"oc_chat1\"",
+                "\"chat_id\":\"oc_other\",\"chat_id\":\"oc_chat1\"",
+            ),
+            (
+                "\"message_id\":\"om_message1\"",
+                "\"message_id\":\"om_other\",\"message_id\":\"om_message1\"",
+            ),
+            (
+                "\"sender_type\":\"user\"",
+                "\"sender_type\":\"user\",\"sender_type\":\"user\"",
+            ),
+        ] {
+            assert!(valid.contains(old), "fixture missing {old}");
+            let plain = valid.replace(old, replacement).into_bytes();
+            let encrypted = serde_json::to_vec(&json!({"encrypt":encrypt(&plain)})).unwrap();
+            for body in [plain, encrypted] {
+                rejected(parse_event(
+                    &sign(&body, NOW),
+                    &body,
+                    INSTALLATION,
+                    KEY,
+                    TOKEN,
+                    NOW,
+                ));
+            }
+        }
+        let mut duplicate_text = message();
+        duplicate_text["event"]["message"]["content"] =
+            json!("{\"text\":\"attacker\",\"text\":\"expected\"}");
+        let plain = duplicate_text.to_string().into_bytes();
+        for body in [
+            plain.clone(),
+            serde_json::to_vec(&json!({"encrypt":encrypt(&plain)})).unwrap(),
+        ] {
+            rejected(parse_event(
+                &sign(&body, NOW),
+                &body,
+                INSTALLATION,
+                KEY,
+                TOKEN,
+                NOW,
+            ));
+        }
+        let encrypted = encrypt(valid.as_bytes());
+        let raw = format!("{{\"encrypt\":{0},\"encrypt\":{0}}}", json!(encrypted));
+        rejected(parse_event(
+            &sign(raw.as_bytes(), NOW),
+            raw.as_bytes(),
+            INSTALLATION,
+            KEY,
+            TOKEN,
+            NOW,
+        ));
+    }
+
+    #[test]
+    fn positional_arrays_are_rejected_at_each_authenticated_object_boundary() {
+        for (pointer, array) in [
+            (
+                "/header",
+                json!([
+                    "event",
+                    "im.message.receive_v1",
+                    "cli_app123",
+                    "tenant_123",
+                    TOKEN
+                ]),
+            ),
+            (
+                "/event",
+                json!([
+                    message()["event"]["sender"].clone(),
+                    message()["event"]["message"].clone()
+                ]),
+            ),
+            (
+                "/event/sender",
+                json!(["user", {"open_id":"ou_person1"}, "tenant_123"]),
+            ),
+            ("/event/sender/sender_id", json!(["ou_person1"])),
+            (
+                "/event/message",
+                json!([
+                    "om_message1",
+                    "oc_chat1",
+                    "p2p",
+                    "text",
+                    null,
+                    "{\"text\":\"hello\"}"
+                ]),
+            ),
+            ("/event/message/content", json!("[\"hello\"]")),
+        ] {
+            let mut value = message();
+            *value.pointer_mut(pointer).unwrap() = array;
+            let plain = value.to_string().into_bytes();
+            for body in [
+                plain.clone(),
+                serde_json::to_vec(&json!({"encrypt":encrypt(&plain)})).unwrap(),
+            ] {
+                rejected(parse_event(
+                    &sign(&body, NOW),
+                    &body,
+                    INSTALLATION,
+                    KEY,
+                    TOKEN,
+                    NOW,
+                ));
+            }
+        }
+        let raw = json!([
+            null,
+            "url_verification",
+            TOKEN,
+            "challenge",
+            null,
+            null,
+            null
+        ])
+        .to_string();
+        for body in [
+            raw.as_bytes().to_vec(),
+            serde_json::to_vec(&json!({"encrypt":encrypt(raw.as_bytes())})).unwrap(),
+        ] {
+            rejected(parse_event(
+                &HeaderMap::new(),
+                &body,
+                INSTALLATION,
+                KEY,
+                TOKEN,
+                NOW,
+            ));
+        }
+    }
+
+    #[test]
+    fn challenge_duplicate_secret_or_challenge_cannot_use_last_field_wins() {
+        for raw in [
+            format!("{{\"type\":\"url_verification\",\"token\":\"wrong\",\"token\":{0},\"challenge\":\"verify\"}}", json!(TOKEN)),
+            format!("{{\"type\":\"url_verification\",\"token\":{0},\"challenge\":\"verify\",\"challenge\":\"verify\"}}", json!(TOKEN)),
+        ] {
+            for body in [raw.as_bytes().to_vec(), serde_json::to_vec(&json!({"encrypt":encrypt(raw.as_bytes())})).unwrap()] {
+                rejected(parse_event(&HeaderMap::new(), &body, INSTALLATION, KEY, TOKEN, NOW));
+            }
+        }
     }
 }

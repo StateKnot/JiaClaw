@@ -764,8 +764,11 @@ mod tests {
         .await;
         let provider = BrokerrouterProvider::new(&url, "fixture-key");
         let request = prepared(&provider, false);
+        // This test proves headers arrive before the explicitly gated body.
+        // Allow the same finite local fixture boot budget used by other tests;
+        // a loaded parallel test runner is not a one-second transport contract.
         let pending = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             provider.post(OPERATION_ID, &request),
         )
         .await

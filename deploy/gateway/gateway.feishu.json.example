@@ -1,0 +1,18 @@
+{
+  "bind": "127.0.0.1:8081",
+  "registry_path": "/data/registry.sqlite3",
+  "request_timeout_seconds": 180,
+  "max_in_flight": 16,
+  "allow_private_http": true,
+  "backends": [{
+    "id": "alice",
+    "url": "http://alice-backend:8080",
+    "token_file": "/run/secrets/alice_backend_token"
+  }],
+  "feishu": [{
+    "binding_id": "11111111-1111-4111-8111-111111111111",
+    "app_secret_file": "/run/secrets/alice_feishu_app_secret",
+    "encrypt_key_file": "/run/secrets/alice_feishu_encrypt_key",
+    "verification_token_file": "/run/secrets/alice_feishu_verification_token"
+  }]
+}

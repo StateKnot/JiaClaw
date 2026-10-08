@@ -24,7 +24,8 @@ const MAX_AUDIT_EVENTS: i64 = 4096;
 const MAX_TELEGRAM_BINDINGS: i64 = 32;
 const MAX_SLACK_BINDINGS: i64 = 32;
 const MAX_DISCORD_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 5;
+const MAX_FEISHU_BINDINGS: i64 = 32;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -87,6 +88,22 @@ pub struct DiscordBindingSummary {
     pub sender_id: String,
     pub conversation_id: String,
     pub command_id: String,
+    pub enabled: bool,
+}
+
+/// Permanent dedicated Feishu enterprise application and private-chat ownership.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct FeishuBindingSummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub backend_id: String,
+    pub app_id: String,
+    pub tenant_key: String,
+    pub bot_open_id: String,
+    pub human_open_id: String,
+    pub chat_id: String,
     pub enabled: bool,
 }
 
@@ -284,6 +301,7 @@ impl Registry {
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute_batch(SCHEMA_V4)?;
             tx.execute_batch(SCHEMA_V5)?;
+            tx.execute_batch(SCHEMA_V6)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -302,6 +320,9 @@ impl Registry {
             }
             if version < 5 {
                 tx.execute_batch(SCHEMA_V5)?;
+            }
+            if version < 6 {
+                tx.execute_batch(SCHEMA_V6)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -1165,6 +1186,185 @@ impl Registry {
         Ok(binding)
     }
 
+    /// Bind an enabled user's backend to a dedicated Feishu application and private chat.
+    pub fn add_feishu_binding(
+        &self,
+        user_id: Uuid,
+        app_id: &str,
+        tenant_key: &str,
+        bot_open_id: &str,
+        human_open_id: &str,
+        chat_id: &str,
+    ) -> Result<FeishuBindingSummary> {
+        for (value, prefix) in [
+            (app_id, "cli_"),
+            (tenant_key, ""),
+            (bot_open_id, "ou_"),
+            (human_open_id, "ou_"),
+            (chat_id, "oc_"),
+        ] {
+            ensure!(
+                canonical_feishu_id(value, prefix),
+                "invalid canonical Feishu ID"
+            );
+        }
+        ensure!(
+            app_id.len() + tenant_key.len() + 1 <= 128,
+            "Feishu installation ID exceeds its size limit"
+        );
+        ensure!(
+            bot_open_id != human_open_id,
+            "Feishu human must differ from the bot"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let backend_id: String = tx
+            .query_row(
+                "SELECT backend_id FROM users WHERE id=?1 AND enabled=1",
+                [user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("enabled gateway user not found")?;
+        let count: i64 =
+            tx.query_row("SELECT count(*) FROM feishu_bindings", [], |row| row.get(0))?;
+        ensure!(
+            count < MAX_FEISHU_BINDINGS,
+            "gateway Feishu lifetime binding limit reached"
+        );
+        let reserved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM feishu_bindings WHERE user_id=?1 OR app_id=?2)",
+            params![user_id.to_string(), app_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !reserved,
+            "gateway Feishu user or app is permanently reserved, including revoked bindings"
+        );
+        let summary = FeishuBindingSummary {
+            id: Uuid::new_v4(),
+            user_id,
+            backend_id,
+            app_id: app_id.into(),
+            tenant_key: tenant_key.into(),
+            bot_open_id: bot_open_id.into(),
+            human_open_id: human_open_id.into(),
+            chat_id: chat_id.into(),
+            enabled: true,
+        };
+        let now = now_ms();
+        tx.execute("INSERT INTO feishu_bindings(id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,enabled,created_ms,updated_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?9)",
+            params![summary.id.to_string(),user_id.to_string(),summary.backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            None,
+            "feishu_binding_added",
+            Some(&summary.id.to_string()),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    /// Exact administrative identity, including permanent revocation and disabled users.
+    pub fn feishu_binding(&self, binding_id: Uuid) -> Result<Option<FeishuBindingSummary>> {
+        Ok(self.connection()?.query_row(
+            "SELECT id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,enabled FROM feishu_bindings WHERE id=?1",
+            [binding_id.to_string()], feishu_row,
+        ).optional()?)
+    }
+
+    /// Bounded lifetime history; secrets and prompts are never stored in this table.
+    pub fn list_feishu_bindings(&self) -> Result<Vec<FeishuBindingSummary>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,enabled FROM feishu_bindings ORDER BY created_ms,id LIMIT 32")?;
+        let rows = statement.query_map([], feishu_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Permanently revoke future admissions while retaining reservations and existing holds.
+    pub fn revoke_feishu_binding(&self, binding_id: Uuid) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user, enabled): (String, bool) = tx
+            .query_row(
+                "SELECT user_id,enabled FROM feishu_bindings WHERE id=?1",
+                [binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("gateway Feishu binding not found")?;
+        if enabled {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE feishu_bindings SET enabled=0,updated_ms=MAX(updated_ms,?2) WHERE id=?1",
+                params![binding_id.to_string(), now],
+            )?;
+            audit(
+                &tx,
+                uuid(user)?,
+                None,
+                None,
+                "feishu_binding_revoked",
+                Some(&binding_id.to_string()),
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Live ingress identity only; each effect must acquire a fresh shared write hold.
+    pub fn feishu_authorized(&self, binding_id: Uuid) -> Result<Option<FeishuBindingSummary>> {
+        feishu_on(&self.connection()?, binding_id)
+    }
+
+    /// Recheck current ownership and acquire the hold shared by HTTP, cron and all channels.
+    pub fn admit_feishu(
+        &self,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+    ) -> Result<FeishuBindingSummary> {
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "Feishu request ID must be RFC4122 UUIDv7"
+        );
+        ensure!(
+            matches!(operation, "feishu_execute" | "feishu_send"),
+            "invalid Feishu admission operation"
+        );
+        let object =
+            Uuid::parse_str(object_id).context("Feishu object ID must be a canonical UUID")?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "Feishu object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let binding = feishu_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, binding.user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        audit(
+            &tx,
+            binding.user_id,
+            None,
+            Some(request_id),
+            operation,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
     /// Read live key/user state for every request. No successful-authentication cache exists.
     pub fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let Some(parsed) = keys::parse(token) else {
@@ -1495,6 +1695,83 @@ fn discord_on(conn: &Connection, binding_id: Uuid) -> Result<Option<DiscordBindi
         [binding_id.to_string()], discord_row).optional()?)
 }
 
+fn canonical_feishu_id(value: &str, prefix: &str) -> bool {
+    value.len() > prefix.len()
+        && value.len() <= 128
+        && value.starts_with(prefix)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn feishu_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FeishuBindingSummary> {
+    let invalid = |index| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid gateway Feishu binding identity",
+            )),
+        )
+    };
+    let id = |index| -> rusqlite::Result<Uuid> {
+        let text: String = row.get(index)?;
+        Uuid::parse_str(&text)
+            .ok()
+            .filter(|id| {
+                !id.is_nil() && id.get_variant() == uuid::Variant::RFC4122 && id.to_string() == text
+            })
+            .ok_or_else(|| invalid(index))
+    };
+    let platform_id = |index, prefix| -> rusqlite::Result<String> {
+        let text: String = row.get(index)?;
+        if !canonical_feishu_id(&text, prefix) {
+            return Err(invalid(index));
+        }
+        Ok(text)
+    };
+    let app_id = platform_id(3, "cli_")?;
+    let tenant_key = platform_id(4, "")?;
+    if app_id.len() + tenant_key.len() + 1 > 128 {
+        return Err(invalid(4));
+    }
+    let bot_open_id = platform_id(5, "ou_")?;
+    let human_open_id = platform_id(6, "ou_")?;
+    if bot_open_id == human_open_id {
+        return Err(invalid(6));
+    }
+    let enabled: i64 = row.get(8)?;
+    if !matches!(enabled, 0 | 1) {
+        return Err(invalid(8));
+    }
+    let backend_id: String = row.get(2)?;
+    if backend_id.is_empty()
+        || backend_id.len() > 64
+        || !backend_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(invalid(2));
+    }
+    Ok(FeishuBindingSummary {
+        id: id(0)?,
+        user_id: id(1)?,
+        backend_id,
+        app_id,
+        tenant_key,
+        bot_open_id,
+        human_open_id,
+        chat_id: platform_id(7, "oc_")?,
+        enabled: enabled == 1,
+    })
+}
+
+fn feishu_on(conn: &Connection, binding_id: Uuid) -> Result<Option<FeishuBindingSummary>> {
+    Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.app_id,b.tenant_key,b.bot_open_id,b.human_open_id,b.chat_id,b.enabled FROM feishu_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
+        [binding_id.to_string()], feishu_row).optional()?)
+}
+
 fn insert_hold(tx: &Transaction<'_>, user_id: Uuid, request_id: Uuid, now: i64) -> Result<()> {
     let held: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
@@ -1814,6 +2091,32 @@ CREATE TRIGGER discord_binding_no_delete BEFORE DELETE ON discord_bindings
  BEGIN SELECT RAISE(ABORT,'Discord binding reservations are permanent'); END;
 ";
 
+// One enterprise application's callback credentials and bot are dedicated to one
+// user for the registry lifetime, including all revoked installations.
+const SCHEMA_V6: &str = "
+CREATE TABLE feishu_bindings(
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL UNIQUE, backend_id TEXT NOT NULL,
+ app_id TEXT NOT NULL UNIQUE CHECK(length(app_id) BETWEEN 5 AND 128 AND length(app_id)=length(CAST(app_id AS BLOB)) AND substr(app_id,1,4)='cli_' AND app_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+ tenant_key TEXT NOT NULL CHECK(length(tenant_key) BETWEEN 1 AND 128 AND length(tenant_key)=length(CAST(tenant_key AS BLOB)) AND tenant_key NOT GLOB '*[^A-Za-z0-9_-]*' AND length(app_id)+length(tenant_key)+1<=128),
+ bot_open_id TEXT NOT NULL CHECK(length(bot_open_id) BETWEEN 4 AND 128 AND length(bot_open_id)=length(CAST(bot_open_id AS BLOB)) AND substr(bot_open_id,1,3)='ou_' AND bot_open_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+ human_open_id TEXT NOT NULL CHECK(length(human_open_id) BETWEEN 4 AND 128 AND length(human_open_id)=length(CAST(human_open_id AS BLOB)) AND substr(human_open_id,1,3)='ou_' AND human_open_id NOT GLOB '*[^A-Za-z0-9_-]*' AND human_open_id<>bot_open_id),
+ chat_id TEXT NOT NULL CHECK(length(chat_id) BETWEEN 4 AND 128 AND length(chat_id)=length(CAST(chat_id AS BLOB)) AND substr(chat_id,1,3)='oc_' AND chat_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+ FOREIGN KEY(user_id,backend_id) REFERENCES users(id,backend_id) ON DELETE RESTRICT);
+CREATE TRIGGER feishu_binding_lifetime_limit BEFORE INSERT ON feishu_bindings WHEN (SELECT count(*) FROM feishu_bindings)>=32
+ BEGIN SELECT RAISE(ABORT,'Feishu lifetime binding limit reached'); END;
+CREATE TRIGGER feishu_binding_no_replace BEFORE INSERT ON feishu_bindings
+ WHEN EXISTS(SELECT 1 FROM feishu_bindings WHERE id=NEW.id OR user_id=NEW.user_id OR app_id=NEW.app_id)
+ BEGIN SELECT RAISE(ABORT,'Feishu binding reservations are permanent'); END;
+CREATE TRIGGER feishu_binding_immutable BEFORE UPDATE OF id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id ON feishu_bindings
+ WHEN NEW.id IS NOT OLD.id OR NEW.user_id IS NOT OLD.user_id OR NEW.backend_id IS NOT OLD.backend_id OR NEW.app_id IS NOT OLD.app_id OR NEW.tenant_key IS NOT OLD.tenant_key OR NEW.bot_open_id IS NOT OLD.bot_open_id OR NEW.human_open_id IS NOT OLD.human_open_id OR NEW.chat_id IS NOT OLD.chat_id
+ BEGIN SELECT RAISE(ABORT,'Feishu binding ownership is immutable'); END;
+CREATE TRIGGER feishu_binding_no_reactivate BEFORE UPDATE OF enabled ON feishu_bindings WHEN OLD.enabled=0 AND NEW.enabled<>0
+ BEGIN SELECT RAISE(ABORT,'Feishu binding revocation is permanent'); END;
+CREATE TRIGGER feishu_binding_no_delete BEFORE DELETE ON feishu_bindings
+ BEGIN SELECT RAISE(ABORT,'Feishu binding reservations are permanent'); END;
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1839,6 +2142,514 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    fn feishu_binding(registry: &Registry, user: Uuid, number: usize) -> FeishuBindingSummary {
+        registry
+            .add_feishu_binding(
+                user,
+                &format!("cli_app{number}"),
+                &format!("tenant_{number}"),
+                &format!("ou_bot{number}"),
+                &format!("ou_human{number}"),
+                &format!("oc_chat{number}"),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn feishu_reservations_and_all_owner_fields_remain_permanent_after_revocation() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = feishu_binding(registry, alice.user_id, 1);
+        assert_eq!(
+            registry.feishu_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        let conn = registry.connection().unwrap();
+        for sql in [
+            "UPDATE feishu_bindings SET app_id='cli_other'",
+            "UPDATE feishu_bindings SET tenant_key='other'",
+            "UPDATE feishu_bindings SET bot_open_id='ou_other'",
+            "UPDATE feishu_bindings SET human_open_id='ou_other'",
+            "UPDATE feishu_bindings SET chat_id='oc_other'",
+            "UPDATE feishu_bindings SET backend_id='bob'",
+            "DELETE FROM feishu_bindings",
+            "INSERT OR REPLACE INTO feishu_bindings SELECT * FROM feishu_bindings",
+        ] {
+            assert!(conn.execute_batch(sql).is_err(), "{sql}");
+        }
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.feishu_authorized(binding.id).unwrap().is_none());
+        registry.set_enabled(alice.user_id, true).unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_feishu(
+                binding.id,
+                request,
+                "feishu_execute",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        registry.revoke_feishu_binding(binding.id).unwrap();
+        registry.revoke_feishu_binding(binding.id).unwrap();
+        assert!(registry.feishu_authorized(binding.id).unwrap().is_none());
+        assert!(
+            !registry
+                .feishu_binding(binding.id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        assert!(registry
+            .add_feishu_binding(alice.user_id, "cli_new", "tenant_2", "ou_b", "ou_h", "oc_c")
+            .is_err());
+        assert!(registry
+            .add_feishu_binding(
+                bob.user_id,
+                &binding.app_id,
+                "different_tenant",
+                "ou_b",
+                "ou_h",
+                "oc_c"
+            )
+            .is_err());
+        assert!(conn
+            .execute_batch("UPDATE feishu_bindings SET enabled=1")
+            .is_err());
+        assert_eq!(
+            registry
+                .list()
+                .unwrap()
+                .iter()
+                .find(|u| u.user_id == alice.user_id)
+                .unwrap()
+                .hold
+                .as_ref()
+                .unwrap()
+                .request_id,
+            request
+        );
+        registry.rotate(alice.key_id).unwrap();
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.list_feishu_bindings().unwrap().len(), 1);
+        assert!(
+            !reopened
+                .feishu_binding(binding.id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+    }
+
+    #[test]
+    fn feishu_invalid_platform_metadata_cannot_create_binding_hold_or_audit() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let before = registry
+            .audit_list(alice.user_id, 0, 100, true)
+            .unwrap()
+            .events
+            .len();
+        for (field, value) in [
+            (0, "cli_"),
+            (0, "app1"),
+            (0, "cli_界"),
+            (0, "cli_a/b"),
+            (1, ""),
+            (1, "tenant:other"),
+            (1, "tenant\n"),
+            (2, "ou_"),
+            (2, "ou_界"),
+            (3, "ou_bot"),
+            (3, "ou_user "),
+            (4, "chat"),
+            (4, "oc_"),
+        ] {
+            let mut ids = ["cli_app", "tenant", "ou_bot", "ou_human", "oc_chat"];
+            ids[field] = value;
+            assert!(registry
+                .add_feishu_binding(alice.user_id, ids[0], ids[1], ids[2], ids[3], ids[4])
+                .is_err());
+        }
+        assert!(registry
+            .add_feishu_binding(
+                alice.user_id,
+                &format!("cli_{}", "a".repeat(123)),
+                "tt",
+                "ou_bot",
+                "ou_human",
+                "oc_chat"
+            )
+            .is_err());
+        assert!(registry.list_feishu_bindings().unwrap().is_empty());
+        assert_eq!(
+            registry
+                .audit_list(alice.user_id, 0, 100, true)
+                .unwrap()
+                .events
+                .len(),
+            before
+        );
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry
+            .add_feishu_binding(
+                alice.user_id,
+                "cli_app",
+                "tenant",
+                "ou_bot",
+                "ou_human",
+                "oc_chat"
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn feishu_shared_admission_rechecks_permission_metadata_and_other_effects() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user_with_access("alice", true).unwrap();
+        let readonly = principal(registry, &alice);
+        let full_key = registry.add_key(alice.user_id).unwrap();
+        let full = principal(registry, &full_key);
+        let binding = feishu_binding(registry, alice.user_id, 1);
+        let slack = slack_binding(registry, alice.user_id, 1);
+        let discord = discord_binding(registry, alice.user_id, 1);
+        let object = binding.id.to_string();
+        for (request, operation, object) in [
+            (Uuid::new_v4(), "feishu_execute", object.clone()),
+            (Uuid::now_v7(), "arbitrary_write", object.clone()),
+            (Uuid::now_v7(), "feishu_send", "om_message".into()),
+            (Uuid::now_v7(), "feishu_send", Uuid::nil().to_string()),
+            (
+                Uuid::now_v7(),
+                "feishu_send",
+                "ABCDEF01-2345-4678-9ABC-DEF012345678".into(),
+            ),
+        ] {
+            assert!(registry
+                .admit_feishu(binding.id, request, operation, &object)
+                .is_err());
+        }
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            registry
+                .admit_write(&readonly, Uuid::new_v4())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::ReadOnly)
+        );
+        let request = Uuid::now_v7();
+        registry
+            .admit_feishu(binding.id, request, "feishu_execute", &object)
+            .unwrap();
+        for result in [
+            registry.admit_write(&full, Uuid::now_v7()).map(|_| ()),
+            registry.admit_scheduled(alice.user_id, "alice", Uuid::now_v7()),
+            registry
+                .admit_slack(slack.id, Uuid::now_v7(), "slack_execute", &object)
+                .map(|_| ()),
+            registry
+                .admit_discord(discord.id, Uuid::now_v7(), "discord_send", &object)
+                .map(|_| ()),
+        ] {
+            assert_eq!(
+                result.unwrap_err().downcast_ref::<WriteAdmissionError>(),
+                Some(&WriteAdmissionError::Held)
+            );
+        }
+        registry.finish_write(alice.user_id, request, true).unwrap();
+        let request = Uuid::now_v7();
+        registry.admit_write(&full, request).unwrap();
+        assert_eq!(
+            registry
+                .admit_feishu(binding.id, Uuid::now_v7(), "feishu_send", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        registry
+            .finish_write(alice.user_id, request, false)
+            .unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert_eq!(
+            registry
+                .admit_feishu(binding.id, Uuid::now_v7(), "feishu_send", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        let audit = registry.audit_list(alice.user_id, 0, 100, true).unwrap();
+        let entry = audit
+            .events
+            .iter()
+            .find(|e| e.action == "feishu_execute")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entry.note.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"binding_id":binding.id.to_string(),"object_id":object})
+        );
+    }
+
+    #[test]
+    fn feishu_audit_failure_rolls_back_binding_revocation_and_admission() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        let blocker = "CREATE TRIGGER fail_feishu_audit BEFORE INSERT ON audit_events WHEN NEW.action LIKE 'feishu_%' BEGIN SELECT RAISE(ABORT,'fixture failure'); END;";
+        conn.execute_batch(blocker).unwrap();
+        assert!(registry
+            .add_feishu_binding(
+                alice.user_id,
+                "cli_app",
+                "tenant",
+                "ou_bot",
+                "ou_human",
+                "oc_chat"
+            )
+            .is_err());
+        assert!(registry.list_feishu_bindings().unwrap().is_empty());
+        conn.execute_batch("DROP TRIGGER fail_feishu_audit")
+            .unwrap();
+        let binding = feishu_binding(registry, alice.user_id, 1);
+        conn.execute_batch(blocker).unwrap();
+        assert!(registry.revoke_feishu_binding(binding.id).is_err());
+        assert!(registry.feishu_authorized(binding.id).unwrap().is_some());
+        assert!(registry
+            .admit_feishu(
+                binding.id,
+                Uuid::now_v7(),
+                "feishu_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+    }
+
+    #[test]
+    fn feishu_lifetime_capacity_includes_revocations_and_sql_rejects_invalid_owners() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let mut first = None;
+        for number in 0..32 {
+            let user = registry.add_user(&format!("backend-{number}")).unwrap();
+            let binding = feishu_binding(registry, user.user_id, number);
+            registry.revoke_feishu_binding(binding.id).unwrap();
+            first.get_or_insert(user);
+        }
+        let user = first.unwrap();
+        let error = registry
+            .add_feishu_binding(
+                user.user_id,
+                "cli_new",
+                "tenant",
+                "ou_bot",
+                "ou_human",
+                "oc_chat",
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("lifetime binding limit"));
+        assert_eq!(registry.list_feishu_bindings().unwrap().len(), 32);
+        let conn = registry.connection().unwrap();
+        assert!(conn.execute("INSERT INTO feishu_bindings(id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'backend-0','cli_new','tenant','ou_bot','ou_human','oc_chat',1,0,0)",params![Uuid::new_v4().to_string(),user.user_id.to_string()]).is_err());
+        let other = Fixture::new();
+        let user = other.registry.add_user("alice").unwrap();
+        let conn = other.registry.connection().unwrap();
+        for (app, tenant, bot, human, chat) in [
+            ("cli_", "tenant", "ou_bot", "ou_human", "oc_chat"),
+            ("cli_app", "bad tenant", "ou_bot", "ou_human", "oc_chat"),
+            ("cli_app", "tenant", "ou_bot", "ou_bot", "oc_chat"),
+            ("cli_app", "tenant", "ou_bot", "ou_human", "oc_界"),
+        ] {
+            assert!(conn.execute("INSERT INTO feishu_bindings(id,user_id,backend_id,app_id,tenant_key,bot_open_id,human_open_id,chat_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'alice',?3,?4,?5,?6,?7,1,0,0)",params![Uuid::new_v4().to_string(),user.user_id.to_string(),app,tenant,bot,human,chat]).is_err());
+        }
+    }
+
+    #[test]
+    fn feishu_corrupt_owner_rows_fail_closed_without_new_hold_or_audit() {
+        for (column, value) in [
+            ("app_id", "cli_"),
+            ("tenant_key", "bad tenant"),
+            ("bot_open_id", "ou_human1"),
+            ("human_open_id", "ou_"),
+            ("chat_id", "oc_界"),
+            ("enabled", "2"),
+        ] {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let user = registry.add_user("alice").unwrap();
+            let binding = feishu_binding(registry, user.user_id, 1);
+            let before = registry
+                .audit_list(user.user_id, 0, 100, true)
+                .unwrap()
+                .events
+                .len();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch(
+                "PRAGMA ignore_check_constraints=ON; DROP TRIGGER feishu_binding_immutable;",
+            )
+            .unwrap();
+            conn.execute(&format!("UPDATE feishu_bindings SET {column}=?1"), [value])
+                .unwrap();
+            assert!(registry
+                .feishu_authorized(binding.id)
+                .map(|b| b.is_none())
+                .unwrap_or(true));
+            assert!(registry
+                .admit_feishu(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "feishu_execute",
+                    &binding.id.to_string()
+                )
+                .is_err());
+            assert!(registry.list().unwrap()[0].hold.is_none());
+            assert_eq!(
+                registry
+                    .audit_list(user.user_id, 0, 100, true)
+                    .unwrap()
+                    .events
+                    .len(),
+                before
+            );
+        }
+    }
+
+    fn downgrade_before_feishu(conn: &Connection, version: i64) {
+        conn.execute_batch("DROP TABLE feishu_bindings").unwrap();
+        if version < 5 {
+            conn.execute_batch("DROP TABLE discord_bindings").unwrap();
+        }
+        if version < 4 {
+            conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+        }
+        if version < 3 {
+            conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
+        }
+        if version < 2 {
+            conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend;")
+                .unwrap();
+        }
+        conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
+    #[test]
+    fn feishu_schema_six_preserves_every_prior_channel_permissions_audit_and_review_hold() {
+        for version in 1..=5 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry
+                .add_user_with_access("alice", version >= 3)
+                .unwrap();
+            let bob = registry.add_user("bob").unwrap();
+            registry.revoke(bob.key_id).unwrap();
+            registry.set_enabled(bob.user_id, false).unwrap();
+            if version >= 2 {
+                let b = registry
+                    .add_telegram_binding(alice.user_id, "123", "456")
+                    .unwrap();
+                registry.revoke_telegram_binding(b.id).unwrap();
+            }
+            if version >= 4 {
+                let b = slack_binding(registry, alice.user_id, 1);
+                registry.revoke_slack_binding(b.id).unwrap();
+            }
+            if version >= 5 {
+                let b = discord_binding(registry, alice.user_id, 1);
+                registry.revoke_discord_binding(b.id).unwrap();
+            }
+            let request = Uuid::now_v7();
+            registry
+                .admit_scheduled(alice.user_id, "alice", request)
+                .unwrap();
+            registry
+                .finish_write(alice.user_id, request, false)
+                .unwrap();
+            let users = serde_json::to_value(registry.list().unwrap()).unwrap();
+            let keys =
+                serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap();
+            let telegram = registry.list_telegram_bindings().unwrap();
+            let slack = registry.list_slack_bindings().unwrap();
+            let discord = registry.list_discord_bindings().unwrap();
+            let audit =
+                serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap();
+            let conn = registry.connection().unwrap();
+            downgrade_before_feishu(&conn, version);
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(
+                serde_json::to_value(migrated.list().unwrap()).unwrap(),
+                users
+            );
+            assert_eq!(
+                serde_json::to_value(migrated.list_keys(alice.user_id, 100, 0).unwrap()).unwrap(),
+                keys
+            );
+            assert_eq!(migrated.list_telegram_bindings().unwrap(), telegram);
+            assert_eq!(migrated.list_slack_bindings().unwrap(), slack);
+            assert_eq!(migrated.list_discord_bindings().unwrap(), discord);
+            assert_eq!(
+                serde_json::to_value(migrated.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap(),
+                audit
+            );
+            assert_eq!(principal(&migrated, &alice).read_only, version >= 3);
+            assert!(migrated.authenticate(&bob.token).unwrap().is_none());
+            assert!(migrated.list_feishu_bindings().unwrap().is_empty());
+            let binding = feishu_binding(&migrated, alice.user_id, 1);
+            assert_eq!(
+                migrated
+                    .admit_feishu(
+                        binding.id,
+                        Uuid::now_v7(),
+                        "feishu_execute",
+                        &binding.id.to_string()
+                    )
+                    .unwrap_err()
+                    .downcast_ref::<WriteAdmissionError>(),
+                Some(&WriteAdmissionError::Held)
+            );
+            assert_eq!(
+                migrated
+                    .connection()
+                    .unwrap()
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                6
+            );
+        }
+    }
+
+    #[test]
+    fn feishu_late_migration_failure_rolls_back_every_prior_schema_step() {
+        for version in 1..=5 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry.add_user("alice").unwrap();
+            let conn = registry.connection().unwrap();
+            downgrade_before_feishu(&conn, version);
+            conn.execute_batch("CREATE TRIGGER feishu_binding_no_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT,'fixture conflict'); END;").unwrap();
+            let schema:String=conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)",[],|row|row.get(0)).unwrap();
+            assert!(Registry::open(&registry.path).is_err());
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)",[],|row|row.get::<_,String>(0)).unwrap(),schema);
+            conn.execute_batch("DROP TRIGGER feishu_binding_no_delete")
+                .unwrap();
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(principal(&migrated, &alice).backend_id, "alice");
+            assert!(migrated.list_feishu_bindings().unwrap().is_empty());
+        }
     }
 
     const DISCORD_VERIFY_KEY: &str =
@@ -2359,7 +3170,8 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE discord_bindings").unwrap();
+            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
+                .unwrap();
             if version < 4 {
                 conn.execute_batch("DROP TABLE slack_bindings").unwrap();
             }
@@ -2425,7 +3237,8 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE discord_bindings").unwrap();
+            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
+                .unwrap();
             if version < 4 {
                 conn.execute_batch("DROP TABLE slack_bindings").unwrap();
             }
@@ -3079,7 +3892,7 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
@@ -3142,7 +3955,7 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
@@ -3798,7 +4611,7 @@ mod tests {
         let bindings = registry.list_telegram_bindings().unwrap();
         let conn = registry.connection().unwrap();
         let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
-        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
+        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
         drop(conn);
         assert!(registry.authenticate(&active.token).is_err());
         let migrated = Registry::open(&registry.path).unwrap();
@@ -3847,7 +4660,7 @@ mod tests {
         let registry = &fixture.registry;
         let active = registry.add_user("alice").unwrap();
         let conn = registry.connection().unwrap();
-        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
         // The v2 schema and v3 column are created before the v3 trigger conflicts.
         // Both must be rolled back together with user_version.
         assert!(Registry::open(&registry.path).is_err());
@@ -4370,7 +5183,7 @@ mod tests {
             .unwrap();
         // No bindings exist. Removing the v2/v3/v4 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
-        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
+        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(
             registry.list().is_err(),
