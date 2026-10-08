@@ -1273,6 +1273,34 @@ pub(crate) fn search_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn workspace_lock_busy<T>(result: &Result<T, JiaClawError>) -> bool {
+        matches!(result, Err(JiaClawError::ToolExecution(message))
+            if message.starts_with("memory file: 安全/IO 错误: workspace write lock busy or unsupported: ")
+                && message.ends_with(&format!("(os error {})", libc::EWOULDBLOCK)))
+    }
+
+    #[cfg(unix)]
+    fn after_workspace_contention<T>(
+        mut operation: impl FnMut() -> Result<T, JiaClawError>,
+    ) -> Result<T, JiaClawError> {
+        // Use the concurrent writer test's existing 200 x 2ms budget. Thread
+        // completion alone does not join kernel references inherited by a
+        // concurrently forked process: flock survives until its last fd closes.
+        // The tool error already rendered its io::Error as text. Retry only the
+        // fixed workspace-flock context and EWOULDBLOCK errno suffix; unsupported
+        // locks and other I/O failures return immediately. Production remains nonblocking.
+        let mut result = operation();
+        for _ in 1..200 {
+            if !workspace_lock_busy(&result) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            result = operation();
+        }
+        result
+    }
     #[tokio::test]
     async fn cancellation_retains_capacity_until_blocking_work_completes() {
         use std::sync::{
@@ -1389,16 +1417,8 @@ mod tests {
                 let path = ws.path();
                 scope.spawn(move || {
                     let text = format!("record-{i:02}");
-                    for _ in 0..200 {
-                        match write_text(path, "a", &text, false, 32768) {
-                            Ok(_) => return,
-                            Err(e) if e.to_string().contains("lock busy") => {
-                                std::thread::sleep(std::time::Duration::from_millis(2))
-                            }
-                            Err(e) => panic!("{e}"),
-                        }
-                    }
-                    panic!("lock did not release");
+                    after_workspace_contention(|| write_text(path, "a", &text, false, 32768))
+                        .unwrap();
                 });
             }
         });
@@ -1408,10 +1428,89 @@ mod tests {
             assert_eq!(text.matches(&format!("record-{i:02}")).count(), 1);
         }
         let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
-        let lock = writer_lock(&root).unwrap();
-        assert!(write_text(ws.path(), "a", "denied", false, 32768).is_err());
+        let lock = after_workspace_contention(|| writer_lock(&root)).unwrap();
+        assert!(workspace_lock_busy(&write_text(
+            ws.path(),
+            "a",
+            "denied",
+            false,
+            32768,
+        )));
         drop(lock);
-        write_text(ws.path(), "a", "after", false, 32768).unwrap();
+        after_workspace_contention(|| write_text(ws.path(), "a", "after", false, 32768)).unwrap();
+        let text = std::fs::read_to_string(ws.path().join("a")).unwrap();
+        assert!(!text.contains("denied"));
+        assert_eq!(text.lines().filter(|line| !line.is_empty()).count(), 13);
+        assert_eq!(text.matches("after").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cloned_directory_lock_reference_must_close_before_reacquisition() {
+        let ws = tempfile::tempdir().unwrap();
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let lock = after_workspace_contention(|| writer_lock(&root)).unwrap();
+        // dup and fork both retain references to this same kernel flock. A real
+        // duplicated descriptor deterministically models a child before CLOEXEC.
+        let retained = lock.try_clone().unwrap();
+        drop(lock);
+        assert!(workspace_lock_busy(&writer_lock(&root)));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                release_rx
+                    .recv_timeout(std::time::Duration::from_millis(400))
+                    .unwrap();
+                drop(retained);
+            });
+            let mut first = true;
+            let lock = after_workspace_contention(|| {
+                let result = writer_lock(&root);
+                if first {
+                    assert!(workspace_lock_busy(&result));
+                    first = false;
+                    release_tx.send(()).unwrap();
+                }
+                result
+            })
+            .unwrap();
+            assert!(!first);
+            assert!(workspace_lock_busy(&write_text(
+                ws.path(),
+                "a",
+                "denied",
+                false,
+                32768,
+            )));
+            drop(lock);
+        });
+        after_workspace_contention(|| write_text(ws.path(), "a", "committed", false, 32768))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("a")).unwrap(),
+            "committed"
+        );
+        let unsupported: Result<(), JiaClawError> = Err(failure(format!(
+            "workspace write lock busy or unsupported: {}",
+            std::io::Error::from_raw_os_error(libc::ENOTSUP),
+        )));
+        assert!(!workspace_lock_busy(&unsupported));
+        let other: Result<(), JiaClawError> = Err(failure(std::io::Error::from_raw_os_error(
+            libc::EWOULDBLOCK,
+        )));
+        assert!(!workspace_lock_busy(&other));
+        for error in [unsupported, other] {
+            let Err(JiaClawError::ToolExecution(message)) = error else {
+                panic!("expected the existing rendered tool error");
+            };
+            let mut calls = 0;
+            let result = after_workspace_contention::<()>(|| {
+                calls += 1;
+                Err(JiaClawError::ToolExecution(message.clone()))
+            });
+            assert!(result.is_err());
+            assert_eq!(calls, 1, "non-contention failure must not be retried");
+        }
     }
 
     #[test]

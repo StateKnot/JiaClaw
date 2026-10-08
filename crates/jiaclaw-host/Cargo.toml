@@ -50,8 +50,9 @@ quick-xml = { version = "=0.39.4", default-features = false }
 ring = "0.17"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 fs2 = "=0.4.3"
+rustix = { version = "=1.1.5", features = ["fs"] }
 libc = "0.2"
-rusqlite = { version = "=0.32.1", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
 chrono = "=0.4.45"
 chrono-tz = "=0.10.4"
 croner = "=4.0.1"

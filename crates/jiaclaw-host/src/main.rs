@@ -1024,6 +1024,23 @@ fn build_router_with_body_limit(
             "/internal/gateway/channel/chat",
             post(tenant_channel::chat).layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
         )
+        .route(
+            "/internal/channels/slack/status",
+            get(tenant_channel::slack_status),
+        )
+        .route(
+            "/internal/channels/slack-binding",
+            post(tenant_channel::slack_bind).layer(DefaultBodyLimit::max(body_limit.min(4096))),
+        )
+        .route(
+            "/internal/channels/slack/execute",
+            post(tenant_channel::slack_chat)
+                .layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
+        )
+        .route(
+            "/internal/channels/slack/requests/:request_id",
+            get(tenant_channel::slack_receipt),
+        )
         .route("/internal/scheduler/status", get(tenant_scheduler::status))
         .route(
             "/internal/scheduler/dispatch",

@@ -165,6 +165,81 @@ pub enum Commands {
         #[arg(long)]
         event: String,
     },
+    /// Permanently bind a dedicated Slack app installation and private DM to one user.
+    SlackBind {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long)]
+        team_id: String,
+        #[arg(long)]
+        app_id: String,
+        #[arg(long)]
+        bot_user_id: String,
+        #[arg(long)]
+        bot_id: String,
+        #[arg(long)]
+        sender_id: String,
+        #[arg(long)]
+        conversation_id: String,
+    },
+    /// List lifetime Slack bindings, including permanent revocations; no credentials.
+    SlackBindings {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Permanently revoke a Slack installation without freeing its owner reservation.
+    SlackRevoke {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+    },
+    /// Inspect private Slack queues after stopping gateway; no credentials are printed.
+    SlackInspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long, value_parser = ["events", "deliveries", "operations"])]
+        kind: String,
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=16000))]
+        offset: u16,
+    },
+    /// Record a verified Slack receipt for an unknown send, without sending again.
+    SlackResolve {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        receipt: String,
+    },
+    /// Cancel remaining Slack sends after external review; requires stopped gateway.
+    SlackCancel {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
+    /// Purge only fully resolved Slack events, retaining dedup tombstones.
+    SlackPurge {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
     /// Clear an uncertain write hold only after checking that its backend is idle.
     ReviewClear {
         #[arg(long)]
@@ -364,6 +439,93 @@ pub async fn run(command: Commands) -> Result<()> {
             binding,
             super::telegram::AdminAction::Purge { event },
         )?),
+        Commands::SlackBind {
+            config,
+            user,
+            team_id,
+            app_id,
+            bot_user_id,
+            bot_id,
+            sender_id,
+            conversation_id,
+        } => {
+            let (config, registry) = registry(&config)?;
+            let owner = registry
+                .list()?
+                .into_iter()
+                .find(|entry| entry.user_id == user)
+                .context("gateway user not found")?;
+            ensure!(
+                config
+                    .backends
+                    .iter()
+                    .any(|entry| entry.id == owner.backend_id),
+                "user backend is not configured"
+            );
+            output(&serde_json::to_value(registry.add_slack_binding(
+                user,
+                &team_id,
+                &app_id,
+                &bot_user_id,
+                &bot_id,
+                &sender_id,
+                &conversation_id,
+            )?)?)
+        }
+        Commands::SlackBindings { config } => {
+            let (_, registry) = registry(&config)?;
+            output(&json!({"bindings":registry.list_slack_bindings()?}))
+        }
+        Commands::SlackRevoke { config, binding } => {
+            let (_, registry) = registry(&config)?;
+            registry.revoke_slack_binding(binding)?;
+            output(&json!({"binding_id":binding.to_string(),"revoked":true}))
+        }
+        Commands::SlackInspect {
+            config,
+            binding,
+            kind,
+            event,
+            limit,
+            offset,
+        } => output(&super::slack::admin(
+            &Config::load(&config)?,
+            binding,
+            super::slack::AdminAction::Inspect {
+                kind,
+                event,
+                limit: usize::from(limit),
+                offset: usize::from(offset),
+            },
+        )?),
+        Commands::SlackResolve {
+            config,
+            binding,
+            delivery,
+            receipt,
+        } => output(&super::slack::admin(
+            &Config::load(&config)?,
+            binding,
+            super::slack::AdminAction::Resolve { delivery, receipt },
+        )?),
+        Commands::SlackCancel {
+            config,
+            binding,
+            event,
+        } => output(&super::slack::admin(
+            &Config::load(&config)?,
+            binding,
+            super::slack::AdminAction::Cancel { event },
+        )?),
+        Commands::SlackPurge {
+            config,
+            binding,
+            event,
+        } => output(&super::slack::admin(
+            &Config::load(&config)?,
+            binding,
+            super::slack::AdminAction::Purge { event },
+        )?),
         Commands::ReviewClear {
             config,
             user,
@@ -374,9 +536,8 @@ pub async fn run(command: Commands) -> Result<()> {
                 confirm_backend_idle,
                 "review-clear requires --confirm-backend-idle after checking the backend"
             );
-            let (_, registry) = registry(&config)?;
-            let current_config = Config::load(&config)?;
-            let _channel_guard = super::telegram::review_guard(&current_config, &registry, user)?;
+            let (current_config, registry) = registry(&config)?;
+            let _channel_guard = super::channel_review_guard(&current_config, &registry, user)?;
             registry.clear_review(user, &note)?;
             output(&json!({"user_id":user.to_string(),"review_cleared":true}))
         }
@@ -430,6 +591,159 @@ mod tests {
         ])
         .is_err());
         assert!(Args::try_parse_from(["gateway", "serve"]).is_err());
+    }
+
+    #[test]
+    fn slack_commands_require_complete_explicit_ownership_and_never_accept_credentials() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "slack-bind",
+            "--config",
+            "c.json",
+            "--user",
+            user,
+            "--team-id",
+            "T1",
+            "--app-id",
+            "A1",
+            "--bot-user-id",
+            "W10",
+            "--bot-id",
+            "B1",
+            "--sender-id",
+            "U11",
+            "--conversation-id",
+            "D1",
+        ];
+        let Commands::SlackBind {
+            user: actual,
+            team_id,
+            app_id,
+            bot_user_id,
+            bot_id,
+            sender_id,
+            conversation_id,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(actual.to_string(), user);
+        assert_eq!(
+            (
+                team_id.as_str(),
+                app_id.as_str(),
+                bot_user_id.as_str(),
+                bot_id.as_str(),
+                sender_id.as_str(),
+                conversation_id.as_str()
+            ),
+            ("T1", "A1", "W10", "B1", "U11", "D1")
+        );
+        for index in (2..base.len()).step_by(2) {
+            let mut missing = base.to_vec();
+            missing.drain(index..index + 2);
+            assert!(Args::try_parse_from(missing).is_err());
+        }
+        for flag in ["--token", "--bot-token", "--signing-secret", "--backend"] {
+            let mut supplied = base.to_vec();
+            supplied.extend([flag, "provided-secret"]);
+            assert!(Args::try_parse_from(supplied).is_err());
+        }
+        assert!(Args::try_parse_from(["gateway", "slack-bindings", "--config", "c.json"]).is_ok());
+        for command in [
+            "slack-revoke",
+            "slack-inspect",
+            "slack-resolve",
+            "slack-cancel",
+            "slack-purge",
+        ] {
+            assert!(Args::try_parse_from(["gateway", command, "--config", "c.json"]).is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "slack-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            user
+        ])
+        .is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "slack-resolve",
+            "--config",
+            "c.json",
+            "--binding",
+            user,
+            "--delivery",
+            user,
+            "--receipt",
+            "slack:1234567890.000001"
+        ])
+        .is_ok());
+        for command in ["slack-cancel", "slack-purge"] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                command,
+                "--config",
+                "c.json",
+                "--binding",
+                user,
+                "--event",
+                user
+            ])
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn slack_inspection_pages_and_kinds_are_bounded_before_dispatch() {
+        let binding = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "slack-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "operations",
+        ];
+        let Commands::SlackInspect { limit, offset, .. } =
+            Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!((limit, offset), (20, 0));
+        for (limit, offset) in [("1", "0"), ("100", "16000")] {
+            let mut supplied = base.to_vec();
+            supplied.extend(["--limit", limit, "--offset", offset]);
+            assert!(Args::try_parse_from(supplied).is_ok());
+        }
+        for (limit, offset) in [
+            ("0", "0"),
+            ("101", "0"),
+            ("-1", "0"),
+            ("1", "16001"),
+            ("1", "-1"),
+        ] {
+            let mut supplied = base.to_vec();
+            supplied.extend(["--limit", limit, "--offset", offset]);
+            assert!(Args::try_parse_from(supplied).is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "slack-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "secrets"
+        ])
+        .is_err());
     }
 
     #[test]

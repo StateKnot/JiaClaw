@@ -58,7 +58,7 @@ JSON 入站最多 64 KiB，正文读取 10 秒，text 最多 16 KiB UTF-8；入�
 
 ## 持久状态、容量与未知结果
 
-每个绑定的文件固定为 registry 同级 `telegram/<binding UUID>.sqlite3`，目录 0700、文件 0600、拒绝符号/硬链接及特殊文件，服务持生命周期排他锁。owner protocol 1 校验不可变身份；内部 SessionStore 仍为 schema 10，registry 当前为 schema 3（只读 Key 迁移保留本批 schema 2 的绑定），不能把普通 session DB 或别人的库搬进来收养。
+每个绑定的文件固定为 registry 同级 `telegram/<binding UUID>.sqlite3`，目录 0700、文件 0600、拒绝符号/硬链接及特殊文件，服务持生命周期排他锁。owner protocol 1 校验不可变身份；内部 SessionStore 仍为 schema 10，registry 当前为 schema 4（保留只读 Key 与 Telegram 绑定，并扩展 Slack 身份），不能把普通 session DB 或别人的库搬进来收养。
 
 | 边界 | 行为 |
 |---|---|

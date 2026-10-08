@@ -487,6 +487,32 @@ try:
     wait_gateway()
     assert request('/api/sessions', issued['alice']['token'])[0] == 401
     assert messages(a) == a_history and messages(b) == b_history
+    # Schema 4 bindings persist on the real bounded gateway volume; runtime stays
+    # explicitly off. Platform ingress/provisioning is qualified separately.
+    slack_binding = admin('slack-bind', '--user', issued['alice']['user_id'],
+                          '--team-id', 'TCONTAINER', '--app-id', 'ACONTAINER',
+                          '--bot-user-id', 'WBOTCONTAINER', '--bot-id', 'BCONTAINER',
+                          '--sender-id', 'UHUMANCONTAINER', '--conversation-id', 'DCONTAINER')
+    assert slack_binding['backend_id'] == 'alice' and slack_binding['enabled']
+    assert admin('slack-bindings')['bindings'] == [slack_binding]
+    assert request('/hooks/slack/' + slack_binding['id'], method='POST', data={})[0] == 404
+    for path in ['/internal/channels/slack/status', '/internal/channels/slack-binding',
+                 '/internal/channels/slack/execute', '/api/gateway/slack-bindings']:
+        assert request(path, a)[0] == 404, path
+    admin('slack-revoke', '--binding', slack_binding['id'])
+    docker('restart', gateway_name)
+    wait_gateway()
+    restored_binding = admin('slack-bindings')['bindings'][0]
+    assert restored_binding == dict(slack_binding, enabled=False)
+    rejected_binding = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'slack-bind',
+                              '--config', '/etc/jiaclaw/gateway.json', '--user', issued['bob']['user_id'],
+                              '--team-id', 'TCONTAINER', '--app-id', 'ACONTAINER',
+                              '--bot-user-id', 'WBOTCONTAINER', '--bot-id', 'BCONTAINER',
+                              '--sender-id', 'UBOBCONTAINER', '--conversation-id', 'DBOBCONTAINER', check=False)
+    assert rejected_binding.returncode != 0, 'revoked installation was reassigned'
+    assert admin('slack-bindings')['bindings'] == [restored_binding]
+    assert messages(a) == a_history and messages(b) == b_history
+    print('PASS: schema 4 Slack immutable reservation and revocation survive real bounded-volume restart; default-off ingress and private routes stay unavailable')
     # Persisted admission is observed through the real admin API before SIGKILL.
     # Pausing only this fixture backend holds the write without vendor calls.
     docker('pause', backend_names['alice'])
@@ -531,8 +557,31 @@ try:
     chat(b, 'Bob remains available while Alice requires review.', session='during-hold')
     assert messages(a) == a_history
     review_note = 'Fixture backend was stopped and restarted; external work is disabled and reviewed. "核对"'
-    admin('review-clear', '--user', issued['alice']['user_id'], '--confirm-backend-idle',
-          '--note', review_note)
+    # A retained channel binding requires the gateway process lock even when
+    # revoked and never enabled. Live maintenance must fail without clearing
+    # the recovered HTTP hold; use the documented stopped-volume workflow.
+    before_review, _ = audit_history(issued['alice']['user_id'])
+    denied = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'review-clear',
+                    '--config', '/etc/jiaclaw/gateway.json', '--user', issued['alice']['user_id'],
+                    '--confirm-backend-idle', '--note', review_note, check=False)
+    assert denied.returncode != 0 and 'stop gateway before reviewing channel queues' in denied.stderr
+    assert audit_history(issued['alice']['user_id'])[0] == before_review
+    assert next(user for user in admin('user-list')['users']
+                if user['user_id'] == issued['alice']['user_id'])['hold'] == user['hold']
+    docker('stop', '--time=155', gateway_name, timeout=165)
+    maintenance_name = prefix + '-maintenance'
+    containers.append(maintenance_name)
+    maintenance_args = container_args(maintenance_name, volume_names['gateway'], net_names['ingress'])
+    maintenance_args += ['--mount', 'type=bind,src=' + str(gateway_config)
+                         + ',dst=/etc/jiaclaw/gateway.json,readonly']
+    cleared = docker('run', *maintenance_args, image, 'gateway', 'review-clear',
+                     '--config', '/etc/jiaclaw/gateway.json', '--user', issued['alice']['user_id'],
+                     '--confirm-backend-idle', '--note', review_note)
+    assert json.loads(cleared.stdout)['review_cleared'] is True
+    docker('rm', maintenance_name)
+    containers.remove(maintenance_name)
+    docker('start', gateway_name)
+    wait_gateway()
     recovery_events, _ = audit_history(issued['alice']['user_id'])
     recovered = next(event for event in reversed(recovery_events) if event['action'] == 'write_recovered_for_review')
     lifecycle = [event for event in recovery_events if event['request_id'] == recovered['request_id']]
