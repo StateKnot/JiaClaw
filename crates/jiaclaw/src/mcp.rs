@@ -703,17 +703,45 @@ mod tests {
     #[tokio::test]
     async fn deadline_is_finite_and_not_retried() {
         let fixture = Fixture::start(Mode::Delay, false).await;
-        let mut config = fixture.config();
-        config.servers[0].timeout_secs = 1;
-        let mut registry = ToolRegistry::new();
-        initialize(&config, &mut registry).await.unwrap();
-        let start = std::time::Instant::now();
-        assert!(registry
-            .get("mcp_inventory_lookup")
-            .unwrap()
-            .execute(json!({"query": "abc"}))
+        let config = fixture.config();
+        let server = &config.servers[0];
+        // Exercise the adapter's one-second call deadline after real, bounded
+        // discovery. Schema/bootstrap scheduling is not the behavior under test.
+        let (client, tool, input, output) =
+            tokio::time::timeout(Duration::from_secs(server.timeout_secs), async {
+                let client = connect(server).await.unwrap();
+                let catalog = client.list_tools().await.unwrap();
+                let tool = catalog.find(&server.tools[0].name).unwrap().clone();
+                assert_eq!(
+                    mcp_tool_descriptor_digest(tool.raw()).unwrap().to_string(),
+                    server.tools[0].descriptor_sha256
+                );
+                let input = compile_schema(tool.input_schema()).unwrap();
+                let output = tool
+                    .output_schema()
+                    .map(compile_schema)
+                    .transpose()
+                    .unwrap();
+                (client, tool, input, output)
+            })
             .await
-            .is_err());
+            .expect("bounded MCP fixture discovery failed");
+        let binding = RemoteTool {
+            name: format!("mcp_{}_{}", server.name, server.tools[0].alias),
+            description: tool.description().unwrap().to_owned(),
+            client,
+            tool,
+            input,
+            output,
+            concurrency: Arc::new(Semaphore::new(server.max_concurrent_calls)),
+            deadline: Duration::from_secs(1),
+            maximum_result_bytes: server.max_response_bytes,
+        };
+        let start = std::time::Instant::now();
+        let error = binding.execute(json!({"query": "abc"})).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("call deadline exceeded; remote outcome is unknown"));
         assert!(start.elapsed() < Duration::from_millis(1800));
         assert_eq!(fixture.call_count(), 1);
     }

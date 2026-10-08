@@ -445,6 +445,7 @@ mod tests {
             scheduled_jobs: true,
             telegram: None,
             slack: None,
+            discord: None,
         });
         (state, user, fake, server)
     }

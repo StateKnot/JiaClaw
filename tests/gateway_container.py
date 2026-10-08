@@ -513,6 +513,31 @@ try:
     assert admin('slack-bindings')['bindings'] == [restored_binding]
     assert messages(a) == a_history and messages(b) == b_history
     print('PASS: schema 4 Slack immutable reservation and revocation survive real bounded-volume restart; default-off ingress and private routes stay unavailable')
+    # Discord reservations remain permanent even with no runtime/state key.
+    discord_binding = admin('discord-bind', '--user', issued['alice']['user_id'],
+                            '--application-id', '1001', '--verify-key', '11' * 32,
+                            '--bot-user-id', '1002', '--sender-id', '1003',
+                            '--conversation-id', '1004', '--command-id', '1005')
+    assert discord_binding['backend_id'] == 'alice' and discord_binding['enabled']
+    assert admin('discord-bindings')['bindings'] == [discord_binding]
+    assert request('/hooks/discord/' + discord_binding['id'], method='POST', data={})[0] == 404
+    for path in ['/internal/channels/discord/status', '/internal/channels/discord-binding',
+                 '/internal/channels/discord/execute', '/api/gateway/discord-bindings']:
+        assert request(path, a)[0] == 404, path
+    admin('discord-revoke', '--binding', discord_binding['id'])
+    docker('restart', gateway_name)
+    wait_gateway()
+    restored_discord = admin('discord-bindings')['bindings'][0]
+    assert restored_discord == dict(discord_binding, enabled=False)
+    rejected_discord = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'discord-bind',
+                             '--config', '/etc/jiaclaw/gateway.json', '--user', issued['bob']['user_id'],
+                             '--application-id', '1001', '--verify-key', '11' * 32,
+                             '--bot-user-id', '1002', '--sender-id', '2003',
+                             '--conversation-id', '2004', '--command-id', '1005', check=False)
+    assert rejected_discord.returncode != 0, 'revoked Discord application was reassigned'
+    assert admin('discord-bindings')['bindings'] == [restored_discord]
+    assert messages(a) == a_history and messages(b) == b_history
+    print('PASS: schema 5 Discord application reservation survives bounded-volume restart/revocation; default-off/private routes refuse access')
     # Persisted admission is observed through the real admin API before SIGKILL.
     # Pausing only this fixture backend holds the write without vendor calls.
     docker('pause', backend_names['alice'])

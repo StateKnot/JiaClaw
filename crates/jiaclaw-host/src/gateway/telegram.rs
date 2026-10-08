@@ -1002,6 +1002,7 @@ mod tests {
                 scheduled_jobs: false,
                 telegram: Some(runtime),
                 slack: None,
+                discord: None,
             });
             (state, installation)
         }

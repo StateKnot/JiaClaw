@@ -3,6 +3,8 @@
 //! Authentication boundary for independently isolated `JiaClaw` backends.
 pub(crate) mod cli;
 mod config;
+mod discord;
+mod discord_store;
 mod keys;
 mod proxy;
 mod registry;
@@ -42,6 +44,7 @@ struct State {
     scheduled_jobs: bool,
     telegram: Option<Arc<telegram::Runtime>>,
     slack: Option<Arc<slack::Runtime>>,
+    discord: Option<Arc<discord::Runtime>>,
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -75,6 +78,10 @@ fn channel_review_guard(
             .list_slack_bindings()?
             .iter()
             .any(|b| b.user_id == user)
+        && !registry
+            .list_discord_bindings()?
+            .iter()
+            .any(|b| b.user_id == user)
     {
         return Ok(None);
     }
@@ -85,6 +92,7 @@ fn channel_review_guard(
     registry.recover_writes()?;
     telegram::review_pending(config, registry, user)?;
     slack::review_pending(config, registry, user)?;
+    discord::review_pending(config, registry, user)?;
     Ok(Some(guard))
 }
 fn review_queue(store: &crate::store::SessionStore) -> Result<()> {
@@ -232,6 +240,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let telegram =
         telegram::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     let slack = slack::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
+    let discord =
+        discord::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     drop(unique_tokens);
     let capacity = u32::try_from(config.max_in_flight).context("gateway capacity overflow")?;
     let state = Arc::new(State {
@@ -244,6 +254,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         scheduled_jobs: config.scheduled_jobs,
         telegram,
         slack,
+        discord,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -264,6 +275,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             "/hooks/slack/:binding_id",
             axum::routing::post(slack::ingress),
         )
+        .route(
+            "/hooks/discord/:binding_id",
+            axum::routing::post(discord::ingress),
+        )
         .fallback(proxy::handle)
         .with_state(Arc::clone(&state));
     let scheduled = scheduler::start(Arc::clone(&state));
@@ -272,6 +287,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let stop_telegram = telegram.stopper();
     let slack = slack::start(Arc::clone(&state));
     let stop_slack = slack.stopper();
+    let discord = discord::start(Arc::clone(&state));
+    let stop_discord = discord.stopper();
     tracing::info!("isolated user gateway listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -279,11 +296,13 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             stop_scheduled.stop();
             stop_telegram.stop();
             stop_slack.stop();
+            stop_discord.stop();
         })
         .await?;
     let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = telegram.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = slack.shutdown(timeout + Duration::from_secs(5)).await;
+    let _ = discord.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
     let _drain = tokio::time::timeout(

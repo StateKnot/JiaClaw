@@ -23,7 +23,8 @@ const MAX_KEYS: i64 = 1024;
 const MAX_AUDIT_EVENTS: i64 = 4096;
 const MAX_TELEGRAM_BINDINGS: i64 = 32;
 const MAX_SLACK_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 4;
+const MAX_DISCORD_BINDINGS: i64 = 32;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -68,6 +69,24 @@ pub struct SlackBindingSummary {
     pub bot_id: String,
     pub sender_id: String,
     pub conversation_id: String,
+    pub enabled: bool,
+}
+
+/// Permanent dedicated user-installable Discord application and private bot-DM ownership.
+/// The verification key is a public pin, never an administrator credential.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct DiscordBindingSummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub backend_id: String,
+    pub application_id: String,
+    pub verify_key: String,
+    pub bot_user_id: String,
+    pub sender_id: String,
+    pub conversation_id: String,
+    pub command_id: String,
     pub enabled: bool,
 }
 
@@ -264,6 +283,7 @@ impl Registry {
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute_batch(SCHEMA_V4)?;
+            tx.execute_batch(SCHEMA_V5)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -279,6 +299,9 @@ impl Registry {
             }
             if version < 4 {
                 tx.execute_batch(SCHEMA_V4)?;
+            }
+            if version < 5 {
+                tx.execute_batch(SCHEMA_V5)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -967,6 +990,181 @@ impl Registry {
         Ok(binding)
     }
 
+    /// Bind an enabled user's dedicated backend to one permanent Discord application and private bot DM.
+    pub fn add_discord_binding(
+        &self,
+        user_id: Uuid,
+        application_id: &str,
+        verify_key: &str,
+        bot_user_id: &str,
+        sender_id: &str,
+        conversation_id: &str,
+        command_id: &str,
+    ) -> Result<DiscordBindingSummary> {
+        for value in [
+            application_id,
+            bot_user_id,
+            sender_id,
+            conversation_id,
+            command_id,
+        ] {
+            ensure!(
+                canonical_discord_id(value),
+                "invalid canonical Discord snowflake"
+            );
+        }
+        ensure!(
+            canonical_discord_key(verify_key),
+            "invalid canonical Discord public verification key"
+        );
+        ensure!(
+            sender_id != bot_user_id,
+            "Discord sender must differ from the bot user"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let backend_id: String = tx
+            .query_row(
+                "SELECT backend_id FROM users WHERE id=?1 AND enabled=1",
+                [user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("enabled gateway user not found")?;
+        let count: i64 = tx.query_row("SELECT count(*) FROM discord_bindings", [], |row| {
+            row.get(0)
+        })?;
+        ensure!(
+            count < MAX_DISCORD_BINDINGS,
+            "gateway Discord lifetime binding limit reached"
+        );
+        let reserved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM discord_bindings WHERE user_id=?1 OR application_id=?2)",
+            params![user_id.to_string(), application_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !reserved,
+            "gateway Discord user or app is permanently reserved, including revoked bindings"
+        );
+        let summary = DiscordBindingSummary {
+            id: Uuid::new_v4(),
+            user_id,
+            backend_id,
+            application_id: application_id.into(),
+            verify_key: verify_key.into(),
+            bot_user_id: bot_user_id.into(),
+            sender_id: sender_id.into(),
+            conversation_id: conversation_id.into(),
+            command_id: command_id.into(),
+            enabled: true,
+        };
+        let now = now_ms();
+        tx.execute("INSERT INTO discord_bindings(id,user_id,backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id,enabled,created_ms,updated_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?10)",
+            params![summary.id.to_string(),user_id.to_string(),summary.backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id,now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            None,
+            "discord_binding_added",
+            Some(&summary.id.to_string()),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    /// Bounded lifetime history, including permanently revoked installations.
+    pub fn list_discord_bindings(&self) -> Result<Vec<DiscordBindingSummary>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,user_id,backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id,enabled FROM discord_bindings ORDER BY created_ms,id LIMIT 32")?;
+        let rows = statement.query_map([], discord_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Permanently revoke future admissions without altering already admitted work or its hold.
+    pub fn revoke_discord_binding(&self, binding_id: Uuid) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user, enabled): (String, bool) = tx
+            .query_row(
+                "SELECT user_id,enabled FROM discord_bindings WHERE id=?1",
+                [binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("gateway Discord binding not found")?;
+        if enabled {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE discord_bindings SET enabled=0,updated_ms=MAX(updated_ms,?2) WHERE id=?1",
+                params![binding_id.to_string(), now],
+            )?;
+            audit(
+                &tx,
+                uuid(user)?,
+                None,
+                None,
+                "discord_binding_revoked",
+                Some(&binding_id.to_string()),
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Live ingress identity only; the write transaction must recheck it before every effect.
+    pub fn discord_authorized(&self, binding_id: Uuid) -> Result<Option<DiscordBindingSummary>> {
+        discord_on(&self.connection()?, binding_id)
+    }
+
+    /// Recheck enabled ownership and acquire the same hold used by HTTP, cron and Telegram.
+    /// Audit stores only immutable binding/object UUIDs; prompts and credentials stay out.
+    pub fn admit_discord(
+        &self,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+    ) -> Result<DiscordBindingSummary> {
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "Discord request ID must be RFC4122 UUIDv7"
+        );
+        ensure!(
+            matches!(operation, "discord_execute" | "discord_send"),
+            "invalid Discord admission operation"
+        );
+        let object =
+            Uuid::parse_str(object_id).context("Discord object ID must be a canonical UUID")?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "Discord object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let binding = discord_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, binding.user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        audit(
+            &tx,
+            binding.user_id,
+            None,
+            Some(request_id),
+            operation,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
     /// Read live key/user state for every request. No successful-authentication cache exists.
     pub fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let Some(parsed) = keys::parse(token) else {
@@ -1219,6 +1417,82 @@ fn slack_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SlackBindingSummary> {
 fn slack_on(conn: &Connection, binding_id: Uuid) -> Result<Option<SlackBindingSummary>> {
     Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.team_id,b.app_id,b.bot_user_id,b.bot_id,b.sender_id,b.conversation_id,b.enabled FROM slack_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
         [binding_id.to_string()], slack_row).optional()?)
+}
+
+/// Discord snowflakes include the whole unsigned 64-bit range, unlike SQLite INTEGER.
+fn canonical_discord_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 20
+        && !value.starts_with('0')
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u64>().is_ok_and(|id| id > 0)
+}
+
+fn canonical_discord_key(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value.bytes().any(|byte| byte != b'0')
+}
+
+fn discord_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DiscordBindingSummary> {
+    let invalid = |index| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid gateway Discord binding identity",
+            )),
+        )
+    };
+    let id = |index| -> rusqlite::Result<Uuid> {
+        let text: String = row.get(index)?;
+        Uuid::parse_str(&text)
+            .ok()
+            .filter(|id| {
+                !id.is_nil() && id.get_variant() == uuid::Variant::RFC4122 && id.to_string() == text
+            })
+            .ok_or_else(|| invalid(index))
+    };
+    let platform_id = |index| -> rusqlite::Result<String> {
+        let text: String = row.get(index)?;
+        if !canonical_discord_id(&text) {
+            return Err(invalid(index));
+        }
+        Ok(text)
+    };
+    let verify_key: String = row.get(4)?;
+    if !canonical_discord_key(&verify_key) {
+        return Err(invalid(4));
+    }
+    let bot_user_id = platform_id(5)?;
+    let sender_id = platform_id(6)?;
+    if bot_user_id == sender_id {
+        return Err(invalid(6));
+    }
+    let enabled: i64 = row.get(9)?;
+    if !matches!(enabled, 0 | 1) {
+        return Err(invalid(9));
+    }
+    Ok(DiscordBindingSummary {
+        id: id(0)?,
+        user_id: id(1)?,
+        backend_id: row.get(2)?,
+        application_id: platform_id(3)?,
+        verify_key,
+        bot_user_id,
+        sender_id,
+        conversation_id: platform_id(7)?,
+        command_id: platform_id(8)?,
+        enabled: enabled == 1,
+    })
+}
+
+fn discord_on(conn: &Connection, binding_id: Uuid) -> Result<Option<DiscordBindingSummary>> {
+    Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.application_id,b.verify_key,b.bot_user_id,b.sender_id,b.conversation_id,b.command_id,b.enabled FROM discord_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
+        [binding_id.to_string()], discord_row).optional()?)
 }
 
 fn insert_hold(tx: &Transaction<'_>, user_id: Uuid, request_id: Uuid, now: i64) -> Result<()> {
@@ -1513,6 +1787,33 @@ CREATE TRIGGER slack_binding_no_delete BEFORE DELETE ON slack_bindings
  BEGIN SELECT RAISE(ABORT,'Slack binding reservations are permanent'); END;
 ";
 
+// Public application IDs and user reservations are never reused, even after revocation.
+const SCHEMA_V5: &str = "
+CREATE TABLE discord_bindings(
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL UNIQUE, backend_id TEXT NOT NULL,
+ application_id TEXT NOT NULL CHECK(length(application_id) BETWEEN 1 AND 20 AND length(application_id)=length(CAST(application_id AS BLOB)) AND substr(application_id,1,1) BETWEEN '1' AND '9' AND application_id NOT GLOB '*[^0-9]*' AND (length(application_id)<20 OR application_id<='18446744073709551615')),
+ verify_key TEXT NOT NULL CHECK(length(verify_key)=64 AND length(CAST(verify_key AS BLOB))=64 AND verify_key NOT GLOB '*[^0-9a-f]*' AND verify_key<>'0000000000000000000000000000000000000000000000000000000000000000'),
+ bot_user_id TEXT NOT NULL CHECK(length(bot_user_id) BETWEEN 1 AND 20 AND length(bot_user_id)=length(CAST(bot_user_id AS BLOB)) AND substr(bot_user_id,1,1) BETWEEN '1' AND '9' AND bot_user_id NOT GLOB '*[^0-9]*' AND (length(bot_user_id)<20 OR bot_user_id<='18446744073709551615')),
+ sender_id TEXT NOT NULL CHECK(length(sender_id) BETWEEN 1 AND 20 AND length(sender_id)=length(CAST(sender_id AS BLOB)) AND substr(sender_id,1,1) BETWEEN '1' AND '9' AND sender_id NOT GLOB '*[^0-9]*' AND (length(sender_id)<20 OR sender_id<='18446744073709551615') AND sender_id<>bot_user_id),
+ conversation_id TEXT NOT NULL CHECK(length(conversation_id) BETWEEN 1 AND 20 AND length(conversation_id)=length(CAST(conversation_id AS BLOB)) AND substr(conversation_id,1,1) BETWEEN '1' AND '9' AND conversation_id NOT GLOB '*[^0-9]*' AND (length(conversation_id)<20 OR conversation_id<='18446744073709551615')),
+ command_id TEXT NOT NULL CHECK(length(command_id) BETWEEN 1 AND 20 AND length(command_id)=length(CAST(command_id AS BLOB)) AND substr(command_id,1,1) BETWEEN '1' AND '9' AND command_id NOT GLOB '*[^0-9]*' AND (length(command_id)<20 OR command_id<='18446744073709551615')),
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+ UNIQUE(application_id),
+ FOREIGN KEY(user_id,backend_id) REFERENCES users(id,backend_id) ON DELETE RESTRICT);
+CREATE TRIGGER discord_binding_lifetime_limit BEFORE INSERT ON discord_bindings WHEN (SELECT count(*) FROM discord_bindings)>=32
+ BEGIN SELECT RAISE(ABORT,'Discord lifetime binding limit reached'); END;
+CREATE TRIGGER discord_binding_no_replace BEFORE INSERT ON discord_bindings
+ WHEN EXISTS(SELECT 1 FROM discord_bindings WHERE id=NEW.id OR user_id=NEW.user_id OR application_id=NEW.application_id)
+ BEGIN SELECT RAISE(ABORT,'Discord binding reservations are permanent'); END;
+CREATE TRIGGER discord_binding_immutable BEFORE UPDATE OF id,user_id,backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id ON discord_bindings
+ WHEN NEW.id IS NOT OLD.id OR NEW.user_id IS NOT OLD.user_id OR NEW.backend_id IS NOT OLD.backend_id OR NEW.application_id IS NOT OLD.application_id OR NEW.verify_key IS NOT OLD.verify_key OR NEW.bot_user_id IS NOT OLD.bot_user_id OR NEW.sender_id IS NOT OLD.sender_id OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.command_id IS NOT OLD.command_id
+ BEGIN SELECT RAISE(ABORT,'Discord binding ownership is immutable'); END;
+CREATE TRIGGER discord_binding_no_reactivate BEFORE UPDATE OF enabled ON discord_bindings WHEN OLD.enabled=0 AND NEW.enabled<>0
+ BEGIN SELECT RAISE(ABORT,'Discord binding revocation is permanent'); END;
+CREATE TRIGGER discord_binding_no_delete BEFORE DELETE ON discord_bindings
+ BEGIN SELECT RAISE(ABORT,'Discord binding reservations are permanent'); END;
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1538,6 +1839,622 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    const DISCORD_VERIFY_KEY: &str =
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
+    fn discord_binding(registry: &Registry, user: Uuid, number: usize) -> DiscordBindingSummary {
+        registry
+            .add_discord_binding(
+                user,
+                &number.to_string(),
+                DISCORD_VERIFY_KEY,
+                &format!("{number}0"),
+                &format!("{number}1"),
+                &format!("{number}2"),
+                &format!("{number}3"),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn discord_ownership_revocation_and_public_pin_are_permanent_independent_of_keys() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user_with_access("alice", true).unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = discord_binding(registry, alice.user_id, 1);
+        registry.rotate(alice.key_id).unwrap();
+        assert_eq!(
+            registry.discord_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        let conn = registry.connection().unwrap();
+        for sql in [
+            "UPDATE discord_bindings SET id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'",
+            "UPDATE discord_bindings SET user_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'",
+            "UPDATE discord_bindings SET backend_id='bob'",
+            "UPDATE discord_bindings SET application_id='20'",
+            "UPDATE discord_bindings SET verify_key=replace(verify_key,'d','e')",
+            "UPDATE discord_bindings SET bot_user_id='20'",
+            "UPDATE discord_bindings SET sender_id='21'",
+            "UPDATE discord_bindings SET conversation_id='22'",
+            "UPDATE discord_bindings SET command_id='23'",
+            "DELETE FROM discord_bindings",
+            "INSERT OR REPLACE INTO discord_bindings SELECT * FROM discord_bindings LIMIT 1",
+        ] {
+            assert!(conn.execute_batch(sql).is_err(), "{sql}");
+        }
+        registry.revoke_discord_binding(binding.id).unwrap();
+        registry.revoke_discord_binding(binding.id).unwrap();
+        assert!(registry.discord_authorized(binding.id).unwrap().is_none());
+        assert!(conn
+            .execute(
+                "UPDATE discord_bindings SET enabled=1 WHERE id=?1",
+                [binding.id.to_string()]
+            )
+            .is_err());
+        assert!(registry
+            .add_discord_binding(
+                alice.user_id,
+                "2",
+                DISCORD_VERIFY_KEY,
+                "20",
+                "21",
+                "22",
+                "23"
+            )
+            .is_err());
+        assert!(registry
+            .add_discord_binding(bob.user_id, "1", DISCORD_VERIFY_KEY, "20", "21", "22", "23")
+            .is_err());
+        let other = discord_binding(registry, bob.user_id, 2);
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.list_discord_bindings().unwrap().len(), 2);
+        assert_eq!(reopened.discord_authorized(other.id).unwrap(), Some(other));
+        let audit = reopened.audit_list(alice.user_id, 0, 100, true).unwrap();
+        assert_eq!(
+            audit
+                .events
+                .iter()
+                .filter(|entry| entry.action == "discord_binding_revoked")
+                .count(),
+            1
+        );
+        assert!(!serde_json::to_string(&audit)
+            .unwrap()
+            .contains(DISCORD_VERIFY_KEY));
+    }
+
+    #[test]
+    fn discord_snowflakes_cover_unsigned_range_and_invalid_identity_has_no_side_effect() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        for bad in [
+            "",
+            "0",
+            "01",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "١",
+            "18446744073709551616",
+            "100000000000000000000",
+            "1\0",
+        ] {
+            for field in 0..5 {
+                let mut ids = ["1", "10", "11", "12", "13"];
+                ids[field] = bad;
+                assert!(
+                    registry
+                        .add_discord_binding(
+                            user.user_id,
+                            ids[0],
+                            DISCORD_VERIFY_KEY,
+                            ids[1],
+                            ids[2],
+                            ids[3],
+                            ids[4]
+                        )
+                        .is_err(),
+                    "{field} {bad:?}"
+                );
+            }
+        }
+        for bad in [
+            "".into(),
+            "0".repeat(64),
+            "f".repeat(63),
+            "f".repeat(65),
+            DISCORD_VERIFY_KEY.to_uppercase(),
+            format!("g{}", "a".repeat(63)),
+        ] {
+            assert!(registry
+                .add_discord_binding(user.user_id, "1", &bad, "10", "11", "12", "13")
+                .is_err());
+        }
+        assert!(registry
+            .add_discord_binding(
+                user.user_id,
+                "1",
+                DISCORD_VERIFY_KEY,
+                "10",
+                "10",
+                "12",
+                "13"
+            )
+            .is_err());
+        assert!(registry
+            .add_discord_binding(
+                Uuid::new_v4(),
+                "1",
+                DISCORD_VERIFY_KEY,
+                "10",
+                "11",
+                "12",
+                "13"
+            )
+            .is_err());
+        registry.set_enabled(user.user_id, false).unwrap();
+        assert!(registry
+            .add_discord_binding(
+                user.user_id,
+                "1",
+                DISCORD_VERIFY_KEY,
+                "10",
+                "11",
+                "12",
+                "13"
+            )
+            .is_err());
+        registry.set_enabled(user.user_id, true).unwrap();
+        assert!(registry.list_discord_bindings().unwrap().is_empty());
+        let audit = registry.audit_list(user.user_id, 0, 100, true).unwrap();
+        assert_eq!(
+            audit
+                .events
+                .iter()
+                .filter(|entry| entry.action == "discord_binding_added")
+                .count(),
+            0
+        );
+        assert_eq!(
+            audit.events.len(),
+            before["events"].as_array().unwrap().len() + 2
+        );
+        let max = registry
+            .add_discord_binding(
+                user.user_id,
+                "18446744073709551615",
+                DISCORD_VERIFY_KEY,
+                "18446744073709551614",
+                "18446744073709551613",
+                "18446744073709551612",
+                "18446744073709551611",
+            )
+            .unwrap();
+        assert_eq!(registry.discord_authorized(max.id).unwrap(), Some(max));
+    }
+
+    #[test]
+    fn discord_admission_validates_metadata_before_hold_and_shares_all_user_effects() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user_with_access("alice", true).unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = discord_binding(registry, alice.user_id, 1);
+        let slack = slack_binding(registry, alice.user_id, 1);
+        let tg = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let before =
+            serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                .unwrap();
+        for (request, operation, object) in [
+            (Uuid::new_v4(), "discord_execute", binding.id.to_string()),
+            (Uuid::nil(), "discord_send", binding.id.to_string()),
+            (Uuid::now_v7(), "slack_send", binding.id.to_string()),
+            (Uuid::now_v7(), "discord_execute", "prompt secret".into()),
+            (Uuid::now_v7(), "discord_send", Uuid::nil().to_string()),
+            (
+                Uuid::now_v7(),
+                "discord_send",
+                "ABCDEF01-2345-4678-9ABC-DEF012345678".into(),
+            ),
+            (
+                Uuid::now_v7(),
+                "discord_send",
+                "abcdef01-2345-4678-1abc-def012345678".into(),
+            ),
+        ] {
+            assert!(registry
+                .admit_discord(binding.id, request, operation, &object)
+                .is_err());
+        }
+        let mut non_rfc = *Uuid::now_v7().as_bytes();
+        non_rfc[8] = 0;
+        assert!(registry
+            .admit_discord(
+                binding.id,
+                Uuid::from_bytes(non_rfc),
+                "discord_send",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry
+            .list()
+            .unwrap()
+            .iter()
+            .all(|user| user.hold.is_none()));
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                .unwrap(),
+            before
+        );
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.discord_authorized(binding.id).unwrap().is_none());
+        assert_eq!(
+            registry
+                .admit_discord(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "discord_execute",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        registry.set_enabled(alice.user_id, true).unwrap();
+        // A read-only API key does not limit this separately administrator-owned channel.
+        let request = Uuid::now_v7();
+        registry
+            .admit_discord(
+                binding.id,
+                request,
+                "discord_execute",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        assert!(registry
+            .admit_write(
+                &principal(registry, &registry.add_key(alice.user_id).unwrap()),
+                Uuid::now_v7()
+            )
+            .is_err());
+        assert!(registry
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        assert!(registry
+            .admit_telegram(tg.id, Uuid::now_v7(), "telegram_send", &tg.id.to_string())
+            .is_err());
+        assert!(registry
+            .admit_slack(
+                slack.id,
+                Uuid::now_v7(),
+                "slack_send",
+                &slack.id.to_string()
+            )
+            .is_err());
+        assert_eq!(
+            registry
+                .admit_discord(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "discord_send",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        let other = Uuid::now_v7();
+        registry.admit_scheduled(bob.user_id, "bob", other).unwrap();
+        registry.finish_write(bob.user_id, other, true).unwrap();
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.recover_writes().unwrap(), 1);
+        reopened.finish_write(alice.user_id, request, true).unwrap();
+        reopened.revoke_discord_binding(binding.id).unwrap();
+        let owner = reopened
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.user_id == alice.user_id)
+            .unwrap();
+        let hold = owner.hold.unwrap();
+        assert_eq!(
+            (hold.request_id, hold.state.as_str()),
+            (request, "needs_review")
+        );
+        reopened
+            .clear_review(
+                alice.user_id,
+                "Reviewed all stopped queues and reconciled external effects",
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .admit_discord(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "discord_send",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        let audit = reopened.audit_list(alice.user_id, 0, 100, true).unwrap();
+        let admitted = audit
+            .events
+            .iter()
+            .find(|entry| entry.action == "discord_execute")
+            .unwrap();
+        assert!(admitted.key_id.is_none());
+        assert_eq!(
+            admitted.request_id.as_deref(),
+            Some(request.to_string().as_str())
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(admitted.note.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"binding_id":binding.id.to_string(),"object_id":binding.id.to_string()})
+        );
+    }
+
+    #[test]
+    fn discord_audit_storage_failure_rolls_back_binding_revocation_and_admission() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        let fail = "CREATE TRIGGER fail_discord_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected audit storage failure'); END";
+        conn.execute_batch(fail).unwrap();
+        assert!(registry
+            .add_discord_binding(
+                user.user_id,
+                "1",
+                DISCORD_VERIFY_KEY,
+                "10",
+                "11",
+                "12",
+                "13"
+            )
+            .is_err());
+        assert!(registry.list_discord_bindings().unwrap().is_empty());
+        conn.execute_batch("DROP TRIGGER fail_discord_audit")
+            .unwrap();
+        let binding = discord_binding(registry, user.user_id, 1);
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        conn.execute_batch(fail).unwrap();
+        assert!(registry.revoke_discord_binding(binding.id).is_err());
+        assert_eq!(
+            registry.discord_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        assert!(registry
+            .admit_discord(
+                binding.id,
+                Uuid::now_v7(),
+                "discord_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn discord_lifetime_limit_counts_revocations_and_sql_enforces_unsigned_canonical_ids() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        for number in 1..=32 {
+            let user = registry.add_user(&format!("backend-{number}")).unwrap();
+            let binding = discord_binding(registry, user.user_id, number);
+            registry.revoke_discord_binding(binding.id).unwrap();
+        }
+        assert_eq!(registry.list_discord_bindings().unwrap().len(), 32);
+        let user = registry.list().unwrap()[0].user_id;
+        assert!(registry
+            .add_discord_binding(user, "999", DISCORD_VERIFY_KEY, "990", "991", "992", "993")
+            .is_err());
+        let conn = registry.connection().unwrap();
+        assert!(conn.execute("INSERT INTO discord_bindings(id,user_id,backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'backend-1','999',?3,'990','991','992','993',1,0,0)", params![Uuid::new_v4().to_string(),user.to_string(),DISCORD_VERIFY_KEY]).is_err());
+        let fixture = Fixture::new();
+        let user = fixture.registry.add_user("alice").unwrap();
+        let conn = fixture.registry.connection().unwrap();
+        for bad in ["0", "01", "18446744073709551616", "1\0", "١"] {
+            assert!(conn.execute("INSERT INTO discord_bindings(id,user_id,backend_id,application_id,verify_key,bot_user_id,sender_id,conversation_id,command_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'alice',?3,?4,'10','11','12','13',1,0,0)", params![Uuid::new_v4().to_string(),user.user_id.to_string(),bad,DISCORD_VERIFY_KEY]).is_err());
+        }
+        assert!(fixture.registry.list_discord_bindings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_discord_owner_rows_fail_closed_without_hold_or_audit_mutation() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let binding = discord_binding(registry, user.user_id, 1);
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints=ON; DROP TRIGGER discord_binding_immutable;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE discord_bindings SET sender_id='18446744073709551616' WHERE id=?1",
+            [binding.id.to_string()],
+        )
+        .unwrap();
+        assert!(registry.list_discord_bindings().is_err());
+        assert!(registry.discord_authorized(binding.id).is_err());
+        assert!(registry
+            .admit_discord(
+                binding.id,
+                Uuid::now_v7(),
+                "discord_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap(),
+            before
+        );
+        conn.execute(
+            "UPDATE discord_bindings SET sender_id='11',verify_key=?1",
+            ["0".repeat(64)],
+        )
+        .unwrap();
+        assert!(registry.discord_authorized(binding.id).is_err());
+        conn.execute(
+            "UPDATE discord_bindings SET verify_key=?1,enabled=2",
+            [DISCORD_VERIFY_KEY],
+        )
+        .unwrap();
+        assert!(registry.list_discord_bindings().is_err());
+        assert!(registry.discord_authorized(binding.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn discord_schema_five_preserves_prior_authority_permissions_audit_and_uncertain_holds() {
+        for version in 1..=4 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry
+                .add_user_with_access("alice", version >= 3)
+                .unwrap();
+            let bob = registry.add_user("bob").unwrap();
+            registry.revoke(bob.key_id).unwrap();
+            registry.set_enabled(bob.user_id, false).unwrap();
+            if version >= 2 {
+                let binding = registry
+                    .add_telegram_binding(alice.user_id, "101", "201")
+                    .unwrap();
+                registry.revoke_telegram_binding(binding.id).unwrap();
+            }
+            if version == 4 {
+                let binding = slack_binding(registry, alice.user_id, 1);
+                registry.revoke_slack_binding(binding.id).unwrap();
+            }
+            registry
+                .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+                .unwrap();
+            let users = serde_json::to_value(registry.list().unwrap()).unwrap();
+            let keys =
+                serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap();
+            let telegram = registry.list_telegram_bindings().unwrap();
+            let slack = registry.list_slack_bindings().unwrap();
+            let audit =
+                serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch("DROP TABLE discord_bindings").unwrap();
+            if version < 4 {
+                conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            }
+            if version < 3 {
+                conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
+            }
+            if version == 1 {
+                conn.execute_batch(
+                    "DROP TABLE telegram_bindings; DROP INDEX users_identity_backend;",
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", version).unwrap();
+            drop(conn);
+            assert!(registry.list().is_err());
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(
+                serde_json::to_value(migrated.list().unwrap()).unwrap(),
+                users
+            );
+            assert_eq!(
+                serde_json::to_value(migrated.list_keys(alice.user_id, 100, 0).unwrap()).unwrap(),
+                keys
+            );
+            assert_eq!(migrated.list_telegram_bindings().unwrap(), telegram);
+            assert_eq!(migrated.list_slack_bindings().unwrap(), slack);
+            assert_eq!(
+                serde_json::to_value(migrated.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap(),
+                audit
+            );
+            assert!(migrated.list_discord_bindings().unwrap().is_empty());
+            assert_eq!(principal(&migrated, &alice).read_only, version >= 3);
+            assert!(migrated.authenticate(&bob.token).unwrap().is_none());
+            let binding = discord_binding(&migrated, alice.user_id, 1);
+            assert_eq!(
+                migrated
+                    .admit_discord(
+                        binding.id,
+                        Uuid::now_v7(),
+                        "discord_execute",
+                        &binding.id.to_string()
+                    )
+                    .unwrap_err()
+                    .downcast_ref::<WriteAdmissionError>(),
+                Some(&WriteAdmissionError::Held)
+            );
+            assert_eq!(
+                migrated
+                    .connection()
+                    .unwrap()
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn discord_schema_five_late_ddl_failure_rolls_back_all_prior_migrations() {
+        for version in 1..=4 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let user = registry.add_user("alice").unwrap();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch("DROP TABLE discord_bindings").unwrap();
+            if version < 4 {
+                conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            }
+            if version < 3 {
+                conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
+            }
+            if version == 1 {
+                conn.execute_batch(
+                    "DROP TABLE telegram_bindings; DROP INDEX users_identity_backend;",
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", version).unwrap();
+            conn.execute_batch("CREATE TRIGGER discord_binding_no_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+            let schema: String = conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)", [], |row| row.get(0)).unwrap();
+            assert!(Registry::open(&registry.path).is_err());
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)", [], |row| row.get::<_,String>(0)).unwrap(), schema);
+            conn.execute_batch("DROP TRIGGER discord_binding_no_delete")
+                .unwrap();
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert!(!principal(&migrated, &user).read_only);
+            assert!(migrated.list_discord_bindings().unwrap().is_empty());
+        }
     }
 
     fn slack_binding(registry: &Registry, user: Uuid, number: usize) -> SlackBindingSummary {
@@ -1923,6 +2840,56 @@ mod tests {
     }
 
     #[test]
+    fn discord_and_foreground_concurrent_admission_have_one_winner() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let binding = discord_binding(registry, user.user_id, 1);
+        let owner = principal(registry, &user);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|index| {
+                let registry = registry.clone();
+                let barrier = barrier.clone();
+                let owner = owner.clone();
+                let binding = binding.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if index == 0 {
+                        registry.admit_write(&owner, Uuid::now_v7())
+                    } else {
+                        registry
+                            .admit_discord(
+                                binding.id,
+                                Uuid::now_v7(),
+                                "discord_execute",
+                                &binding.id.to_string(),
+                            )
+                            .map(|_| ())
+                    }
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.as_ref().err().is_some_and(|error| error
+                    .downcast_ref::<WriteAdmissionError>(
+                ) == Some(
+                    &WriteAdmissionError::Held
+                )))
+                .count(),
+            1
+        );
+        assert!(registry.list().unwrap()[0].hold.is_some());
+    }
+
+    #[test]
     fn slack_and_foreground_concurrent_admission_have_one_winner() {
         let fixture = Fixture::new();
         let registry = &fixture.registry;
@@ -2112,7 +3079,8 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+                .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
             }
@@ -2162,7 +3130,7 @@ mod tests {
                     .unwrap()
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                4
+                SCHEMA_VERSION
             );
         }
     }
@@ -2174,7 +3142,8 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+                .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
             }
@@ -2829,7 +3798,7 @@ mod tests {
         let bindings = registry.list_telegram_bindings().unwrap();
         let conn = registry.connection().unwrap();
         let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
-        conn.execute_batch("DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
+        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
         drop(conn);
         assert!(registry.authenticate(&active.token).is_err());
         let migrated = Registry::open(&registry.path).unwrap();
@@ -2878,7 +3847,7 @@ mod tests {
         let registry = &fixture.registry;
         let active = registry.add_user("alice").unwrap();
         let conn = registry.connection().unwrap();
-        conn.execute_batch("DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
         // The v2 schema and v3 column are created before the v3 trigger conflicts.
         // Both must be rolled back together with user_version.
         assert!(Registry::open(&registry.path).is_err());
@@ -3401,7 +4370,7 @@ mod tests {
             .unwrap();
         // No bindings exist. Removing the v2/v3/v4 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
-        conn.execute_batch("DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
+        conn.execute_batch("DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(
             registry.list().is_err(),

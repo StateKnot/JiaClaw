@@ -608,23 +608,27 @@ pub(super) fn enqueue_job_delivery(
 // IMMEDIATE transaction; ordinary channel callers never touch either table.
 pub(super) const MAX_TELEGRAM_OPERATIONS: usize = 16_000;
 pub(super) const MAX_SLACK_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
+pub(super) const MAX_DISCORD_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 
 #[derive(Clone, Copy)]
 enum RecordedChannel {
     Telegram,
     Slack,
+    Discord,
 }
 impl RecordedChannel {
     fn table(self) -> &'static str {
         match self {
             Self::Telegram => "gateway_telegram_operations",
             Self::Slack => "gateway_slack_operations",
+            Self::Discord => "gateway_discord_operations",
         }
     }
     fn channel(self) -> Channel {
         match self {
             Self::Telegram => Channel::Telegram,
             Self::Slack => Channel::Slack,
+            Self::Discord => Channel::Discord,
         }
     }
     fn full_message(self) -> &'static str {
@@ -633,12 +637,16 @@ impl RecordedChannel {
                 "Telegram operation ledger is full; reconcile and purge reviewed events"
             }
             Self::Slack => "Slack operation ledger is full; reconcile and purge reviewed events",
+            Self::Discord => {
+                "Discord operation ledger is full; reconcile and purge reviewed events"
+            }
         }
     }
     fn capacity(self) -> usize {
         match self {
             Self::Telegram => MAX_TELEGRAM_OPERATIONS,
             Self::Slack => MAX_SLACK_OPERATIONS,
+            Self::Discord => MAX_DISCORD_OPERATIONS,
         }
     }
 }
@@ -784,6 +792,13 @@ impl SessionStore {
     ) -> Result<Option<ChannelEvent>> {
         self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Slack)))
     }
+    pub(super) fn claim_discord_event_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Discord)))
+    }
     fn claim_channel_event_impl(
         &mut self,
         now: i64,
@@ -925,6 +940,13 @@ impl SessionStore {
         request_id: &str,
     ) -> Result<Option<ChannelDelivery>> {
         self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Slack)))
+    }
+    pub(super) fn claim_discord_delivery_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Discord)))
     }
     fn claim_channel_delivery_impl(
         &mut self,
@@ -3584,7 +3606,11 @@ mod tests {
         );
     }
     fn recorded_ledgers(db: &SessionStore) {
-        for table in ["gateway_telegram_operations", "gateway_slack_operations"] {
+        for table in [
+            "gateway_telegram_operations",
+            "gateway_slack_operations",
+            "gateway_discord_operations",
+        ] {
             db.channel_conn().unwrap().execute_batch(&format!("CREATE TABLE {table}(request_id TEXT PRIMARY KEY NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','delivery')),event_id TEXT NOT NULL REFERENCES channel_events(id) ON DELETE CASCADE,delivery_id TEXT REFERENCES channel_outbox(id) ON DELETE CASCADE,attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 5),claimed_ms INTEGER NOT NULL,CHECK((kind='event' AND delivery_id IS NULL AND attempt=1) OR (kind='delivery' AND delivery_id IS NOT NULL)));" )).unwrap();
         }
     }
@@ -3817,6 +3843,164 @@ mod tests {
             db.get_channel_event(&accepted.id).unwrap().unwrap().status,
             "received"
         );
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
+    }
+
+    fn recorded_discord_spec(event: &str) -> EventSpec {
+        let mut event = spec(event);
+        event.destination.channel = Channel::Discord;
+        event.destination.installation_id = "111111111111111111".into();
+        event.destination.conversation_id = "333333333333333333".into();
+        event.destination.interaction_id = Some(event.event_id.clone());
+        event.destination.expires_ms = Some(1_000_000);
+        event.sealed_token = Some("sealed-credential".into());
+        event
+    }
+    #[test]
+    fn recorded_discord_claims_track_one_attempt_identity_and_preserve_other_channel_ledgers() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db
+            .accept_channel_event(recorded_discord_spec("555555555555555555"), 0)
+            .unwrap();
+        let request = uuid::Uuid::now_v7().to_string();
+        let event = db
+            .claim_discord_event_recorded(0, &request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.id, accepted.id);
+        assert_eq!(ledger_count(&db, "gateway_discord_operations"), 1);
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
+        db.complete_channel_event(&event.id, None, "completed", vec!["reply".into()], None, 1)
+            .unwrap();
+        let request = uuid::Uuid::now_v7().to_string();
+        let delivery = db
+            .claim_discord_delivery_recorded(2, &request)
+            .unwrap()
+            .unwrap();
+        let recorded:(String,String,String,u32)=db.channel_conn().unwrap().query_row("SELECT kind,event_id,delivery_id,attempt FROM gateway_discord_operations WHERE request_id=?1",[&request],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+        assert_eq!(
+            recorded,
+            ("delivery".into(), accepted.id, delivery.id.clone(), 1)
+        );
+        db.finish_channel_delivery(
+            &delivery.id,
+            1,
+            "retry_wait",
+            None,
+            Some("rate_limited".into()),
+            Some(2000),
+            3,
+        )
+        .unwrap();
+        let retry = db
+            .claim_discord_delivery_recorded(2003, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.id, delivery.id);
+        assert_eq!(retry.attempts, 2);
+        assert_eq!(ledger_count(&db, "gateway_discord_operations"), 3);
+        delivered(&mut db, &retry, 2004);
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
+    }
+    #[test]
+    fn recorded_discord_wrong_channel_and_sql_faults_roll_back_event_delivery_and_pacing() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let tg = db.accept_channel_event(spec("wrong-channel"), 0).unwrap();
+        assert!(db
+            .claim_discord_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&tg.id).unwrap().unwrap().status,
+            "received"
+        );
+        db.claim_channel_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(&tg.id, None, "completed", vec!["old shape".into()], None, 1)
+            .unwrap();
+        assert!(db
+            .claim_discord_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let delivery = db
+            .claim_channel_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        delivered(&mut db, &delivery, 3);
+        let event = db
+            .accept_channel_event(recorded_discord_spec("555555555555555555"), 4)
+            .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_discord_operation BEFORE INSERT ON gateway_discord_operations BEGIN SELECT RAISE(ABORT,'fixture ledger failure'); END;").unwrap();
+        assert!(db
+            .claim_discord_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&event.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_discord_operations"), 0);
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_discord_operation;")
+            .unwrap();
+        db.claim_discord_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(&event.id, None, "completed", vec!["reply".into()], None, 5)
+            .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_discord_operation BEFORE INSERT ON gateway_discord_operations BEGIN SELECT RAISE(ABORT,'fixture ledger failure'); END;").unwrap();
+        assert!(db
+            .claim_discord_delivery_recorded(6, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let pending = db
+            .list_channel_deliveries(Some(&event.id), 10, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(pending.state, "pending");
+        assert_eq!(pending.attempts, 0);
+        let cooldowns: usize = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM channel_cooldowns WHERE channel='discord'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cooldowns, 0);
+    }
+    #[test]
+    fn recorded_discord_capacity_duplicate_and_noncanonical_claims_never_mutate_event() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let event = db
+            .accept_channel_event(recorded_discord_spec("555555555555555555"), 0)
+            .unwrap();
+        for request in [
+            uuid::Uuid::new_v4().to_string(),
+            "0195CA8E-0000-7000-8000-00000000000A".into(),
+        ] {
+            assert!(db.claim_discord_event_recorded(0, &request).is_err());
+        }
+        let used = uuid::Uuid::now_v7().to_string();
+        db.channel_conn().unwrap().execute("INSERT INTO gateway_discord_operations(request_id,kind,event_id,attempt,claimed_ms) VALUES(?1,'event',?2,1,0)",params![used,event.id]).unwrap();
+        assert!(db.claim_discord_event_recorded(0, &used).is_err());
+        db.channel_conn().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_discord_operations(request_id,kind,event_id,attempt,claimed_ms) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),'event',?1,1,0 FROM n",[&event.id]).unwrap();
+        assert_eq!(
+            ledger_count(&db, "gateway_discord_operations"),
+            MAX_DISCORD_OPERATIONS
+        );
+        assert!(db
+            .claim_discord_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&event.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
         assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
     }
 }

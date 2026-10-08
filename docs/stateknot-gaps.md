@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对日期：2026-10-08；上游 main：`4e3c9e9194db524886ca795e5e2394be071ea202`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/4e3c9e9194db524886ca795e5e2394be071ea202/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/4e3c9e9194db524886ca795e5e2394be071ea202/README.md)。
+核对日期：2026-10-08；上游 main：`9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/9110ad71934e446d9fbb8ff21387cf14a7b7bdc6/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/9110ad71934e446d9fbb8ff21387cf14a7b7bdc6/README.md)。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -8,7 +8,11 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 2026-10-03 回访核对：main、v0.1.0-alpha.1 和 #140 状态未变化；优先保持已接入 HTTP MCP 的回归，durable 继续受 Brokerrouter #41 原生输出合同阻挡。
 
-2026-10-08 04:38 UTC 回访核对 #141 的依赖/CI 更新；05:26 UTC 复核 main 再推进至上述 SHA，#145 仅更新 jsonschema/Tokio/Node 类型的 patch pin/lockfile 和 Dependabot 分组。README 与 runtime/integrations 源码合同均未变。最新 prerelease 仍为 0.1.0-alpha.1，#140 仍 OPEN 且无回复，main 检查 SUCCESS。不会将应用精确依赖切换到浮动 main；新依赖提交没有解除 stdio/durable 门槛。
+2026-10-08 04:38 UTC 核对 #141 的依赖/CI 更新；05:26 UTC 的 main `4e3c9e9194db524886ca795e5e2394be071ea202` 中，#145 仅更新依赖 patch 与 Dependabot 分组。该次没有 runtime/integrations 合同变化。
+
+06:32 UTC 再核对 main 推进至本文 SHA：[#146](https://github.com/StateKnot/StateKnot/pull/146) 已合并本地 RFC 9068 RS256 JWT/JWKS 身份 profile，使用可信运营方 provision 的有界公钥集、CAS 轮换、过期租户策略和独立资源授权；真实 PostgreSQL 16/17 与 TLS Keycloak 验收覆盖声明的范围。可信公钥分发/刷新、多副本拓扑及框架生产门槛仍需部署验收。[固定接线合同](https://github.com/StateKnot/StateKnot/blob/9110ad71934e446d9fbb8ff21387cf14a7b7bdc6/docs/agent-jwt-jwks.md)。[#147](https://github.com/StateKnot/StateKnot/pull/147) 增加执行/凭据不得序列化的 compile-fail 合同及生产验收 ledger；当前 main 12 项检查全部 SUCCESS。
+
+这些是实际源码增量，不能再说本轮只有依赖变化；但公开 release 仍为 `0.1.0-alpha.1`，不包含新 JWT/JWKS profile。JiaClaw 未认证或接入该身份 profile，当前永久渠道映射与租户容器隔离不能据此改称框架身份接线。此 delta 没有修改现成 durable graph/native schema 或 MCP transport；#140 仍 OPEN、无回复，Brokerrouter #41 仍阻止当前原生输出合同。保留精确 HTTP MCP 依赖，不自动切换浮动 main。
 
 ## MCP 现状与新议题
 
@@ -28,4 +32,4 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
 
-独立用户 Telegram 的 registry 准入、私有 inbox/outbox 与人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。本次 main 仅依赖治理变化，release/#140 未变；独立用户 Slack 同样只属于应用准入，不计为上游运行时认证。
+独立用户 Telegram/Slack/Discord 的 registry 准入、私有 inbox/outbox、加密凭据和人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。

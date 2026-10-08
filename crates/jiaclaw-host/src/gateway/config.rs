@@ -40,6 +40,9 @@ pub struct Config {
     /// Dedicated Slack app installations, each bound to one user and private DM.
     #[serde(default)]
     pub slack: Vec<SlackConfig>,
+    /// Dedicated user-installable Discord applications, each bound to one private bot DM.
+    #[serde(default)]
+    pub discord: Vec<DiscordConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -78,6 +81,21 @@ pub struct SlackConfig {
 }
 fn slack_api() -> String {
     "https://slack.com/api".into()
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscordConfig {
+    pub binding_id: String,
+    pub bot_token_file: PathBuf,
+    pub state_key_file: PathBuf,
+    #[serde(default = "discord_api")]
+    pub api_base: String,
+    #[serde(default)]
+    pub allow_loopback: bool,
+}
+fn discord_api() -> String {
+    "https://discord.com/api/v10".into()
 }
 
 fn default_bind() -> String {
@@ -224,6 +242,46 @@ impl Config {
                 entry.allow_loopback,
             )?;
         }
+        ensure!(
+            self.discord.len() <= 32,
+            "at most 32 Discord bindings are supported"
+        );
+        ensure!(
+            self.discord.is_empty() || self.request_timeout_seconds >= 150,
+            "Discord requires request_timeout_seconds >= 150"
+        );
+        let mut discord_ids = HashSet::new();
+        for entry in &self.discord {
+            ensure!(
+                uuid::Uuid::parse_str(&entry.binding_id).is_ok_and(|id| !id.is_nil()
+                    && id.get_variant() == uuid::Variant::RFC4122
+                    && id.to_string() == entry.binding_id),
+                "Discord binding_id must be a canonical non-nil RFC4122 UUID"
+            );
+            ensure!(
+                discord_ids.insert(&entry.binding_id),
+                "duplicate Discord binding_id"
+            );
+            ensure!(
+                [&entry.bot_token_file, &entry.state_key_file]
+                    .into_iter()
+                    .all(|path| path.is_absolute()
+                        && path.file_name().is_some()
+                        && !path
+                            .components()
+                            .any(|part| matches!(part, Component::ParentDir))),
+                "Discord secret paths must be absolute without parent traversal"
+            );
+            ensure!(
+                entry.api_base.len() <= 2048,
+                "Discord API base exceeds its size limit"
+            );
+            crate::outbound::validate_api_base(
+                crate::channel_types::Channel::Discord,
+                &entry.api_base,
+                entry.allow_loopback,
+            )?;
+        }
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
@@ -308,6 +366,7 @@ mod tests {
         assert_eq!(c.max_in_flight, 16);
         assert!(!c.scheduled_jobs);
         assert!(c.slack.is_empty());
+        assert!(c.discord.is_empty());
         c.scheduled_jobs = true;
         c.request_timeout_seconds = 149;
         assert!(c.validate().is_err());
@@ -596,6 +655,103 @@ mod tests {
         for value in [json!(null), json!(1), json!("true")] {
             let mut input = slack_value();
             input["slack"][0]["allow_loopback"] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err());
+        }
+    }
+    fn discord_value() -> serde_json::Value {
+        let mut input = value();
+        input["discord"] = json!([{"binding_id":"12345678-1234-4234-9234-123456789012","bot_token_file":"/tmp/bot.token","state_key_file":"/tmp/signing.secret"}]);
+        input
+    }
+
+    #[test]
+    fn discord_configuration_requires_bounded_canonical_bindings_paths_and_explicit_loopback() {
+        let c = config(discord_value());
+        c.validate().unwrap();
+        assert_eq!(c.discord[0].api_base, "https://discord.com/api/v10");
+        assert!(!c.discord[0].allow_loopback);
+        for id in [
+            "",
+            "00000000-0000-0000-0000-000000000000",
+            "ABCDEF01-2345-4678-9ABC-DEF012345678",
+            "abcdef01-2345-4678-1abc-def012345678",
+            "not-uuid",
+        ] {
+            let mut c = config(discord_value());
+            c.discord[0].binding_id = id.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(discord_value());
+        c.request_timeout_seconds = 149;
+        assert!(c.validate().is_err());
+        c.request_timeout_seconds = 150;
+        c.validate().unwrap();
+        c.discord.push(c.discord[0].clone());
+        assert!(c.validate().is_err());
+        let mut c = config(discord_value());
+        c.discord = (0..32)
+            .map(|_| {
+                let mut entry = c.discord[0].clone();
+                entry.binding_id = uuid::Uuid::new_v4().to_string();
+                entry
+            })
+            .collect();
+        c.validate().unwrap();
+        c.discord.push(c.discord[0].clone());
+        assert!(c.validate().is_err());
+        for url in [
+            "https://other.example/api",
+            "http://localhost:8080/api/v10",
+            "https://discord.com/other",
+            "https://secret@discord.com/api",
+            "https://discord.com/api/v10?secret=token",
+            "https://discord.com/api/v10#secret",
+            "http://127.0.0.1:8080/other",
+        ] {
+            let mut c = config(discord_value());
+            c.discord[0].api_base = url.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(discord_value());
+        c.discord[0].api_base = "http://127.0.0.1:8080/api/v10".into();
+        assert!(c.validate().is_err());
+        c.discord[0].allow_loopback = true;
+        c.validate().unwrap();
+        for path in ["relative.secret", "/tmp/../secret", "/"] {
+            for signing in [false, true] {
+                let mut c = config(discord_value());
+                if signing {
+                    c.discord[0].state_key_file = path.into();
+                } else {
+                    c.discord[0].bot_token_file = path.into();
+                }
+                assert!(c.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn discord_configuration_rejects_inline_credentials_and_caller_owned_identity() {
+        for (field, value) in [
+            ("bot_token", json!("secret")),
+            ("state_key", json!("secret")),
+            ("application_id", json!("1")),
+            ("verify_key", json!("public-pin")),
+            ("bot_user_id", json!("U1")),
+            ("command_id", json!("13")),
+            ("sender_id", json!("U2")),
+            ("conversation_id", json!("D1")),
+            ("backend_id", json!("other")),
+            ("user_id", json!("other")),
+            ("enabled", json!(true)),
+        ] {
+            let mut input = discord_value();
+            input["discord"][0][field] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err(), "{field}");
+        }
+        for value in [json!(null), json!(1), json!("true")] {
+            let mut input = discord_value();
+            input["discord"][0]["allow_loopback"] = value;
             assert!(serde_json::from_value::<Config>(input).is_err());
         }
     }

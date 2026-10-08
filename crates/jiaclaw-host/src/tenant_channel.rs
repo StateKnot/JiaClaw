@@ -240,23 +240,26 @@ async fn execute_channel(
     request: ChannelRequest,
     session_id: String,
     permit: OwnedSemaphorePermit,
-    slack: Option<SlackRequest>,
+    recorded: Option<(BackendProtocol, PrivateChannelRequest)>,
 ) -> Result<Json<ChannelResponse>, AppError> {
-    let protocol = if slack.is_some() { 2 } else { 1 };
+    let protocol = recorded
+        .as_ref()
+        .map_or(1, |(channel, _)| channel.protocol());
     let prepared = tokio::time::timeout(Duration::from_secs(MAX_RUN_SECONDS), async {
         let guard = session_turn_lock(&state, &session_id).await;
-        let (guard, permit) = if let Some(slack) = slack.clone() {
+        let (guard, permit) = if let Some((channel, request)) = recorded.clone() {
             // A timed-out/abandoned admission closure retains both ownership
             // guards until SQLite finishes, even if its result is never observed.
             let backend_id = state.agent.config().name.clone();
             let (admitted, guard, permit) = with_sessions(&state, move |store| {
-                let admitted = store.admit_slack_backend_request(&slack, &backend_id)?;
+                let admitted =
+                    store.admit_private_backend_request(&request, &backend_id, channel)?;
                 Ok((admitted, guard, permit))
             })
             .await?;
             if !admitted {
                 return Err(AppError::JobConflict(
-                    "Slack request or event was already admitted; review its receipt".into(),
+                    "channel request or event was already admitted; review its receipt".into(),
                 ));
             }
             (guard, permit)
@@ -316,8 +319,8 @@ async fn execute_channel(
     // unknown outcome, and must not release its slot or session lock early.
     let commit = with_sessions(&state, move |store| {
         let _ownership = (permit, guard);
-        if let Some(slack) = slack {
-            store.complete_slack_backend_request(&slack, &id, &messages)
+        if let Some((channel, request)) = recorded {
+            store.complete_private_backend_request(&request, &id, &messages, channel)
         } else {
             store.insert(id, SessionRecord::new(messages))?;
             store.flush()
@@ -428,7 +431,7 @@ impl SlackBinding {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SlackRequest {
+struct PrivateChannelRequest {
     protocol: u8,
     binding_id: String,
     request_id: String,
@@ -436,21 +439,63 @@ struct SlackRequest {
     event_id: String,
     prompt: String,
 }
-impl SlackRequest {
-    fn validate(&self) -> Result<(), AppError> {
+// Request and receipt DTOs are shared; the route chooses a closed, internal
+// protocol enum before validation. Clients cannot select a ledger or session.
+#[cfg(test)]
+type SlackRequest = PrivateChannelRequest;
+
+#[derive(Clone, Copy)]
+enum BackendProtocol {
+    Slack,
+    Discord,
+}
+impl BackendProtocol {
+    fn protocol(self) -> u8 {
+        match self {
+            Self::Slack => 2,
+            Self::Discord => 3,
+        }
+    }
+    fn request_table(self) -> &'static str {
+        match self {
+            Self::Slack => "gateway_slack_backend_requests",
+            Self::Discord => "gateway_discord_backend_requests",
+        }
+    }
+    fn session(self, binding: &str) -> String {
+        match self {
+            Self::Slack => format!("slack:{binding}"),
+            Self::Discord => format!("discord:{binding}"),
+        }
+    }
+    fn event_valid(self, event: &str) -> bool {
+        match self {
+            Self::Slack => slack_event_id(event),
+            Self::Discord => discord_id(event),
+        }
+    }
+    fn capacity(self) -> usize {
+        match self {
+            Self::Slack => super::channel_store::MAX_SLACK_OPERATIONS,
+            Self::Discord => super::channel_store::MAX_DISCORD_OPERATIONS,
+        }
+    }
+}
+impl PrivateChannelRequest {
+    fn validate(&self, channel: BackendProtocol) -> Result<(), AppError> {
         let request_id = canonical_id(&self.request_id);
-        if self.protocol != 2
+        if self.protocol != channel.protocol()
             || !request_id.is_some_and(|id| {
                 id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122
             })
             || canonical_id(&self.binding_id).is_none()
-            || self.session_id != format!("slack:{}", self.binding_id)
-            || !slack_event_id(&self.event_id)
+            || self.session_id != channel.session(&self.binding_id)
+            || !channel.event_valid(&self.event_id)
             || self.prompt.trim().is_empty()
             || self.prompt.len() > MAX_PROMPT_BYTES
         {
             return Err(AppError::BadRequest(
-                "invalid Slack protocol, request, binding, session, event or prompt".into(),
+                "invalid channel protocol, request, binding, session, event or prompt".into(),
             ));
         }
         Ok(())
@@ -458,7 +503,7 @@ impl SlackRequest {
 }
 
 #[derive(Serialize)]
-pub(super) struct SlackReceipt {
+pub(super) struct PrivateChannelReceipt {
     protocol: u8,
     backend_id: String,
     binding_id: String,
@@ -467,6 +512,8 @@ pub(super) struct SlackReceipt {
     session_id: String,
     status: String,
 }
+pub(super) type SlackReceipt = PrivateChannelReceipt;
+pub(super) type DiscordReceipt = PrivateChannelReceipt;
 
 impl super::store::SessionStore {
     fn slack_binding(&self) -> Result<Option<SlackBinding>> {
@@ -512,57 +559,96 @@ impl super::store::SessionStore {
         Ok(true)
     }
 
+    #[cfg(test)]
     fn admit_slack_backend_request(
         &mut self,
         request: &SlackRequest,
         backend: &str,
     ) -> Result<bool> {
+        self.admit_private_backend_request(request, backend, BackendProtocol::Slack)
+    }
+
+    fn private_backend_binding(
+        &self,
+        channel: BackendProtocol,
+        backend: &str,
+    ) -> Result<Option<String>> {
+        match channel {
+            BackendProtocol::Slack => self
+                .slack_binding()?
+                .map(|binding| {
+                    binding.validate(backend)?;
+                    Ok(binding.binding_id)
+                })
+                .transpose(),
+            BackendProtocol::Discord => self
+                .discord_binding()?
+                .map(|binding| {
+                    binding.validate(backend)?;
+                    Ok(binding.binding_id)
+                })
+                .transpose(),
+        }
+    }
+
+    fn admit_private_backend_request(
+        &mut self,
+        request: &PrivateChannelRequest,
+        backend: &str,
+        channel: BackendProtocol,
+    ) -> Result<bool> {
+        request
+            .validate(channel)
+            .map_err(|_| anyhow::anyhow!("invalid private channel request"))?;
         let binding = self
-            .slack_binding()?
-            .ok_or_else(|| anyhow::anyhow!("Slack backend has no permanent binding"))?;
-        binding.validate(backend)?;
+            .private_backend_binding(channel, backend)?
+            .ok_or_else(|| anyhow::anyhow!("channel backend has no permanent binding"))?;
         ensure!(
-            binding.binding_id == request.binding_id,
-            "Slack request differs from the permanent binding"
+            binding == request.binding_id,
+            "channel request differs from the permanent binding"
         );
         let Self::Sqlite { conn, .. } = self else {
-            anyhow::bail!("Slack backend requires SQLite")
+            anyhow::bail!("channel backend requires SQLite")
         };
+        let table = channel.request_table();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM gateway_slack_backend_requests WHERE request_id=?1 OR event_id=?2)", params![request.request_id,request.event_id], |row| row.get(0))?;
+        let duplicate: bool = tx.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE request_id=?1 OR event_id=?2)"),
+            params![request.request_id, request.event_id],
+            |row| row.get(0),
+        )?;
         if duplicate {
             return Ok(false);
         }
-        let count: usize = tx.query_row(
-            "SELECT count(*) FROM gateway_slack_backend_requests",
-            [],
-            |row| row.get(0),
-        )?;
-        ensure!(count < super::channel_store::MAX_SLACK_OPERATIONS, "Slack backend request ledger is full; new admission requires administrator maintenance");
+        let count: usize = tx.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })?;
+        ensure!(count < channel.capacity(), "channel backend request ledger is full; new admission requires administrator maintenance");
         let digest = Sha256::digest(request.prompt.as_bytes());
-        tx.execute("INSERT INTO gateway_slack_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,?3,?4,?5,'admitted')", params![request.request_id,request.binding_id,request.event_id,request.session_id,&digest[..]])?;
+        tx.execute(&format!("INSERT INTO {table}(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,?3,?4,?5,'admitted')"), params![request.request_id,request.binding_id,request.event_id,request.session_id,&digest[..]])?;
         tx.commit()?;
         Ok(true)
     }
 
-    fn complete_slack_backend_request(
+    fn complete_private_backend_request(
         &mut self,
-        request: &SlackRequest,
+        request: &PrivateChannelRequest,
         session_id: &str,
         messages: &[ChatMessage],
+        channel: BackendProtocol,
     ) -> Result<()> {
         ensure!(
-            session_id == request.session_id,
-            "Slack session commit identity mismatch"
+            session_id == request.session_id && request.protocol == channel.protocol(),
+            "channel session commit identity mismatch"
         );
         let Self::Sqlite { conn, .. } = self else {
-            anyhow::bail!("Slack backend requires SQLite")
+            anyhow::bail!("channel backend requires SQLite")
         };
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let updated = tx.execute("UPDATE gateway_slack_backend_requests SET status='completed' WHERE request_id=?1 AND binding_id=?2 AND event_id=?3 AND session_id=?4 AND status='admitted'", params![request.request_id,request.binding_id,request.event_id,session_id])?;
+        let updated = tx.execute(&format!("UPDATE {} SET status='completed' WHERE request_id=?1 AND binding_id=?2 AND event_id=?3 AND session_id=?4 AND status='admitted'", channel.request_table()), params![request.request_id,request.binding_id,request.event_id,session_id])?;
         ensure!(
             updated == 1,
-            "Slack admitted request is missing or already settled"
+            "channel admitted request is missing or already settled"
         );
         tx.execute("INSERT INTO sessions(id,messages,accessed_ms) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET messages=excluded.messages,accessed_ms=excluded.accessed_ms", params![session_id,serde_json::to_string(messages)?,super::scheduler::now_ms()])?;
         tx.commit()?;
@@ -574,24 +660,32 @@ impl super::store::SessionStore {
         request_id: &str,
         backend: &str,
     ) -> Result<Option<SlackReceipt>> {
-        let Some(binding) = self.slack_binding()? else {
+        self.private_backend_receipt(request_id, backend, BackendProtocol::Slack)
+    }
+
+    fn private_backend_receipt(
+        &self,
+        request_id: &str,
+        backend: &str,
+        channel: BackendProtocol,
+    ) -> Result<Option<PrivateChannelReceipt>> {
+        let Some(binding) = self.private_backend_binding(channel, backend)? else {
             return Ok(None);
         };
-        binding.validate(backend)?;
         let Self::Sqlite { conn, .. } = self else {
-            anyhow::bail!("Slack backend requires SQLite")
+            anyhow::bail!("channel backend requires SQLite")
         };
-        let receipt = conn.query_row("SELECT CASE WHEN length(CAST(binding_id AS BLOB))=36 THEN binding_id ELSE NULL END,CASE WHEN length(CAST(event_id AS BLOB)) BETWEEN 3 AND 128 THEN event_id ELSE NULL END,CASE WHEN length(CAST(session_id AS BLOB))=42 THEN session_id ELSE NULL END,CASE WHEN status IN ('admitted','completed') THEN status ELSE NULL END FROM gateway_slack_backend_requests WHERE request_id=?1", [request_id], |row| Ok(SlackReceipt {
-            protocol: 2, backend_id: backend.into(), request_id: request_id.into(),
+        let receipt = conn.query_row(&format!("SELECT CASE WHEN length(CAST(binding_id AS BLOB))=36 THEN binding_id ELSE NULL END,CASE WHEN length(CAST(event_id AS BLOB)) BETWEEN 1 AND 128 THEN event_id ELSE NULL END,CASE WHEN length(CAST(session_id AS BLOB)) BETWEEN 42 AND 44 THEN session_id ELSE NULL END,CASE WHEN status IN ('admitted','completed') THEN status ELSE NULL END FROM {} WHERE request_id=?1", channel.request_table()), [request_id], |row| Ok(PrivateChannelReceipt {
+            protocol: channel.protocol(), backend_id: backend.into(), request_id: request_id.into(),
             binding_id: row.get(0)?, event_id: row.get(1)?, session_id: row.get(2)?, status: row.get(3)?,
         })).optional()?;
         if let Some(receipt) = &receipt {
             ensure!(
-                receipt.binding_id == binding.binding_id
-                    && receipt.session_id == format!("slack:{}", binding.binding_id)
-                    && slack_event_id(&receipt.event_id)
+                receipt.binding_id == binding
+                    && receipt.session_id == channel.session(&binding)
+                    && channel.event_valid(&receipt.event_id)
                     && matches!(receipt.status.as_str(), "admitted" | "completed"),
-                "stored Slack request identity is corrupt"
+                "stored channel request identity is corrupt"
             );
         }
         Ok(receipt)
@@ -624,12 +718,12 @@ async fn json_bytes(
     )
     .await
     .map_err(|_| AppError::ChannelUnavailable)?
-    .map_err(|_| AppError::BadRequest("Slack body exceeds limit or is unreadable".into()))?;
+    .map_err(|_| AppError::BadRequest("channel body exceeds limit or is unreadable".into()))?;
     let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::BadRequest("invalid Slack JSON".into()))?;
+        .map_err(|_| AppError::BadRequest("invalid channel JSON".into()))?;
     if !value.is_object() {
         return Err(AppError::BadRequest(
-            "Slack request must be a JSON object".into(),
+            "channel request must be a JSON object".into(),
         ));
     }
     Ok(bytes.to_vec())
@@ -681,6 +775,23 @@ pub(super) async fn slack_chat(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Json<ChannelResponse>, AppError> {
+    private_chat(State(state), headers, request, BackendProtocol::Slack).await
+}
+
+pub(super) async fn discord_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Json<ChannelResponse>, AppError> {
+    private_chat(State(state), headers, request, BackendProtocol::Discord).await
+}
+
+async fn private_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+    channel: BackendProtocol,
+) -> Result<Json<ChannelResponse>, AppError> {
     authorize(&state, &headers)?;
     let control = state
         .tenant_control_permits
@@ -688,9 +799,9 @@ pub(super) async fn slack_chat(
         .try_acquire_owned()
         .map_err(|_| AppError::ChannelUnavailable)?;
     let bytes = json_bytes(&state, &headers, request, MAX_BODY_BYTES).await?;
-    let request: SlackRequest = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::BadRequest("invalid Slack execution JSON or fields".into()))?;
-    request.validate()?;
+    let request: PrivateChannelRequest = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("invalid channel execution JSON or fields".into()))?;
+    request.validate(channel)?;
     validate_tools(&state.agent).map_err(|_| AppError::ChannelUnavailable)?;
     let permit = state
         .gateway_channel_permit
@@ -711,7 +822,7 @@ pub(super) async fn slack_chat(
         plain,
         session_id,
         permit,
-        Some(request),
+        Some((channel, request)),
     ))
     .await
     .map_err(|_| AppError::ChannelUnavailable)?
@@ -744,6 +855,226 @@ pub(super) async fn slack_receipt(
         store.slack_backend_receipt(&request_id, &backend)
     })
     .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(receipt))
+}
+
+// Discord owns an independent ledger in the same tenant session database.
+// Binding identities are permanent, including the public verification key and
+// nonsecret state-key fingerprint. No empty/fresh owner can adopt old requests.
+const DISCORD_BINDING_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS gateway_discord_backend_binding (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ identity TEXT NOT NULL CHECK(json_valid(identity))
+);
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_binding_immutable_insert BEFORE INSERT ON gateway_discord_backend_binding
+ WHEN EXISTS(SELECT 1 FROM gateway_discord_backend_binding)
+ BEGIN SELECT RAISE(ABORT,'Discord backend owner is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_binding_immutable_update BEFORE UPDATE ON gateway_discord_backend_binding
+ BEGIN SELECT RAISE(ABORT,'Discord backend owner is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_binding_immutable_delete BEFORE DELETE ON gateway_discord_backend_binding
+ BEGIN SELECT RAISE(ABORT,'Discord backend owner is immutable'); END;
+CREATE TABLE IF NOT EXISTS gateway_discord_backend_requests (
+ request_id TEXT PRIMARY KEY NOT NULL,
+ binding_id TEXT NOT NULL,
+ event_id TEXT NOT NULL UNIQUE,
+ session_id TEXT NOT NULL,
+ prompt_sha256 BLOB NOT NULL CHECK(length(prompt_sha256)=32),
+ status TEXT NOT NULL CHECK(status IN ('admitted','completed'))
+);
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_requests_immutable_insert BEFORE INSERT ON gateway_discord_backend_requests
+ WHEN EXISTS(SELECT 1 FROM gateway_discord_backend_requests WHERE request_id=NEW.request_id OR event_id=NEW.event_id)
+ BEGIN SELECT RAISE(ABORT,'Discord request identity is already admitted'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_requests_immutable_update BEFORE UPDATE ON gateway_discord_backend_requests
+ WHEN NEW.request_id<>OLD.request_id OR NEW.binding_id<>OLD.binding_id OR NEW.event_id<>OLD.event_id OR NEW.session_id<>OLD.session_id OR NEW.prompt_sha256<>OLD.prompt_sha256 OR OLD.status='completed'
+ BEGIN SELECT RAISE(ABORT,'Discord request identity and completed receipt are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_discord_backend_requests_immutable_delete BEFORE DELETE ON gateway_discord_backend_requests
+ BEGIN SELECT RAISE(ABORT,'Discord request identity is permanent'); END;";
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DiscordBinding {
+    protocol: u8,
+    binding_id: String,
+    user_id: String,
+    backend_id: String,
+    application_id: String,
+    verify_key: String,
+    bot_user_id: String,
+    sender_id: String,
+    conversation_id: String,
+    command_id: String,
+    state_key_fingerprint: String,
+}
+
+fn discord_id(value: &str) -> bool {
+    value
+        .parse::<u64>()
+        .ok()
+        .is_some_and(|id| id != 0 && id.to_string() == value)
+}
+fn lowercase_nonzero_hex_key(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && value.bytes().any(|b| b != b'0')
+}
+impl DiscordBinding {
+    fn validate(&self, backend: &str) -> Result<()> {
+        ensure!(
+            self.protocol == 3 && self.backend_id == backend,
+            "Discord backend protocol or identity mismatch"
+        );
+        ensure!(
+            canonical_id(&self.binding_id).is_some() && canonical_id(&self.user_id).is_some(),
+            "canonical Discord owner UUIDs required"
+        );
+        ensure!(
+            [
+                &self.application_id,
+                &self.bot_user_id,
+                &self.sender_id,
+                &self.conversation_id,
+                &self.command_id
+            ]
+            .iter()
+            .all(|id| discord_id(id)),
+            "canonical nonzero Discord snowflake identities required"
+        );
+        ensure!(
+            self.bot_user_id != self.sender_id,
+            "Discord sender cannot be the bot user"
+        );
+        ensure!(
+            lowercase_nonzero_hex_key(&self.verify_key)
+                && lowercase_nonzero_hex_key(&self.state_key_fingerprint),
+            "Discord verification key and state fingerprint require nonzero lowercase 32-byte hex"
+        );
+        Ok(())
+    }
+}
+
+impl super::store::SessionStore {
+    fn discord_binding(&self) -> Result<Option<DiscordBinding>> {
+        let Self::Sqlite { conn, .. } = self else {
+            anyhow::bail!("Discord backend requires SQLite")
+        };
+        let present: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='gateway_discord_backend_binding')", [], |row| row.get(0))?;
+        if !present {
+            return Ok(None);
+        }
+        let raw: Option<String> = conn.query_row("SELECT CASE WHEN length(CAST(identity AS BLOB))<=4096 THEN identity ELSE NULL END FROM gateway_discord_backend_binding WHERE id=1", [], |row| row.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
+            .transpose()
+    }
+    fn bind_discord_backend(&mut self, binding: &DiscordBinding) -> Result<bool> {
+        let Self::Sqlite { conn, .. } = self else {
+            anyhow::bail!("Discord backend requires SQLite")
+        };
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(DISCORD_BINDING_SCHEMA)?;
+        let existing: Option<String> = tx.query_row("SELECT CASE WHEN length(CAST(identity AS BLOB))<=4096 THEN identity ELSE NULL END FROM gateway_discord_backend_binding WHERE id=1", [], |row| row.get(0)).optional()?;
+        if let Some(existing) = existing {
+            let existing: DiscordBinding = serde_json::from_str(&existing)?;
+            let matches = existing == *binding;
+            tx.commit()?;
+            return Ok(matches);
+        }
+        let records: usize = tx.query_row(
+            "SELECT count(*) FROM gateway_discord_backend_requests",
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            records == 0,
+            "Discord backend ledger exists without its permanent owner"
+        );
+        tx.execute(
+            "INSERT INTO gateway_discord_backend_binding(id,identity) VALUES(1,?1)",
+            [serde_json::to_string(binding)?],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+}
+
+pub(super) async fn discord_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Json<Value>, AppError> {
+    let Json(mut value) = status(State(state), headers, uri).await?;
+    value["protocol"] = json!(3);
+    Ok(Json(value))
+}
+
+pub(super) async fn discord_bind(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Json<DiscordBinding>, AppError> {
+    authorize(&state, &headers)?;
+    let permit = state
+        .tenant_control_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::ChannelUnavailable)?;
+    let bytes = json_bytes(&state, &headers, request, 4096).await?;
+    let binding: DiscordBinding = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("invalid Discord binding JSON or fields".into()))?;
+    binding.validate(&state.agent.config().name).map_err(|_| {
+        AppError::BadRequest("invalid Discord backend or application binding".into())
+    })?;
+    let owner = binding.clone();
+    let bound = tokio::time::timeout(
+        COMMIT_TIMEOUT,
+        with_sessions(&state, move |store| {
+            let _permit = permit;
+            store.bind_discord_backend(&owner)
+        }),
+    )
+    .await
+    .map_err(|_| AppError::ChannelUnavailable)??;
+    if !bound {
+        return Err(AppError::JobConflict(
+            "Discord backend is permanently owned by a different binding".into(),
+        ));
+    }
+    Ok(Json(binding))
+}
+
+pub(super) async fn discord_receipt(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    uri: Uri,
+) -> Result<Json<DiscordReceipt>, AppError> {
+    authorize(&state, &headers)?;
+    if uri.query().is_some()
+        || !canonical_id(&request_id).is_some_and(|id| {
+            id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122
+        })
+    {
+        return Err(AppError::BadRequest(
+            "canonical UUIDv7 request ID without query required".into(),
+        ));
+    }
+    let permit = state
+        .tenant_control_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::ChannelUnavailable)?;
+    let backend = state.agent.config().name.clone();
+    let receipt = tokio::time::timeout(
+        COMMIT_TIMEOUT,
+        with_sessions(&state, move |store| {
+            let _permit = permit;
+            store.private_backend_receipt(&request_id, &backend, BackendProtocol::Discord)
+        }),
+    )
+    .await
+    .map_err(|_| AppError::ChannelUnavailable)??
     .ok_or(AppError::NotFound)?;
     Ok(Json(receipt))
 }
@@ -1820,5 +2151,741 @@ mod tests {
                 .status,
             "admitted"
         );
+    }
+
+    fn discord_owner(binding: Uuid) -> Value {
+        json!({"protocol":3,"binding_id":binding.to_string(),"user_id":Uuid::new_v4().to_string(),"backend_id":"tenant-alice","application_id":"111111111111111111","verify_key":"a".repeat(64),"bot_user_id":"111111111111111111","sender_id":"222222222222222222","conversation_id":"333333333333333333","command_id":"444444444444444444","state_key_fingerprint":"b".repeat(64)})
+    }
+    fn discord_body(binding: Uuid) -> Value {
+        json!({"protocol":3,"binding_id":binding.to_string(),"request_id":Uuid::now_v7().to_string(),"session_id":format!("discord:{binding}"),"event_id":"555555555555555555","prompt":"hello private Discord"})
+    }
+    async fn bind_discord(state: AppState, value: Value) -> Result<Json<DiscordBinding>, AppError> {
+        discord_bind(
+            State(state),
+            headers(),
+            Request::new(Body::from(value.to_string())),
+        )
+        .await
+    }
+    async fn post_discord(
+        state: AppState,
+        value: Value,
+    ) -> Result<Json<ChannelResponse>, AppError> {
+        discord_chat(
+            State(state),
+            headers(),
+            Request::new(Body::from(value.to_string())),
+        )
+        .await
+    }
+    async fn receipt_discord(
+        state: AppState,
+        request_id: &str,
+    ) -> Result<Json<DiscordReceipt>, AppError> {
+        discord_receipt(
+            State(state),
+            headers(),
+            Path(request_id.into()),
+            Uri::from_static("/internal/channels/discord/requests/placeholder"),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn discord_default_routes_are_closed_and_every_private_route_authenticates_first() {
+        let fixture = Fixture::new().await;
+        let mut closed = fixture.state.clone();
+        let mut config = closed.agent.config().clone();
+        config.http.gateway_channel_chat = false;
+        closed.agent = Arc::new(JiaClawAgent::new(config).unwrap());
+        let router = crate::build_router(closed);
+        for (method, path) in [
+            (Method::GET, "/internal/channels/discord/status"),
+            (Method::POST, "/internal/channels/discord-binding"),
+            (Method::POST, "/internal/channels/discord/execute"),
+            (
+                Method::GET,
+                "/internal/channels/discord/requests/0195ca8e-0000-7000-8000-00000000000a",
+            ),
+        ] {
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(Body::empty())
+                            .unwrap()
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        drop(router);
+        assert_eq!(
+            discord_status(
+                State(fixture.state.clone()),
+                headers(),
+                Uri::from_static("/internal/channels/discord/status")
+            )
+            .await
+            .unwrap()
+            .0,
+            json!({"protocol":3,"backend_id":"tenant-alice","max_run_seconds":120,"tools":TOOLS,"mode":"gateway"})
+        );
+        for bad in [
+            HeaderMap::new(),
+            {
+                let mut h = headers();
+                h.append(
+                    header::AUTHORIZATION,
+                    "Bearer private-fixture-token".parse().unwrap(),
+                );
+                h
+            },
+            {
+                let mut h = headers();
+                h.insert("x-api-token", "private-fixture-token".parse().unwrap());
+                h
+            },
+            {
+                let mut h = headers();
+                h.insert(header::AUTHORIZATION, "Bearer wrong".parse().unwrap());
+                h
+            },
+        ] {
+            assert!(matches!(
+                discord_status(
+                    State(fixture.state.clone()),
+                    bad.clone(),
+                    Uri::from_static("/internal/channels/discord/status?bad=1")
+                )
+                .await,
+                Err(AppError::Unauthorized)
+            ));
+            assert!(matches!(
+                discord_bind(
+                    State(fixture.state.clone()),
+                    bad.clone(),
+                    Request::new(Body::from("not json"))
+                )
+                .await,
+                Err(AppError::Unauthorized)
+            ));
+            assert!(matches!(
+                discord_chat(
+                    State(fixture.state.clone()),
+                    bad.clone(),
+                    Request::new(Body::from("not json"))
+                )
+                .await,
+                Err(AppError::Unauthorized)
+            ));
+            assert!(matches!(
+                discord_receipt(
+                    State(fixture.state.clone()),
+                    bad,
+                    Path("not uuid".into()),
+                    Uri::from_static("/internal/channels/discord/requests/placeholder?bad=1")
+                )
+                .await,
+                Err(AppError::Unauthorized)
+            ));
+        }
+        let controls = fixture
+            .state
+            .tenant_control_permits
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+        assert!(matches!(
+            discord_status(
+                State(fixture.state.clone()),
+                headers(),
+                Uri::from_static("/internal/channels/discord/status")
+            )
+            .await,
+            Err(AppError::ChannelUnavailable)
+        ));
+        assert!(matches!(
+            bind_discord(fixture.state.clone(), discord_owner(Uuid::new_v4())).await,
+            Err(AppError::ChannelUnavailable)
+        ));
+        assert!(matches!(
+            post_discord(fixture.state.clone(), discord_body(Uuid::new_v4())).await,
+            Err(AppError::ChannelUnavailable)
+        ));
+        assert!(matches!(
+            receipt_discord(fixture.state.clone(), &Uuid::now_v7().to_string()).await,
+            Err(AppError::ChannelUnavailable)
+        ));
+        drop(controls);
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
+    async fn discord_exact_binding_request_fields_and_canonical_identities_precede_model_io() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let owner = discord_owner(binding);
+        for (field, value) in [
+            ("protocol", json!(2)),
+            ("binding_id", json!(Uuid::nil().to_string())),
+            ("user_id", json!("0195CA8E-0000-7000-8000-00000000000A")),
+            ("backend_id", json!("other-tenant")),
+            ("application_id", json!("0111111111111111111")),
+            ("bot_user_id", json!("0")),
+            ("sender_id", owner["bot_user_id"].clone()),
+            ("conversation_id", json!("+333333333333333333")),
+            ("command_id", json!("18446744073709551616")),
+            ("verify_key", json!("A".repeat(64))),
+            ("verify_key", json!("0".repeat(64))),
+            ("state_key_fingerprint", json!("g".repeat(64))),
+            ("state_key_fingerprint", json!("0".repeat(64))),
+            ("enabled_tools", json!(["exec"])),
+        ] {
+            let mut invalid = owner.clone();
+            invalid[field] = value;
+            assert!(
+                matches!(
+                    bind_discord(fixture.state.clone(), invalid).await,
+                    Err(AppError::BadRequest(_))
+                ),
+                "{field}"
+            );
+        }
+        for raw in [
+            "[]".into(),
+            format!(
+                "{},\"application_id\":\"111111111111111111\"}}",
+                owner.to_string().trim_end_matches('}')
+            ),
+        ] {
+            assert!(matches!(
+                discord_bind(
+                    State(fixture.state.clone()),
+                    headers(),
+                    Request::new(Body::from(raw))
+                )
+                .await,
+                Err(AppError::BadRequest(_))
+            ));
+        }
+        assert!(fixture
+            .state
+            .sessions
+            .lock()
+            .unwrap()
+            .discord_binding()
+            .unwrap()
+            .is_none());
+        let _ = bind_discord(fixture.state.clone(), owner).await.unwrap();
+        let valid = discord_body(binding);
+        for (field, value) in [
+            ("protocol", json!(2)),
+            ("binding_id", json!("bad")),
+            ("request_id", json!(Uuid::new_v4().to_string())),
+            ("session_id", json!(format!("slack:{binding}"))),
+            ("event_id", json!("0")),
+            ("event_id", json!("0555555555555555555")),
+            ("event_id", json!("18446744073709551616")),
+            ("event_id", json!(" 555555555555555555")),
+            ("prompt", json!(" \n ")),
+            ("prompt", json!("界".repeat(MAX_PROMPT_BYTES / 3 + 1))),
+            ("enabled_tools", json!(["exec"])),
+            ("state_key_fingerprint", json!("a".repeat(64))),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(
+                matches!(
+                    post_discord(fixture.state.clone(), invalid).await,
+                    Err(AppError::BadRequest(_))
+                ),
+                "{field}"
+            );
+        }
+        for raw in [
+            "[]".into(),
+            format!(
+                "{},\"prompt\":\"again\"}}",
+                valid.to_string().trim_end_matches('}')
+            ),
+        ] {
+            assert!(matches!(
+                discord_chat(
+                    State(fixture.state.clone()),
+                    headers(),
+                    Request::new(Body::from(raw))
+                )
+                .await,
+                Err(AppError::BadRequest(_))
+            ));
+        }
+        for (route, value) in [
+            (
+                "/internal/channels/discord-binding?x=1",
+                discord_owner(binding),
+            ),
+            ("/internal/channels/discord/execute?x=1", valid.clone()),
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .body(Body::from(value.to_string()))
+                .unwrap();
+            let result = if route.contains("binding") {
+                discord_bind(State(fixture.state.clone()), headers(), request)
+                    .await
+                    .map(|_| ())
+            } else {
+                discord_chat(State(fixture.state.clone()), headers(), request)
+                    .await
+                    .map(|_| ())
+            };
+            assert!(matches!(result, Err(AppError::BadRequest(_))));
+        }
+        assert!(matches!(
+            discord_status(
+                State(fixture.state.clone()),
+                headers(),
+                Uri::from_static("/internal/channels/discord/status?x=1")
+            )
+            .await,
+            Err(AppError::BadRequest(_))
+        ));
+        assert!(matches!(
+            discord_bind(
+                State(fixture.state.clone()),
+                headers(),
+                Request::new(Body::from(" ".repeat(4097)))
+            )
+            .await,
+            Err(AppError::BadRequest(_))
+        ));
+        let mut wrong = valid;
+        let different = Uuid::new_v4();
+        wrong["binding_id"] = json!(different.to_string());
+        wrong["session_id"] = json!(format!("discord:{different}"));
+        assert!(post_discord(fixture.state.clone(), wrong).await.is_err());
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        assert_eq!(fixture.state.gateway_channel_permit.available_permits(), 1);
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
+    async fn discord_permanent_owner_coexists_with_slack_and_survives_reopen() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let owner = discord_owner(binding);
+        let slack = slack_owner(Uuid::new_v4());
+        let _ = bind_slack(fixture.state.clone(), slack.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                bind_discord(fixture.state.clone(), owner.clone())
+                    .await
+                    .unwrap()
+                    .0
+            )
+            .unwrap(),
+            owner
+        );
+        let _ = bind_discord(fixture.state.clone(), owner.clone())
+            .await
+            .unwrap();
+        for field in [
+            "binding_id",
+            "user_id",
+            "application_id",
+            "bot_user_id",
+            "sender_id",
+            "conversation_id",
+            "command_id",
+            "verify_key",
+            "state_key_fingerprint",
+        ] {
+            let mut altered = owner.clone();
+            altered[field] = match field {
+                "binding_id" | "user_id" => json!(Uuid::new_v4().to_string()),
+                "verify_key" | "state_key_fingerprint" => json!("c".repeat(64)),
+                _ => json!(format!("{}1", owner[field].as_str().unwrap())),
+            };
+            assert!(
+                matches!(
+                    bind_discord(fixture.state.clone(), altered).await,
+                    Err(AppError::JobConflict(_))
+                ),
+                "{field}"
+            );
+        }
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let mut reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.discord_binding().unwrap().unwrap()).unwrap(),
+            owner
+        );
+        assert_eq!(
+            serde_json::to_value(reopened.slack_binding().unwrap().unwrap()).unwrap(),
+            slack
+        );
+        let mut altered: DiscordBinding = serde_json::from_value(owner.clone()).unwrap();
+        altered.state_key_fingerprint = "c".repeat(64);
+        assert!(!reopened.bind_discord_backend(&altered).unwrap());
+        let SessionStore::Sqlite { conn, .. } = &reopened else {
+            panic!("SQLite")
+        };
+        for statement in [
+            "DELETE FROM gateway_discord_backend_binding",
+            "UPDATE gateway_discord_backend_binding SET identity='{}'",
+        ] {
+            assert!(conn.execute(statement, []).is_err());
+        }
+        assert!(conn
+            .execute(
+                "INSERT OR REPLACE INTO gateway_discord_backend_binding(id,identity) VALUES(1,?1)",
+                [serde_json::to_string(&altered).unwrap()]
+            )
+            .is_err());
+        assert_eq!(
+            serde_json::to_value(reopened.discord_binding().unwrap().unwrap()).unwrap(),
+            owner
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn discord_request_receipt_is_atomic_private_and_replays_never_reach_model() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_discord(fixture.state.clone(), discord_owner(binding))
+            .await
+            .unwrap();
+        let request = discord_body(binding);
+        let reply = post_discord(fixture.state.clone(), request.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(reply.protocol, 3);
+        assert_eq!(
+            reply.response.session_id,
+            Some(format!("discord:{binding}"))
+        );
+        assert_eq!(
+            reply.response.routing.as_ref().unwrap().purpose,
+            ModelPurpose::Channel
+        );
+        let receipt = serde_json::to_value(
+            receipt_discord(
+                fixture.state.clone(),
+                request["request_id"].as_str().unwrap(),
+            )
+            .await
+            .unwrap()
+            .0,
+        )
+        .unwrap();
+        assert_eq!(
+            receipt,
+            json!({"protocol":3,"backend_id":"tenant-alice","binding_id":binding.to_string(),"request_id":request["request_id"],"event_id":"555555555555555555","session_id":format!("discord:{binding}"),"status":"completed"})
+        );
+        assert!(!receipt.to_string().contains("hello private Discord"));
+        assert!(!receipt.to_string().contains("prompt_sha256"));
+        let mut duplicate_event = request.clone();
+        duplicate_event["request_id"] = json!(Uuid::now_v7().to_string());
+        let mut duplicate_request = request.clone();
+        duplicate_request["event_id"] = json!("555555555555555556");
+        for duplicate in [request.clone(), duplicate_event, duplicate_request] {
+            assert!(matches!(
+                post_discord(fixture.state.clone(), duplicate).await,
+                Err(AppError::JobConflict(_))
+            ));
+        }
+        {
+            let model = fixture.requests.lock().unwrap();
+            assert_eq!(model.len(), 1);
+            assert_eq!(model[0]["model"], "exact-channel-route");
+            let mut tools = model[0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            tools.sort_unstable();
+            assert_eq!(tools, TOOLS);
+        }
+        assert!(matches!(
+            receipt_discord(fixture.state.clone(), &Uuid::new_v4().to_string()).await,
+            Err(AppError::BadRequest(_))
+        ));
+        assert!(matches!(
+            receipt_discord(fixture.state.clone(), &Uuid::now_v7().to_string()).await,
+            Err(AppError::NotFound)
+        ));
+        assert!(matches!(
+            discord_receipt(
+                State(fixture.state.clone()),
+                headers(),
+                Path(request["request_id"].as_str().unwrap().into()),
+                Uri::from_static("/internal/channels/discord/requests/placeholder?x=1")
+            )
+            .await,
+            Err(AppError::BadRequest(_))
+        ));
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let mut reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        let parsed: PrivateChannelRequest = serde_json::from_value(request).unwrap();
+        assert_eq!(
+            reopened
+                .private_backend_receipt(
+                    &parsed.request_id,
+                    "tenant-alice",
+                    BackendProtocol::Discord
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert!(!reopened
+            .admit_private_backend_request(&parsed, "tenant-alice", BackendProtocol::Discord)
+            .unwrap());
+        assert_eq!(
+            reopened
+                .get(&parsed.session_id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn discord_commit_failure_preserves_unknown_admission_and_rolls_back_receipt() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_discord(fixture.state.clone(), discord_owner(binding))
+            .await
+            .unwrap();
+        {
+            let store = fixture.state.sessions.lock().unwrap();
+            let SessionStore::Sqlite { conn, .. } = &*store else {
+                panic!("SQLite")
+            };
+            conn.execute_batch("CREATE TRIGGER reject_discord_commit BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'private fixture commit failure'); END;").unwrap();
+        }
+        let request = discord_body(binding);
+        assert!(
+            matches!(post_discord(fixture.state.clone(),request.clone()).await,Err(AppError::Internal(message)) if message=="session_storage_error")
+        );
+        assert_eq!(
+            receipt_discord(
+                fixture.state.clone(),
+                request["request_id"].as_str().unwrap()
+            )
+            .await
+            .unwrap()
+            .0
+            .status,
+            "admitted"
+        );
+        assert!(fixture
+            .state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&format!("discord:{binding}"))
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            post_discord(fixture.state.clone(), request.clone()).await,
+            Err(AppError::JobConflict(_))
+        ));
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let mut reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        let parsed: PrivateChannelRequest = serde_json::from_value(request).unwrap();
+        assert_eq!(
+            reopened
+                .private_backend_receipt(
+                    &parsed.request_id,
+                    "tenant-alice",
+                    BackendProtocol::Discord
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+            "admitted"
+        );
+        assert!(!reopened
+            .admit_private_backend_request(&parsed, "tenant-alice", BackendProtocol::Discord)
+            .unwrap());
+        assert!(reopened.get(&parsed.session_id).unwrap().is_none());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn discord_disconnected_caller_keeps_shared_channel_slot_until_durable_completion() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_discord(fixture.state.clone(), discord_owner(binding))
+            .await
+            .unwrap();
+        let _ = bind_slack(fixture.state.clone(), slack_owner(binding))
+            .await
+            .unwrap();
+        let request = discord_body(binding);
+        let request_id = request["request_id"].as_str().unwrap().to_string();
+        let guard = session_turn_lock(&fixture.state, &format!("discord:{binding}")).await;
+        let state = fixture.state.clone();
+        let caller = tokio::spawn(async move { post_discord(state, request).await });
+        wait_busy(&fixture.state).await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert_eq!(fixture.state.gateway_channel_permit.available_permits(), 0);
+        assert!(matches!(
+            post_slack(fixture.state.clone(), slack_body(binding)).await,
+            Err(AppError::JobConflict(_))
+        ));
+        assert!(matches!(
+            post_body(fixture.state.clone(), body(binding)).await,
+            Err(AppError::JobConflict(_))
+        ));
+        assert!(discord_status(
+            State(fixture.state.clone()),
+            headers(),
+            Uri::from_static("/internal/channels/discord/status")
+        )
+        .await
+        .is_ok());
+        drop(guard);
+        wait_idle(&fixture.state).await;
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+        assert_eq!(
+            receipt_discord(fixture.state.clone(), &request_id)
+                .await
+                .unwrap()
+                .0
+                .status,
+            "completed"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn discord_backend_quota_and_permanent_admissions_reject_replace_delete_and_partial_records() {
+        let mut store = SessionStore::open(std::path::Path::new(":memory:")).unwrap();
+        let binding = Uuid::new_v4();
+        let owner: DiscordBinding = serde_json::from_value(discord_owner(binding)).unwrap();
+        store.bind_discord_backend(&owner).unwrap();
+        let request: PrivateChannelRequest = serde_json::from_value(discord_body(binding)).unwrap();
+        assert!(store
+            .admit_private_backend_request(&request, "tenant-alice", BackendProtocol::Discord)
+            .unwrap());
+        assert!(!store
+            .admit_private_backend_request(&request, "tenant-alice", BackendProtocol::Discord)
+            .unwrap());
+        let SessionStore::Sqlite { conn, .. } = &store else {
+            panic!("SQLite")
+        };
+        assert!(conn
+            .execute("DELETE FROM gateway_discord_backend_requests", [])
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE gateway_discord_backend_requests SET event_id='666666666666666666'",
+                []
+            )
+            .is_err());
+        assert!(conn.execute("INSERT OR REPLACE INTO gateway_discord_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,'666666666666666666',?3,zeroblob(32),'completed')",params![request.request_id,binding.to_string(),request.session_id]).is_err());
+        assert!(conn.execute("INSERT OR REPLACE INTO gateway_discord_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,?3,?4,zeroblob(32),'completed')",params![Uuid::now_v7().to_string(),binding.to_string(),request.event_id,request.session_id]).is_err());
+        conn.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_discord_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),?1,CAST(600000000000000000+x AS TEXT),?2,zeroblob(32),'admitted' FROM n",params![binding.to_string(),format!("discord:{binding}")]).unwrap();
+        let mut next = request.clone();
+        next.request_id = Uuid::now_v7().to_string();
+        next.event_id = "666666666666666666".into();
+        assert!(store
+            .admit_private_backend_request(&next, "tenant-alice", BackendProtocol::Discord)
+            .is_err());
+        assert!(store
+            .private_backend_receipt(&next.request_id, "tenant-alice", BackendProtocol::Discord)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .private_backend_receipt(
+                    &request.request_id,
+                    "tenant-alice",
+                    BackendProtocol::Discord
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+            "admitted"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn discord_owner_commit_deadline_retains_io_permit_until_blocking_write_finishes() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let sessions = fixture.state.sessions.clone();
+        let (locked_send, locked_recv) = tokio::sync::oneshot::channel();
+        let (release_send, release_recv) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _guard = sessions.lock().unwrap();
+            locked_send.send(()).unwrap();
+            release_recv.recv().unwrap();
+        });
+        locked_recv.await.unwrap();
+        let state = fixture.state.clone();
+        let caller = tokio::spawn(async move { bind_discord(state, discord_owner(binding)).await });
+        while fixture.state.tenant_control_permits.available_permits() == 4 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs(11)).await;
+        assert!(matches!(
+            caller.await.unwrap(),
+            Err(AppError::ChannelUnavailable)
+        ));
+        assert_eq!(fixture.state.tenant_control_permits.available_permits(), 3);
+        release_send.send(()).unwrap();
+        blocker.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fixture.state.tenant_control_permits.available_permits() != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture
+                .state
+                .sessions
+                .lock()
+                .unwrap()
+                .discord_binding()
+                .unwrap()
+                .unwrap()
+                .binding_id,
+            binding.to_string()
+        );
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        fixture.cleanup();
     }
 }
