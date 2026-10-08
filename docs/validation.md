@@ -629,3 +629,12 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 同一冻结生产binary `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 的修订后完整 `tests/tenant_feishu.py` 一次11组PASS、exit0、119.517秒；fixture SHA256 `8701f98030df3f09156facc870a88d5c6f8b7a746941579927ceacfabb5dff10`，日志SHA256 `be56ea9a671ba14c1946c0f5eb28183bd6a6260b59ef73e13f91d287936f4a09`。实际100屏障0.434ms、另一请求429、队列请求第一次busy时count12且matches0/hold/model/send不变，补全后released=true，随后准确满队列与全部原11组通过。fixture/binary前后hash相同，生产源码与依赖未再改或重建；先前17套是其当时原fixture的完整回归，本次另执行更新后的飞书全套，不伪称所有17套在该fixture修订后重新运行。独立非作者只读复核同步时序、预算与全部原断言，无阻断发现。
 
 提交准备时最新fixture修订的三项固定head CI仍待运行/完整日志核对；最终head/tree/run及日志以本draft PR最后说明为准，下一批回填。Linux/macOS本地文件与泛容器部署证据不认证Windows、网络文件系统、copy容器压力或真实平台/供应商；stdio/外部写入、durable委派、生产流式与多模态仍保持开放。没有恢复自动回访、合并或公开发布。
+
+
+## 复制批次完整 CI 作业容量修订
+
+跨连接屏障修订 head `469ba6ae005eb9c303cc7059bc6234d92a2e6f14` 的 [CI 37814363011](https://github.com/jiawenyao401/JiaClaw/actions/runs/37814363011) 没有取得三作业整体 SUCCESS：Linux 和容器成功，macOS 整项作业在30分02秒被取消。官方步骤元数据显示全部四项Cargo、30项强制Python、新copy七组和更新后的飞书11组都通过，checkout后处理和Complete job亦成功；两个Linux专用浏览器/Docker步骤按条件跳过。官方failure annotation明确为 `The job has exceeded the maximum execution time of 30m0s`，原始annotation JSON SHA256 `5a1dac18985d23cf3b4fb37805f4231eadbbc6c46cdf88372be3111d856ce49d`。不能把所有测试步骤成功改写为这次完整作业成功，也不能把整体取消误报为框架或应用测试失败。
+
+实际macOS冷构建及完整进程链占满原30分钟预算，末尾installer17:39:29 UTC、checkout清理17:39:30 UTC、Complete job17:39:32 UTC，而job从17:09:31 UTC开始；整任务取消于17:39:33 UTC。本次只把test矩阵的完整作业容量从30分钟改为有上限的40分钟，预留冷构建和runner结束开销。容器作业仍20分钟，四项Cargo、30项Python、Linux真实Chromium/Docker及清理、工具链/action固定版本、全部生产和fixture期限/资源/原断言不改。生产源码、依赖和二进制 `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 未重建，飞书fixture仍 `8701f98030df3f09156facc870a88d5c6f8b7a746941579927ceacfabb5dff10`。
+
+该固定head的Linux日志SHA256 `882684250ff9a83b58201383fea6480c5c7f675a7ff3515a1bf9e115785d0ad5`：Rust1172、30强制Python、copy七组、飞书11组（100屏障0.433ms/第二请求429/原队列count12及matches0/无效果/实际释放）、四Chromium和单独真实Docker全部通过；容器日志SHA256 `91e4b52354eb2dbc4fe1b9257959d150a7e84a1c7da3a8c1d8be23a36e576c35`，新镜像部署/所有权/卷恢复/限额压力通过，仍未认证copy容器专项或真实平台runtime。macOS完整日志SHA256 `9e1933ef9bb338313b5b0db910fa294cebb44470f9e565a22cfb157656d319aa`：Rust1171、全部新copy/ownership及旧Telegram重开、30强制Python与copy七组/飞书11组通过；实际100屏障0.77ms、第二请求429、busy第一次count12/event0/无效果并实际释放。此记录仍不改变整个macOS job cancelled。前两轮应用/fixture失败记录同样保留。预算修订需新提交重新执行三项完整CI，最终head/tree/run与完整日志以本draft PR最后说明为准，不使用旧head的成功替代。没有恢复自动回访、合并或公开发布。

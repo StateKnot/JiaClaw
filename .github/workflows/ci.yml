@@ -15,9 +15,10 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
-    # Compilation plus all mandatory process suites exceeded 20 minutes on macOS.
-    # Keep fixture/production deadlines intact and bound the complete job separately.
-    timeout-minutes: 30
+    # A macOS run passed every mandatory suite but was cancelled at the 30m boundary.
+    # Reserve bounded job capacity for compilation, all suites and runner teardown.
+    # Fixture and production deadlines remain independent and unchanged.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
