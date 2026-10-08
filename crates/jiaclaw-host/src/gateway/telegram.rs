@@ -1004,6 +1004,7 @@ mod tests {
                 slack: None,
                 discord: None,
                 feishu: None,
+                wecom: None,
             });
             (state, installation)
         }

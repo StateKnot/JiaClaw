@@ -25,7 +25,8 @@ const MAX_TELEGRAM_BINDINGS: i64 = 32;
 const MAX_SLACK_BINDINGS: i64 = 32;
 const MAX_DISCORD_BINDINGS: i64 = 32;
 const MAX_FEISHU_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 6;
+const MAX_WECOM_BINDINGS: i64 = 32;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -104,6 +105,20 @@ pub struct FeishuBindingSummary {
     pub bot_open_id: String,
     pub human_open_id: String,
     pub chat_id: String,
+    pub enabled: bool,
+}
+
+/// Permanent dedicated WeCom enterprise application and canonical private-member ownership.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct WecomBindingSummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub backend_id: String,
+    pub corp_id: String,
+    pub agent_id: u32,
+    pub human_user_id: String,
     pub enabled: bool,
 }
 
@@ -302,6 +317,7 @@ impl Registry {
             tx.execute_batch(SCHEMA_V4)?;
             tx.execute_batch(SCHEMA_V5)?;
             tx.execute_batch(SCHEMA_V6)?;
+            tx.execute_batch(SCHEMA_V7)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -323,6 +339,9 @@ impl Registry {
             }
             if version < 6 {
                 tx.execute_batch(SCHEMA_V6)?;
+            }
+            if version < 7 {
+                tx.execute_batch(SCHEMA_V7)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -1365,6 +1384,165 @@ impl Registry {
         Ok(binding)
     }
 
+    /// Bind an enabled user's backend to a dedicated WeCom application and private member.
+    pub fn add_wecom_binding(
+        &self,
+        user_id: Uuid,
+        corp_id: &str,
+        agent_id: u32,
+        human_user_id: &str,
+    ) -> Result<WecomBindingSummary> {
+        crate::wecom::validate_installation(&format!("{corp_id}:{agent_id}"))?;
+        ensure!(
+            crate::wecom::user_id(human_user_id),
+            "invalid canonical WeCom member ID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let backend_id: String = tx
+            .query_row(
+                "SELECT backend_id FROM users WHERE id=?1 AND enabled=1",
+                [user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("enabled gateway user not found")?;
+        let count: i64 =
+            tx.query_row("SELECT count(*) FROM wecom_bindings", [], |row| row.get(0))?;
+        ensure!(
+            count < MAX_WECOM_BINDINGS,
+            "gateway WeCom lifetime binding limit reached"
+        );
+        let reserved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM wecom_bindings WHERE user_id=?1 OR (corp_id=?2 AND agent_id=?3))",
+            params![user_id.to_string(),corp_id,agent_id], |row| row.get(0),
+        )?;
+        ensure!(
+            !reserved,
+            "gateway WeCom user or application is permanently reserved, including revoked bindings"
+        );
+        let summary = WecomBindingSummary {
+            id: Uuid::new_v4(),
+            user_id,
+            backend_id,
+            corp_id: corp_id.into(),
+            agent_id,
+            human_user_id: human_user_id.into(),
+            enabled: true,
+        };
+        let now = now_ms();
+        tx.execute("INSERT INTO wecom_bindings(id,user_id,backend_id,corp_id,agent_id,human_user_id,enabled,created_ms,updated_ms) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?7)",
+            params![summary.id.to_string(),user_id.to_string(),summary.backend_id,corp_id,agent_id,human_user_id,now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            None,
+            "wecom_binding_added",
+            Some(&summary.id.to_string()),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    /// Exact administrative identity, including permanent revocation and disabled users.
+    pub fn wecom_binding(&self, binding_id: Uuid) -> Result<Option<WecomBindingSummary>> {
+        Ok(self.connection()?.query_row(
+            "SELECT id,user_id,backend_id,corp_id,agent_id,human_user_id,enabled FROM wecom_bindings WHERE id=?1",
+            [binding_id.to_string()], wecom_row,
+        ).optional()?)
+    }
+
+    /// Bounded lifetime history; credentials and prompts are never stored in this table.
+    pub fn list_wecom_bindings(&self) -> Result<Vec<WecomBindingSummary>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,user_id,backend_id,corp_id,agent_id,human_user_id,enabled FROM wecom_bindings ORDER BY created_ms,id LIMIT 32")?;
+        let rows = statement.query_map([], wecom_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Permanently revoke future admissions, retaining the application reservation and holds.
+    pub fn revoke_wecom_binding(&self, binding_id: Uuid) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user, enabled): (String, bool) = tx
+            .query_row(
+                "SELECT user_id,enabled FROM wecom_bindings WHERE id=?1",
+                [binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("gateway WeCom binding not found")?;
+        if enabled {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE wecom_bindings SET enabled=0,updated_ms=MAX(updated_ms,?2) WHERE id=?1",
+                params![binding_id.to_string(), now],
+            )?;
+            audit(
+                &tx,
+                uuid(user)?,
+                None,
+                None,
+                "wecom_binding_revoked",
+                Some(&binding_id.to_string()),
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Live ingress identity only; each effect must acquire a fresh shared write hold.
+    pub fn wecom_authorized(&self, binding_id: Uuid) -> Result<Option<WecomBindingSummary>> {
+        wecom_on(&self.connection()?, binding_id)
+    }
+
+    /// Recheck current ownership and acquire the hold shared by HTTP, cron and all channels.
+    pub fn admit_wecom(
+        &self,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+    ) -> Result<WecomBindingSummary> {
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "WeCom request ID must be RFC4122 UUIDv7"
+        );
+        ensure!(
+            matches!(operation, "wecom_execute" | "wecom_send"),
+            "invalid WeCom admission operation"
+        );
+        let object =
+            Uuid::parse_str(object_id).context("WeCom object ID must be a canonical UUID")?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "WeCom object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let binding = wecom_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, binding.user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        audit(
+            &tx,
+            binding.user_id,
+            None,
+            Some(request_id),
+            operation,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
     /// Read live key/user state for every request. No successful-authentication cache exists.
     pub fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let Some(parsed) = keys::parse(token) else {
@@ -1772,6 +1950,68 @@ fn feishu_on(conn: &Connection, binding_id: Uuid) -> Result<Option<FeishuBinding
         [binding_id.to_string()], feishu_row).optional()?)
 }
 
+fn wecom_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WecomBindingSummary> {
+    let invalid = |index| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid gateway WeCom binding identity",
+            )),
+        )
+    };
+    let id = |index| -> rusqlite::Result<Uuid> {
+        let text: String = row.get(index)?;
+        Uuid::parse_str(&text)
+            .ok()
+            .filter(|id| {
+                !id.is_nil() && id.get_variant() == uuid::Variant::RFC4122 && id.to_string() == text
+            })
+            .ok_or_else(|| invalid(index))
+    };
+    let corp_id: String = row.get(3)?;
+    let agent: i64 = row.get(4)?;
+    let agent_id = u32::try_from(agent)
+        .ok()
+        .filter(|agent| *agent > 0 && *agent <= i32::MAX as u32)
+        .ok_or_else(|| invalid(4))?;
+    if crate::wecom::validate_installation(&format!("{corp_id}:{agent_id}")).is_err() {
+        return Err(invalid(3));
+    }
+    let human_user_id: String = row.get(5)?;
+    if !crate::wecom::user_id(&human_user_id) {
+        return Err(invalid(5));
+    }
+    let backend_id: String = row.get(2)?;
+    if backend_id.is_empty()
+        || backend_id.len() > 64
+        || !backend_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(invalid(2));
+    }
+    let enabled: i64 = row.get(6)?;
+    if !matches!(enabled, 0 | 1) {
+        return Err(invalid(6));
+    }
+    Ok(WecomBindingSummary {
+        id: id(0)?,
+        user_id: id(1)?,
+        backend_id,
+        corp_id,
+        agent_id,
+        human_user_id,
+        enabled: enabled == 1,
+    })
+}
+
+fn wecom_on(conn: &Connection, binding_id: Uuid) -> Result<Option<WecomBindingSummary>> {
+    Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.corp_id,b.agent_id,b.human_user_id,b.enabled FROM wecom_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
+        [binding_id.to_string()],wecom_row).optional()?)
+}
+
 fn insert_hold(tx: &Transaction<'_>, user_id: Uuid, request_id: Uuid, now: i64) -> Result<()> {
     let held: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM write_holds WHERE user_id=?1)",
@@ -2117,6 +2357,30 @@ CREATE TRIGGER feishu_binding_no_delete BEFORE DELETE ON feishu_bindings
  BEGIN SELECT RAISE(ABORT,'Feishu binding reservations are permanent'); END;
 ";
 
+// CorpID identifies the enterprise; AgentID identifies its dedicated application.
+// Revocation retains both reservations and the one-member ownership forever.
+const SCHEMA_V7: &str = "
+CREATE TABLE wecom_bindings(
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL UNIQUE, backend_id TEXT NOT NULL,
+ corp_id TEXT NOT NULL CHECK(length(corp_id) BETWEEN 1 AND 64 AND length(corp_id)=length(CAST(corp_id AS BLOB)) AND corp_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+ agent_id INTEGER NOT NULL CHECK(typeof(agent_id)='integer' AND agent_id BETWEEN 1 AND 2147483647),
+ human_user_id TEXT NOT NULL CHECK(length(human_user_id) BETWEEN 1 AND 64 AND length(human_user_id)=length(CAST(human_user_id AS BLOB)) AND substr(human_user_id,1,1) GLOB '[a-z0-9]' AND human_user_id NOT GLOB '*[^a-z0-9_.@-]*'),
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+ UNIQUE(corp_id,agent_id), FOREIGN KEY(user_id,backend_id) REFERENCES users(id,backend_id) ON DELETE RESTRICT);
+CREATE TRIGGER wecom_binding_lifetime_limit BEFORE INSERT ON wecom_bindings WHEN (SELECT count(*) FROM wecom_bindings)>=32
+ BEGIN SELECT RAISE(ABORT,'WeCom lifetime binding limit reached'); END;
+CREATE TRIGGER wecom_binding_no_replace BEFORE INSERT ON wecom_bindings
+ WHEN EXISTS(SELECT 1 FROM wecom_bindings WHERE id=NEW.id OR user_id=NEW.user_id OR (corp_id=NEW.corp_id AND agent_id=NEW.agent_id))
+ BEGIN SELECT RAISE(ABORT,'WeCom binding reservations are permanent'); END;
+CREATE TRIGGER wecom_binding_immutable BEFORE UPDATE OF id,user_id,backend_id,corp_id,agent_id,human_user_id ON wecom_bindings
+ WHEN NEW.id IS NOT OLD.id OR NEW.user_id IS NOT OLD.user_id OR NEW.backend_id IS NOT OLD.backend_id OR NEW.corp_id IS NOT OLD.corp_id OR NEW.agent_id IS NOT OLD.agent_id OR NEW.human_user_id IS NOT OLD.human_user_id
+ BEGIN SELECT RAISE(ABORT,'WeCom binding ownership is immutable'); END;
+CREATE TRIGGER wecom_binding_no_reactivate BEFORE UPDATE OF enabled ON wecom_bindings WHEN OLD.enabled=0 AND NEW.enabled<>0
+ BEGIN SELECT RAISE(ABORT,'WeCom binding revocation is permanent'); END;
+CREATE TRIGGER wecom_binding_no_delete BEFORE DELETE ON wecom_bindings
+ BEGIN SELECT RAISE(ABORT,'WeCom binding reservations are permanent'); END;
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2142,6 +2406,546 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    fn wecom_binding(registry: &Registry, user: Uuid, number: u32) -> WecomBindingSummary {
+        registry
+            .add_wecom_binding(user, "wwEnterprise", number, "alice.member")
+            .unwrap()
+    }
+
+    #[test]
+    fn wecom_permanent_application_ownership_and_revocation_survive_restart() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let carol = registry.add_user("carol").unwrap();
+        let binding = wecom_binding(registry, alice.user_id, 1);
+        assert_eq!(
+            registry.wecom_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        // AgentID is scoped to CorpID; a different application in the same Corp is independent.
+        let same_corp = wecom_binding(registry, bob.user_id, 2);
+        let other_corp = registry
+            .add_wecom_binding(carol.user_id, "wwOther", 1, "alice.member")
+            .unwrap();
+        assert_ne!(same_corp.id, other_corp.id);
+        let conn = registry.connection().unwrap();
+        for sql in [
+            "UPDATE wecom_bindings SET id='12345678-1234-4234-9234-123456789012'",
+            "UPDATE wecom_bindings SET user_id='12345678-1234-4234-9234-123456789012'",
+            "UPDATE wecom_bindings SET backend_id='other'",
+            "UPDATE wecom_bindings SET corp_id='wwChanged'",
+            "UPDATE wecom_bindings SET agent_id=3",
+            "UPDATE wecom_bindings SET human_user_id='other.member'",
+            "DELETE FROM wecom_bindings",
+            "INSERT OR REPLACE INTO wecom_bindings SELECT * FROM wecom_bindings",
+        ] {
+            assert!(conn.execute_batch(sql).is_err(), "{sql}");
+        }
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.wecom_authorized(binding.id).unwrap().is_none());
+        registry.set_enabled(alice.user_id, true).unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_wecom(
+                binding.id,
+                request,
+                "wecom_execute",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        registry.revoke_wecom_binding(binding.id).unwrap();
+        registry.revoke_wecom_binding(binding.id).unwrap();
+        assert!(registry.wecom_authorized(binding.id).unwrap().is_none());
+        assert!(!registry.wecom_binding(binding.id).unwrap().unwrap().enabled);
+        assert!(registry
+            .add_wecom_binding(alice.user_id, "wwNew", 7, "new.member")
+            .is_err());
+        let dave = registry.add_user("dave").unwrap();
+        assert!(registry
+            .add_wecom_binding(dave.user_id, "wwEnterprise", 1, "dave")
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE wecom_bindings SET enabled=1 WHERE id=?1",
+                [binding.id.to_string()]
+            )
+            .is_err());
+        registry.rotate(alice.key_id).unwrap();
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.list_wecom_bindings().unwrap().len(), 3);
+        assert!(!reopened.wecom_binding(binding.id).unwrap().unwrap().enabled);
+        assert_eq!(
+            reopened
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|u| u.user_id == alice.user_id)
+                .unwrap()
+                .hold
+                .unwrap()
+                .request_id,
+            request
+        );
+    }
+
+    #[test]
+    fn wecom_invalid_platform_metadata_cannot_create_binding_audit_or_hold() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        for (corp, agent, human) in [
+            ("", 1, "alice"),
+            ("ww/other", 1, "alice"),
+            ("ww界", 1, "alice"),
+            ("wwCorp", 0, "alice"),
+            ("wwCorp", i32::MAX as u32 + 1, "alice"),
+            ("wwCorp", u32::MAX, "alice"),
+            ("wwCorp", 1, "Alice"),
+            ("wwCorp", 1, "@all"),
+            ("wwCorp", 1, "_alice"),
+            ("wwCorp", 1, "alice|bob"),
+            ("wwCorp", 1, "界"),
+        ] {
+            assert!(registry
+                .add_wecom_binding(user.user_id, corp, agent, human)
+                .is_err());
+        }
+        assert!(registry
+            .add_wecom_binding(user.user_id, &"w".repeat(65), 1, "alice")
+            .is_err());
+        assert!(registry
+            .add_wecom_binding(user.user_id, "wwCorp", 1, &"a".repeat(65))
+            .is_err());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap(),
+            before
+        );
+        registry.set_enabled(user.user_id, false).unwrap();
+        assert!(registry
+            .add_wecom_binding(user.user_id, "wwCorp", 1, "alice")
+            .is_err());
+        registry.set_enabled(user.user_id, true).unwrap();
+        // Compare before user-state audit entries are added.
+        assert_eq!(
+            registry
+                .audit_list(user.user_id, 0, 100, true)
+                .unwrap()
+                .events
+                .len(),
+            before["events"].as_array().unwrap().len() + 2
+        );
+        assert!(registry.list_wecom_bindings().unwrap().is_empty());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        let binding = registry
+            .add_wecom_binding(
+                user.user_id,
+                &"W".repeat(64),
+                i32::MAX as u32,
+                &"a".repeat(64),
+            )
+            .unwrap();
+        assert_eq!(binding.agent_id, i32::MAX as u32);
+    }
+
+    #[test]
+    fn wecom_admission_rechecks_current_auth_and_shares_every_channel_hold() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user_with_access("alice", true).unwrap();
+        let alice_read = principal(registry, &alice);
+        let full = registry.add_key(alice.user_id).unwrap();
+        let alice_full = principal(registry, &full);
+        let binding = wecom_binding(registry, alice.user_id, 1);
+        let slack = slack_binding(registry, alice.user_id, 1);
+        let discord = discord_binding(registry, alice.user_id, 1);
+        let feishu = feishu_binding(registry, alice.user_id, 1);
+        let telegram = registry
+            .add_telegram_binding(alice.user_id, "123", "456")
+            .unwrap();
+        for (request, operation, object) in [
+            (Uuid::new_v4(), "wecom_execute", binding.id.to_string()),
+            (Uuid::now_v7(), "write", binding.id.to_string()),
+            (Uuid::now_v7(), "wecom_send", Uuid::nil().to_string()),
+            (
+                Uuid::now_v7(),
+                "wecom_execute",
+                "ABCDEF01-2345-4678-9ABC-DEF012345678".into(),
+            ),
+            (Uuid::now_v7(), "wecom_execute", "not-uuid".into()),
+        ] {
+            assert!(registry
+                .admit_wecom(binding.id, request, operation, &object)
+                .is_err());
+        }
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        let request = Uuid::now_v7();
+        let object = Uuid::new_v4().to_string();
+        registry
+            .admit_wecom(binding.id, request, "wecom_send", &object)
+            .unwrap();
+        assert_eq!(
+            registry
+                .admit_write(&alice_read, Uuid::now_v7())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::ReadOnly)
+        );
+        assert_eq!(
+            registry
+                .admit_write(&alice_full, Uuid::now_v7())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        assert_eq!(
+            registry
+                .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        assert!(registry
+            .admit_telegram(telegram.id, Uuid::now_v7(), "telegram_send", &object)
+            .is_err());
+        assert!(registry
+            .admit_slack(slack.id, Uuid::now_v7(), "slack_send", &object)
+            .is_err());
+        assert!(registry
+            .admit_discord(discord.id, Uuid::now_v7(), "discord_send", &object)
+            .is_err());
+        assert!(registry
+            .admit_feishu(feishu.id, Uuid::now_v7(), "feishu_send", &object)
+            .is_err());
+        let audit = registry.audit_list(alice.user_id, 0, 100, true).unwrap();
+        let entry = audit
+            .events
+            .iter()
+            .find(|e| e.action == "wecom_send")
+            .unwrap();
+        assert_eq!(entry.request_id, Some(request.to_string()));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entry.note.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"binding_id":binding.id.to_string(),"object_id":object})
+        );
+        registry.finish_write(alice.user_id, request, true).unwrap();
+        let http = Uuid::now_v7();
+        registry.admit_write(&alice_full, http).unwrap();
+        assert_eq!(
+            registry
+                .admit_wecom(binding.id, Uuid::now_v7(), "wecom_execute", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        registry.finish_write(alice.user_id, http, false).unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert_eq!(
+            registry
+                .admit_wecom(binding.id, Uuid::now_v7(), "wecom_execute", &object)
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        assert!(registry.list().unwrap()[0].hold.is_some());
+    }
+
+    #[test]
+    fn wecom_binding_and_admission_rollback_with_audit_failure() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        let blocker="CREATE TRIGGER fail_wecom_audit BEFORE INSERT ON audit_events WHEN NEW.action LIKE 'wecom_%' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;";
+        conn.execute_batch(blocker).unwrap();
+        assert!(registry
+            .add_wecom_binding(user.user_id, "wwCorp", 1, "alice")
+            .is_err());
+        assert!(registry.list_wecom_bindings().unwrap().is_empty());
+        conn.execute_batch("DROP TRIGGER fail_wecom_audit").unwrap();
+        let binding = wecom_binding(registry, user.user_id, 1);
+        conn.execute_batch(blocker).unwrap();
+        assert!(registry.revoke_wecom_binding(binding.id).is_err());
+        assert!(registry.wecom_authorized(binding.id).unwrap().is_some());
+        assert!(registry
+            .admit_wecom(
+                binding.id,
+                Uuid::now_v7(),
+                "wecom_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+    }
+
+    #[test]
+    fn wecom_lifetime_capacity_and_sql_validation_include_revocations() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let mut first = None;
+        for number in 1..=32 {
+            let user = registry.add_user(&format!("backend-{number}")).unwrap();
+            let binding = wecom_binding(registry, user.user_id, number);
+            registry.revoke_wecom_binding(binding.id).unwrap();
+            first.get_or_insert(user);
+        }
+        let first = first.unwrap();
+        let error = registry
+            .add_wecom_binding(first.user_id, "wwNew", 33, "new")
+            .unwrap_err();
+        assert!(error.to_string().contains("lifetime binding limit"));
+        assert_eq!(registry.list_wecom_bindings().unwrap().len(), 32);
+        let conn = registry.connection().unwrap();
+        assert!(conn.execute("INSERT INTO wecom_bindings(id,user_id,backend_id,corp_id,agent_id,human_user_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'backend-1','wwNew',33,'new',1,0,0)",params![Uuid::new_v4().to_string(),first.user_id.to_string()]).is_err());
+        let other = Fixture::new();
+        let user = other.registry.add_user("alice").unwrap();
+        let conn = other.registry.connection().unwrap();
+        for (corp, agent, human) in [
+            ("", 1i64, "alice"),
+            ("ww/Corp", 1, "alice"),
+            ("wwCorp", 0, "alice"),
+            ("wwCorp", 2147483648, "alice"),
+            ("wwCorp", 1, "Alice"),
+            ("wwCorp", 1, "@all"),
+            ("wwCorp", 1, "alice|bob"),
+            ("ww界", 1, "alice"),
+            ("wwCorp", 1, "a界"),
+        ] {
+            assert!(conn.execute("INSERT INTO wecom_bindings(id,user_id,backend_id,corp_id,agent_id,human_user_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'alice',?3,?4,?5,1,0,0)",params![Uuid::new_v4().to_string(),user.user_id.to_string(),corp,agent,human]).is_err());
+        }
+    }
+
+    #[test]
+    fn wecom_corrupt_owner_rows_fail_closed_without_admission_effects() {
+        for (column, value) in [
+            ("corp_id", "bad corp"),
+            ("agent_id", "0"),
+            ("agent_id", "2147483648"),
+            ("human_user_id", "Alice"),
+            ("human_user_id", "@all"),
+            ("backend_id", "bad/backend"),
+            ("id", "not-uuid"),
+            ("enabled", "2"),
+        ] {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let user = registry.add_user("alice").unwrap();
+            let binding = wecom_binding(registry, user.user_id, 1);
+            let before = registry
+                .audit_list(user.user_id, 0, 100, true)
+                .unwrap()
+                .events
+                .len();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA ignore_check_constraints=ON; DROP TRIGGER wecom_binding_immutable").unwrap();
+            conn.execute(&format!("UPDATE wecom_bindings SET {column}=?1"), [value])
+                .unwrap();
+            assert!(registry
+                .wecom_authorized(binding.id)
+                .map(|b| b.is_none())
+                .unwrap_or(true));
+            assert!(registry
+                .admit_wecom(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "wecom_execute",
+                    &binding.id.to_string()
+                )
+                .is_err());
+            assert!(registry.list().unwrap()[0].hold.is_none());
+            assert_eq!(
+                registry
+                    .audit_list(user.user_id, 0, 100, true)
+                    .unwrap()
+                    .events
+                    .len(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn wecom_simultaneous_application_reservations_have_one_winner() {
+        let fixture = Fixture::new();
+        let registry = Arc::new(fixture.registry.clone());
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = [alice.user_id, bob.user_id].map(|user| {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry
+                    .add_wecom_binding(user, "wwCorp", 1, "human")
+                    .is_ok()
+            })
+        });
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(registry.list_wecom_bindings().unwrap().len(), 1);
+        let winner = registry.list_wecom_bindings().unwrap().remove(0).user_id;
+        let loser = if winner == alice.user_id {
+            bob.user_id
+        } else {
+            alice.user_id
+        };
+        assert_eq!(
+            registry
+                .audit_list(loser, 0, 100, true)
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+    }
+
+    fn downgrade_before_wecom(conn: &Connection, version: i64) {
+        if version < 6 {
+            downgrade_before_feishu(conn, version);
+        } else {
+            conn.execute_batch("DROP TABLE wecom_bindings").unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+        }
+    }
+
+    #[test]
+    fn wecom_schema_seven_preserves_all_previous_bindings_permissions_audit_and_hold() {
+        for version in 1..=6 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry
+                .add_user_with_access("alice", version >= 3)
+                .unwrap();
+            let bob = registry.add_user("bob").unwrap();
+            registry.revoke(bob.key_id).unwrap();
+            registry.set_enabled(bob.user_id, false).unwrap();
+            if version >= 2 {
+                let b = registry
+                    .add_telegram_binding(alice.user_id, "123", "456")
+                    .unwrap();
+                registry.revoke_telegram_binding(b.id).unwrap();
+            }
+            if version >= 4 {
+                let b = slack_binding(registry, alice.user_id, 1);
+                registry.revoke_slack_binding(b.id).unwrap();
+            }
+            if version >= 5 {
+                let b = discord_binding(registry, alice.user_id, 1);
+                registry.revoke_discord_binding(b.id).unwrap();
+            }
+            if version >= 6 {
+                let b = feishu_binding(registry, alice.user_id, 1);
+                registry.revoke_feishu_binding(b.id).unwrap();
+            }
+            let request = Uuid::now_v7();
+            registry
+                .admit_scheduled(alice.user_id, "alice", request)
+                .unwrap();
+            registry
+                .finish_write(alice.user_id, request, false)
+                .unwrap();
+            let users = serde_json::to_value(registry.list().unwrap()).unwrap();
+            let keys =
+                serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap();
+            let telegram = registry.list_telegram_bindings().unwrap();
+            let slack = registry.list_slack_bindings().unwrap();
+            let discord = registry.list_discord_bindings().unwrap();
+            let feishu = registry.list_feishu_bindings().unwrap();
+            let audit =
+                serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap();
+            let conn = registry.connection().unwrap();
+            downgrade_before_wecom(&conn, version);
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(
+                serde_json::to_value(migrated.list().unwrap()).unwrap(),
+                users
+            );
+            assert_eq!(
+                serde_json::to_value(migrated.list_keys(alice.user_id, 100, 0).unwrap()).unwrap(),
+                keys
+            );
+            assert_eq!(migrated.list_telegram_bindings().unwrap(), telegram);
+            assert_eq!(migrated.list_slack_bindings().unwrap(), slack);
+            assert_eq!(migrated.list_discord_bindings().unwrap(), discord);
+            assert_eq!(migrated.list_feishu_bindings().unwrap(), feishu);
+            assert_eq!(
+                serde_json::to_value(migrated.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap(),
+                audit
+            );
+            assert_eq!(principal(&migrated, &alice).read_only, version >= 3);
+            assert!(migrated.authenticate(&bob.token).unwrap().is_none());
+            assert!(migrated.list_wecom_bindings().unwrap().is_empty());
+            let binding = wecom_binding(&migrated, alice.user_id, 1);
+            assert_eq!(
+                migrated
+                    .admit_wecom(
+                        binding.id,
+                        Uuid::now_v7(),
+                        "wecom_execute",
+                        &binding.id.to_string()
+                    )
+                    .unwrap_err()
+                    .downcast_ref::<WriteAdmissionError>(),
+                Some(&WriteAdmissionError::Held)
+            );
+            assert_eq!(
+                migrated
+                    .connection()
+                    .unwrap()
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                7
+            );
+        }
+    }
+
+    #[test]
+    fn wecom_late_migration_failure_rolls_back_all_earlier_steps_and_data() {
+        for version in 1..=6 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry.add_user("alice").unwrap();
+            let conn = registry.connection().unwrap();
+            downgrade_before_wecom(&conn, version);
+            conn.execute_batch("CREATE TRIGGER wecom_binding_no_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT,'fixture conflict'); END;").unwrap();
+            let schema:String=conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)",[],|row|row.get(0)).unwrap();
+            let audit: i64 = conn
+                .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
+                .unwrap();
+            assert!(Registry::open(&registry.path).is_err());
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)",[],|row|row.get::<_,String>(0)).unwrap(),schema);
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                audit
+            );
+            conn.execute_batch("DROP TRIGGER wecom_binding_no_delete")
+                .unwrap();
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(principal(&migrated, &alice).backend_id, "alice");
+            assert!(migrated.list_wecom_bindings().unwrap().is_empty());
+        }
     }
 
     fn feishu_binding(registry: &Registry, user: Uuid, number: usize) -> FeishuBindingSummary {
@@ -2521,7 +3325,8 @@ mod tests {
     }
 
     fn downgrade_before_feishu(conn: &Connection, version: i64) {
-        conn.execute_batch("DROP TABLE feishu_bindings").unwrap();
+        conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings")
+            .unwrap();
         if version < 5 {
             conn.execute_batch("DROP TABLE discord_bindings").unwrap();
         }
@@ -2621,7 +3426,7 @@ mod tests {
                     .unwrap()
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                6
+                SCHEMA_VERSION
             );
         }
     }
@@ -3170,7 +3975,7 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
+            conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
                 .unwrap();
             if version < 4 {
                 conn.execute_batch("DROP TABLE slack_bindings").unwrap();
@@ -3237,7 +4042,7 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
+            conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
                 .unwrap();
             if version < 4 {
                 conn.execute_batch("DROP TABLE slack_bindings").unwrap();
@@ -3892,7 +4697,7 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+            conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
@@ -3955,7 +4760,7 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
-            conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
+            conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
                 conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
@@ -4611,7 +5416,7 @@ mod tests {
         let bindings = registry.list_telegram_bindings().unwrap();
         let conn = registry.connection().unwrap();
         let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
-        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
+        conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
         drop(conn);
         assert!(registry.authenticate(&active.token).is_err());
         let migrated = Registry::open(&registry.path).unwrap();
@@ -4660,7 +5465,7 @@ mod tests {
         let registry = &fixture.registry;
         let active = registry.add_user("alice").unwrap();
         let conn = registry.connection().unwrap();
-        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+        conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
         // The v2 schema and v3 column are created before the v3 trigger conflicts.
         // Both must be rolled back together with user_version.
         assert!(Registry::open(&registry.path).is_err());
@@ -5183,7 +5988,7 @@ mod tests {
             .unwrap();
         // No bindings exist. Removing the v2/v3/v4 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
-        conn.execute_batch("DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
+        conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(
             registry.list().is_err(),

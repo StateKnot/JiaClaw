@@ -564,6 +564,37 @@ try:
     assert admin('feishu-bindings')['bindings'] == [restored_feishu]
     assert messages(a) == a_history and messages(b) == b_history
     print('PASS: schema 6 Feishu application reservation survives bounded-volume restart/revocation; default-off/private routes refuse access')
+    # Schema 7 WeCom identities include the enterprise and dedicated app.
+    # The real bounded image retains reservations while platform runtime is off.
+    wecom_binding = admin('wecom-bind', '--user', issued['alice']['user_id'],
+                          '--corp-id', 'wwContainerCorp', '--agent-id', '1000002',
+                          '--human-user-id', 'alice.member')
+    assert wecom_binding['backend_id'] == 'alice' and wecom_binding['enabled']
+    assert admin('wecom-bindings')['bindings'] == [wecom_binding]
+    for method in ('GET', 'POST'):
+        assert request('/hooks/wecom/' + wecom_binding['id'], method=method,
+                       data={} if method == 'POST' else None)[0] == 404
+    for path in ['/internal/channels/wecom/status', '/internal/channels/wecom-binding',
+                 '/internal/channels/wecom/execute', '/api/gateway/wecom-bindings']:
+        assert request(path, a)[0] == 404, path
+    for kind in ('events', 'deliveries', 'operations', 'reservations'):
+        refused = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'wecom-inspect',
+                         '--config', '/etc/jiaclaw/gateway.json', '--binding', wecom_binding['id'],
+                         '--kind', kind, check=False)
+        assert refused.returncode != 0 and 'stop gateway before inspecting' in refused.stderr
+    admin('wecom-revoke', '--binding', wecom_binding['id'])
+    docker('restart', gateway_name)
+    wait_gateway()
+    restored_wecom = admin('wecom-bindings')['bindings'][0]
+    assert restored_wecom == dict(wecom_binding, enabled=False)
+    rejected_wecom = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'wecom-bind',
+                           '--config', '/etc/jiaclaw/gateway.json', '--user', issued['bob']['user_id'],
+                           '--corp-id', 'wwContainerCorp', '--agent-id', '1000002',
+                           '--human-user-id', 'bob.member', check=False)
+    assert rejected_wecom.returncode != 0, 'revoked WeCom app was reassigned'
+    assert admin('wecom-bindings')['bindings'] == [restored_wecom]
+    assert messages(a) == a_history and messages(b) == b_history
+    print('PASS: schema 7 WeCom Corp/Agent reservation survives real bounded-volume restart/revocation; default-off hooks/private routes and live maintenance refusal verified')
     # Persisted admission is observed through the real admin API before SIGKILL.
     # Pausing only this fixture backend holds the write without vendor calls.
     docker('pause', backend_names['alice'])
@@ -631,6 +662,17 @@ try:
     assert json.loads(cleared.stdout)['review_cleared'] is True
     docker('rm', maintenance_name)
     containers.remove(maintenance_name)
+    # The same stopped bounded volume can be inspected with no platform/backend
+    # Secret mounts; a never initialized binding must not invent a channel DB.
+    for kind in ('events', 'deliveries', 'operations', 'reservations'):
+        containers.append(maintenance_name)
+        inspected = docker('run', *maintenance_args, image, 'gateway', 'wecom-inspect',
+                           '--config', '/etc/jiaclaw/gateway.json', '--binding', wecom_binding['id'],
+                           '--kind', kind)
+        assert json.loads(inspected.stdout)['result'][kind] == []
+        docker('rm', maintenance_name)
+        containers.remove(maintenance_name)
+    print('PASS: stopped real bounded-volume WeCom history has credential-free empty inspection; existing HTTP recovery hold clears only under retained process lock')
     docker('start', gateway_name)
     wait_gateway()
     recovery_events, _ = audit_history(issued['alice']['user_id'])

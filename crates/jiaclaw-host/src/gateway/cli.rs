@@ -389,6 +389,75 @@ pub enum Commands {
         #[arg(long)]
         event: String,
     },
+    /// Permanently bind a dedicated WeCom enterprise application and private member to one user.
+    WecomBind {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long)]
+        corp_id: String,
+        #[arg(long, value_parser = wecom_agent_id)]
+        agent_id: u32,
+        #[arg(long)]
+        human_user_id: String,
+    },
+    /// List lifetime WeCom bindings, including permanent revocations; no credentials.
+    WecomBindings {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Permanently revoke a WeCom installation without freeing its owner reservation.
+    WecomRevoke {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+    },
+    /// Inspect private WeCom queues after stopping gateway; no credentials are printed.
+    WecomInspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long, value_parser = ["events", "deliveries", "operations", "reservations"])]
+        kind: String,
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=16000))]
+        offset: u16,
+    },
+    /// Record a verified WeCom receipt for an unknown send, without sending again.
+    WecomResolve {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        receipt: String,
+    },
+    /// Cancel remaining WeCom sends after external review; requires stopped gateway.
+    WecomCancel {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
+    /// Purge only fully resolved WeCom events, retaining dedup tombstones.
+    WecomPurge {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
     /// Clear an uncertain write hold only after checking that its backend is idle.
     ReviewClear {
         #[arg(long)]
@@ -400,6 +469,20 @@ pub enum Commands {
         #[arg(long)]
         note: String,
     },
+}
+
+fn wecom_agent_id(raw: &str) -> std::result::Result<u32, String> {
+    if raw.is_empty()
+        || raw.len() > 10
+        || raw.starts_with('0')
+        || !raw.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("WeCom agent ID must be canonical decimal in 1..=2147483647".into());
+    }
+    raw.parse::<u32>()
+        .ok()
+        .filter(|id| *id <= i32::MAX as u32)
+        .ok_or_else(|| "WeCom agent ID must be canonical decimal in 1..=2147483647".into())
 }
 
 fn audit_after_seq(raw: &str) -> std::result::Result<u64, String> {
@@ -846,6 +929,87 @@ pub async fn run(command: Commands) -> Result<()> {
             &Config::load(&config)?,
             binding,
             super::feishu::AdminAction::Purge { event },
+        )?),
+        Commands::WecomBind {
+            config,
+            user,
+            corp_id,
+            agent_id,
+            human_user_id,
+        } => {
+            let (config, registry) = registry(&config)?;
+            let owner = registry
+                .list()?
+                .into_iter()
+                .find(|entry| entry.user_id == user)
+                .context("gateway user not found")?;
+            ensure!(
+                config
+                    .backends
+                    .iter()
+                    .any(|entry| entry.id == owner.backend_id),
+                "user backend is not configured"
+            );
+            output(&serde_json::to_value(registry.add_wecom_binding(
+                user,
+                &corp_id,
+                agent_id,
+                &human_user_id,
+            )?)?)
+        }
+        Commands::WecomBindings { config } => {
+            let (_, registry) = registry(&config)?;
+            output(&json!({"bindings":registry.list_wecom_bindings()?}))
+        }
+        Commands::WecomRevoke { config, binding } => {
+            let (_, registry) = registry(&config)?;
+            registry.revoke_wecom_binding(binding)?;
+            output(&json!({"binding_id":binding.to_string(),"revoked":true}))
+        }
+        Commands::WecomInspect {
+            config,
+            binding,
+            kind,
+            event,
+            limit,
+            offset,
+        } => output(&super::wecom::admin(
+            &Config::load(&config)?,
+            binding,
+            super::wecom::AdminAction::Inspect {
+                kind,
+                event,
+                limit: usize::from(limit),
+                offset: usize::from(offset),
+            },
+        )?),
+        Commands::WecomResolve {
+            config,
+            binding,
+            delivery,
+            receipt,
+        } => output(&super::wecom::admin(
+            &Config::load(&config)?,
+            binding,
+            super::wecom::AdminAction::Resolve { delivery, receipt },
+        )?),
+        Commands::WecomCancel {
+            config,
+            binding,
+            event,
+        } => output(&super::wecom::admin(
+            &Config::load(&config)?,
+            binding,
+            super::wecom::AdminAction::Cancel { event },
+        )?),
+        Commands::WecomPurge {
+            config,
+            binding,
+            event,
+        } => output(&super::wecom::admin(
+            &Config::load(&config)?,
+            binding,
+            super::wecom::AdminAction::Purge { event },
         )?),
         Commands::ReviewClear {
             config,
@@ -1404,6 +1568,191 @@ mod tests {
             "credentials"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn wecom_inspection_pages_and_kinds_are_bounded_before_dispatch() {
+        let binding = "12345678-1234-4234-9234-123456789012";
+        for kind in ["events", "deliveries", "operations", "reservations"] {
+            let Commands::WecomInspect { limit, offset, .. } = Args::try_parse_from([
+                "gateway",
+                "wecom-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                kind,
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("wrong command")
+            };
+            assert_eq!((limit, offset), (20, 0));
+            assert!(Args::try_parse_from([
+                "gateway",
+                "wecom-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                kind,
+                "--limit",
+                "100",
+                "--offset",
+                "16000"
+            ])
+            .is_ok());
+        }
+        for (field, value) in [
+            ("--limit", "0"),
+            ("--limit", "101"),
+            ("--limit", "-1"),
+            ("--offset", "16001"),
+            ("--offset", "-1"),
+        ] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                "wecom-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                "events",
+                field,
+                value
+            ])
+            .is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "wecom-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "credentials"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn wecom_commands_require_explicit_ownership_and_canonical_agent_without_credentials() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "wecom-bind",
+            "--config",
+            "c.json",
+            "--user",
+            user,
+            "--corp-id",
+            "wwEnterprise",
+            "--agent-id",
+            "1",
+            "--human-user-id",
+            "alice.member",
+        ];
+        let Commands::WecomBind {
+            corp_id,
+            agent_id,
+            human_user_id,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(
+            (corp_id.as_str(), agent_id, human_user_id.as_str()),
+            ("wwEnterprise", 1, "alice.member")
+        );
+        for index in [2, 4, 6, 8, 10] {
+            let mut missing = base.to_vec();
+            missing.drain(index..index + 2);
+            assert!(Args::try_parse_from(missing).is_err());
+        }
+        for value in [
+            "0",
+            "01",
+            "+1",
+            "-1",
+            "1.0",
+            "2147483648",
+            "4294967295",
+            "1 ",
+            "١",
+        ] {
+            let mut invalid = base;
+            invalid[9] = value;
+            assert!(Args::try_parse_from(invalid).is_err(), "{value}");
+        }
+        let mut largest = base;
+        largest[9] = "2147483647";
+        assert!(Args::try_parse_from(largest).is_ok());
+        for forbidden in [
+            "--app-secret",
+            "--callback-token",
+            "--encoding-aes-key",
+            "--backend-id",
+            "--bot-id",
+            "--chat-id",
+            "--state-key",
+            "--token",
+        ] {
+            let mut extra = base.to_vec();
+            extra.extend([forbidden, "provided-secret"]);
+            assert!(Args::try_parse_from(extra).is_err());
+        }
+        for command in [
+            "wecom-bindings",
+            "wecom-revoke",
+            "wecom-inspect",
+            "wecom-resolve",
+            "wecom-cancel",
+            "wecom-purge",
+        ] {
+            assert!(Args::try_parse_from(["gateway", command]).is_err());
+        }
+        assert!(Args::try_parse_from(["gateway", "wecom-bindings", "--config", "c.json"]).is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "wecom-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            user
+        ])
+        .is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "wecom-resolve",
+            "--config",
+            "c.json",
+            "--binding",
+            user,
+            "--delivery",
+            user,
+            "--receipt",
+            "platformReceipt123"
+        ])
+        .is_ok());
+        for command in ["wecom-cancel", "wecom-purge"] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                command,
+                "--config",
+                "c.json",
+                "--binding",
+                user,
+                "--event",
+                user
+            ])
+            .is_ok());
+        }
     }
 
     #[test]

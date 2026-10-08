@@ -1,6 +1,6 @@
 # Brokerrouter 消费方状态
 
-核对时间：2026-10-08 11:35 UTC；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
+核对时间：2026-10-08 12:56 UTC；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
@@ -34,7 +34,7 @@
 
 11:35 UTC 企业微信启动校验批次复核上述 main、无 release、#31/#41 与 PR #40 head，均未变化。此次逐项读取 main 六项和 PR #40 六项 FAILURE 的全部 annotations：十二项均明确因账户付款/额度未启动，没有未分类失败或已执行测试失败的证据。不能因此宣称 SSE 修复已验收，也不能误报为代码测试失败。StateKnot #148 的 typed Tool Schema 方向修复已合并但未发布，不改变网关拒绝原生最终输出 Schema 的合同；#41 仍 OPEN、无回复。JiaClaw 本批复用既有 standalone channel 模型，只新增企业微信官方 token/应用身份/显式成员可见范围的启动校验，不新增模型、媒体或真实供应商资格。
 
-本批默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套本地回归全部通过，保留未知发送和持久额度语义；没有真实供应商请求或上游模型合同变更，详见[验证记录](validation.md#企业微信启动校验批次)。本提交准备时最终跨平台 CI pending，以本批 draft PR 固定 head 为准；不据此关闭 #31/#41 或认证运行期 token 刷新、真实平台和容器渠道 runtime。
+本批默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套本地回归全部通过，保留未知发送和持久额度语义；没有真实供应商请求或上游模型合同变更，详见[验证记录](validation.md#企业微信启动校验批次)。后续已核对 [PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 全部成功；不据此关闭 #31/#41 或认证运行期 token 刷新、真实平台和容器渠道 runtime。
 
 ## 消费合同与下一步
 
@@ -59,3 +59,5 @@
 媒体创建须持久保存原幂等键、正文和 turn 绑定；已提交后的取消只是意图，不保证供应商停止或退款。未知提交不能重新生成，模型费用、检测费用及存储/流量费用分别核对。固定连接器、真实费用与产物源、S3、IdP 和检测质量仍在上游 LIVE-10/11/12/13/20 发布闸门内；离线 fixture 只能证明消费者协议和恢复行为，不能代替这些认证。[上游验收清单](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/acceptance-backlog.md)。
 
 本轮独立用户 Telegram 复用既有受限 channel 逻辑模型和专属后端虚拟 Key，不新增网关模型合同，也不把应用的持久 inbox/outbox 解释为工具循环恢复。main/#31/#41/PR #40 本次核对未变化；没有据此新增上游 issue。范围见[独立用户 Telegram](tenant-telegram.md)。
+
+12:56 UTC 独立用户企业微信预检重新读取固定 main、无 release、#31/#41 与 draft PR #40 及全部十二项失败 annotations，状态没有变化：十二项均因账户付款/额度未启动，没有已执行代码失败或未分类 annotation。StateKnot #152 的执行状态读取加严已合并但未发布，不改变 Brokerrouter 原生最终输出 Schema 合同；#41 仍 OPEN、无回复。新企业微信 protocol 5 继续使用现有原生 Brokerrouter channel 工具循环及应用原请求 metadata，不增加供应商资格、durable graph、自动换模型或未知重放。本批固定artifact的默认并行Rust1158项与真实双后端十组全部通过；提交准备时旧21套回归仍独立运行、最终CI pending，以本批draft PR固定head为准，不能用PR #86启动门槛或新本地fixture替代真实供应商/完整跨平台交付。
