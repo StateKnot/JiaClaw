@@ -88,6 +88,8 @@ mkdir 中途失败可能留下已创建目录；move/copy 报同步错误、超�
 
 CLI `session export/import` 与 HTTP 导入导出提供会话级迁移。serve 正在运行时使用鉴权 HTTP API，避免第二个 CLI 进程竞争数据库。消息摘要/TTL 会删除或压缩历史，开启前确认保留策略。
 
+会话库与独立用户 Telegram/Slack/Discord/飞书/企业微信队列库正常关闭时，先关闭 SQLite 再显式释放 lifetime flock；初始化失败也释放取得的所有权。不要通过删除 `.sqlite3.lock` 文件解除占用，这会让两个描述符锁住不同 inode。正常关闭的显式解锁消除 fork/dup 保留旧描述符造成的锁余存，但强杀/断电没有析构保证；先核对原实例与子进程均已停止再打开。若仍报告 busy，保留拒绝并检查真实占用和挂载锁语义，不自动重试写入或绕过独占。
+
 ## 发布审核
 
 CI 对 Linux/macOS 运行完整测试、真实二进制 E2E、安装 fixture；Linux 额外做 Docker 沙箱与镜像启动。`v<workspace.version>` tag 才触发四平台 release build，验证版本后上传二进制、校验和并创建 draft。发布维护者审核 CI、平台 ABI、上游模型认证与恢复证据后再公开。安装脚本只使用显式版本，不自动执行下载内容的初始化或覆盖配置。

@@ -580,7 +580,7 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 六个新Rust测试实际覆盖：外部hardlink/FIFO及两端保留；创建可访问的1024/1025字节和64/65组件路径；metadata之后真实源增长、严格最多64MiB+1及目标保留；父目录真实替换后保留已打开能力和目标叶子替换拒绝；no-clobber真实竞争/部分暂存传输失败与清理；真实copy传输门上取消async调用、阻塞worker仍持有一槽/目录锁且下一mutation零效果，释放后实际发布及新显式copy成功。取消测试使用与生产同helper的隔离一槽，不将其记为真实serve八槽压力。新文件不保留源权限/时间戳；跨源/目标卷机制未单独实测认证。
 
-| 最终本地验证 | 实际结果 |
+| 初版提交前本地验证 | 实际结果 |
 |---|---|
 | copy定向 / 完整默认并行Rust | 定向10项通过；`CARGO_INCREMENTAL=0 cargo test --workspace --locked`1169项（379/123/667）全通过，本机既有Docker一项ignored。 |
 | fmt / required Clippy / locked host build | 全通过，0.482/11.438/13.635秒；correctness/suspicious必需检查通过，保留既有style warnings。Cargo依赖/锁未升级。 |
@@ -593,3 +593,20 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 中间测试修正如实保留：Mac不提供使用的rustix mknodat API，FIFO构造改用既有mkfifo测试方式；绝对路径根前缀使1024边界setup触发Mac PATH_MAX，改为实际逐级目录句柄创建/读取，未减小路径边界或skip；首版名为copy.py阴影Python标准库，在host启动前0.071秒导入失败，重命名workspace_copy.py及CI引用，fixture内容SHA未变后正式七组通过。生产/fixture期限、整作业30/20分钟预算和所有既有fixture未改，未把测试setup问题记为生产bug。
 
 独立非作者审查生产两文件和新fixture，无blocking finding；read-only review不当作执行测试。CI新增一个强制workspace_copy步骤，两平台现在各30项Python；提交准备时本批固定head CI待运行/核对，以本批draft PR最终完整日志为准，后续回填。真实Linux Docker/Chromium由CI单独验收，开发机/机制描述不代替实际挂载与资源部署资格。[使用/恢复合同](workspace-files.md#copy-原子字节复制合同)
+
+## 复制批次首次 CI 与数据库所有权修订
+
+[PR #89](https://github.com/jiawenyao401/JiaClaw/pull/89) 初版 head `292142118b85bf6166199a6c733ce58bd2c61a30` 的 [CI 37805809681](https://github.com/jiawenyao401/JiaClaw/actions/runs/37805809681) 在 macOS 既有 `gateway::telegram_store::tests::restart_preserves_claim_associations_unknown_fifo_and_atomic_purge_cascades` 失败：同步 drop/reopen 后，`telegram_store.rs:466` 收到 lifetime flock EWOULDBLOCK（errno35）。library379/core123和六项新copy测试均通过，host666通过/1失败；macOS后续Clippy/build/Python全部skipped，不能计为copy跨平台整机PASS。当前没有证明该次CI恰好与哪个子进程fork重叠，不能把后续通过写成已经证明了CI根因。
+
+独立Mac实际fork/pipe gate证明：CLOEXEC文件描述仍由fork继承；只关闭父描述符、子进程尚活时，独立flock立即busy；显式解锁旧描述后，不等子进程退出即可取得新独立锁。另新增真实SessionStore retained-dup定向测试，在旧生产实现稳定失败，正是drop后即时重开busy。此证据确认close-only生命周期缺口，区别于对原CI具体重叠的推断。
+
+修订引入不可克隆的 `DatabaseOwnership` guard：会话库和Telegram/Slack/Discord/飞书/企业微信私库在成功取得锁后立即guard，覆盖helper前的所有初始化错误；SessionStore字段按conn→ownership声明，正常先关闭SQLite再显式解锁，错误路径的局部conn/事务也先析构。没有在SessionStore自身Drop提前解锁，没有新增等待/retry、串行全局测试或放宽期限。析构释锁失败仍保留下一次打开的fail-closed行为；强杀不保证执行析构。两项定向回归实际验证活跃owner拒绝、提交会话重开、保留旧dup关闭不解除新owner、未来schema11打开失败释放旧锁且version不改；11项ownership定向全部通过。独立非作者复核六份生产文件与两新测试，没有可行动finding。
+
+初版container作业113409655465实际SUCCESS：checkout merge `d8fbe554e721a860502a018af8c7af56e19be8ae` / tree `c86f9128bc8854b7b7e0212b50449333984ec10d` / 精确初版head与base4f62，完整日志90271字节，SHA256 `097541a14db80b2cd5bf83d98f186afc5735a6020946d829ed2a95e158675587`；实际新镜像、非root/只读rootfs、private network/限额卷、schema7/default-off/无平台凭据维护及真实ENOSPC全通过。两份container脚本没有执行workspace_copy，不能记为copy容器压力；该初版成功也不代替修订后最终head验收。修订后的最终证据如下，CI仍以本PR最终固定head为准。
+
+
+初版Ubuntu作业113409655961亦已完成SUCCESS，完整日志SHA256 `f867bd4c58f4e4e34b1539615923d201c2cda3f078acb19bbe1dd0d1c823e22b`：Rust1170（380/123/667），30项Python及新copy七组全通过，四项真实Chromium及单独ignored Docker一项PASS。初版整个run仍因macOS失败而FAIL，不重跑相同提交；后续正常释锁修复需新head三作业重新认证。
+
+最终修订源码默认并行完整Rust1171项（379/123/669）全部通过，62.919秒；fmt/必需Clippy/locked host build0.680/14.930/14.726秒全通过。真实新binary SHA256 `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 冻结后重新执行copy七组PASS（9.969秒、原fixture内容SHA未变、日志SHA仍 `677b1312451ceb764dc9fef79fb43ca4d7c9051cc50e76a99a863d07af1f207f`），同binary既有文件/记忆/MCP八套全PASS（57.704秒），再执行用户网关/只读Key/审计/cron/Telegram/Slack/Discord/飞书/企业微信九套全部PASS（551.243秒）。全部17套原脚本/内部deadline不改、零重试，每套script/log/binary前后digest独立核对；既有Docker一项本机仍ignored，由最终Linux CI另验。没有把初版c252二进制或初版CI结果替代最终修订。
+
+提交准备时修订后固定head完整CI待运行/核对，最终精确head/tree、三份完整日志与所有30项步骤以本draft PR最终说明为准，后续批次回填。16:27:50 UTC 官方再次复核两框架main/release/#140/#31/#41/PR40无新回复/合同，不重复issues。已逐文件核对现成网关SSE与PR40有界连接修复，可在既有provider/模型收据/native loop/HTTP接线；现JiaClaw仍是完成后分块，生产默认stream资格仍须固定资源修复和真实供应商验收。此只读研究不记成流式或durable完成。
