@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对时间：2026-10-08 14:39 UTC；上游 main：`83802cb3202bf9cb860c6357a94abc80408b1f88`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
+核对时间：2026-10-08 15:36 UTC；上游 main：`83802cb3202bf9cb860c6357a94abc80408b1f88`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -49,3 +49,5 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 14:39 UTC 钉钉批次复核：StateKnot main相对13:51已核实的`83802cb3` compare identical/ahead0，release/#140未变化。#153仅公开类型/schema/constructor测试盘点与fixtures/CI/docs，没有当前HTTP MCP生产合同变化。重新读取最新main的`integrations/src/mcp_client.rs`与实际Cargo alpha.1缓存，字节完全相同，SHA256均`0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`；JiaClaw仍消费原始descriptor/input/output Schema，未使用typed registry。没有必要升级精确pin或新重复issue；typed schema方向和durable/gap ledger门槛仍分开计。
 
 此前企业微信固定head PR #87 三项CI及旧21套回归已最终通过，见[最终回填](validation.md#独立用户企业微信最终-ci-回填)。本批钉钉原始JSON/MIME修复属于现有应用协议路径，不新增框架原生durable/stdio身份，亦不将钉钉的未知安装权限映射归因于StateKnot。
+
+15:36 UTC 复制批次重新核对官方 main/release/#140，与14:39快照 compare identical/ahead0；四份 runtime/integrations 合同源码字节未变。当前 HTTP MCP 与实际 alpha.1 缓存仍为83407字节、SHA256 `0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`，现有 raw descriptor/schema 路径不消费尚未发布的 typed registry。PR #58–#88 均 OPEN/draft、当前head CI成功；[PR #88最终三项验收](validation.md#钉钉原始报文最终-ci-回填)已补证。copy 的共享资源、锁和 Schema 参数修复属于实际应用接线缺陷，不新增框架 issue、不升级pin，也不替代 durable/stdio/外部写入认证。

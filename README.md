@@ -56,7 +56,7 @@ docker compose up --build -d
 
 ## 已实现的能力
 
-- 工作区文件读写、目录、grep/glob、mkdir/move，以及原子 `copy` / `file_copy`；只读 `stat` / `tree` 已通过本机验收。十一个主文件工具与四个兼容名称的[权限和 I/O 边界](docs/workspace-files.md)分别说明。
+- 十二个主文件工具与五个兼容名称：文件读写、目录、grep/glob、mkdir/move、stat/tree，以及二进制 `copy` / `file_copy`。copy 与其他文件/记忆工具共用目录句柄、八槽 I/O 容量和协作写锁，保留 64 MiB 流式复制与原子发布合同；[权限、取消和核对边界](docs/workspace-files.md)分别说明。
 - 显式启用的 `exec` / `shell_exec`：白名单映射、固定镜像、无网络容器、非 root、时间与输出限制。默认关闭；没有宿主机 shell 回退。
 - SQLite WAL 会话存储、旧 JSON 一次性迁移、导入导出、TTL、同一会话并发串行提交。
 - StateKnot HTTP MCP：显式批准的只读工具、描述摘要固定、离线 schema 校验、有界 JSON/SSE 与取消；[配置与验收边界](docs/mcp.md)。
@@ -83,6 +83,7 @@ python3 tests/workspace_files.py target/debug/jiaclaw
 python3 tests/file_search.py target/debug/jiaclaw
 python3 tests/workspace_mutations.py target/debug/jiaclaw
 python3 tests/filesystem_info.py target/debug/jiaclaw
+python3 tests/workspace_copy.py target/debug/jiaclaw
 python3 tests/tenant_telegram.py target/debug/jiaclaw
 python3 tests/installer.py
 ```

@@ -4,7 +4,9 @@
 
 已补 copy、容器 exec、SQLite 会话、内置 Web 和 StateKnot HTTP MCP 的已审查只读工具，并提供可审核的版本安装/镜像/发布路径。持久 cron/interval 与 Telegram/Slack/Discord/飞书/企业微信/钉钉授权 inbox/outbox 已接线；Discord 本批增加单 guild 普通文字频道的 Bot 定时通知，验收见 [Discord](discord.md)。独立用户聊天/会话及受限定时任务、显式 Brokerrouter 语义检索、模型调用收据也已接线。完整多用户后台、真实模型检索质量/渠道/供应商认证仍未完成；MCP stdio/外部写入、更多渠道、durable 子 Agent、多模态与真正逐 token streaming 仍待交付。
 
-单实例管理员的 [Web 发件箱审计](web-outbox.md)已通过 PR #74 的 Chromium 与跨平台验收；确认送达和整来源取消保留持久状态边界，普通网关用户不能获得渠道管理权限。PR #76–78 依次修复五个主文件工具/四个兼容名称、grep/glob 有界搜索及 mkdir/move 的同卷原子变更，均已通过各自最终 head 的跨平台 CI。copy 保留独立合同，这些修复不提供 durable 文件操作恢复。
+单实例管理员的 [Web 发件箱审计](web-outbox.md)已通过 PR #74 的 Chromium 与跨平台验收；确认送达和整来源取消保留持久状态边界，普通网关用户不能获得渠道管理权限。PR #76–78 依次修复五个主文件工具/四个兼容名称、grep/glob 有界搜索及 mkdir/move 的同卷原子变更，均已通过各自最终 head 的跨平台 CI；这些历史批次不包含本次 copy 治理修复。
+
+当前十二个主文件工具与五个兼容名称共用目录句柄及八槽阻塞 I/O，copy/file_copy 也纳入与记忆及其他 mutation 相同的工作区 inode 协作写锁，并拒绝源/目标硬链接。copy 保留 64 MiB 二进制流式上限、增长时上限 + 1 字节检测，以及 hard link 无覆盖 / rename 覆盖的原子发布合同。取消后任务可能完成，提交后同步或暂存链接清理错误需要停写核对，不自动重放；这不是 durable 文件操作恢复或非协作编辑的一致快照。此批本地、跨平台及真实文件系统验收结果由[验证记录](validation.md)分别记录，不用历史 CI 替代。
 
 本轮新增可选的 [stat/tree](workspace-files.md#stat--tree-元数据与目录树合同)：叶子自身元数据查询、可调深度的有界 DFS 目录树、严格参数与独立配置开关。本机 884 项 Rust、fmt/Clippy/锁定构建、新工具六组与七套既有进程回归通过，PR #79 最终 head 已通过 Linux/macOS 与真实容器 CI；持久渠道/cron 白名单不扩大，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 仍遵循现有注册工具策略。
 

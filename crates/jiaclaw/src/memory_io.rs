@@ -536,6 +536,122 @@ pub(crate) fn delete_file(workspace: &Path, raw: &str) -> Result<u64, JiaClawErr
     Ok(size)
 }
 
+/// Stream a bounded binary copy under the same directory lock as other writers.
+pub(crate) fn copy_file(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+) -> Result<(u64, bool), JiaClawError> {
+    copy_file_with(workspace, from, to, overwrite, |input, output| {
+        io::copy(input, output)
+    })
+}
+
+fn copy_file_with(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    transfer: impl FnOnce(&mut io::Take<File>, &mut File) -> io::Result<u64>,
+) -> Result<(u64, bool), JiaClawError> {
+    let source = relative(from)?;
+    let destination = relative(to)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    let source_dir = parent(&root, source, false)?.ok_or_else(|| failure("源父目录不存在"))?;
+    let input = open_regular(
+        &source_dir,
+        source.file_name().ok_or_else(|| failure("无效源文件名"))?,
+    )?
+    .ok_or_else(|| failure("源文件不存在"))?;
+    let source_metadata = input.metadata().map_err(failure)?;
+    if source_metadata.len() > crate::copy::COPY_MAX_BYTES {
+        return Err(failure("复制源超过 64 MiB"));
+    }
+    let destination_dir =
+        parent(&root, destination, false)?.ok_or_else(|| failure("目标父目录不存在"))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| failure("无效目标文件名"))?;
+    let overwritten = match destination_dir.symlink_metadata(name) {
+        Ok(metadata) => {
+            regular(&metadata)?;
+            if same_entry(&source_metadata, &metadata) {
+                return Err(failure("源与目标是同一文件"));
+            }
+            if !overwrite {
+                return Err(failure("目标已存在（overwrite=false）"));
+            }
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(failure(e)),
+    };
+    let staged = Staged {
+        dir: &destination_dir,
+        name: format!(".jiaclaw-copy-{}", uuid::Uuid::new_v4()),
+    };
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = destination_dir
+        .open_with(&staged.name, &options)
+        .map_err(failure)?;
+    // The extra byte detects growth after the metadata check, without copying
+    // an unbounded source into either memory or the destination filesystem.
+    let bytes = transfer(
+        &mut input.take(crate::copy::COPY_MAX_BYTES + 1),
+        &mut output,
+    )
+    .map_err(failure)?;
+    if bytes > crate::copy::COPY_MAX_BYTES {
+        return Err(failure("复制期间源文件超过 64 MiB"));
+    }
+    output.sync_all().map_err(failure)?;
+    drop(output);
+    // Cooperating writers retain the root lock. Recheck external substitutions;
+    // publication operates on the held parent and never follows the final leaf.
+    match destination_dir.symlink_metadata(name) {
+        Ok(metadata) => {
+            regular(&metadata)?;
+            if same_entry(&source_metadata, &metadata) {
+                return Err(failure("源与目标是同一文件"));
+            }
+            if !overwrite {
+                return Err(failure("目标已存在（overwrite=false）"));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+        Err(e) => return Err(failure(e)),
+    }
+    if overwrite {
+        destination_dir
+            .rename(&staged.name, &destination_dir, name)
+            .map_err(failure)?;
+    } else {
+        destination_dir
+            .hard_link(&staged.name, &destination_dir, name)
+            .map_err(failure)?;
+        destination_dir.remove_file(&staged.name).map_err(|e| {
+            failure(format!(
+                "复制已提交但暂存链接清理失败，请核对后再决定是否重试: {e}"
+            ))
+        })?;
+    }
+    drop(staged);
+    sync_dir(&destination_dir).map_err(|e| {
+        failure(format!(
+            "复制已提交但目录同步失败，请核对后再决定是否重试: {e}"
+        ))
+    })?;
+    Ok((bytes, overwritten))
+}
+
 /// Idempotent directory creation under the same lock as file mutations.
 pub(crate) fn mkdir_directory(
     workspace: &Path,
@@ -2540,5 +2656,267 @@ mod tests {
             let (entries, truncated) = list_directory(ws.path(), &base, 1000, false).unwrap();
             assert!(truncated && entries.is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_refuses_hardlinks_and_special_entries_without_publishing() {
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"original").unwrap();
+        std::fs::write(outside.path().join("sentinel"), b"outside").unwrap();
+        std::fs::hard_link(outside.path().join("sentinel"), ws.path().join("hardlink")).unwrap();
+        for (from, to) in [("hardlink", "new"), ("source", "hardlink")] {
+            assert!(copy_file(ws.path(), from, to, true).is_err());
+        }
+        assert!(!ws.path().join("new").exists());
+        assert_eq!(
+            std::fs::read(outside.path().join("sentinel")).unwrap(),
+            b"outside"
+        );
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("parent")).unwrap();
+        assert!(copy_file(ws.path(), "source", "parent/new", true).is_err());
+        assert!(copy_file(ws.path(), "parent/sentinel", "new", false).is_err());
+        let fifo = ws.path().join("fifo");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(copy_file(ws.path(), "fifo", "new", false).is_err());
+        assert!(copy_file(ws.path(), "source", "fifo", true).is_err());
+        assert!(!outside.path().join("new").exists());
+        assert!(!std::fs::read_dir(ws.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".jiaclaw-copy-")
+        }));
+    }
+
+    #[test]
+    fn copy_full_path_byte_and_component_boundaries_apply_to_both_ends() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"bytes").unwrap();
+        let parent = vec!["d"; 63].join("/");
+        std::fs::create_dir_all(ws.path().join(&parent)).unwrap();
+        let exact = format!("{parent}/s");
+        assert_eq!(copy_file(ws.path(), "source", &exact, false).unwrap().0, 5);
+        assert_eq!(copy_file(ws.path(), &exact, "again", false).unwrap().0, 5);
+        let too_deep = format!("{parent}/d/s");
+        std::fs::create_dir_all(ws.path().join(&parent).join("d")).unwrap();
+        std::fs::write(ws.path().join(&too_deep), b"too deep").unwrap();
+        assert!(copy_file(ws.path(), &too_deep, "new", false).is_err());
+        assert!(copy_file(ws.path(), "source", &too_deep, true).is_err());
+        assert_eq!(
+            std::fs::read(ws.path().join(&too_deep)).unwrap(),
+            b"too deep"
+        );
+        let parent = vec!["b".repeat(250); 4].join("/");
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let dir = descend(&root, Path::new(&parent), true).unwrap().unwrap();
+        let exact = format!("{parent}/{}", "s".repeat(20));
+        assert_eq!(exact.len(), 1024);
+        assert_eq!(copy_file(ws.path(), "source", &exact, false).unwrap().0, 5);
+        assert_eq!(
+            copy_file(ws.path(), &exact, "at-limit", false).unwrap().0,
+            5
+        );
+        let beyond = format!("{exact}x");
+        dir.write(format!("{}x", "s".repeat(20)), b"beyond")
+            .unwrap();
+        assert!(copy_file(ws.path(), &beyond, "new", false).is_err());
+        assert!(copy_file(ws.path(), "source", &beyond, true).is_err());
+        assert_eq!(dir.read(format!("{}x", "s".repeat(20))).unwrap(), b"beyond");
+        assert!(!ws.path().join("new").exists());
+    }
+
+    #[test]
+    fn copy_growth_reads_at_most_limit_plus_one_and_preserves_existing_destination() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"small").unwrap();
+        std::fs::write(ws.path().join("destination"), b"preserved").unwrap();
+        let mut observed = 0;
+        let result = copy_file_with(ws.path(), "source", "destination", true, |input, output| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(ws.path().join("source"))?
+                .set_len(crate::copy::COPY_MAX_BYTES + 100)?;
+            observed = io::copy(input, output)?;
+            Ok(observed)
+        });
+        assert!(result.unwrap_err().to_string().contains("复制期间"));
+        assert_eq!(observed, crate::copy::COPY_MAX_BYTES + 1);
+        assert_eq!(
+            std::fs::read(ws.path().join("destination")).unwrap(),
+            b"preserved"
+        );
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_retains_open_parent_capabilities_and_rejects_substituted_leaf() {
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for parent in ["src", "dst"] {
+            std::fs::create_dir(ws.path().join(parent)).unwrap();
+        }
+        std::fs::write(ws.path().join("src/source"), b"held source").unwrap();
+        std::fs::write(outside.path().join("sentinel"), b"outside").unwrap();
+        let copied = copy_file_with(
+            ws.path(),
+            "src/source",
+            "dst/new",
+            false,
+            |input, output| {
+                for parent in ["src", "dst"] {
+                    std::fs::rename(
+                        ws.path().join(parent),
+                        ws.path().join(format!("{parent}-held")),
+                    )?;
+                    std::os::unix::fs::symlink(outside.path(), ws.path().join(parent))?;
+                }
+                io::copy(input, output)
+            },
+        )
+        .unwrap();
+        assert_eq!(copied, (11, false));
+        assert_eq!(
+            std::fs::read(ws.path().join("dst-held/new")).unwrap(),
+            b"held source"
+        );
+        assert!(!outside.path().join("new").exists());
+        let result = copy_file_with(
+            ws.path(),
+            "src-held/source",
+            "dst-held/new",
+            true,
+            |input, output| {
+                std::fs::remove_file(ws.path().join("dst-held/new"))?;
+                std::os::unix::fs::symlink(
+                    outside.path().join("sentinel"),
+                    ws.path().join("dst-held/new"),
+                )?;
+                io::copy(input, output)
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(outside.path().join("sentinel")).unwrap(),
+            b"outside"
+        );
+        assert_eq!(
+            std::fs::read_dir(ws.path().join("dst-held"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn copy_no_clobber_race_and_transfer_failure_leave_no_staged_file() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"source").unwrap();
+        let result = copy_file_with(
+            ws.path(),
+            "source",
+            "destination",
+            false,
+            |input, output| {
+                std::fs::write(ws.path().join("destination"), b"external winner")?;
+                io::copy(input, output)
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(ws.path().join("destination")).unwrap(),
+            b"external winner"
+        );
+        let result = copy_file_with(
+            ws.path(),
+            "source",
+            "destination",
+            true,
+            |_input, output| {
+                output.write_all(b"partial")?;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected transfer failure",
+                ))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(ws.path().join("destination")).unwrap(),
+            b"external winner"
+        );
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_copy_keeps_blocking_capacity_and_writer_lock_until_publication() {
+        static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("source"), b"copy").unwrap();
+        let work_path = ws.path().to_path_buf();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(run_blocking_with_slots(&SLOTS, move || {
+            let result = copy_file_with(
+                &work_path,
+                "source",
+                "destination",
+                false,
+                |input, output| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    io::copy(input, output)
+                },
+            );
+            finished_tx.send(result).unwrap();
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let executed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let denied = executed.clone();
+        assert!(run_blocking_with_slots(&SLOTS, move || {
+            denied.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .is_err());
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(copy_file(ws.path(), "source", "second", false).is_err());
+        assert!(write_file_bytes(ws.path(), "other", "blocked", false, FILE_LIMIT).is_err());
+        assert!(!ws.path().join("destination").exists());
+        assert!(!ws.path().join("second").exists());
+        assert!(!ws.path().join("other").exists());
+        release_tx.send(()).unwrap();
+        assert_eq!(finished_rx.await.unwrap().unwrap(), (4, false));
+        let permit = tokio::time::timeout(std::time::Duration::from_secs(2), SLOTS.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(ws.path().join("destination")).unwrap(),
+            b"copy"
+        );
+        drop(permit);
+        assert_eq!(
+            run_blocking_with_slots(&SLOTS, move || copy_file(
+                ws.path(),
+                "source",
+                "second",
+                false
+            ))
+            .await
+            .unwrap(),
+            (4, false)
+        );
     }
 }

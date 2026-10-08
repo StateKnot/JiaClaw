@@ -557,3 +557,39 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 同一冻结binary的五套相关旧进程回归全一次通过，实际合计79.647秒：e2e0.465、MCP1.315、channels28.086、scheduled_delivery31.841、wecom_startup17.727（原六组/32负例）；每套前后binary/log/script SHA核对。临时`/tmp`runner最初Popen参数拼写在任何测试启动前失败，仅修runner并运行正式完整五套，不把该初始化失败计作已执行回归或生产修复。
 
 两位独立agent分别审root callback/fixture和sender，未发现明确blocking finding；未把作者自审当成独立sender review。提交准备时本批固定head跨平台CI pending，最终结果以本批draft PR为准；当前30分钟完整test job和20分钟container预算、原生产/fixture期限不变。真实Docker/Chromium由Linux CI实际验证。本批不增加tenant安装/权限证明、正常到期refresh、真实私聊/平台额度、容器启用DingTalk runtime或供应商生产资格。[合同范围](dingtalk.md#本批协议修复与安装证明的区别)
+
+## 钉钉原始报文最终 CI 回填
+
+2026-10-08 15:36 UTC 官方复核：[PR #88](https://github.com/jiawenyao401/JiaClaw/pull/88) OPEN/draft，head `4f62ecf2ae471899aa5233e24796a71e57bd4a40`、base `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`；[CI 37797041026](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026) 首次运行三项 SUCCESS。实际 checkout merge `e3fa352454d2ecf839dfc89671c8d685b7f79924` 的 parents 精确为上述 head/base，tree `436af9a4488e76af595f33c026588d638cce9ac6` 与本地冻结源码一致；真实平台身份未因此认证。
+
+| 最终作业 | 完整日志及官方步骤核对 |
+|---|---|
+| [macOS 113379096190](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379096190) | Rust 1163（373/123/667）、29项强制Python全部通过，新钉钉原始回调/冷缓存token/发送负例9/6/7及三类filtered正例完整；浏览器/真实Docker专项明确skipped。 |
+| [Ubuntu 113379096092](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379096092) | Rust 1164（374/123/667）、同29项及完整钉钉组通过；四项真实Chromium PASS，单独既有ignored Docker隔离/超时/输出/清理测试1项PASS（7.79秒）。 |
+| [container 113379095664](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379095664) | 非root、只读rootfs、私网/限额卷、schema7/default-off及维护实际通过；真实ENOSPC与其它租户继续可用。没有启用DingTalk平台runtime，不记成容器渠道压力认证。 |
+
+三份完整日志SHA256（macOS/Ubuntu/container）为 `128e072051318bdc710fce5cdac4410e9ca288a3ab3bcf66443bb286de118b26` / `0d7e97a2e1ce415b2c7184234c55bb934eaf17ea7f88b7a49041ae04d2f59df8` / `6c0de1c5c78d7237c5347f31062851cad3fb74e1b95d3bb6412a228a8e33f501`。CLI watch观察器曾API i/o timeout退出，重新读取官方状态和完整日志确认全成功；没有重跑或把观察器网络错误记作CI代码失败。无人工/代码review、inline findings或review thread，唯一CodeRabbit评论仅表示draftskip；外部CodeRabbit审查未执行。保留draft，未合并或公开Release。
+
+## 复制共享 IO 与写锁批次
+
+2026-10-08 15:36 UTC 预检两框架最新main、release和相关议题：StateKnot `83802cb3202bf9cb860c6357a94abc80408b1f88`、Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc` 未变化；当前raw HTTP MCP与alpha.1客户端字节相同，stdio/durable/native最终Schema合同仍分别跟踪原议题。PR #58–#88均OPEN/draft且当前head CI成功，只有CodeRabbit draftskip，无实质review。另取得正式CorpID-bound GetToken JSON/权限合同，但当前生产端点未替换、凭据→机器人完整安装证明仍缺正式read权限/适用性，见[钉钉边界](dingtalk.md#本批协议修复与安装证明的区别)。
+
+改动前用PR88冻结二进制 `ea37d64a682f0599ce0148e43f366628a6967c77f057a8b10807963953a77635` 真实serve/native localhost重现：canonical/legacy正例均HTTP200及两轮模型；fixture所有的工作区外哨兵与工作区来源实际同dev/inode、nlink2，旧copy仍HTTP200并复制相同SHA字节；`from/destination`、`source/to`各被native Schema在第一轮后HTTP500拒绝且无目标。脱敏记录SHA256 `b29f27baaffb5c9f18039f81baba056b4b2e93de1efd6b481c7cc2de29d94f7c`，旧binary前后相同，临时文件真实清理。属于应用接线/Schema缺陷，不向两个框架重复报issue。
+
+注册的copy/file_copy现实际走共享`run_blocking → copy_file`：与十二主工具/五compat及记忆共用八槽；持有工作区inode写锁，经单组件目录句柄与pre/post-open单链接普通文件检查，两端共用1024字节/64组件路径；64MiB仍独立流式字节合同，最多实际读取上限+1后拒绝源增长。随机0600目标卷暂存、文件sync、无覆盖hardlink或覆盖rename、明确清理与父目录sync。两个名称同Schema接受全部四种参数组合，冲突别名由运行期拒绝。没有复制正文到模型、跨卷事务、外部编辑器CAS或自动回滚/重放；取消后可能发布，实际worker继续持有许可/锁到结束。
+
+六个新Rust测试实际覆盖：外部hardlink/FIFO及两端保留；创建可访问的1024/1025字节和64/65组件路径；metadata之后真实源增长、严格最多64MiB+1及目标保留；父目录真实替换后保留已打开能力和目标叶子替换拒绝；no-clobber真实竞争/部分暂存传输失败与清理；真实copy传输门上取消async调用、阻塞worker仍持有一槽/目录锁且下一mutation零效果，释放后实际发布及新显式copy成功。取消测试使用与生产同helper的隔离一槽，不将其记为真实serve八槽压力。新文件不保留源权限/时间戳；跨源/目标卷机制未单独实测认证。
+
+| 最终本地验证 | 实际结果 |
+|---|---|
+| copy定向 / 完整默认并行Rust | 定向10项通过；`CARGO_INCREMENTAL=0 cargo test --workspace --locked`1169项（379/123/667）全通过，本机既有Docker一项ignored。 |
+| fmt / required Clippy / locked host build | 全通过，0.482/11.438/13.635秒；correctness/suspicious必需检查通过，保留既有style warnings。Cargo依赖/锁未升级。 |
+| 最终生产二进制 | SHA256 `c25276180f625e8480da8e5b8836fbc62744a415f3f72b66d2bfd9bc50b0944d`，正式新/旧进程验收前后相同，没有测试中构建。 |
+| `tests/workspace_copy.py`真实进程 | 七组一次全通过、exit0、9.095秒；fixture SHA256 `e316c4323d4ffc7e990fdc5fd3959cea0b4b388003145a306ff52a7d620c30ff`，日志SHA256 `677b1312451ceb764dc9fef79fb43ca4d7c9051cc50e76a99a863d07af1f207f`。 |
+| 同一binary既有八套进程 | e2e/native_tools/workspace_files/workspace_mutations/file_search/filesystem_info/memory_io/MCP顺序全通过、exit0、总54.181秒，每套script/log/binary前后SHA独立核对。 |
+
+七组真实serve/native证据包括两个名字全部四种Schema组合/准确JSON；非稀疏真实64MiB字节SHA及64MiB+1拒绝后目标inode/字节保留；内部/外部/悬空父目录及叶子链接、两端hardlink/FIFO/目录与路径越界零外部效果；实际1024/1025、64/65路径正负边界；对真实工作区目录flock保持期间copy/file_copy/write_file/file_write零效果、health响应，释放后仅新显式请求成功；disabled两名称HTTP/native均隐藏，伪造混合批次全预检失败/零工具效果，disabled/未知请求权限零模型调用。全部使用临时目录和localhost fixture，没有真实平台凭据/付费调用。
+
+中间测试修正如实保留：Mac不提供使用的rustix mknodat API，FIFO构造改用既有mkfifo测试方式；绝对路径根前缀使1024边界setup触发Mac PATH_MAX，改为实际逐级目录句柄创建/读取，未减小路径边界或skip；首版名为copy.py阴影Python标准库，在host启动前0.071秒导入失败，重命名workspace_copy.py及CI引用，fixture内容SHA未变后正式七组通过。生产/fixture期限、整作业30/20分钟预算和所有既有fixture未改，未把测试setup问题记为生产bug。
+
+独立非作者审查生产两文件和新fixture，无blocking finding；read-only review不当作执行测试。CI新增一个强制workspace_copy步骤，两平台现在各30项Python；提交准备时本批固定head CI待运行/核对，以本批draft PR最终完整日志为准，后续回填。真实Linux Docker/Chromium由CI单独验收，开发机/机制描述不代替实际挂载与资源部署资格。[使用/恢复合同](workspace-files.md#copy-原子字节复制合同)

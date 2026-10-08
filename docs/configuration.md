@@ -61,7 +61,9 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 ## 工具
 
-`tools.copy.enabled` 默认 true，同时控制 `copy` 和 `file_copy`。参数为 `from/to` 或 `source/destination`，`overwrite` 默认 false；只复制不超过 64 MiB 的常规文件。父目录须存在，不复制目录，不保留权限/时间戳，目标文件在 Unix 创建为 0600。禁止绝对路径、`..`、符号链接和特殊文件；提交时原子发布，无覆盖模式能处理并发竞争。依赖文件系统支持 hard link / rename / fsync，错误会明确返回。
+`tools.copy.enabled` 默认 true，同时控制 `copy` 和 `file_copy`，两者使用相同 schema 和成功 JSON（`from, to, bytes, overwritten`）。来源可用 `from` / `source`，目的地可用 `to` / `destination`，四种组合均有效；同一端同时给出两个名字时必须一致，冲突由运行期拒绝。`overwrite` 默认 false。仅复制单链接常规文件，允许二进制；两端路径最多 1024 UTF-8 字节和 64 个组件，父目录须存在，拒绝绝对路径、`..`、符号/硬链接和特殊文件，不复制目录或保留权限/时间戳。Unix 目标文件创建为 0600。
+
+copy 的异步入口与其他文件/记忆工具共用八槽阻塞 I/O 容量，复制全程持有工作区 inode 协作写锁；容量或锁忙立即报错。字节上限仍独立为 64 MiB，不套用文本工具的 256 KiB 上限；元数据检查后最多流式读取 64 MiB + 1 字节，增长超限不发布。同步暂存文件后，无覆盖使用 hard link 原子 create-if-absent，覆盖使用 rename 且不预删目标，再同步父目录。部署需验证实际文件系统的锁、hard link、rename 和 fsync。取消等待不会停止已受理的阻塞复制；提交后同步或暂存链接清理失败会明确要求核对，目标可能已可见，不自动重放。完整边界见[copy 合同](workspace-files.md#copy-原子字节复制合同)。
 
 `tools.exec` 字段如下；缺省关闭，错误配置中止工具注册：
 
@@ -80,7 +82,7 @@ SQLite 使用 WAL、FULL 同步与单进程所有权锁。API 完成响应前提
 
 容器无网络、只读根文件系统、移除 capabilities、no-new-privileges、非 root、限制内存/CPU/PID，只有 `/workspace` 与受限 `/tmp`。超时和 future 取消会请求删除整个容器；daemon 不可达时不能声称清理成功，需按日志检查。宿主服务被 SIGKILL/断电时无法执行取消清理，这是容器 exec 生命周期的已知边界。服务宿主接入 Docker daemon 是高权限操作，容器部署示例因此禁用 exec。
 
-`read_file` / `write_file` / `delete_file` / `list_dir` 的配置开关也分别控制 `file_read` / `file_write` / `file_delete` / `file_list`。兼容名称共用主名称 schema 和 JSON 结果；请求白名单仍按确切名称授权。十一个主文件工具（另含 `str_replace` / `grep` / `glob` / `mkdir` / `move` / `stat` / `tree`）的目录句柄、字节/扫描预算和取消边界见[工作区文件指南](workspace-files.md)。grep/glob 默认递归但最多扫描 2000 条目、32 层子目录、2 秒合作预算及 64 KiB 最终 JSON；grep 单文件 256 KiB、累计实际读取 16 MiB，glob 不读正文。`mkdir` / `move` 也受协作工作区锁与同一八槽 I/O 容量限制；mkdir 递归创建不提供整体回滚，move 只提供同卷原子 rename，不跨卷复制后删除。`overwrite=false` 原子不覆盖，true 也不预删目标；未知结果须核对两端。copy 保留独立实现。
+`read_file` / `write_file` / `delete_file` / `list_dir` 的配置开关也分别控制 `file_read` / `file_write` / `file_delete` / `file_list`；`tools.copy.enabled` 控制第五个兼容名称 `file_copy`。兼容名称共用主名称 schema 和 JSON 结果；请求白名单仍按确切名称授权。十二个主文件工具（另含 `str_replace` / `grep` / `glob` / `mkdir` / `move` / `copy` / `stat` / `tree`）的目录句柄、字节/扫描预算和取消边界见[工作区文件指南](workspace-files.md)。grep/glob 默认递归但最多扫描 2000 条目、32 层子目录、2 秒合作预算及 64 KiB 最终 JSON；grep 单文件 256 KiB、累计实际读取 16 MiB，glob 不读正文。`mkdir` / `move` / `copy` 也受协作工作区锁与同一八槽 I/O 容量限制；mkdir 递归创建不提供整体回滚，move 只提供同卷原子 rename，不跨卷复制后删除。`overwrite=false` 原子不覆盖，true 也不预删目标；未知结果须核对两端。copy 的流式字节预算与发布行为按前述独立合同执行。
 
 新增 `[tools.stat]` 与 `[tools.tree]` 的 enabled 默认 true、可独立关闭。stat 只查询叶子自身元数据，tree 提供每层排序 DFS 的有界平面路径列表，两者不读取正文、不取 mutation 锁，也不提供一致快照；持久渠道和 cron/interval 固定白名单不接纳它们。管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 沿用空工具白名单，包含全部已注册工具，stat/tree 分别受上述配置开关控制。tree 默认深度 3、条数 200，严格范围分别为 1–32、1–1000；最多扫描 2000 条目、2 秒合作预算和 64 KiB 完整 JSON。list_dir 与 tree 的输出路径按完整工作区相对路径检查 1024 字节/64 组件，而不是只检查相对所选目录的名称。输入和文件类型细节见 [stat/tree 合同](workspace-files.md#stat--tree-元数据与目录树合同)，本机验收与最终 CI 范围见[验证记录](validation.md)。
 
