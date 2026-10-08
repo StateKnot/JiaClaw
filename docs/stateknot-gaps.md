@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对时间：2026-10-08 12:56 UTC；上游 main：`04567c4db12553025b4d31330693f4958222c30f`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
+核对时间：2026-10-08 14:39 UTC；上游 main：`83802cb3202bf9cb860c6357a94abc80408b1f88`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -22,7 +22,7 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 本批应用验收已有默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套回归全部通过，原 HTTP MCP pin 未变；两次 fixture 观察/断言修订没有改动生产数据库或框架，见[验证记录](validation.md#企业微信启动校验批次)。后续 12:56 UTC 已核对 [PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 三项成功；不认证真实企业安装或 StateKnot durable。
 
-12:56 UTC 独立用户企业微信批次复核：[PR #152](https://github.com/StateKnot/StateKnot/pull/152) 已于 11:56 UTC 合并，main 推进至本文顶部固定提交， [CI 37773442993](https://github.com/StateKnot/StateKnot/actions/runs/37773442993) 十二项 SUCCESS。实际源码新增[严格空对象读取](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/crates/stateknot-core/src/json.rs)，关闭七种内部 tagged 空变体对序列或额外字段的宽松接纳；合法 Rust 变体、规范 wire bytes 与七个 Schema pins 不变。新增 67 typed readers、104 正例、32 digest 变异，以及既有八类完整 wire 对照；[R1 qualification ledger](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/docs/r1-contract-gap-ledger.zh-CN.md) 仍保留类型/属性/fuzz、namespace 与版本兼容/生产门槛。
+12:56 UTC 独立用户企业微信批次复核：[PR #152](https://github.com/StateKnot/StateKnot/pull/152) 已于 11:56 UTC 合并，main 推进至 `04567c4db12553025b4d31330693f4958222c30f`， [CI 37773442993](https://github.com/StateKnot/StateKnot/actions/runs/37773442993) 十二项 SUCCESS。实际源码新增[严格空对象读取](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/crates/stateknot-core/src/json.rs)，关闭七种内部 tagged 空变体对序列或额外字段的宽松接纳；合法 Rust 变体、规范 wire bytes 与七个 Schema pins 不变。新增 67 typed readers、104 正例、32 digest 变异，以及既有八类完整 wire 对照；[R1 qualification ledger](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/docs/r1-contract-gap-ledger.zh-CN.md) 仍保留类型/属性/fuzz、namespace 与版本兼容/生产门槛。
 
 #148/#152 均是未发布 main 能力；release/#140 仍未变化。当前 alpha.1 HTTP MCP 不读取这些 execution wire/tagged runtime 变体，也不调用 typed registry，不因这次修复升级或提交框架缺陷。新企业微信 protocol 5、私有队列/原请求/持久额度属于应用接线：最终默认并行Rust1158项与同一冻结二进制真实双后端十组已通过；提交准备时旧21套进程回归仍独立运行、最终固定head CI pending，不替代 durable graph 的原生输出合同或认证。
 
@@ -45,3 +45,7 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
 
 独立用户 Telegram/Slack/Discord/飞书及本批企业微信的 registry 准入、私有 inbox/outbox、原请求收据与人工 hold 属于 JiaClaw 应用接线；Discord 单独加密短期凭据，飞书业务文本仍为明文。没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。
+
+14:39 UTC 钉钉批次复核：StateKnot main相对13:51已核实的`83802cb3` compare identical/ahead0，release/#140未变化。#153仅公开类型/schema/constructor测试盘点与fixtures/CI/docs，没有当前HTTP MCP生产合同变化。重新读取最新main的`integrations/src/mcp_client.rs`与实际Cargo alpha.1缓存，字节完全相同，SHA256均`0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`；JiaClaw仍消费原始descriptor/input/output Schema，未使用typed registry。没有必要升级精确pin或新重复issue；typed schema方向和durable/gap ledger门槛仍分开计。
+
+此前企业微信固定head PR #87 三项CI及旧21套回归已最终通过，见[最终回填](validation.md#独立用户企业微信最终-ci-回填)。本批钉钉原始JSON/MIME修复属于现有应用协议路径，不新增框架原生durable/stdio身份，亦不将钉钉的未知安装权限映射归因于StateKnot。

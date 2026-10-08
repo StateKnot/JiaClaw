@@ -14,6 +14,7 @@ use axum::http::HeaderMap;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use sha2::Sha256;
 
 const MAX_BODY: usize = 128 * 1024;
@@ -105,10 +106,11 @@ impl Callback {
     fn parse_inner(&self, headers: &HeaderMap, body: &[u8], now_ms: i64) -> Result<Inbound> {
         ensure!(!body.is_empty() && body.len() <= MAX_BODY, "body");
         self.verify(headers, now_ms)?;
+        ensure!(json_mime(headers), "JSON content type");
         // serde's ignored fields must also be depth bounded; never deserialize
         // arbitrary deeply nested unknown fields before checking this ceiling.
         ensure!(bounded_json_depth(body), "JSON nesting");
-        let event: Envelope = serde_json::from_slice(body)?;
+        let event: Envelope = decode_object(body)?;
         ensure!(
             event.robot_code == self.robot_code && event.chatbot_corp_id == self.corp_id,
             "installation"
@@ -195,6 +197,42 @@ fn unique_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     Ok(value.to_str()?)
 }
 
+// Both callbacks and API replies have an unambiguous original JSON object
+// contract. Never convert through Value: it would discard critical duplicates.
+pub(super) fn json_mime(headers: &HeaderMap) -> bool {
+    let mut values = headers.get_all(axum::http::header::CONTENT_TYPE).iter();
+    values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        && values.next().is_none()
+}
+
+pub(super) fn decode_object<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    ensure!(
+        bytes
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(b'{'),
+        "object required"
+    );
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn deserialize_text<'de, D>(deserializer: D) -> std::result::Result<Option<Text>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Box<RawValue>>::deserialize(deserializer)?;
+    raw.map(|raw| {
+        decode_object(raw.get().as_bytes())
+            .map_err(|_| serde::de::Error::custom("invalid DingTalk text object"))
+    })
+    .transpose()
+}
+
 fn opaque_id(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
@@ -250,6 +288,7 @@ struct Envelope {
     conversation_id: Option<String>,
     msg_id: Option<String>,
     msgtype: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_text")]
     text: Option<Text>,
     error_code: Option<u32>,
 }
@@ -274,6 +313,7 @@ mod tests {
     }
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
         headers.insert("timestamp", HeaderValue::from_static("1577262236757"));
         // Fixed official example inputs, calculated independently with Python
         // hmac/hashlib, not by the implementation under test.
@@ -471,6 +511,61 @@ mod tests {
         let duplicate_text =
             serialized.replace("\"content\":", "\"content\":\"first\",\"content\":");
         invalid(&headers(), duplicate_text.as_bytes(), NOW);
+    }
+
+    #[test]
+    fn original_callback_objects_reject_positional_arrays_at_every_boundary() {
+        let positional = json!([
+            "dingRobot", "dingCorp", "dingCorp", "Alice_01@example.com",
+            "1", "cidAa+/Bb==", "msgAa+/Bb==", "text",
+            {"content":"a valid message"}, null
+        ]);
+        invalid(&headers(), &serde_json::to_vec(&positional).unwrap(), NOW);
+        let mut nested = body();
+        nested["text"] = json!(["a valid message"]);
+        assert_eq!(parse(&nested).unwrap_err().to_string(), INVALID);
+        // Even ignored notifications cannot accept a malformed typed object.
+        for text in [json!([]), json!(["ignored"]), json!("ignored"), json!(1)] {
+            let quota = json!({"robotCode":"dingRobot","chatbotCorpId":"dingCorp",
+                "errorCode":20001,"text":text});
+            assert_eq!(parse(&quota).unwrap_err().to_string(), INVALID);
+        }
+        for text in [Value::Null, json!({"content":"unused", "extension":[1,2]})] {
+            let quota = json!({"robotCode":"dingRobot","chatbotCorpId":"dingCorp",
+                "errorCode":20001,"text":text});
+            assert_eq!(parse(&quota).unwrap(), Inbound::Ignored);
+        }
+        let mut extended = body();
+        extended["providerExtension"] = json!({"ignored":[1,2]});
+        assert!(parse(&extended).is_ok());
+    }
+
+    #[test]
+    fn callback_requires_one_json_content_type_before_durable_admission() {
+        let wire = serde_json::to_vec(&body()).unwrap();
+        for value in ["application/json", "Application/JSON; charset=utf-8"] {
+            let mut accepted = headers();
+            accepted.insert("content-type", value.parse().unwrap());
+            assert!(callback().parse_event(&accepted, &wire, NOW).is_ok());
+        }
+        let mut missing = headers();
+        missing.remove("content-type");
+        invalid(&missing, &wire, NOW);
+        for value in [
+            "text/plain",
+            "application/json, text/plain",
+            "application/ld+json",
+            "",
+        ] {
+            let mut rejected = headers();
+            rejected.insert("content-type", value.parse().unwrap());
+            invalid(&rejected, &wire, NOW);
+        }
+        for second in ["text/plain", "application/json"] {
+            let mut duplicate = headers();
+            duplicate.append("content-type", second.parse().unwrap());
+            invalid(&duplicate, &wire, NOW);
+        }
     }
 
     #[test]

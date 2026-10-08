@@ -3,7 +3,7 @@
 
 //! One private-member message through an enterprise application's robot.
 //!
-//! Primary contracts, retrieved 2026-10-03:
+//! Primary contracts, retrieved 2026-10-08:
 //! - <https://open.dingtalk.com/document/development/chatbots-send-one-on-one-chat-messages-in-batches.md>
 //! - <https://open.dingtalk.com/document/development/obtain-the-access-token-of-an-internal-app.md>
 //! - <https://open.dingtalk.com/document/development/robot-message-type.md>
@@ -22,6 +22,7 @@ use tokio::{sync::Mutex, time::Instant};
 
 use crate::{
     channel_types::{Channel, Destination},
+    dingtalk::{decode_object, json_mime},
     outbound::{
         http_client, rejected, response_body, unknown, validate_api_base, validate_destination,
         DeliveryOutcome, MAX_PART_UTF16, MAX_TEXT_BYTES,
@@ -124,11 +125,11 @@ impl DingTalkSender {
             .send()
             .await
             .ok()?;
-        if response.status() != StatusCode::OK {
+        if response.status() != StatusCode::OK || !json_mime(response.headers()) {
             return None;
         }
         let body = response_body(response).await.ok()?;
-        let token: TokenEnvelope = serde_json::from_slice(&body).ok()?;
+        let token: TokenEnvelope = decode_object(&body).ok()?;
         if token.code.is_some()
             || token.expire_in <= TOKEN_EXPIRY_MARGIN
             || token.access_token.is_empty()
@@ -189,11 +190,14 @@ impl DingTalkSender {
         if !status.is_success() && !status.is_client_error() {
             return unknown("unexpected_http_status");
         }
+        if !json_mime(response.headers()) {
+            return unknown("invalid_response");
+        }
         let body = match response_body(response).await {
             Ok(body) => body,
             Err(code) => return unknown(code),
         };
-        let Ok(envelope) = serde_json::from_slice::<MessageEnvelope>(&body) else {
+        let Ok(envelope) = decode_object::<MessageEnvelope>(&body) else {
             return unknown("invalid_response");
         };
         if envelope.code.as_deref().is_some_and(token_rejected) {
@@ -247,11 +251,7 @@ fn parse_receipt(status: StatusCode, envelope: MessageEnvelope) -> DeliveryOutco
         return unknown("dingtalk_partial_delivery");
     }
     if let Some(code) = &envelope.code {
-        if envelope
-            .process_query_key
-            .as_ref()
-            .is_some_and(|key| !key.is_empty())
-        {
+        if envelope.process_query_key.is_some() {
             return unknown("dingtalk_conflicting_receipt");
         }
         // Only the documented status/code combinations prove a refusal.
@@ -345,7 +345,11 @@ mod tests {
     }
     impl Reply {
         fn raw(status: u16, headers: &str, body: &str) -> Self {
-            Self { wire:Some(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",body.len()).into_bytes()), gate:None }
+            Self::raw_with_mime(status, Some("application/json"), headers, body)
+        }
+        fn raw_with_mime(status: u16, mime: Option<&str>, headers: &str, body: &str) -> Self {
+            let mime = mime.map_or(String::new(), |value| format!("Content-Type: {value}\r\n"));
+            Self { wire:Some(format!("HTTP/1.1 {status} Test\r\n{mime}Content-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",body.len()).into_bytes()), gate:None }
         }
         fn json(value: &Value) -> Self {
             Self::raw(200, "", &value.to_string())
@@ -478,6 +482,179 @@ mod tests {
     }
     fn receipt(id: &str) -> Reply {
         Reply::json(&json!({"processQueryKey":id}))
+    }
+
+    #[tokio::test]
+    async fn original_token_shape_duplicates_and_mime_fail_before_send_and_back_off() {
+        let mut replies = vec![
+            Reply::raw(200, "", r#"["token",7200,null]"#),
+            Reply::raw(200, "", r#""token""#),
+            Reply::raw(200, "", "null"),
+            Reply::raw(
+                200,
+                "",
+                r#"{"accessToken":"first","accessToken":"second","expireIn":7200}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"accessToken":"token","expireIn":7200,"expireIn":7200}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"accessToken":"token","expireIn":7200,"code":null,"code":null}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"accessToken":"token","access\u0054oken":"second","expireIn":7200}"#,
+            ),
+        ];
+        let valid = r#"{"accessToken":"token","expireIn":7200}"#;
+        for mime in [
+            None,
+            Some("text/plain"),
+            Some("application/json, text/plain"),
+        ] {
+            replies.push(Reply::raw_with_mime(200, mime, "", valid));
+        }
+        for duplicate in ["text/plain", "application/json"] {
+            replies.push(Reply::raw(
+                200,
+                &format!("Content-Type: {duplicate}\r\n"),
+                valid,
+            ));
+        }
+        for reply in replies {
+            let server = Server::new(vec![reply]).await;
+            let sender = server.sender();
+            for _ in 0..2 {
+                assert_eq!(
+                    sender.send(&destination(), "text").await,
+                    rejected("credential_unavailable")
+                );
+            }
+            let records = server.captured();
+            assert_eq!(records.len(), 1, "token failure retried or sent a message");
+            assert_eq!(records[0].path, "/v1.0/oauth2/accessToken");
+            let state = sender.token.lock().await;
+            assert!(state.cached.is_none());
+            assert!(state.retry_at > Instant::now());
+        }
+    }
+
+    #[tokio::test]
+    async fn original_receipt_shape_duplicates_and_mime_stay_unknown_without_replay() {
+        let mut replies = vec![
+            Reply::raw(200, "", r#"["accepted",null,null,null,null]"#),
+            Reply::raw(200, "", r#""accepted""#),
+            Reply::raw(200, "", "null"),
+            Reply::raw(
+                200,
+                "",
+                r#"{"processQueryKey":"first","processQueryKey":"second"}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"processQueryKey":null,"processQueryKey":"accepted"}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"processQueryKey":"accepted","code":null,"code":null}"#,
+            ),
+            Reply::raw(
+                200,
+                "",
+                r#"{"processQueryKey":"accepted","processQuery\u004bey":"accepted"}"#,
+            ),
+            Reply::raw(
+                400,
+                "",
+                r#"{"code":"InvalidAuthentication","processQueryKey":""}"#,
+            ),
+        ];
+        for field in [
+            "invalidStaffIdList",
+            "flowControlledStaffIdList",
+            "filteredStaffIdList",
+        ] {
+            replies.push(Reply::raw(
+                200,
+                "",
+                &format!(r#"{{"processQueryKey":"accepted","{field}":null,"{field}":[]}}"#),
+            ));
+        }
+        let valid = r#"{"processQueryKey":"accepted"}"#;
+        for mime in [
+            None,
+            Some("text/plain"),
+            Some("application/json, text/plain"),
+        ] {
+            replies.push(Reply::raw_with_mime(200, mime, "", valid));
+        }
+        for duplicate in ["text/plain", "application/json"] {
+            replies.push(Reply::raw(
+                200,
+                &format!("Content-Type: {duplicate}\r\n"),
+                valid,
+            ));
+        }
+        // Even a known error code is untrusted under an ambiguous MIME.
+        replies.push(Reply::raw(
+            400,
+            "Content-Type: text/plain\r\n",
+            r#"{"code":"InvalidAuthentication"}"#,
+        ));
+        for reply in replies {
+            let server = Server::new(vec![token("token"), reply]).await;
+            let outcome = server.sender().send(&destination(), "text").await;
+            let DeliveryOutcome::Unknown { code } = outcome else {
+                panic!("ambiguous original response was classified as known")
+            };
+            assert!(matches!(
+                code,
+                "invalid_response" | "dingtalk_conflicting_receipt"
+            ));
+            let records = server.captured();
+            assert_eq!(records.len(), 2, "response ambiguity caused a hidden retry");
+            assert_eq!(records[0].path, "/v1.0/oauth2/accessToken");
+            assert_eq!(records[1].path, "/v1.0/robot/oToMessages/batchSend");
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_original_objects_with_single_json_mime_preserve_platform_metadata_and_cache() {
+        let server = Server::new(vec![
+            Reply::raw_with_mime(
+                200,
+                Some("Application/JSON; charset=utf-8"),
+                "",
+                r#" {"accessToken":"token","expireIn":7200,"requestId":"platform-token-metadata"}"#,
+            ),
+            Reply::raw_with_mime(
+                200,
+                Some("Application/JSON; charset=utf-8"),
+                "",
+                r#" {"processQueryKey":"first","invalidStaffIdList":null,"flowControlledStaffIdList":[],"filteredStaffIdList":[],"requestId":"platform-message-metadata"}"#,
+            ),
+            receipt("second"),
+        ])
+        .await;
+        let sender = server.sender();
+        for id in ["first", "second"] {
+            assert_eq!(
+                sender.send(&destination(), "text").await,
+                DeliveryOutcome::Delivered { receipt: id.into() }
+            );
+        }
+        let records = server.captured();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[1].token.as_deref(), Some("token"));
+        assert_eq!(records[2].token.as_deref(), Some("token"));
+        assert!(records.iter().all(|request| request.query.is_empty()));
     }
 
     #[tokio::test]
