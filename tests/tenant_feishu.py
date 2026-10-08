@@ -528,7 +528,8 @@ def main():
                 return {"X-Lark-Request-Timestamp": timestamp, "X-Lark-Request-Nonce": nonce,
                         "X-Lark-Signature": digest, "Content-Type": "application/json"}
 
-            def webhook(who, value, expected=200, headers=None, query="", raw=None):
+            def webhook(who, value, expected=200, headers=None, query="", raw=None,
+                        expected_code=None, return_status=False):
                 raw = encrypted(who, value) if raw is None else raw
                 supplied = signed(who, raw) if headers is None else headers
                 request = urllib.request.Request(gateway_url + "/hooks/feishu/" + bindings[who]["id"] + query,
@@ -541,9 +542,22 @@ def main():
                 with response:
                     body = response.read(64 * 1024 + 1)
                     assert len(body) <= 64 * 1024, "unbounded webhook response"
-                    assert response.status == expected, (who, response.status, expected)
-                    assert time.monotonic() - start < 1, "Feishu acknowledgement exceeded its 1-second ingress budget"
-                    return json.loads(body) if body else None
+                    parsed = json.loads(body) if body else None
+                    code = parsed.get("status") if isinstance(parsed, dict) else None
+                    known_codes = {None, "accepted", "ignored", "invalid_callback", "body_timeout",
+                                   "busy", "queue_full", "admission_failed", "storage_unavailable",
+                                   "ingress_deadline", "binding_disabled", "unknown_binding", "disabled",
+                                   "json_required", "query_not_allowed", "invalid_body", "event_not_authorized",
+                                   "fingerprint_conflict"}
+                    safe_code = code if type(code) in (str, type(None)) and code in known_codes else "unrecognized_code"
+                    elapsed = time.monotonic() - start
+                    diagnostic = {"tenant": who, "http_status": response.status, "code": safe_code,
+                                  "elapsed_ms": round(elapsed * 1000)}
+                    allowed = (expected,) if isinstance(expected, int) else expected
+                    assert response.status in allowed, diagnostic
+                    assert expected_code is None or code == expected_code, diagnostic
+                    assert elapsed < 1, {**diagnostic, "error": "ingress_budget_exceeded"}
+                    return (response.status, parsed) if return_status else parsed
 
             def inspect(who, kind, *arguments):
                 return cli("feishu-inspect", "--binding", bindings[who]["id"], "--kind", kind, *arguments)["result"][kind]
@@ -1061,24 +1075,121 @@ def main():
             with LOCK:
                 MODES["alice"] = "unknown"
             webhook("alice", payload("alice", 117, "CAPACITY_HOLD"))
-            pending_review("alice")
+            original_hold = pending_review("alice")
             before_model, before_send = model_count("alice"), send_count("alice")
             count = len(events("alice"))
             busy = payload("alice", 4001, "STORAGE_BUSY")
             queue_lock = sqlite3.connect(channel_db("alice").as_uri() + "?mode=rw", uri=True, timeout=2)
             try:
                 queue_lock.execute("BEGIN IMMEDIATE")
-                webhook("alice", busy, expected=503, raw=encoded(busy))
+                # A deadline response does not prove the blocking SQL operation
+                # has finished. Keep the writer lock until a known failure and
+                # process exit have drained every task; never release it early
+                # and accidentally admit this request after its 503 response.
+                webhook("alice", busy, expected=503, expected_code="admission_failed", raw=encoded(busy))
+                assert len(events("alice")) == count and event("alice", 4001) is None
+                assert hold("alice") == original_hold and model_count("alice") == before_model and send_count("alice") == before_send
+                stop(gateway)
+                assert len(events("alice")) == count and event("alice", 4001) is None
             finally:
                 queue_lock.rollback()
                 queue_lock.close()
+            gateway = start_gateway()
             assert len(events("alice")) == count and event("alice", 4001) is None
-            for update in range(2000, 2000 + 1000 - count):
+            assert hold("alice") == original_hold
+            baseline_ids = {item["event_id"] for item in events("alice")}
+            count = len(baseline_ids)  # Count after the drain barrier, never before unknown work.
+            admitted_ids = set()
+            busy_retries = 0
+
+            def queue_admission(update, release_slot=None):
+                nonlocal busy_retries
                 data = payload("alice", update, "QUEUED_CAPACITY")
-                webhook("alice", data, raw=encoded(data))
-            assert len(events("alice")) == 1000
+                raw = encoded(data)
+                original_headers = signed("alice", raw)
+                original_event = "om_" + str(update)
+                expected_count = count + len(admitted_ids)
+                deadline = time.monotonic() + 2.5
+                for attempt in range(1, 9):
+                    assert time.monotonic() < deadline, "queue admission retry budget exhausted"
+                    status, reply = webhook("alice", None, expected=(200, 429), raw=raw,
+                                            headers=original_headers, return_status=True)
+                    observed = rows(channel_db("alice"),
+                                    "SELECT count(*) AS count,sum(event_id=?1) AS matches FROM channel_events",
+                                    (original_event,))[0]
+                    unchanged = (model_count("alice") == before_model and send_count("alice") == before_send
+                                 and hold("alice") == original_hold)
+                    diagnostic = {"tenant": "alice", "update_id": update, "attempt": attempt,
+                                  "http_status": status, "queue_count": observed["count"],
+                                  "event_matches": observed["matches"], "expected_count": expected_count,
+                                  "effects_unchanged": unchanged}
+                    assert time.monotonic() < deadline, {**diagnostic, "error": "retry_budget_exceeded"}
+                    if status == 200:
+                        assert reply == {"status": "accepted"}, {**diagnostic, "error": "unexpected_ack_code"}
+                        assert unchanged and observed == {"count": expected_count + 1, "matches": 1}, diagnostic
+                        admitted_ids.add(original_event)
+                        return
+                    # Only the semaphore's explicit pre-admission busy result is
+                    # retryable here. Full queues, SQL errors and deadlines fail.
+                    assert reply == {"status": "busy"}, {**diagnostic, "error": "non_transient_429"}
+                    assert unchanged and observed == {"count": expected_count, "matches": 0}, diagnostic
+                    busy_retries += 1
+                    print("INGRESS DIAGNOSTIC " + json.dumps({**diagnostic, "code": "busy",
+                                                             "busy_retries": busy_retries}, sort_keys=True), flush=True)
+                    assert busy_retries <= 32 and attempt < 8 and time.monotonic() < deadline, diagnostic
+                    if release_slot is not None:
+                        release_slot()
+                        release_slot = None
+                    time.sleep(min(.01 * 2 ** (attempt - 1), .1))
+                raise AssertionError("bounded queue admission retries exhausted")
+
+            # Occupy the actual per-binding body-reader slot, then release it
+            # after the first busy response. This exercises the retry branch
+            # without changing production state, quotas or the original signature.
+            challenge = {"type": "url_verification", "token": VERIFICATION_TOKENS["alice"],
+                         "challenge": "bounded-queue-slot-barrier"}
+            challenge_raw = encoded(challenge)
+            connection = HTTPConnection(settings["bind"], timeout=4)
+            connection.putrequest("POST", "/hooks/feishu/" + bindings["alice"]["id"])
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(len(challenge_raw)))
+            slot_start = time.monotonic()
+            connection.endheaders(challenge_raw[:1])
+            released = False
+
+            def release_slot():
+                nonlocal released
+                connection.send(challenge_raw[1:])
+                response = connection.getresponse()
+                body = response.read(64 * 1024 + 1)
+                assert response.status == 200 and len(body) <= 64 * 1024
+                assert json.loads(body) == {"challenge": challenge["challenge"]}
+                assert time.monotonic() - slot_start < 1
+                released = True
+                connection.close()
+
+            try:
+                readiness_deadline = time.monotonic() + .25
+                while True:
+                    status, reply = webhook("alice", None, expected=(200, 429), raw=challenge_raw,
+                                            headers={"Content-Type": "application/json"}, return_status=True)
+                    if status == 429:
+                        assert reply == {"status": "busy"}
+                        break
+                    assert reply == {"challenge": challenge["challenge"]}
+                    assert time.monotonic() < readiness_deadline, "body-reader slot was never occupied"
+                    time.sleep(.002)
+                queue_admission(2000, release_slot)
+                assert released and busy_retries >= 1, "actual busy admission branch was not exercised"
+            finally:
+                connection.close()
+            for update in range(2001, 2000 + 1000 - count):
+                queue_admission(update)
+            current = events("alice")
+            assert len(current) == 1000 and {item["event_id"] for item in current} == baseline_ids | admitted_ids
+            assert len(admitted_ids) == 1000 - count
             overflow = payload("alice", 4000, "CAPACITY_OVERFLOW")
-            webhook("alice", overflow, expected=429, raw=encoded(overflow))
+            webhook("alice", overflow, expected=429, expected_code="queue_full", raw=encoded(overflow))
             assert model_count("alice") == before_model and send_count("alice") == before_send
             assert len(events("alice")) == 1000 and event("alice", 4000) is None
             cli("feishu-revoke", "--binding", bindings["alice"]["id"])

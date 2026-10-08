@@ -112,6 +112,6 @@ review-clear 必须检查该用户全部保留渠道，包括撤销或已移除 
 
 ## 验收状态
 
-本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套最终通过，使用同一最终二进制；初始失败、实际修订和证据分层见[验证记录](validation.md)。当前 draft PR 的最终 exact-head CI 仍待核对 Linux/macOS 与真实容器，不据本机结果标记完整跨平台验收。
+首版本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套通过，使用同一生产二进制。PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 容量准入用例收到未记录具体状态的 429 后失败；测试增加明确 busy 的有界同签名重试、SQL 锁的停机排空和精确容量/身份断言，修订后的完整 11 组一次通过，同一生产二进制哈希不变，生产期限与限额未改。具体证据见[验证记录](validation.md)；最终 exact-head 三项 CI 仍待核对，不标记完整跨平台验收。
 
 协议 fixture 使用一次性凭据，不触发真实平台消息或付费供应商。正常 7200 秒 token mint 的启动 HTTP 取消/截止、明确失效后的 terminal/no resend 与离线核对已作进程验证；Sender 单元覆盖 cache 失效/退避/取消，不能外推运行期正常到期刷新认证。真实飞书安装、权限可用范围、事件字段、终端消息、TLS 总预算、平台 token/限额、共享网关卷及容器渠道 runtime 压力、供应商联合认证仍另行完成。

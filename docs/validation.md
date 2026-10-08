@@ -443,4 +443,12 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 
 token 验收分层保留：通过的进程 fixture 使用正常 `expire=7200` mint，覆盖已知 `99991663` 失效后的 terminal/no resend、离线核对，以及启动 token HTTP 的真实取消/截止。Sender 单元测试另行覆盖 cache 失效、退避、取消及未来独立投递，不用成功 mint 的 61 秒寿命、修改 clock 或人工改 hold 来构造运行期刷新。官方自建 token 接口在剩余有效期不足 30 分钟时签发新 token，运行期正常到期刷新仍未取得真实平台整机认证。[官方 token 生命周期](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
 
-**本批本地源码和进程验收已完成，当前 draft PR 的最终 exact-head CI 仍待核对，不记录完整跨平台批次通过。** 终验由交付 PR 核对固定 head，再于下批回填，避免为记录自身 SHA 重复变更提交；不会用上批 Discord 通过作为飞书入口认证。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、平台 token/限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。
+首轮 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85) 的 [CI 37759803423](https://github.com/jiawenyao401/JiaClaw/actions/runs/37759803423) 对应 exact head `ff4737a531f0a8ca70b3e903513e39b75164ddd8`，已 completed/failure。Ubuntu job `113253178887` 全部成功，包含新增飞书 11 组、全部强制进程回归、Chromium 与真实 Docker；container job `113253178575` 成功，覆盖 schema 6 永久 App 预留、撤销/重启、默认关闭及真实 ENOSPC，未据此认证渠道 runtime。
+
+macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准入循环在 `tenant_feishu.py:1078` 预期 HTTP 200、实际收到 429 后失败，后续 channels 等步骤 skipped。首版 helper 的断言没有输出 response `body.status`，当前不能区分 transient busy 与 queue_full，更不能据此确定调度、队列或生产根因。首轮 Linux/容器成功不能代替修订后最终 head 的三项完整验证。
+
+修订仅限 fixture：helper 输出白名单内的 `body.status`、HTTP 状态及 elapsed，不输出正文或 Secrets。真实 `BEGIN IMMEDIATE` 写锁期间必须返回 `503 admission_failed`，断言队列/hold/model/send 未变；保持锁到网关停止并排空后再释放，重启后再次计数，避免把 HTTP 截止当作阻塞 SQL 已结束的证明。
+
+千条准入每条复用同一原始正文/签名 header，仅明确的 `429 busy` 可在 2.5 秒内至多尝试八次，全组至多 32 次 busy；逐次检查精确队列计数和唯一消息身份、hold/model/send 不变，queue_full、503、未知状态立即失败。用真实未读完的 challenge 占用 body-reader 槽、收到 busy 后有界释放，明确执行新重试分支；最终 1000 条事件必须等于原 ID 集合与新增 ID 集合的精确并集，第 1001 条必须 `429 queue_full`。生产实现、每次 1 秒断言、900 ms 回调预算、SQL 250 ms 和各项限额均未改。这增加确定的忙碌合同验收，不解释首次未记录状态的 429；修订后的完整 11 组一次运行退出码 0、全部通过，前后仍为同一生产二进制 SHA256 `43f7ec3bdacb6d2258eef37e77c75377822493de5e134283712b8149ada93db6`。实际 reader-slot 分支记录一次 `busy`，队列为 12、该新消息匹配数为 0、hold/model/send 未变；释放 challenge 后同 raw/header 接纳一次，988 个新增身份加原 12 个精确达到 1000，第 1001 条明确 queue_full。Python 语法和 diff-check 通过，没有重建生产二进制。
+
+**上述本地源码和首版进程验收已完成，PR #85 首轮 CI 有明确 macOS 失败；修订后的本地整机已通过，最终 exact-head CI 仍待核对，不记录完整跨平台批次通过。** 终验由交付 PR 核对固定 head，再于下批回填，避免为记录自身 SHA 重复变更提交；不会用上批 Discord 通过作为飞书入口认证。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、平台 token/限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。
