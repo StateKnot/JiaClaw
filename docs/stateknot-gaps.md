@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对时间：2026-10-08 11:35 UTC；上游 main：`a312b0c2d09cd6d695b37b8d4163cddb910bdf6a`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
+核对时间：2026-10-08 12:56 UTC；上游 main：`04567c4db12553025b4d31330693f4958222c30f`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -16,11 +16,15 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 08:23 UTC 飞书批次通过官方 GitHub API 复核：当时 main `9110ad7`、release、#140 与十二项成功检查均未变化；没有新增可消费 runtime/native Schema/stdio 合同。本批私聊身份与后端 protocol 4 属于应用接线，不新增上游缺陷议题。
 
-11:35 UTC 企业微信启动校验批次复核：main 已推进至本文顶部的 `a312b0c2`，[CI 37765235278](https://github.com/StateKnot/StateKnot/actions/runs/37765235278) 十二项检查全部 SUCCESS。已合并的 [#148](https://github.com/StateKnot/StateKnot/pull/148) 是实际工具合同修复：[typed Tool input](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-core/src/tool_runtime.rs#L3466) 按 Serde Deserialize 方向生成 draft 2020-12 Schema，[output](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-core/src/tool_runtime.rs#L3480) 按 Serialize 方向生成，并新增 [register_rust_output_type](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-runtime/src/schema.rs#L321)。此修复尚未发布到 alpha.1；后续采用 typed runtime 时须固定新版本、复核 schema/version 与描述 pin，并保留已准入操作的旧合同，不能原地覆盖。[方向与升级合同](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/docs/rfcs/0019-typed-tool-schema-directions.md)
+11:35 UTC 企业微信启动校验批次复核：当时 main 为 `a312b0c2d09cd6d695b37b8d4163cddb910bdf6a`，[CI 37765235278](https://github.com/StateKnot/StateKnot/actions/runs/37765235278) 十二项检查全部 SUCCESS。已合并的 [#148](https://github.com/StateKnot/StateKnot/pull/148) 是实际工具合同修复：[typed Tool input](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-core/src/tool_runtime.rs#L3466) 按 Serde Deserialize 方向生成 draft 2020-12 Schema，[output](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-core/src/tool_runtime.rs#L3480) 按 Serialize 方向生成，并新增 [register_rust_output_type](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/crates/stateknot-runtime/src/schema.rs#L321)。此修复尚未发布到 alpha.1；后续采用 typed runtime 时须固定新版本、复核 schema/version 与描述 pin，并保留已准入操作的旧合同，不能原地覆盖。[方向与升级合同](https://github.com/StateKnot/StateKnot/blob/a312b0c2d09cd6d695b37b8d4163cddb910bdf6a/docs/rfcs/0019-typed-tool-schema-directions.md)
 
 已独立核对 JiaClaw 当前精确依赖及调用路径：HTTP MCP 直接保存服务端原始 input/output Schema 与完整描述 digest，经离线验证后单次调用；没有 typed Tool 或 runtime 类型注册调用。因此 #148 不要求当前 HTTP MCP 升级，也不表示其现有接线存在框架缺陷。最新 PostgreSQL 并发 journal 身份/投影测试覆盖真实 16/17，不能代替尚未完成的容量、fencing、failover 或 soak 闸门。release 和 #140 仍未变化；Brokerrouter #41 的原生输出准入缺口仍在。此次企业微信启动 token/AgentID/可见范围校验是应用接线，不属于 durable driver 或新身份 profile 消费。
 
-本批应用验收已有默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套回归全部通过，原 HTTP MCP pin 未变；两次 fixture 观察/断言修订没有改动生产数据库或框架，见[验证记录](validation.md#企业微信启动校验批次)。本提交准备时最终跨平台 CI pending，以本批 draft PR 固定 head 为准；这些本地证据不认证真实企业安装或 StateKnot durable。
+本批应用验收已有默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套回归全部通过，原 HTTP MCP pin 未变；两次 fixture 观察/断言修订没有改动生产数据库或框架，见[验证记录](validation.md#企业微信启动校验批次)。后续 12:56 UTC 已核对 [PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 三项成功；不认证真实企业安装或 StateKnot durable。
+
+12:56 UTC 独立用户企业微信批次复核：[PR #152](https://github.com/StateKnot/StateKnot/pull/152) 已于 11:56 UTC 合并，main 推进至本文顶部固定提交， [CI 37773442993](https://github.com/StateKnot/StateKnot/actions/runs/37773442993) 十二项 SUCCESS。实际源码新增[严格空对象读取](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/crates/stateknot-core/src/json.rs)，关闭七种内部 tagged 空变体对序列或额外字段的宽松接纳；合法 Rust 变体、规范 wire bytes 与七个 Schema pins 不变。新增 67 typed readers、104 正例、32 digest 变异，以及既有八类完整 wire 对照；[R1 qualification ledger](https://github.com/StateKnot/StateKnot/blob/04567c4db12553025b4d31330693f4958222c30f/docs/r1-contract-gap-ledger.zh-CN.md) 仍保留类型/属性/fuzz、namespace 与版本兼容/生产门槛。
+
+#148/#152 均是未发布 main 能力；release/#140 仍未变化。当前 alpha.1 HTTP MCP 不读取这些 execution wire/tagged runtime 变体，也不调用 typed registry，不因这次修复升级或提交框架缺陷。新企业微信 protocol 5、私有队列/原请求/持久额度属于应用接线：最终默认并行Rust1158项与同一冻结二进制真实双后端十组已通过；提交准备时旧21套进程回归仍独立运行、最终固定head CI pending，不替代 durable graph 的原生输出合同或认证。
 
 ## MCP 现状与新议题
 
@@ -40,4 +44,4 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
 
-独立用户 Telegram/Slack/Discord/飞书的 registry 准入、私有 inbox/outbox、原请求收据与人工 hold 属于 JiaClaw 应用接线；Discord 单独加密短期凭据，飞书业务文本仍为明文。没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。
+独立用户 Telegram/Slack/Discord/飞书及本批企业微信的 registry 准入、私有 inbox/outbox、原请求收据与人工 hold 属于 JiaClaw 应用接线；Discord 单独加密短期凭据，飞书业务文本仍为明文。没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。

@@ -2,7 +2,7 @@
 
 本渠道接入企业微信企业内部自建应用：接收成员发给应用的文本消息，后台运行 Agent，再通过应用消息接口回复同一成员。它支持显式授权的定时成员通知，复用 SQLite 收件箱、会话事务、持久发件箱和人工核查接口。
 
-这是单实例渠道，使用该服务的共享工作区和数据库；独立用户网关尚无企业微信永久绑定、私有队列或专属后端入口。本批补齐实际 `serve` 路径的启动身份校验，不将它计为完整独立用户企业微信交付。
+本页是单实例渠道，使用该服务的共享工作区和数据库。独立用户专用应用、永久绑定、私有队列和后端入口见[独立用户企业微信](tenant-wecom.md)，该批最终冻结二进制的本地十组/Rust已通过，旧回归及固定提交CI仍在验证；本页的 standalone 启动门槛不代替私有租户交付。
 
 企业微信“智能机器人”使用另一套协议，包括 `aibotid`、群聊 `chatid`、临时 `response_url` 和流式刷新；这些字段不能放进自建应用配置。本次也不接群机器人 webhook、应用群聊会话、客户群、微信客服、第三方套件或个人微信会话。[自建应用接收消息](https://developer.work.weixin.qq.com/document/path/90238)、[智能机器人接收消息](https://developer.work.weixin.qq.com/document/path/100719)
 
@@ -130,6 +130,6 @@ python3 tests/wecom.py target/debug/jiaclaw
 
 脚本仅使用临时数据库、本地模型/平台 HTTP fixture 和一次性密钥，OpenSSL 独立构造 AES 回调。覆盖 GET/POST 验签和时限、企业/应用身份、XML 实体拒绝、成员大小写归一、重投与冲突、原生工具闭环、相同独立消息、渲染字节分片、token 复用、发送间隔、未知结果与强杀恢复、精确定时接收人、环境变量凭据及错误脱敏。加密单元测试还使用官方 Java 示例中的固定向量；官方示例包可从[企业微信官网下载](https://open.work.weixin.qq.com/wwopen/downloadfile/java.zip)，本次读取的 SHA-256 为 `4a1644d08db8a2b489e79281925dedb2a4788a082fda7d311b17ee942f03192f`。
 
-新增启动 fixture 的六组和 32 个原始 JSON/MIME/HTTP/身份/可见范围/大小负例已在同一最终二进制通过，验证实际 `serve` 失败时没有 HTTP 监听、Agent/MCP 请求、会话库或后台效果，并覆盖真实阻塞请求的 SIGTERM 与 token 头/app 部分正文的五秒截止。完整默认并行 Rust 1105 项、fmt/必需 Clippy/locked build 通过；同一冻结二进制的 WeCom、MCP、e2e、channels、scheduled_delivery 五套既有回归全部退出码 0，包含 WeCom 的加密、发送、恢复、定时和停发维护。两次测试观察/断言修订及精确证据见[验证记录](validation.md)。本提交准备时最终跨平台 CI pending，固定 head 结果以本批 draft PR 为准；不把本地 fixture 外推为真实安装认证。
+新增启动 fixture 的六组和 32 个原始 JSON/MIME/HTTP/身份/可见范围/大小负例已在同一最终二进制通过，验证实际 `serve` 失败时没有 HTTP 监听、Agent/MCP 请求、会话库或后台效果，并覆盖真实阻塞请求的 SIGTERM 与 token 头/app 部分正文的五秒截止。完整默认并行 Rust 1105 项、fmt/必需 Clippy/locked build 通过；同一冻结二进制的 WeCom、MCP、e2e、channels、scheduled_delivery 五套既有回归全部退出码 0，包含 WeCom 的加密、发送、恢复、定时和停发维护。两次测试观察/断言修订及精确证据见[验证记录](validation.md)。后续已核对 [PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 三项全部通过；不把协议 fixture 外推为真实安装认证。
 
-真实上线还须验证企业认证、生产 API 与应用可见范围、成员许可、可信出口 IP、公开 HTTPS 回调、真实成员收发、应用 Secret 对应的 AgentID、接收额度及终端展示。正常运行期 token 到期刷新与容器内渠道 runtime 压力也尚未取得真实平台认证。本地测试不能替代真实安装认证，本次未使用真实凭据或发送真实消息。Brokerrouter 的真实模型供应商认证及 StateKnot durable 契约仍单独跟踪，见[上游能力差距](brokerrouter-gaps.md)。完整独立用户企业微信还需永久 registry/后端 owner、私有队列、跨渠道用户授权和撤销后停机核对接线。
+真实上线还须验证企业认证、生产 API 与应用可见范围、成员许可、可信出口 IP、公开 HTTPS 回调、真实成员收发、应用 Secret 对应的 AgentID、接收额度及终端展示。正常运行期 token 到期刷新与容器内渠道 runtime 压力也尚未取得真实平台认证。本地测试不能替代真实安装认证，本次未使用真实凭据或发送真实消息。Brokerrouter 的真实模型供应商认证及 StateKnot durable 契约仍单独跟踪，见[上游能力差距](brokerrouter-gaps.md)。新独立用户企业微信的永久 registry/后端 owner、私有队列、跨渠道用户授权和撤销后停机核对已实际接线，最终冻结 artifact 本地十组已通过，旧回归/最终 CI 验收另计，见[专用部署指南](tenant-wecom.md)。

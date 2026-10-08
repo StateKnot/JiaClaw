@@ -51,6 +51,7 @@ jobs:
         run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
       - run: python3 tests/tenant_discord.py target/debug/jiaclaw
       - run: python3 tests/tenant_feishu.py target/debug/jiaclaw
+      - run: python3 tests/tenant_wecom.py target/debug/jiaclaw
       - run: python3 tests/channels.py target/debug/jiaclaw
       - run: python3 tests/scheduled_delivery.py target/debug/jiaclaw
       - run: python3 tests/discord_scheduled.py target/debug/jiaclaw

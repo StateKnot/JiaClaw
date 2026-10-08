@@ -1075,6 +1075,23 @@ fn build_router_with_body_limit(
             "/internal/channels/feishu/requests/:request_id",
             get(tenant_channel::feishu_receipt),
         )
+        .route(
+            "/internal/channels/wecom/status",
+            get(tenant_channel::wecom_status),
+        )
+        .route(
+            "/internal/channels/wecom-binding",
+            post(tenant_channel::wecom_bind).layer(DefaultBodyLimit::max(body_limit.min(4096))),
+        )
+        .route(
+            "/internal/channels/wecom/execute",
+            post(tenant_channel::wecom_chat)
+                .layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
+        )
+        .route(
+            "/internal/channels/wecom/requests/:request_id",
+            get(tenant_channel::wecom_receipt),
+        )
         .route("/internal/scheduler/status", get(tenant_scheduler::status))
         .route(
             "/internal/scheduler/dispatch",

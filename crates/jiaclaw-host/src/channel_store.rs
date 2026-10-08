@@ -27,6 +27,41 @@ const MAX_WECOM_RESERVATIONS: i64 = 10_000;
 pub(super) struct ChannelConflict(pub &'static str);
 #[derive(Debug)]
 pub(super) struct ChannelCapacity(pub &'static str);
+
+/// Durable quota evidence, independent of purged message bodies. Unknown sends
+/// keep `settled_ms` null until an explicit, known operator reconciliation.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub(super) struct WecomReservation {
+    pub installation_id: String,
+    pub delivery_id: String,
+    pub attempt: u32,
+    pub reserved_ms: i64,
+    pub settled_ms: Option<i64>,
+}
+
+const WECOM_RESERVATION_FIELDS: &str = "CASE WHEN length(CAST(installation_id AS BLOB)) BETWEEN 1 AND 128 THEN installation_id ELSE NULL END,CASE WHEN length(CAST(delivery_id AS BLOB)) BETWEEN 1 AND 128 THEN delivery_id ELSE NULL END,attempt,reserved_ms,settled_ms";
+
+fn wecom_reservation_row(row: &Row<'_>) -> rusqlite::Result<WecomReservation> {
+    Ok(WecomReservation {
+        installation_id: row.get(0)?,
+        delivery_id: row.get(1)?,
+        attempt: row.get(2)?,
+        reserved_ms: row.get(3)?,
+        settled_ms: row.get(4)?,
+    })
+}
+
+impl WecomReservation {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=MAX_ATTEMPTS).contains(&self.attempt)
+                && self.reserved_ms >= 0
+                && self.settled_ms.is_none_or(|time| time >= self.reserved_ms),
+            "corrupt WeCom quota reservation"
+        );
+        Ok(())
+    }
+}
 macro_rules! store_error {
     ($name:ident) => {
         impl std::fmt::Display for $name {
@@ -610,6 +645,8 @@ pub(super) const MAX_TELEGRAM_OPERATIONS: usize = 16_000;
 pub(super) const MAX_SLACK_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 pub(super) const MAX_DISCORD_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 pub(super) const MAX_FEISHU_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
+pub(super) const MAX_WECOM_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
+pub(super) const MAX_WECOM_RECORDED_CHUNKS: usize = 16;
 
 #[derive(Clone, Copy)]
 enum RecordedChannel {
@@ -617,6 +654,7 @@ enum RecordedChannel {
     Slack,
     Discord,
     Feishu,
+    Wecom,
 }
 impl RecordedChannel {
     fn table(self) -> &'static str {
@@ -625,6 +663,7 @@ impl RecordedChannel {
             Self::Slack => "gateway_slack_operations",
             Self::Discord => "gateway_discord_operations",
             Self::Feishu => "gateway_feishu_operations",
+            Self::Wecom => "gateway_wecom_operations",
         }
     }
     fn channel(self) -> Channel {
@@ -633,6 +672,7 @@ impl RecordedChannel {
             Self::Slack => Channel::Slack,
             Self::Discord => Channel::Discord,
             Self::Feishu => Channel::Feishu,
+            Self::Wecom => Channel::Wecom,
         }
     }
     fn full_message(self) -> &'static str {
@@ -645,6 +685,7 @@ impl RecordedChannel {
                 "Discord operation ledger is full; reconcile and purge reviewed events"
             }
             Self::Feishu => "Feishu operation ledger is full; reconcile and purge reviewed events",
+            Self::Wecom => "WeCom permanent operation ledger is full; new admission requires administrator maintenance",
         }
     }
     fn capacity(self) -> usize {
@@ -653,6 +694,7 @@ impl RecordedChannel {
             Self::Slack => MAX_SLACK_OPERATIONS,
             Self::Discord => MAX_DISCORD_OPERATIONS,
             Self::Feishu => MAX_FEISHU_OPERATIONS,
+            Self::Wecom => MAX_WECOM_OPERATIONS,
         }
     }
 }
@@ -688,6 +730,59 @@ fn check_recorded_claim(
 }
 
 impl SessionStore {
+    pub(super) fn get_wecom_reservation(
+        &self,
+        installation_id: &str,
+        delivery_id: &str,
+        attempt: u32,
+    ) -> Result<Option<WecomReservation>> {
+        let record = self.channel_conn()?.query_row(
+            &format!("SELECT {WECOM_RESERVATION_FIELDS} FROM wecom_send_reservations WHERE installation_id=?1 AND delivery_id=?2 AND attempt=?3"),
+            params![installation_id, delivery_id, attempt],
+            wecom_reservation_row,
+        ).optional()?;
+        if let Some(record) = &record {
+            record.validate()?;
+        }
+        Ok(record)
+    }
+
+    pub(super) fn list_wecom_reservations(
+        &self,
+        installation_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WecomReservation>> {
+        ensure!(
+            (1..=1000).contains(&limit) && offset <= 10_000,
+            "invalid WeCom reservation page"
+        );
+        let mut statement = self.channel_conn()?.prepare(&format!(
+            "SELECT {WECOM_RESERVATION_FIELDS} FROM wecom_send_reservations WHERE (?1 IS NULL OR installation_id=?1) ORDER BY reserved_ms,installation_id,delivery_id,attempt LIMIT ?2 OFFSET ?3"
+        ))?;
+        let rows = statement
+            .query_map(
+                params![installation_id, limit, offset],
+                wecom_reservation_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for record in &rows {
+            record.validate()?;
+        }
+        Ok(rows)
+    }
+
+    pub(super) fn has_unsettled_wecom_reservations(
+        &self,
+        installation_id: Option<&str>,
+    ) -> Result<bool> {
+        Ok(self.channel_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM wecom_send_reservations WHERE settled_ms IS NULL AND (?1 IS NULL OR installation_id=?1))",
+            [installation_id],
+            |row| row.get(0),
+        )?)
+    }
+
     fn channel_conn(&self) -> Result<&Connection> {
         match self {
             Self::Sqlite { conn, .. } => Ok(conn),
@@ -718,10 +813,33 @@ impl SessionStore {
     }
     pub(super) fn accept_channel_event(
         &mut self,
-        mut spec: EventSpec,
+        spec: EventSpec,
         now: i64,
     ) -> Result<EventAcceptance> {
+        self.accept_channel_event_impl(spec, now, false)
+    }
+
+    pub(super) fn accept_wecom_event_recorded(
+        &mut self,
+        spec: EventSpec,
+        now: i64,
+    ) -> Result<EventAcceptance> {
+        self.accept_channel_event_impl(spec, now, true)
+    }
+
+    fn accept_channel_event_impl(
+        &mut self,
+        mut spec: EventSpec,
+        now: i64,
+        wecom_recorded: bool,
+    ) -> Result<EventAcceptance> {
         validate_spec(&spec)?;
+        if wecom_recorded {
+            ensure!(
+                spec.destination.channel == Channel::Wecom,
+                "recorded WeCom admission requires its own channel"
+            );
+        }
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -742,6 +860,28 @@ impl SessionStore {
                 created: false,
                 status,
             });
+        }
+        if wecom_recorded {
+            // Each accepted event needs one permanent model operation and up to
+            // sixteen single-attempt sends. A claim converts reserved headroom
+            // into an immutable operation in the same transaction. Duplicate
+            // callbacks remain acknowledged even after lifetime capacity fills.
+            let committed_and_reserved: usize = tx.query_row(
+                "SELECT (SELECT count(*) FROM gateway_wecom_operations)
+                    +(SELECT count(*) FROM channel_events WHERE channel='wecom' AND status='received')*?1
+                    +(SELECT count(*) FROM channel_events WHERE channel='wecom' AND status='processing')*?2
+                    +(SELECT count(*) FROM channel_outbox WHERE channel='wecom' AND state IN ('pending','retry_wait'))",
+                params![MAX_WECOM_RECORDED_CHUNKS + 1, MAX_WECOM_RECORDED_CHUNKS],
+                |row| row.get(0),
+            )?;
+            if committed_and_reserved.saturating_add(MAX_WECOM_RECORDED_CHUNKS + 1)
+                > MAX_WECOM_OPERATIONS
+            {
+                return Err(ChannelCapacity(
+                    "WeCom permanent operation headroom is full; new events cannot be acknowledged",
+                )
+                .into());
+            }
         }
         let events: usize =
             tx.query_row("SELECT count(*) FROM channel_events", [], |r| r.get(0))?;
@@ -812,6 +952,13 @@ impl SessionStore {
     ) -> Result<Option<ChannelEvent>> {
         self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Feishu)))
     }
+    pub(super) fn claim_wecom_event_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Wecom)))
+    }
     fn claim_channel_event_impl(
         &mut self,
         now: i64,
@@ -869,6 +1016,33 @@ impl SessionStore {
         error: Option<String>,
         now: i64,
     ) -> Result<bool> {
+        self.complete_channel_event_impl(id, session, status, chunks, error, now, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn complete_wecom_event_recorded(
+        &mut self,
+        id: &str,
+        session: Option<(String, SessionRecord)>,
+        status: &str,
+        chunks: Vec<String>,
+        error: Option<String>,
+        now: i64,
+    ) -> Result<bool> {
+        self.complete_channel_event_impl(id, session, status, chunks, error, now, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_channel_event_impl(
+        &mut self,
+        id: &str,
+        session: Option<(String, SessionRecord)>,
+        status: &str,
+        chunks: Vec<String>,
+        error: Option<String>,
+        now: i64,
+        wecom_recorded: bool,
+    ) -> Result<bool> {
         ensure!(
             matches!(status, "completed" | "needs_review"),
             "invalid terminal channel event status"
@@ -879,6 +1053,16 @@ impl SessionStore {
         let Some(event) = find_event(&tx, id)?.filter(|e| e.status == "processing") else {
             return Ok(false);
         };
+        if wecom_recorded {
+            ensure!(
+                event.spec.destination.channel == Channel::Wecom,
+                "recorded WeCom completion requires its own channel"
+            );
+            ensure!(
+                chunks.len() <= MAX_WECOM_RECORDED_CHUNKS,
+                "recorded WeCom reply exceeds sixteen parts"
+            );
+        }
         validate_chunks(event.spec.destination.channel, &chunks)?;
         let count: usize = tx.query_row("SELECT count(*) FROM channel_outbox", [], |r| r.get(0))?;
         if count.saturating_add(chunks.len()) > MAX_DELIVERIES {
@@ -967,6 +1151,13 @@ impl SessionStore {
         request_id: &str,
     ) -> Result<Option<ChannelDelivery>> {
         self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Feishu)))
+    }
+    pub(super) fn claim_wecom_delivery_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Wecom)))
     }
     fn claim_channel_delivery_impl(
         &mut self,
@@ -1236,12 +1427,35 @@ impl SessionStore {
         Ok(true)
     }
     pub(super) fn purge_channel_event(&mut self, id: &str, now: i64) -> Result<bool> {
+        self.purge_channel_event_impl(id, now, false)
+    }
+
+    pub(super) fn purge_wecom_channel_event_recorded(
+        &mut self,
+        id: &str,
+        now: i64,
+    ) -> Result<bool> {
+        self.purge_channel_event_impl(id, now, true)
+    }
+
+    fn purge_channel_event_impl(
+        &mut self,
+        id: &str,
+        now: i64,
+        wecom_recorded: bool,
+    ) -> Result<bool> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(event) = find_event(&tx, id)? else {
             return Ok(false);
         };
+        if wecom_recorded {
+            ensure!(
+                event.spec.destination.channel == Channel::Wecom,
+                "recorded WeCom purge requires its own channel event"
+            );
+        }
         if !(event.status == "completed"
             || (event.status == "needs_review" && event.reviewed_ms.is_some()))
         {
@@ -1264,6 +1478,11 @@ impl SessionStore {
             "UPDATE channel_dedup SET retain_until_ms=MAX(retain_until_ms,?2) WHERE id=?1",
             params![id, until],
         )?;
+        if wecom_recorded {
+            // Operation identities have no cascading FK. Snapshot their live
+            // metadata before deleting bodies, in this same purge transaction.
+            tx.execute("UPDATE gateway_wecom_operations SET cached_state=COALESCE((SELECT o.state FROM channel_outbox o WHERE o.id=gateway_wecom_operations.delivery_id),(SELECT e.status FROM channel_events e WHERE e.id=gateway_wecom_operations.event_id)),cached_receipt=(SELECT o.receipt FROM channel_outbox o WHERE o.id=gateway_wecom_operations.delivery_id),cached_reviewed_ms=(SELECT e.reviewed_ms FROM channel_events e WHERE e.id=gateway_wecom_operations.event_id) WHERE event_id=?1", [id])?;
+        }
         tx.execute("DELETE FROM channel_outbox WHERE event_id=?1", [id])?;
         tx.execute("DELETE FROM channel_events WHERE id=?1", [id])?;
         tx.commit()?;
@@ -4218,5 +4437,528 @@ mod tests {
         ] {
             assert_eq!(ledger_count(&db, table), 0);
         }
+    }
+    fn recorded_wecom_ledgers(db: &SessionStore) {
+        recorded_ledgers(db);
+        // The private store owns this permanent ledger. There are deliberately
+        // no cascading body FKs; purge snapshots must preserve the identities.
+        db.channel_conn().unwrap().execute_batch("CREATE TABLE gateway_wecom_operations(request_id TEXT PRIMARY KEY NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','delivery')),event_id TEXT NOT NULL,delivery_id TEXT,attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 5),claimed_ms INTEGER NOT NULL,cached_state TEXT,cached_receipt TEXT,cached_reviewed_ms INTEGER);").unwrap();
+    }
+    fn complete_wecom_recorded(
+        db: &mut SessionStore,
+        platform_event: &str,
+        now: i64,
+        parts: &[&str],
+    ) -> ChannelEvent {
+        db.accept_channel_event(wecom_spec(platform_event, "alice"), now)
+            .unwrap();
+        let event = db
+            .claim_wecom_event_recorded(now, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(
+            &event.id,
+            None,
+            "completed",
+            parts.iter().map(|s| (*s).into()).collect(),
+            None,
+            now + 1,
+        )
+        .unwrap();
+        event
+    }
+
+    #[test]
+    fn recorded_wecom_operation_and_reservation_faults_roll_back_submitting_and_cooldown() {
+        for fail_table in ["gateway_wecom_operations", "wecom_send_reservations"] {
+            let mut db = database();
+            recorded_wecom_ledgers(&db);
+            let event = complete_wecom_recorded(&mut db, "1", 0, &["reply"]);
+            db.channel_conn().unwrap().execute_batch(&format!("CREATE TRIGGER refuse_wecom_send BEFORE INSERT ON {fail_table} BEGIN SELECT RAISE(ABORT,'fixture claim failure'); END;")).unwrap();
+            assert!(db
+                .claim_wecom_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+                .is_err());
+            let pending = db
+                .list_channel_deliveries(Some(&event.id), 10, 0)
+                .unwrap()
+                .remove(0);
+            assert_eq!(pending.state, "pending");
+            assert_eq!(pending.attempts, 0);
+            assert!(db.list_wecom_reservations(None, 10, 0).unwrap().is_empty());
+            assert!(!db.has_unsettled_wecom_reservations(None).unwrap());
+            assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 1);
+            assert_eq!(
+                db.channel_conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM channel_cooldowns WHERE channel='wecom'",
+                        [],
+                        |r| r.get::<_, usize>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            db.channel_conn()
+                .unwrap()
+                .execute_batch("DROP TRIGGER refuse_wecom_send")
+                .unwrap();
+            let request = uuid::Uuid::now_v7().to_string();
+            let claimed = db
+                .claim_wecom_delivery_recorded(2, &request)
+                .unwrap()
+                .unwrap();
+            assert_eq!(claimed.id, pending.id);
+            assert_eq!(claimed.attempts, 1);
+            let reservation = db
+                .get_wecom_reservation("wwfixture:1", &claimed.id, 1)
+                .unwrap()
+                .unwrap();
+            assert_eq!(reservation.reserved_ms, 2);
+            assert_eq!(reservation.settled_ms, None);
+            let operation:(String,String,String,u32)=db.channel_conn().unwrap().query_row("SELECT kind,event_id,delivery_id,attempt FROM gateway_wecom_operations WHERE request_id=?1",[&request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+            assert_eq!(operation, ("delivery".into(), event.id, claimed.id, 1));
+        }
+    }
+
+    #[test]
+    fn recorded_wecom_recovery_keeps_unknown_quota_and_never_claims_the_send_or_next_part_again() {
+        let root =
+            std::env::temp_dir().join(format!("jiaclaw-recorded-wecom-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state.sqlite3");
+        let mut db = SessionStore::open(&path).unwrap();
+        recorded_wecom_ledgers(&db);
+        let event = complete_wecom_recorded(&mut db, "1", 0, &["first", "unsent"]);
+        let request = uuid::Uuid::now_v7().to_string();
+        let first = db
+            .claim_wecom_delivery_recorded(2, &request)
+            .unwrap()
+            .unwrap();
+        drop(db);
+        let mut db = SessionStore::open(&path).unwrap();
+        let recovery = WECOM_BUDGET_WINDOW_MS * 2;
+        assert_eq!(db.recover_channels(recovery).unwrap(), (0, 1));
+        assert_eq!(
+            db.get_channel_delivery(&first.id).unwrap().unwrap().state,
+            "unknown"
+        );
+        assert!(db
+            .has_unsettled_wecom_reservations(Some("wwfixture:1"))
+            .unwrap());
+        assert!(!db
+            .has_unsettled_wecom_reservations(Some("wwdifferent:1"))
+            .unwrap());
+        assert_eq!(
+            db.get_wecom_reservation("wwfixture:1", &first.id, 1)
+                .unwrap()
+                .unwrap()
+                .settled_ms,
+            None
+        );
+        assert!(db
+            .claim_wecom_delivery_recorded(recovery + 10, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_none());
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 2);
+        assert!(db
+            .purge_wecom_channel_event_recorded(&event.id, recovery + 11)
+            .is_err());
+        let cache: Option<String> = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT cached_state FROM gateway_wecom_operations WHERE request_id=?1",
+                [&request],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cache, None);
+        assert!(db
+            .resolve_channel_delivery(
+                &first.id,
+                "operator verified platform receipt".into(),
+                recovery + 20
+            )
+            .unwrap());
+        assert!(!db.has_unsettled_wecom_reservations(None).unwrap());
+        assert_eq!(
+            db.get_wecom_reservation("wwfixture:1", &first.id, 1)
+                .unwrap()
+                .unwrap()
+                .settled_ms,
+            Some(recovery + 20)
+        );
+        assert!(db
+            .claim_wecom_delivery_recorded(recovery + 4019, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_none());
+        let next = db
+            .claim_wecom_delivery_recorded(recovery + 4020, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        assert_ne!(next.id, first.id);
+        assert_eq!(next.ordinal, 1);
+        assert_eq!(next.attempts, 1);
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 3);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recorded_wecom_purge_snapshots_receipt_and_review_atomically_without_releasing_quota() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        let event = complete_wecom_recorded(&mut db, "1", 0, &["reply"]);
+        let request = uuid::Uuid::now_v7().to_string();
+        let send = db
+            .claim_wecom_delivery_recorded(2, &request)
+            .unwrap()
+            .unwrap();
+        delivered(&mut db, &send, 3);
+        db.cancel_channel_event(&event.id, 4).unwrap();
+        let other = complete_wecom_recorded(&mut db, "2", 5, &["later"]);
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER refuse_wecom_purge BEFORE DELETE ON channel_events BEGIN SELECT RAISE(ABORT,'fixture purge failure'); END;").unwrap();
+        assert!(db.purge_wecom_channel_event_recorded(&event.id, 6).is_err());
+        assert!(db.get_channel_event(&event.id).unwrap().is_some());
+        assert!(db.get_channel_delivery(&send.id).unwrap().is_some());
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT cached_state FROM gateway_wecom_operations WHERE request_id=?1",
+                    [&request],
+                    |r| r.get::<_, Option<String>>(0)
+                )
+                .unwrap(),
+            None
+        );
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER refuse_wecom_purge")
+            .unwrap();
+        assert!(db.purge_wecom_channel_event_recorded(&event.id, 6).unwrap());
+        assert!(db.get_channel_event(&event.id).unwrap().is_none());
+        assert!(db.get_channel_delivery(&send.id).unwrap().is_none());
+        let snapshot:(String,Option<String>,Option<i64>)=db.channel_conn().unwrap().query_row("SELECT cached_state,cached_receipt,cached_reviewed_ms FROM gateway_wecom_operations WHERE request_id=?1",[&request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(
+            snapshot,
+            (
+                "delivered".into(),
+                Some(format!("platform:{}", send.id)),
+                Some(4)
+            )
+        );
+        let snapshot:(String,Option<String>,Option<i64>)=db.channel_conn().unwrap().query_row("SELECT cached_state,cached_receipt,cached_reviewed_ms FROM gateway_wecom_operations WHERE kind='event' AND event_id=?1",[&event.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(snapshot, ("completed".into(), None, Some(4)));
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT cached_state FROM gateway_wecom_operations WHERE event_id=?1",
+                    [&other.id],
+                    |r| r.get::<_, Option<String>>(0)
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 3);
+        assert_eq!(
+            db.get_wecom_reservation("wwfixture:1", &send.id, 1)
+                .unwrap()
+                .unwrap()
+                .settled_ms,
+            Some(3)
+        );
+        assert!(
+            db.claim_wecom_event_recorded(7, &request).is_err(),
+            "body purge cannot authorize reusing a permanent send UUID"
+        );
+        assert!(db
+            .claim_wecom_delivery_recorded(4002, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_none());
+        assert!(db
+            .claim_wecom_delivery_recorded(4003, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn recorded_wecom_daily_budget_and_bounded_read_pages_use_existing_reservations() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        for n in 0..200 {
+            let now = n * 5000;
+            let _ = complete_wecom_recorded(&mut db, &(n + 1).to_string(), now, &["one"]);
+            let delivery = db
+                .claim_wecom_delivery_recorded(now + 2, &uuid::Uuid::now_v7().to_string())
+                .unwrap()
+                .unwrap();
+            delivered(&mut db, &delivery, now + 3);
+        }
+        let _ = complete_wecom_recorded(&mut db, "201", 1_000_000, &["blocked"]);
+        assert!(db
+            .claim_wecom_delivery_recorded(1_000_002, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_none());
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 401);
+        let first = db
+            .list_wecom_reservations(Some("wwfixture:1"), 100, 0)
+            .unwrap();
+        let second = db
+            .list_wecom_reservations(Some("wwfixture:1"), 100, 100)
+            .unwrap();
+        assert_eq!(first.len(), 100);
+        assert_eq!(second.len(), 100);
+        assert_ne!(first[99].delivery_id, second[0].delivery_id);
+        assert!(db
+            .list_wecom_reservations(Some("wwother:1"), 100, 0)
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .list_wecom_reservations(None, 100, 200)
+            .unwrap()
+            .is_empty());
+        assert!(db.list_wecom_reservations(None, 0, 0).is_err());
+        assert!(db.list_wecom_reservations(None, 1001, 0).is_err());
+        assert!(db.list_wecom_reservations(None, 100, 10001).is_err());
+        let public = serde_json::to_value(&first[0]).unwrap();
+        assert_eq!(public.as_object().unwrap().len(), 5);
+        assert!(public.get("prompt").is_none());
+        assert!(public.get("receipt").is_none());
+        assert!(!db.has_unsettled_wecom_reservations(None).unwrap());
+    }
+
+    #[test]
+    fn recorded_wecom_wrong_channel_duplicate_and_full_ledger_do_not_mutate_admission() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        let wrong = db.accept_channel_event(spec("wrong-channel"), 0).unwrap();
+        assert!(db
+            .claim_wecom_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&wrong.id).unwrap().unwrap().status,
+            "received"
+        );
+        let claimed = db.claim_channel_event(0).unwrap().unwrap();
+        db.complete_channel_event(&claimed.id, None, "completed", vec![], None, 0)
+            .unwrap();
+        let event = db
+            .accept_channel_event(wecom_spec("1", "alice"), 1)
+            .unwrap();
+        for id in [
+            uuid::Uuid::new_v4().to_string(),
+            "0195CA8E-0000-7000-8000-00000000000A".into(),
+        ] {
+            assert!(db.claim_wecom_event_recorded(1, &id).is_err());
+        }
+        let used = uuid::Uuid::now_v7().to_string();
+        db.channel_conn().unwrap().execute("INSERT INTO gateway_wecom_operations(request_id,kind,event_id,attempt,claimed_ms) VALUES(?1,'event',?2,1,0)",params![used,event.id]).unwrap();
+        assert!(db.claim_wecom_event_recorded(1, &used).is_err());
+        db.channel_conn().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_wecom_operations(request_id,kind,event_id,attempt,claimed_ms) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),'event',?1,1,0 FROM n",[&event.id]).unwrap();
+        assert!(db
+            .claim_wecom_event_recorded(1, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&event.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(
+            ledger_count(&db, "gateway_wecom_operations"),
+            MAX_WECOM_OPERATIONS
+        );
+        assert!(db.list_wecom_reservations(None, 10, 0).unwrap().is_empty());
+        for table in [
+            "gateway_telegram_operations",
+            "gateway_slack_operations",
+            "gateway_discord_operations",
+            "gateway_feishu_operations",
+        ] {
+            assert_eq!(ledger_count(&db, table), 0);
+        }
+    }
+    #[test]
+    fn recorded_wecom_headroom_is_atomic_through_sixteen_sends_and_duplicates_keep_their_ack() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        db.channel_conn().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15983) INSERT INTO gateway_wecom_operations(request_id,kind,event_id,attempt,claimed_ms,cached_state) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),'event','past-event',1,0,'completed' FROM n",[]).unwrap();
+        let input = wecom_spec("1", "alice");
+        let accepted = db.accept_wecom_event_recorded(input.clone(), 0).unwrap();
+        assert!(accepted.created);
+        assert!(db
+            .accept_wecom_event_recorded(wecom_spec("2", "alice"), 1)
+            .unwrap_err()
+            .downcast_ref::<ChannelCapacity>()
+            .is_some());
+        assert!(
+            !db.accept_wecom_event_recorded(input.clone(), 1)
+                .unwrap()
+                .created
+        );
+        let mut drift = input.clone();
+        drift.fingerprint = "a".repeat(64);
+        assert!(db
+            .accept_wecom_event_recorded(drift, 1)
+            .unwrap_err()
+            .downcast_ref::<ChannelConflict>()
+            .is_some());
+        let event = db
+            .claim_wecom_event_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.id, accepted.id);
+        assert!(db
+            .accept_wecom_event_recorded(wecom_spec("2", "alice"), 3)
+            .is_err());
+        assert!(db
+            .complete_wecom_event_recorded(
+                &event.id,
+                None,
+                "completed",
+                (0..16).map(|n| format!("part {n}")).collect(),
+                None,
+                3
+            )
+            .unwrap());
+        assert!(db
+            .accept_wecom_event_recorded(wecom_spec("2", "alice"), 4)
+            .is_err());
+        for n in 0..16 {
+            let now = 10 + n * 5000;
+            let delivery = db
+                .claim_wecom_delivery_recorded(now, &uuid::Uuid::now_v7().to_string())
+                .unwrap()
+                .unwrap();
+            assert_eq!(delivery.ordinal, u32::try_from(n).unwrap());
+            delivered(&mut db, &delivery, now + 1);
+            assert!(db
+                .accept_wecom_event_recorded(wecom_spec("2", "alice"), now + 2)
+                .is_err());
+        }
+        assert_eq!(
+            ledger_count(&db, "gateway_wecom_operations"),
+            MAX_WECOM_OPERATIONS
+        );
+        assert!(
+            !db.accept_wecom_event_recorded(input, 100_000)
+                .unwrap()
+                .created
+        );
+        assert!(db
+            .claim_wecom_delivery_recorded(100_001, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert!(db
+            .list_channel_events(100, 0)
+            .unwrap()
+            .iter()
+            .all(|e| e.spec.event_id != "2"));
+    }
+
+    #[test]
+    fn recorded_wecom_completion_bound_rejects_partial_commit_without_restricting_standalone() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        let accepted = db
+            .accept_wecom_event_recorded(wecom_spec("1", "alice"), 0)
+            .unwrap();
+        db.claim_wecom_event_recorded(1, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        assert!(db
+            .complete_wecom_event_recorded(
+                &accepted.id,
+                Some(("channel:room".into(), history("must roll back"))),
+                "completed",
+                vec!["part".into(); 17],
+                None,
+                2
+            )
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+            "processing"
+        );
+        assert!(db
+            .list_channel_deliveries(Some(&accepted.id), 100, 0)
+            .unwrap()
+            .is_empty());
+        assert!(db.get("channel:room").unwrap().is_none());
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 1);
+        assert!(db
+            .complete_wecom_event_recorded(
+                &accepted.id,
+                None,
+                "completed",
+                vec!["part".into(); 16],
+                None,
+                3
+            )
+            .unwrap());
+        // Existing standalone applications keep their original 100-part bound.
+        let standalone = complete(&mut db, wecom_spec("standalone", "bob"), &["one"]);
+        assert!(db.get_channel_event(&standalone).unwrap().is_some());
+        let accepted = db
+            .accept_channel_event(wecom_spec("standalone-many", "bob"), 4)
+            .unwrap();
+        db.claim_channel_event(4).unwrap().unwrap();
+        assert!(db
+            .complete_channel_event(
+                &accepted.id,
+                None,
+                "completed",
+                vec!["part".into(); 100],
+                None,
+                5
+            )
+            .unwrap());
+        let wrong = db.accept_channel_event(spec("telegram"), 6).unwrap();
+        db.claim_channel_event(6).unwrap().unwrap();
+        assert!(db
+            .complete_wecom_event_recorded(
+                &wrong.id,
+                None,
+                "completed",
+                vec!["part".into()],
+                None,
+                7
+            )
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&wrong.id).unwrap().unwrap().status,
+            "processing"
+        );
+    }
+
+    #[test]
+    fn recorded_wecom_received_queue_reserves_lifetime_capacity_before_any_model_claim() {
+        let mut db = database();
+        recorded_wecom_ledgers(&db);
+        for n in 1..=941 {
+            assert!(
+                db.accept_wecom_event_recorded(wecom_spec(&n.to_string(), "alice"), 0)
+                    .unwrap()
+                    .created
+            );
+        }
+        assert_eq!(ledger_count(&db, "gateway_wecom_operations"), 0);
+        assert!(db
+            .accept_wecom_event_recorded(wecom_spec("942", "alice"), 1)
+            .unwrap_err()
+            .downcast_ref::<ChannelCapacity>()
+            .is_some());
+        assert!(
+            !db.accept_wecom_event_recorded(wecom_spec("941", "alice"), 1)
+                .unwrap()
+                .created
+        );
+        assert_eq!(
+            db.channel_conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM channel_events", [], |r| r
+                    .get::<_, usize>(0))
+                .unwrap(),
+            941
+        );
     }
 }

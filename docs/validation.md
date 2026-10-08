@@ -484,6 +484,40 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 旧 WeCom 新维护 helper 初次错误地要求 scheduler-disabled DTO 含 `state`，实际既有合同在 scheduler.enabled=false 时返回精确 HTTP 404，导致 KeyError。仅修正测试断言为 404，正式完整旧 WeCom 一次通过；没有新增 DTO、改变服务语义或延长生产/fixture 超时。
 
-本提交准备时最终跨平台 CI pending，固定 head 结果以本批 draft PR 为准，交付核对后于下批文档回填，避免为记录自身 SHA 循环提交；不猜 PR 编号或用飞书 final CI 替代本批证据。校验失败拒绝整个服务，坏 Secret 不会开放 HTTP 诊断；上述维护配置与请求终止/人工核对是不同层次。
+原启动门槛提交准备时跨平台 CI pending，未猜 PR 编号或以飞书 CI 替代；下方已回填 PR #86 的最终固定提交结果，避免为记录自身 SHA 循环提交。校验失败拒绝整个服务，坏 Secret 不会开放 HTTP 诊断；上述维护配置与请求终止/人工核对是不同层次。
 
 本批不改变未知发送人工核对、200 个预留/24 小时/4 秒额度或独立重复消息语义；不增加独立用户企业微信 registry/后端 owner、私有队列与后台准入，不计为完整 tenant WeCom。真实生产 API、企业认证、动态可见范围/成员许可、可信出口 IP、公开 TLS/客户端收发、运行期 token 到期刷新、容器渠道 runtime 压力及供应商认证仍未完成。
+
+2026-10-08 12:56 UTC 回填：[PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027) completed/success，无 review/thread。
+
+| 作业 | 最终固定提交结果 |
+|---|---|
+| [macOS 113307363149](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363149) | SUCCESS；新增 wecom_startup 与既有 wecom 及该平台全部强制步骤通过 |
+| [Ubuntu 113307363413](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363413) | SUCCESS；新启动/旧渠道、全部强制回归、Chromium 与真实 Docker 步骤通过 |
+| [container 113307363064](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363064) | SUCCESS；原镜像/私网限额卷范围通过，不含本批之后的独立用户 WeCom runtime |
+
+## 独立用户企业微信批次
+
+本批基于 PR #86 上述固定 head。12:56 UTC 官方 GitHub API 核对 PR #58–#86：均 OPEN draft，各自当前 head 检查 SUCCESS，无 review/thread。StateKnot main `04567c4db12553025b4d31330693f4958222c30f` 十二项成功，#152 已合并七种空 tagged execution wire 严格读取；合法 wire/schema pins 不变、未发布，当前精确 alpha.1 HTTP MCP 不消费这些读取器，不需要升级。release/#140 未变化。Brokerrouter main/#31/#41/PR #40 未变化，十二项 FAILURE 的全部 annotations 均为付款/额度导致未启动，无执行代码失败或新 durable 输出合同；没有新/重复 issue。
+
+实际接线为 registry schema7 的 CorpID/AgentID/精确成员/用户终身绑定、protocol5 后端永久 owner、每绑定私有队列、XML/AES 原始回调持久准入、共享用户授权/hold/容量与原UUID账本。启动先打开/迁移普通 registry，官方安装证明通过后才打开 WeCom 私库/握手；不承诺启动前所有本地文件零写入。发送原请求与NULL额度保持未知结果、不自动重放，停机管理在缺失 runtime/Secret 或永久撤销后仍核对保留 owner/额度。
+
+新 `tests/tenant_wecom.py` 使用同企业两个不同专用应用、真实双后端、原生 Brokerrouter native tools、本地官方形状 HTTP 和独立 OpenSSL，最终冻结artifact十组已全部通过；第一组实际验证partial-body超时/安装间槽隔离及原始后端DTO数组/重复字段/unknown负例、同一合法已绑定owner的单一MIME正例与JSON+text/JSON+JSON重复头负例。永久16000操作 headroom 为每消息预留一次模型及最多16次单尝试发送，空新库最多941条未执行消息；整机根据停止后的真实既有 metadata 计算剩余名额，不改时钟/hold/额度或SQL伪造满额。写锁用例只接受503 admission_failed/ingress_deadline，保持真实锁到网关实际退出排空，再核对完整状态、零新增效果及重启后原身份不变。
+
+首轮通过安装组并完成真实 native basic 回复后，测试错误地读取 events 顶层 event_id，实际 DTO 位于 spec.event_id，导致 KeyError；仅修四处测试读取。第二轮通过前六组，在 actual POST 后 SIGKILL 用例错误要求 wecom-inspect 之后仍为 submitting；管理打开会恢复为 unknown。已改为**任何 inspect 前**先用非创建、WAL-aware、query_only 且立即关闭的停止进程数据库快照证明真实 submitting/in_flight/NULL额度，再核对维护转换 unknown/needs_review 且原UUID/额度不变。独立 review 同时修正未执行到的 bindings DTO 为顶层 `bindings` 数组。这些是观察/DTO 断言错误，不是生产语义或期限变更；被沙箱拒绝的 loopback 初始化没有执行任何验收组。
+
+源码审查另发现实际永久操作 headroom 不足可能永久停滞，以及异 owner 的WAL打开可能在拒绝前生成sidecar；最终生产事务预留及immutable主文件 owner 前置读取已按完整源码测试通过；immutable只用于已固定主文件的application/schema/owner证明，不读取队列/额度或执行恢复，正式queue/quota/recovery仍使用完整WAL。测试停止进程观察也保持WAL-aware，不用immutable掩盖真实提交；私有后端共用body读取最初仅检查首个Content-Type，已收紧唯一JSON MIME，并用合法已绑定owner正例与重复头负例通过验证，不能以无效DTO掩盖头检查。新增 parser 测试编译初次把无serde feature的Uuid交给json!，已仅改测试为规范字符串，不改变依赖或生产。修订后 preliminary 二进制十组完整通过：按真实历史 metadata 计算准入940条新身份，下一条精确queue_full，满额原MsgId仍ACK。该artifact在最后owner/receipt补强前，不作为最终源码认证。首份默认并行Rust快照1153项（373/123/657）通过；追加owner/receipt测试后的第三份默认并行快照1157项（373/123/661）全部通过。中间第二份全量在旧Slack测试出现一次EAGAIN，随后目标单独执行及第三份完整默认并行执行通过；具体原因未确定，不把重跑成功写成生产缺陷已修复，没有修改生产/fixture期限。以上属于中间快照，最终整批数字如下，不以旧快照代替MIME等最后源码验收。
+
+最终源码完成完整Rust/格式/静态检查/构建，整机使用同一冻结生产artifact，未延长生产/fixture期限：
+
+| 验证 | 最终结果/范围 |
+|---|---|
+| 默认并行完整workspace Rust | 1158项（library373/core123/host662）全部通过，157.95秒；既有真实Docker一项本机ignored，由Linux CI另验 |
+| fmt / required Clippy / locked build | 全部通过，分别1.06 / 21.86 / 24.59秒；Clippy必需correctness/suspicious通过，不将既有style warnings说成零告警 |
+| 冻结生产二进制 | SHA256 `ac8da42d9c066b7ea9212c1e32733cde4c9459d7828a5acec444b1e6fcf5f58d`，fixture前后保持不变 |
+| 新tenant_wecom整机 | 十组一次全部通过，exit0、143.05秒；fixture SHA256 `341726b8fa524d7d053aef6399cc1a6ace4506b2844ba8e845252dac1698430b`；日志SHA256 `85c2ca33cc056eed213153a73311a5fc656b89a7444e55b45855181abf11da2e` |
+| 既有进程回归 / 最终CI | 提交准备时21套回归仍独立运行，尚不声称全部通过；本批draft PR保存最终固定head的完整结果，下一批回填 |
+
+新十组的最终源码证据包含真实模型POST/平台POST后的SIGKILL原UUID核对、维护前submitting/in_flight/NULL快照及恢复后unknown/needs_review、物理移除全部安装凭据的离线核对、purge后metadata/额度相同、user-disable和不可逆撤销、完整Unicode渲染与4秒间隔，以及真实写锁保持到网关退出后核对零新增效果。最终库历史仅剩940条可预留新身份，全部实际加密准入、下一条精确queue_full、原MsgId重复仍200，未编辑时钟/额度/hold或假造满额。
+
+真实生产安装/许可/动态可见范围、公开TLS与终端收发、正常token到期刷新、接收额度及共享卷/容器runtime压力、付费供应商联合认证仍未完成。公开指南见[独立用户企业微信](tenant-wecom.md)；本提交准备时最终CI pending，以本批draft PR固定head为准，后续批次回填，不用PR #86旧范围代替此批交付。

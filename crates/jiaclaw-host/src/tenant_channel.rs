@@ -449,6 +449,7 @@ enum BackendProtocol {
     Slack,
     Discord,
     Feishu,
+    Wecom,
 }
 impl BackendProtocol {
     fn protocol(self) -> u8 {
@@ -456,6 +457,7 @@ impl BackendProtocol {
             Self::Slack => 2,
             Self::Discord => 3,
             Self::Feishu => 4,
+            Self::Wecom => 5,
         }
     }
     fn request_table(self) -> &'static str {
@@ -463,6 +465,7 @@ impl BackendProtocol {
             Self::Slack => "gateway_slack_backend_requests",
             Self::Discord => "gateway_discord_backend_requests",
             Self::Feishu => "gateway_feishu_backend_requests",
+            Self::Wecom => "gateway_wecom_backend_requests",
         }
     }
     fn session(self, binding: &str) -> String {
@@ -470,6 +473,7 @@ impl BackendProtocol {
             Self::Slack => format!("slack:{binding}"),
             Self::Discord => format!("discord:{binding}"),
             Self::Feishu => format!("feishu:{binding}"),
+            Self::Wecom => format!("wecom:{binding}"),
         }
     }
     fn event_valid(self, event: &str) -> bool {
@@ -477,6 +481,7 @@ impl BackendProtocol {
             Self::Slack => slack_event_id(event),
             Self::Discord => discord_id(event),
             Self::Feishu => super::outbound::feishu_id(event, "om_"),
+            Self::Wecom => wecom_event_id(event),
         }
     }
     fn capacity(self) -> usize {
@@ -484,6 +489,7 @@ impl BackendProtocol {
             Self::Slack => super::channel_store::MAX_SLACK_OPERATIONS,
             Self::Discord => super::channel_store::MAX_DISCORD_OPERATIONS,
             Self::Feishu => super::channel_store::MAX_FEISHU_OPERATIONS,
+            Self::Wecom => super::channel_store::MAX_WECOM_OPERATIONS,
         }
     }
 }
@@ -495,7 +501,8 @@ impl PrivateChannelRequest {
                 id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122
             })
             || canonical_id(&self.binding_id).is_none()
-            || (matches!(channel, BackendProtocol::Feishu) && !feishu_uuid(&self.binding_id))
+            || (matches!(channel, BackendProtocol::Feishu | BackendProtocol::Wecom)
+                && !owner_uuid(&self.binding_id))
             || self.session_id != channel.session(&self.binding_id)
             || !channel.event_valid(&self.event_id)
             || self.prompt.trim().is_empty()
@@ -522,6 +529,7 @@ pub(super) struct PrivateChannelReceipt {
 pub(super) type SlackReceipt = PrivateChannelReceipt;
 pub(super) type DiscordReceipt = PrivateChannelReceipt;
 pub(super) type FeishuReceipt = PrivateChannelReceipt;
+pub(super) type WecomReceipt = PrivateChannelReceipt;
 
 impl super::store::SessionStore {
     fn slack_binding(&self) -> Result<Option<SlackBinding>> {
@@ -598,6 +606,13 @@ impl super::store::SessionStore {
                 .transpose(),
             BackendProtocol::Feishu => self
                 .feishu_binding()?
+                .map(|binding| {
+                    binding.validate(backend)?;
+                    Ok(binding.binding_id)
+                })
+                .transpose(),
+            BackendProtocol::Wecom => self
+                .wecom_binding()?
                 .map(|binding| {
                     binding.validate(backend)?;
                     Ok(binding.binding_id)
@@ -718,11 +733,14 @@ async fn json_bytes(
             "query parameters are not supported".into(),
         ));
     }
-    let mime = headers
-        .get(header::CONTENT_TYPE)
+    let mut content_types = headers.get_all(header::CONTENT_TYPE).iter();
+    let mime = content_types
+        .next()
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next());
-    if !mime.is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json")) {
+    if !mime.is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        || content_types.next().is_some()
+    {
         return Err(AppError::BadRequest("JSON content type required".into()));
     }
     let limit = super::max_body_bytes_usize(state.agent.config().http.effective_max_body_bytes())
@@ -807,6 +825,14 @@ pub(super) async fn feishu_chat(
     request: Request,
 ) -> Result<Json<ChannelResponse>, AppError> {
     private_chat(State(state), headers, request, BackendProtocol::Feishu).await
+}
+
+pub(super) async fn wecom_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Json<ChannelResponse>, AppError> {
+    private_chat(State(state), headers, request, BackendProtocol::Wecom).await
 }
 
 async fn private_chat(
@@ -1148,7 +1174,7 @@ pub(super) struct FeishuBinding {
     chat_id: String,
 }
 
-fn feishu_uuid(raw: &str) -> bool {
+fn owner_uuid(raw: &str) -> bool {
     canonical_id(raw).is_some_and(|id| id.get_variant() == uuid::Variant::RFC4122)
 }
 impl FeishuBinding {
@@ -1158,7 +1184,7 @@ impl FeishuBinding {
             "Feishu backend protocol or identity mismatch"
         );
         ensure!(
-            feishu_uuid(&self.binding_id) && feishu_uuid(&self.user_id),
+            owner_uuid(&self.binding_id) && owner_uuid(&self.user_id),
             "canonical Feishu owner UUIDs required"
         );
         // Reuse the application/tenant installation contract used by the
@@ -1294,6 +1320,203 @@ pub(super) async fn feishu_receipt(
         with_sessions(&state, move |store| {
             let _permit = permit;
             store.private_backend_receipt(&request_id, &backend, BackendProtocol::Feishu)
+        }),
+    )
+    .await
+    .map_err(|_| AppError::ChannelUnavailable)??
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(receipt))
+}
+
+// Wecom owns an independent ledger in the same tenant session database.
+// Binding identities are permanent. A new owner cannot adopt old requests
+// or replace another tenant, enterprise, app or member.
+const WECOM_BINDING_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS gateway_wecom_backend_binding (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ identity TEXT NOT NULL CHECK(json_valid(identity))
+);
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_binding_immutable_insert BEFORE INSERT ON gateway_wecom_backend_binding
+ WHEN EXISTS(SELECT 1 FROM gateway_wecom_backend_binding)
+ BEGIN SELECT RAISE(ABORT,'Wecom backend owner is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_binding_immutable_update BEFORE UPDATE ON gateway_wecom_backend_binding
+ BEGIN SELECT RAISE(ABORT,'Wecom backend owner is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_binding_immutable_delete BEFORE DELETE ON gateway_wecom_backend_binding
+ BEGIN SELECT RAISE(ABORT,'Wecom backend owner is immutable'); END;
+CREATE TABLE IF NOT EXISTS gateway_wecom_backend_requests (
+ request_id TEXT PRIMARY KEY NOT NULL,
+ binding_id TEXT NOT NULL,
+ event_id TEXT NOT NULL UNIQUE,
+ session_id TEXT NOT NULL,
+ prompt_sha256 BLOB NOT NULL CHECK(length(prompt_sha256)=32),
+ status TEXT NOT NULL CHECK(status IN ('admitted','completed'))
+);
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_requests_immutable_insert BEFORE INSERT ON gateway_wecom_backend_requests
+ WHEN EXISTS(SELECT 1 FROM gateway_wecom_backend_requests WHERE request_id=NEW.request_id OR event_id=NEW.event_id)
+ BEGIN SELECT RAISE(ABORT,'Wecom request identity is already admitted'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_requests_immutable_update BEFORE UPDATE ON gateway_wecom_backend_requests
+ WHEN NEW.request_id<>OLD.request_id OR NEW.binding_id<>OLD.binding_id OR NEW.event_id<>OLD.event_id OR NEW.session_id<>OLD.session_id OR NEW.prompt_sha256<>OLD.prompt_sha256 OR OLD.status='completed'
+ BEGIN SELECT RAISE(ABORT,'Wecom request identity and completed receipt are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS gateway_wecom_backend_requests_immutable_delete BEFORE DELETE ON gateway_wecom_backend_requests
+ BEGIN SELECT RAISE(ABORT,'Wecom request identity is permanent'); END;";
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WecomBinding {
+    protocol: u8,
+    binding_id: String,
+    user_id: String,
+    backend_id: String,
+    corp_id: String,
+    agent_id: String,
+    human_user_id: String,
+}
+
+fn wecom_event_id(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 20
+        && raw
+            .parse::<u64>()
+            .ok()
+            .is_some_and(|id| id != 0 && id.to_string() == raw)
+}
+
+impl WecomBinding {
+    fn validate(&self, backend: &str) -> Result<()> {
+        ensure!(
+            self.protocol == 5 && self.backend_id == backend && !backend.is_empty(),
+            "Wecom backend protocol or identity mismatch"
+        );
+        ensure!(
+            owner_uuid(&self.binding_id) && owner_uuid(&self.user_id),
+            "canonical Wecom owner UUIDs required"
+        );
+        super::wecom::validate_installation(&format!("{}:{}", self.corp_id, self.agent_id))?;
+        ensure!(
+            super::wecom::user_id(&self.human_user_id),
+            "canonical Wecom member required"
+        );
+        Ok(())
+    }
+}
+
+impl super::store::SessionStore {
+    fn wecom_binding(&self) -> Result<Option<WecomBinding>> {
+        let Self::Sqlite { conn, .. } = self else {
+            anyhow::bail!("Wecom backend requires SQLite")
+        };
+        let present: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='gateway_wecom_backend_binding')", [], |row| row.get(0))?;
+        if !present {
+            return Ok(None);
+        }
+        let raw: Option<String> = conn.query_row("SELECT CASE WHEN length(CAST(identity AS BLOB))<=4096 THEN identity ELSE NULL END FROM gateway_wecom_backend_binding WHERE id=1", [], |row| row.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
+            .transpose()
+    }
+    fn bind_wecom_backend(&mut self, binding: &WecomBinding) -> Result<bool> {
+        binding.validate(&binding.backend_id)?;
+        let Self::Sqlite { conn, .. } = self else {
+            anyhow::bail!("Wecom backend requires SQLite")
+        };
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(WECOM_BINDING_SCHEMA)?;
+        let existing: Option<String> = tx.query_row("SELECT CASE WHEN length(CAST(identity AS BLOB))<=4096 THEN identity ELSE NULL END FROM gateway_wecom_backend_binding WHERE id=1", [], |row| row.get(0)).optional()?;
+        if let Some(existing) = existing {
+            let existing: WecomBinding = serde_json::from_str(&existing)?;
+            let matches = existing == *binding;
+            tx.commit()?;
+            return Ok(matches);
+        }
+        let records: usize = tx.query_row(
+            "SELECT count(*) FROM gateway_wecom_backend_requests",
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            records == 0,
+            "Wecom backend ledger exists without its permanent owner"
+        );
+        tx.execute(
+            "INSERT INTO gateway_wecom_backend_binding(id,identity) VALUES(1,?1)",
+            [serde_json::to_string(binding)?],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+}
+
+pub(super) async fn wecom_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Json<Value>, AppError> {
+    let Json(mut value) = status(State(state), headers, uri).await?;
+    value["protocol"] = json!(5);
+    Ok(Json(value))
+}
+
+pub(super) async fn wecom_bind(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Json<WecomBinding>, AppError> {
+    authorize(&state, &headers)?;
+    let permit = state
+        .tenant_control_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::ChannelUnavailable)?;
+    let bytes = json_bytes(&state, &headers, request, 4096).await?;
+    let binding: WecomBinding = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("invalid Wecom binding JSON or fields".into()))?;
+    binding
+        .validate(&state.agent.config().name)
+        .map_err(|_| AppError::BadRequest("invalid Wecom backend or application binding".into()))?;
+    let owner = binding.clone();
+    let bound = tokio::time::timeout(
+        COMMIT_TIMEOUT,
+        with_sessions(&state, move |store| {
+            let _permit = permit;
+            store.bind_wecom_backend(&owner)
+        }),
+    )
+    .await
+    .map_err(|_| AppError::ChannelUnavailable)??;
+    if !bound {
+        return Err(AppError::JobConflict(
+            "Wecom backend is permanently owned by a different binding".into(),
+        ));
+    }
+    Ok(Json(binding))
+}
+
+pub(super) async fn wecom_receipt(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    uri: Uri,
+) -> Result<Json<WecomReceipt>, AppError> {
+    authorize(&state, &headers)?;
+    if uri.query().is_some()
+        || !canonical_id(&request_id).is_some_and(|id| {
+            id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122
+        })
+    {
+        return Err(AppError::BadRequest(
+            "canonical UUIDv7 request ID without query required".into(),
+        ));
+    }
+    let permit = state
+        .tenant_control_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::ChannelUnavailable)?;
+    let backend = state.agent.config().name.clone();
+    let receipt = tokio::time::timeout(
+        COMMIT_TIMEOUT,
+        with_sessions(&state, move |store| {
+            let _permit = permit;
+            store.private_backend_receipt(&request_id, &backend, BackendProtocol::Wecom)
         }),
     )
     .await
@@ -3849,6 +4072,600 @@ mod tests {
             binding.to_string()
         );
         assert!(fixture.requests.lock().unwrap().is_empty());
+        fixture.cleanup();
+    }
+    fn wecom_owner(binding: Uuid) -> Value {
+        json!({"protocol":5,"binding_id":binding.to_string(),"user_id":Uuid::new_v4().to_string(),"backend_id":"tenant-alice","corp_id":"wwfixture","agent_id":"1000002","human_user_id":"alice.one@example.com"})
+    }
+    fn wecom_body(binding: Uuid) -> Value {
+        json!({"protocol":5,"binding_id":binding.to_string(),"request_id":Uuid::now_v7().to_string(),"session_id":format!("wecom:{binding}"),"event_id":"18446744073709551615","prompt":"private WeCom prompt"})
+    }
+    async fn bind_wecom(state: AppState, body: Value) -> Result<Json<WecomBinding>, AppError> {
+        wecom_bind(
+            State(state),
+            headers(),
+            Request::new(Body::from(body.to_string())),
+        )
+        .await
+    }
+    async fn post_wecom(state: AppState, body: Value) -> Result<Json<ChannelResponse>, AppError> {
+        wecom_chat(
+            State(state),
+            headers(),
+            Request::new(Body::from(body.to_string())),
+        )
+        .await
+    }
+    async fn receipt_wecom(state: AppState, id: &str) -> Result<Json<WecomReceipt>, AppError> {
+        wecom_receipt(
+            State(state),
+            headers(),
+            Path(id.into()),
+            Uri::from_static("/internal/channels/wecom/requests/placeholder"),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn wecom_private_routes_reject_duplicate_content_types_before_effects() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let owner = wecom_owner(binding);
+        let router = crate::build_router(fixture.state.clone());
+        let snapshot = || {
+            let store = fixture.state.sessions.lock().unwrap();
+            let SessionStore::Sqlite { conn, .. } = &*store else {
+                unreachable!()
+            };
+            conn.query_row(
+                "SELECT total_changes(), (SELECT count(*) FROM sqlite_schema WHERE name LIKE 'gateway_wecom_backend_%')",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap()
+        };
+        for (bind, body) in [(true, owner.clone()), (false, wecom_body(binding))] {
+            if !bind {
+                // A valid owner makes the execute request otherwise admissible.
+                let _ = bind_wecom(fixture.state.clone(), owner.clone())
+                    .await
+                    .unwrap();
+            }
+            let before = snapshot();
+            let control_permits = fixture.state.tenant_control_permits.available_permits();
+            let execution_permits = fixture.state.gateway_channel_permit.available_permits();
+            for duplicate in ["text/plain", "application/json"] {
+                for authorized in [true, false] {
+                    let mut request = Request::builder()
+                        .method(Method::POST)
+                        .uri(if bind {
+                            "/internal/channels/wecom-binding"
+                        } else {
+                            "/internal/channels/wecom/execute"
+                        })
+                        .body(Body::from(body.to_string()))
+                        .unwrap();
+                    *request.headers_mut() = headers();
+                    request
+                        .headers_mut()
+                        .append(header::CONTENT_TYPE, duplicate.parse().unwrap());
+                    if !authorized {
+                        request.headers_mut().insert(
+                            header::AUTHORIZATION,
+                            "Bearer invalid-fixture-token".parse().unwrap(),
+                        );
+                    }
+                    let response = router.clone().oneshot(request).await.unwrap();
+                    assert_eq!(
+                        response.status(),
+                        if authorized {
+                            StatusCode::BAD_REQUEST
+                        } else {
+                            StatusCode::UNAUTHORIZED
+                        }
+                    );
+                    assert_eq!(snapshot(), before, "rejection changed SQLite state");
+                    assert_eq!(
+                        fixture.state.tenant_control_permits.available_permits(),
+                        control_permits
+                    );
+                    assert_eq!(
+                        fixture.state.gateway_channel_permit.available_permits(),
+                        execution_permits
+                    );
+                    assert!(fixture.requests.lock().unwrap().is_empty());
+                }
+            }
+            if bind {
+                assert!(fixture
+                    .state
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .wecom_binding()
+                    .unwrap()
+                    .is_none());
+            } else {
+                assert!(fixture
+                    .state
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .private_backend_receipt(
+                        body["request_id"].as_str().unwrap(),
+                        "tenant-alice",
+                        BackendProtocol::Wecom,
+                    )
+                    .unwrap()
+                    .is_none());
+            }
+        }
+        drop(router);
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
+    async fn wecom_routes_authenticate_before_shape_io_and_keep_canonical_identity_contract() {
+        let fixture = Fixture::new().await;
+        let routes = [
+            (Method::GET, "/internal/channels/wecom/status"),
+            (Method::POST, "/internal/channels/wecom-binding"),
+            (Method::POST, "/internal/channels/wecom/execute"),
+            (
+                Method::GET,
+                "/internal/channels/wecom/requests/0195ca8e-0000-7000-8000-00000000000a",
+            ),
+        ];
+        let router = crate::build_router(fixture.state.clone());
+        for (method, path) in routes.clone() {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("{path}?bad=1"))
+                        .body(Body::from("not JSON"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        drop(router);
+        let mut closed = fixture.state.clone();
+        let mut config = closed.agent.config().clone();
+        config.http.gateway_channel_chat = false;
+        closed.agent = Arc::new(JiaClawAgent::new(config).unwrap());
+        let router = crate::build_router(closed);
+        for (method, path) in routes {
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(Body::empty())
+                            .unwrap()
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        drop(router);
+        assert_eq!(
+            wecom_status(
+                State(fixture.state.clone()),
+                headers(),
+                Uri::from_static("/internal/channels/wecom/status")
+            )
+            .await
+            .unwrap()
+            .0,
+            json!({"protocol":5,"backend_id":"tenant-alice","max_run_seconds":120,"tools":TOOLS,"mode":"gateway"})
+        );
+        let binding = Uuid::new_v4();
+        let owner = wecom_owner(binding);
+        for (field, value) in [
+            ("protocol", json!(4)),
+            ("binding_id", json!(Uuid::nil().to_string())),
+            ("user_id", json!("0195ca8e-0000-7000-0000-000000000001")),
+            ("backend_id", json!("other-tenant")),
+            ("corp_id", json!("ww:a")),
+            ("agent_id", json!("01000002")),
+            ("agent_id", json!(1_000_002)),
+            ("agent_id", json!("0")),
+            ("agent_id", json!("2147483648")),
+            ("human_user_id", json!("Alice")),
+            ("human_user_id", json!("@all")),
+            ("enabled_tools", json!(["exec"])),
+        ] {
+            let mut invalid = owner.clone();
+            invalid[field] = value;
+            assert!(
+                matches!(
+                    bind_wecom(fixture.state.clone(), invalid).await,
+                    Err(AppError::BadRequest(_))
+                ),
+                "{field}"
+            );
+        }
+        for raw in [
+            "[]".into(),
+            format!(
+                "{},\"agent_id\":\"1000002\"}}",
+                owner.to_string().trim_end_matches('}')
+            ),
+        ] {
+            assert!(matches!(
+                wecom_bind(
+                    State(fixture.state.clone()),
+                    headers(),
+                    Request::new(Body::from(raw))
+                )
+                .await,
+                Err(AppError::BadRequest(_))
+            ));
+        }
+        assert!(fixture
+            .state
+            .sessions
+            .lock()
+            .unwrap()
+            .wecom_binding()
+            .unwrap()
+            .is_none());
+        let _ = bind_wecom(fixture.state.clone(), owner.clone())
+            .await
+            .unwrap();
+        let body = wecom_body(binding);
+        for (field, value) in [
+            ("protocol", json!(4)),
+            ("binding_id", json!("0195ca8e-0000-7000-0000-000000000001")),
+            ("request_id", json!(Uuid::new_v4().to_string())),
+            ("session_id", json!(format!("feishu:{binding}"))),
+            ("event_id", json!("0")),
+            ("event_id", json!("01")),
+            ("event_id", json!("+1")),
+            ("event_id", json!("18446744073709551616")),
+            ("event_id", json!(" 1")),
+            ("event_id", json!(1)),
+            ("prompt", json!(" \n")),
+            ("prompt", json!("a".repeat(MAX_PROMPT_BYTES + 1))),
+            ("corp_id", json!("wwother")),
+        ] {
+            let mut invalid = body.clone();
+            invalid[field] = value;
+            assert!(
+                matches!(
+                    post_wecom(fixture.state.clone(), invalid).await,
+                    Err(AppError::BadRequest(_))
+                ),
+                "{field}"
+            );
+        }
+        for raw in [
+            "[]".into(),
+            format!(
+                "{},\"event_id\":\"1\"}}",
+                body.to_string().trim_end_matches('}')
+            ),
+        ] {
+            assert!(matches!(
+                wecom_chat(
+                    State(fixture.state.clone()),
+                    headers(),
+                    Request::new(Body::from(raw))
+                )
+                .await,
+                Err(AppError::BadRequest(_))
+            ));
+        }
+        for (bind, value) in [(true, owner), (false, body)] {
+            let path = if bind {
+                "/internal/channels/wecom-binding?bad=1"
+            } else {
+                "/internal/channels/wecom/execute?bad=1"
+            };
+            let request = Request::builder()
+                .uri(path)
+                .body(Body::from(value.to_string()))
+                .unwrap();
+            let result = if bind {
+                wecom_bind(State(fixture.state.clone()), headers(), request)
+                    .await
+                    .map(|_| ())
+            } else {
+                wecom_chat(State(fixture.state.clone()), headers(), request)
+                    .await
+                    .map(|_| ())
+            };
+            assert!(matches!(result, Err(AppError::BadRequest(_))));
+        }
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        assert_eq!(fixture.state.gateway_channel_permit.available_permits(), 1);
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
+    async fn wecom_permanent_complete_owner_coexists_and_cannot_be_adopted_after_reopen() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let owner = wecom_owner(binding);
+        let _ = bind_slack(fixture.state.clone(), slack_owner(Uuid::new_v4()))
+            .await
+            .unwrap();
+        let _ = bind_discord(fixture.state.clone(), discord_owner(Uuid::new_v4()))
+            .await
+            .unwrap();
+        let _ = bind_feishu(fixture.state.clone(), feishu_owner(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                bind_wecom(fixture.state.clone(), owner.clone())
+                    .await
+                    .unwrap()
+                    .0
+            )
+            .unwrap(),
+            owner
+        );
+        let _ = bind_wecom(fixture.state.clone(), owner.clone())
+            .await
+            .unwrap();
+        for (field, value) in [
+            ("binding_id", json!(Uuid::new_v4().to_string())),
+            ("user_id", json!(Uuid::new_v4().to_string())),
+            ("corp_id", json!("wwother")),
+            ("agent_id", json!("1000003")),
+            ("human_user_id", json!("bob")),
+        ] {
+            let mut changed = owner.clone();
+            changed[field] = value;
+            assert!(matches!(
+                bind_wecom(fixture.state.clone(), changed).await,
+                Err(AppError::JobConflict(_))
+            ));
+        }
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let mut reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.wecom_binding().unwrap().unwrap()).unwrap(),
+            owner
+        );
+        assert!(reopened.slack_binding().unwrap().is_some());
+        assert!(reopened.discord_binding().unwrap().is_some());
+        assert!(reopened.feishu_binding().unwrap().is_some());
+        let mut replacement: WecomBinding = serde_json::from_value(owner.clone()).unwrap();
+        replacement.human_user_id = "bob".into();
+        assert!(!reopened.bind_wecom_backend(&replacement).unwrap());
+        let SessionStore::Sqlite { conn, .. } = &reopened else {
+            panic!("SQLite")
+        };
+        assert!(conn
+            .execute("DELETE FROM gateway_wecom_backend_binding", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE gateway_wecom_backend_binding SET identity='{}'", [])
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT OR REPLACE INTO gateway_wecom_backend_binding VALUES(1,?1)",
+                [owner.to_string()]
+            )
+            .is_err());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wecom_session_and_private_metadata_receipt_commit_atomically_and_survive_restart() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_wecom(fixture.state.clone(), wecom_owner(binding))
+            .await
+            .unwrap();
+        let request = wecom_body(binding);
+        let id = request["request_id"].as_str().unwrap();
+        let response = post_wecom(fixture.state.clone(), request.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(response.protocol, 5);
+        assert_eq!(
+            response.response.session_id,
+            Some(format!("wecom:{binding}"))
+        );
+        let expected = json!({"protocol":5,"backend_id":"tenant-alice","binding_id":binding.to_string(),"request_id":id,"event_id":"18446744073709551615","session_id":format!("wecom:{binding}"),"status":"completed"});
+        assert_eq!(
+            serde_json::to_value(receipt_wecom(fixture.state.clone(), id).await.unwrap().0)
+                .unwrap(),
+            expected
+        );
+        for changed in [
+            request.clone(),
+            {
+                let mut r = request.clone();
+                r["request_id"] = json!(Uuid::now_v7().to_string());
+                r
+            },
+            {
+                let mut r = request.clone();
+                r["event_id"] = json!("1");
+                r["prompt"] = json!("changed text");
+                r
+            },
+        ] {
+            assert!(matches!(
+                post_wecom(fixture.state.clone(), changed).await,
+                Err(AppError::JobConflict(_))
+            ));
+        }
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                reopened
+                    .private_backend_receipt(id, "tenant-alice", BackendProtocol::Wecom)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            reopened
+                .get(&format!("wecom:{binding}"))
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+        assert!(reopened
+            .private_backend_receipt(id, "other-tenant", BackendProtocol::Wecom)
+            .is_err());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wecom_failed_session_commit_retains_permanent_admission_and_no_partial_result() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_wecom(fixture.state.clone(), wecom_owner(binding))
+            .await
+            .unwrap();
+        {
+            let store = fixture.state.sessions.lock().unwrap();
+            let SessionStore::Sqlite { conn, .. } = &*store else {
+                panic!("SQLite")
+            };
+            conn.execute_batch("CREATE TRIGGER reject_wecom_result BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'fixture transaction failure'); END;").unwrap();
+        }
+        let request = wecom_body(binding);
+        let id = request["request_id"].as_str().unwrap();
+        assert!(post_wecom(fixture.state.clone(), request.clone())
+            .await
+            .is_err());
+        assert_eq!(
+            receipt_wecom(fixture.state.clone(), id)
+                .await
+                .unwrap()
+                .0
+                .status,
+            "admitted"
+        );
+        assert!(fixture
+            .state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&format!("wecom:{binding}"))
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            post_wecom(fixture.state.clone(), request.clone()).await,
+            Err(AppError::JobConflict(_))
+        ));
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+        let root = fixture.root.clone();
+        fixture.server.abort();
+        drop(fixture.state);
+        let mut reopened = SessionStore::open(&root.join("sessions.sqlite3")).unwrap();
+        assert_eq!(
+            reopened
+                .private_backend_receipt(id, "tenant-alice", BackendProtocol::Wecom)
+                .unwrap()
+                .unwrap()
+                .status,
+            "admitted"
+        );
+        let parsed: PrivateChannelRequest = serde_json::from_value(request.clone()).unwrap();
+        assert!(!reopened
+            .admit_private_backend_request(&parsed, "tenant-alice", BackendProtocol::Wecom)
+            .unwrap());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wecom_permanent_request_capacity_prevents_replacement_deletion_or_orphan_adoption() {
+        let mut store = SessionStore::open(std::path::Path::new(":memory:")).unwrap();
+        let binding = Uuid::new_v4();
+        let owner: WecomBinding = serde_json::from_value(wecom_owner(binding)).unwrap();
+        store.bind_wecom_backend(&owner).unwrap();
+        let request: PrivateChannelRequest = serde_json::from_value(wecom_body(binding)).unwrap();
+        assert!(store
+            .admit_private_backend_request(&request, "tenant-alice", BackendProtocol::Wecom)
+            .unwrap());
+        let SessionStore::Sqlite { conn, .. } = &store else {
+            panic!("SQLite")
+        };
+        assert!(conn
+            .execute("DELETE FROM gateway_wecom_backend_requests", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE gateway_wecom_backend_requests SET event_id='1'", [])
+            .is_err());
+        assert!(conn.execute("INSERT OR REPLACE INTO gateway_wecom_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,'1',?3,zeroblob(32),'completed')",params![request.request_id,request.binding_id,request.session_id]).is_err());
+        conn.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_wecom_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),?1,CAST(x AS TEXT),?2,zeroblob(32),'admitted' FROM n",params![request.binding_id,request.session_id]).unwrap();
+        let mut next = request.clone();
+        next.request_id = Uuid::now_v7().to_string();
+        next.event_id = "16000".into();
+        assert!(store
+            .admit_private_backend_request(&next, "tenant-alice", BackendProtocol::Wecom)
+            .is_err());
+        assert!(store
+            .private_backend_receipt(&next.request_id, "tenant-alice", BackendProtocol::Wecom)
+            .unwrap()
+            .is_none());
+        let mut orphan = SessionStore::open(std::path::Path::new(":memory:")).unwrap();
+        let SessionStore::Sqlite { conn, .. } = &orphan else {
+            panic!("SQLite")
+        };
+        conn.execute_batch(WECOM_BINDING_SCHEMA).unwrap();
+        conn.execute("INSERT INTO gateway_wecom_backend_requests(request_id,binding_id,event_id,session_id,prompt_sha256,status) VALUES(?1,?2,'1',?3,zeroblob(32),'admitted')",params![Uuid::now_v7().to_string(),request.binding_id,request.session_id]).unwrap();
+        assert!(orphan.bind_wecom_backend(&owner).is_err());
+        assert!(orphan.wecom_binding().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn wecom_caller_cancellation_keeps_shared_slot_through_actual_result_commit() {
+        let fixture = Fixture::new().await;
+        let binding = Uuid::new_v4();
+        let _ = bind_wecom(fixture.state.clone(), wecom_owner(binding))
+            .await
+            .unwrap();
+        let request = wecom_body(binding);
+        let id = request["request_id"].as_str().unwrap().to_owned();
+        let guard = session_turn_lock(&fixture.state, &format!("wecom:{binding}")).await;
+        let state = fixture.state.clone();
+        let caller = tokio::spawn(async move { post_wecom(state, request).await });
+        wait_busy(&fixture.state).await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert_eq!(fixture.state.gateway_channel_permit.available_permits(), 0);
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        drop(guard);
+        wait_idle(&fixture.state).await;
+        assert_eq!(
+            receipt_wecom(fixture.state.clone(), &id)
+                .await
+                .unwrap()
+                .0
+                .status,
+            "completed"
+        );
+        assert_eq!(fixture.requests.lock().unwrap().len(), 1);
         fixture.cleanup();
     }
 }
