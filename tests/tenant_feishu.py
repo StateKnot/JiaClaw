@@ -1153,9 +1153,10 @@ def main():
                     time.sleep(min(.01 * 2 ** (attempt - 1), .1))
                 raise AssertionError("bounded queue admission retries exhausted")
 
-            # Occupy the actual per-binding body-reader slot, then release it
-            # after the first busy response. This exercises the retry branch
-            # without changing production state, quotas or the original signature.
+            # Hyper sends 100 Continue only when the handler polls the body,
+            # after acquiring the actual per-binding reader slot. A TCP write
+            # alone cannot synchronize a request on a different connection.
+            # Release the slot after the first queue-admission busy response.
             challenge = {"type": "url_verification", "token": VERIFICATION_TOKENS["alice"],
                          "challenge": "bounded-queue-slot-barrier"}
             challenge_raw = encoded(challenge)
@@ -1163,13 +1164,14 @@ def main():
             connection.putrequest("POST", "/hooks/feishu/" + bindings["alice"]["id"])
             connection.putheader("Content-Type", "application/json")
             connection.putheader("Content-Length", str(len(challenge_raw)))
+            connection.putheader("Expect", "100-continue")
             slot_start = time.monotonic()
-            connection.endheaders(challenge_raw[:1])
+            connection.endheaders()
             released = False
 
             def release_slot():
                 nonlocal released
-                connection.send(challenge_raw[1:])
+                connection.send(challenge_raw)
                 response = connection.getresponse()
                 body = response.read(64 * 1024 + 1)
                 assert response.status == 200 and len(body) <= 64 * 1024
@@ -1180,17 +1182,31 @@ def main():
 
             try:
                 readiness_deadline = time.monotonic() + .25
-                while True:
-                    status, reply = webhook("alice", None, expected=(200, 429), raw=challenge_raw,
-                                            headers={"Content-Type": "application/json"}, return_status=True)
-                    if status == 429:
-                        assert reply == {"status": "busy"}
-                        break
-                    assert reply == {"challenge": challenge["challenge"]}
-                    assert time.monotonic() < readiness_deadline, "body-reader slot was never occupied"
-                    time.sleep(.002)
+                interim = bytearray()
+                while not interim.endswith(b"\r\n\r\n"):
+                    remaining = readiness_deadline - time.monotonic()
+                    assert remaining > 0, "body-reader Continue barrier exceeded its original 250ms budget"
+                    connection.sock.settimeout(remaining)
+                    try:
+                        chunk = connection.sock.recv(1)
+                    except socket.timeout as error:
+                        raise AssertionError("body-reader Continue barrier exceeded its original 250ms budget") from error
+                    assert chunk, "gateway closed before body-reader Continue barrier"
+                    assert len(interim) < 8192, "unbounded body-reader Continue headers"
+                    interim.extend(chunk)
+                assert interim == b"HTTP/1.1 100 Continue\r\n\r\n", "unexpected body-reader Continue response"
+                assert time.monotonic() < readiness_deadline, "body-reader Continue barrier exceeded its original 250ms budget"
+                connection.sock.settimeout(4)
+                barrier_ms = round((time.monotonic() - slot_start) * 1000, 3)
+                status, reply = webhook("alice", None, expected=429, raw=challenge_raw,
+                                        headers={"Content-Type": "application/json"}, return_status=True)
+                assert reply == {"status": "busy"}, "confirmed body-reader slot did not exclude the second request"
                 queue_admission(2000, release_slot)
                 assert released and busy_retries >= 1, "actual busy admission branch was not exercised"
+                print("BODY_SLOT DIAGNOSTIC " + json.dumps({"barrier": "http_100_continue",
+                                                           "barrier_ms": barrier_ms, "budget_ms": 250,
+                                                           "second_request_status": status,
+                                                           "released": released, "busy_retries": busy_retries}, sort_keys=True), flush=True)
             finally:
                 connection.close()
             for update in range(2001, 2000 + 1000 - count):

@@ -610,3 +610,22 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 最终修订源码默认并行完整Rust1171项（379/123/669）全部通过，62.919秒；fmt/必需Clippy/locked host build0.680/14.930/14.726秒全通过。真实新binary SHA256 `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 冻结后重新执行copy七组PASS（9.969秒、原fixture内容SHA未变、日志SHA仍 `677b1312451ceb764dc9fef79fb43ca4d7c9051cc50e76a99a863d07af1f207f`），同binary既有文件/记忆/MCP八套全PASS（57.704秒），再执行用户网关/只读Key/审计/cron/Telegram/Slack/Discord/飞书/企业微信九套全部PASS（551.243秒）。全部17套原脚本/内部deadline不改、零重试，每套script/log/binary前后digest独立核对；既有Docker一项本机仍ignored，由最终Linux CI另验。没有把初版c252二进制或初版CI结果替代最终修订。
 
 提交准备时修订后固定head完整CI待运行/核对，最终精确head/tree、三份完整日志与所有30项步骤以本draft PR最终说明为准，后续批次回填。16:27:50 UTC 官方再次复核两框架main/release/#140/#31/#41/PR40无新回复/合同，不重复issues。已逐文件核对现成网关SSE与PR40有界连接修复，可在既有provider/模型收据/native loop/HTTP接线；现JiaClaw仍是完成后分块，生产默认stream资格仍须固定资源修复和真实供应商验收。此只读研究不记成流式或durable完成。
+
+
+## 复制批次跨连接验收屏障修订
+
+数据库所有权修订 head `92a2d6d07b849bb9a7b5b61c669f399b9d59baa9` 的 [CI 37809741134](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134) 仍因 macOS 整机失败而整体 FAIL，未重跑相同提交。实际 checkout merge `dc1ed1a1863d1f30301aa0027dc3d08746d902c2`、tree `f54e207f0d4c198058434e1998965e5ba559ce40`，Git API 核对 parents 为该 head 和 base4f62；以下结果属于此固定版本，不代替后续 fixture 修订。
+
+| 修订作业 | 完整官方日志核对 |
+|---|---|
+| [macOS 113423181717](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181717) | 19分26秒；Rust1171（379/123/669）、六copy新测、两ownership新测及原Telegram同步重开全部PASS，fmt/必需Clippy/build通过。30项Python为20成功、飞书1失败、其后9跳过；新copy七组通过，飞书前10组通过，第11组 `tenant_feishu.py:1190` 的占槽就绪断言失败。日志SHA256 `1811392aa2376c846ee09f3c9dd9e619f55cbd4d1fa11d84095d44c936f6446a`。 |
+| [Ubuntu 113423181481](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181481) | 25分11秒SUCCESS；Rust1172（380/123/669）、全部新单测/原Telegram重开、30强制Python/copy七组、四实际Chromium与单独实际Docker1项PASS（7.80秒）及清理通过。仅macOS专用OpenSSL步骤按条件skipped。日志SHA256 `e4370af77c51b82e79282f33ab4473d78c7d4f357935d6853e10987555648247`。 |
+| [container 113423181801](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181801) | 5分35秒SUCCESS；精确新镜像 `bbf0484e9dbe1a748afe05a741048a8d44b6b4a18bf0d97f527d6316abaaabec`，非root/只读rootfs、命名卷恢复、私网、schema7/default-off与维护、真实ENOSPC及其它租户可用全部实测。日志SHA256 `4881abbef08f459de11ec64fa8c4efb27131ae4c6f674ee7f4e07f73739174a0`；未执行copy专项容器压力或真实平台runtime。 |
+
+飞书失败日志仅证明原partial请求与另一连接probe未在250ms就绪窗口内形成429占槽证据，不证明生产semaphore失效，也未记录足以判定具体网络/Nagle/调度原因的数据。之前的SQL_BUSY `ingress_deadline`、`process_exited=true` 指的是fixture主动停机并完成退出屏障的旧gateway；此前队列/hold/model/send保持不变，随后确实启动了新gateway，不能误读成在死进程上probe。
+
+本次只修该验收脚本的真实同步方式：headers-only `Expect: 100-continue`，在原250ms总窗口内限8192字节读取精确100 interim，再要求另一完整challenge实际429 busy。固定Cargo.lock的Hyper1.11.1在body consumer首次poll后才允许Sender ready并发送100；飞书handler在该poll前已取得global及单binding许可，所以这条协议屏障确认实际占槽。100尚不证明callback认证完成。随后原queue_admission仍须观察真实busy、核对未入队和原hold/model/send零增，再补全第一条完整body并读取精确200释放许可；原签名、最多8次/2.5秒/总32次busy、1000精确集合/1001拒绝、SQL退出drain、撤销与离线保留断言都保留。生产650/900ms、fixture250ms及原整作业预算没有扩大。
+
+同一冻结生产binary `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 的修订后完整 `tests/tenant_feishu.py` 一次11组PASS、exit0、119.517秒；fixture SHA256 `8701f98030df3f09156facc870a88d5c6f8b7a746941579927ceacfabb5dff10`，日志SHA256 `be56ea9a671ba14c1946c0f5eb28183bd6a6260b59ef73e13f91d287936f4a09`。实际100屏障0.434ms、另一请求429、队列请求第一次busy时count12且matches0/hold/model/send不变，补全后released=true，随后准确满队列与全部原11组通过。fixture/binary前后hash相同，生产源码与依赖未再改或重建；先前17套是其当时原fixture的完整回归，本次另执行更新后的飞书全套，不伪称所有17套在该fixture修订后重新运行。独立非作者只读复核同步时序、预算与全部原断言，无阻断发现。
+
+提交准备时最新fixture修订的三项固定head CI仍待运行/完整日志核对；最终head/tree/run及日志以本draft PR最后说明为准，下一批回填。Linux/macOS本地文件与泛容器部署证据不认证Windows、网络文件系统、copy容器压力或真实平台/供应商；stdio/外部写入、durable委派、生产流式与多模态仍保持开放。没有恢复自动回访、合并或公开发布。
