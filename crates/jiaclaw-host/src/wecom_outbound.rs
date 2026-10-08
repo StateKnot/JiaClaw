@@ -3,8 +3,10 @@
 
 //! One attempt to send a text message from an enterprise self-built `WeCom` app.
 //!
-//! Official contracts (retrieved 2026-10-03):
+//! Official contracts (retrieved 2026-10-08):
 //! - <https://developer.work.weixin.qq.com/document/path/91039>
+//! - <https://developer.work.weixin.qq.com/document/path/90227>
+//! - <https://developer.work.weixin.qq.com/document/path/90195>
 //! - <https://developer.work.weixin.qq.com/document/path/90236>
 //! - <https://developer.work.weixin.qq.com/document/path/90312>
 //! - <https://developer.work.weixin.qq.com/document/path/90313>
@@ -15,10 +17,10 @@
 //! A valid receipt acknowledges platform acceptance, not the member reading it.
 
 use anyhow::{ensure, Result};
-use reqwest::{Client, StatusCode};
+use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::Deserialize;
-use serde_json::json;
-use std::time::Duration;
+use serde_json::{json, value::RawValue};
+use std::{collections::HashSet, time::Duration};
 use tokio::{sync::Mutex, time::Instant};
 
 use crate::{
@@ -32,6 +34,10 @@ use crate::{
 const TOKEN_BUDGET: Duration = Duration::from_secs(12);
 const TOKEN_BACKOFF: Duration = Duration::from_secs(30);
 const TOKEN_EXPIRY_MARGIN: u64 = 60;
+const INSTALLATION_BUDGET: Duration = Duration::from_secs(30);
+const VERIFICATION_HTTP_BUDGET: Duration = Duration::from_secs(5);
+const MAX_REQUIRED_MEMBERS: usize = 300;
+const MAX_VISIBLE_MEMBERS: usize = 4096;
 
 // No Debug/Serialize: this state contains memory-only credentials.
 pub(super) struct WeComSender {
@@ -55,6 +61,83 @@ struct TokenState {
 }
 
 impl WeComSender {
+    /// Prove the app secret's own active AgentID and explicit member visibility.
+    /// This read-only evidence does not certify licenses or terminal delivery.
+    pub(super) async fn verify_installation(&self, allowed_members: &[String]) -> Result<()> {
+        let verified = tokio::time::timeout(INSTALLATION_BUDGET, async {
+            ensure!(
+                (1..=MAX_REQUIRED_MEMBERS).contains(&allowed_members.len()),
+                "invalid member count"
+            );
+            let mut required = HashSet::with_capacity(allowed_members.len());
+            for member in allowed_members {
+                ensure!(
+                    super::wecom::user_id(member) && required.insert(member.as_str()),
+                    "invalid member identity"
+                );
+            }
+            let token = tokio::time::timeout(
+                VERIFICATION_HTTP_BUDGET,
+                self.access_token_with_timeout(VERIFICATION_HTTP_BUDGET),
+            )
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("verification credential unavailable"))?;
+            let agent_id = self.agent_id.to_string();
+            let response = self
+                .client
+                .get(format!("{}/agent/get", self.api_base))
+                .query(&[
+                    ("access_token", token.as_str()),
+                    ("agentid", agent_id.as_str()),
+                ])
+                .timeout(VERIFICATION_HTTP_BUDGET)
+                .send()
+                .await?;
+            ensure!(
+                response.status() == StatusCode::OK && json_mime(response.headers()),
+                "installation response rejected"
+            );
+            let bytes = response_body(response)
+                .await
+                .map_err(|_| anyhow::anyhow!("invalid installation response"))?;
+            let identity: AgentEnvelope = decode_object(&bytes)?;
+            ensure!(
+                identity.errcode == 0 && identity.agentid == self.agent_id && identity.close == 0,
+                "app identity mismatch"
+            );
+            let members: AllowedMembers = decode_object(identity.allow_userinfos.get().as_bytes())?;
+            let members: Vec<Box<RawValue>> = serde_json::from_str(members.user.get())?;
+            ensure!(
+                members.len() <= MAX_VISIBLE_MEMBERS,
+                "too many visible members"
+            );
+            let mut visible = HashSet::with_capacity(members.len());
+            for member in members {
+                let member: Member = decode_object(member.get().as_bytes())?;
+                let canonical = member.userid.to_ascii_lowercase();
+                ensure!(
+                    super::wecom::user_id(&canonical) && visible.insert(canonical),
+                    "invalid visible member"
+                );
+            }
+            ensure!(
+                required.iter().all(|member| visible.contains(*member)),
+                "member visibility mismatch"
+            );
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+        // Credentials, request URLs and untrusted upstream/parser diagnostics
+        // remain private, including timeout, cancellation and identity failure.
+        ensure!(
+            matches!(verified, Ok(Ok(()))),
+            "WeCom installation verification failed"
+        );
+        Ok(())
+    }
+
     pub(super) fn new(
         installation_id: &str,
         app_secret: String,
@@ -85,6 +168,11 @@ impl WeComSender {
     }
 
     async fn access_token(&self) -> Option<String> {
+        self.access_token_with_timeout(Duration::from_secs(10))
+            .await
+    }
+
+    async fn access_token_with_timeout(&self, http_timeout: Duration) -> Option<String> {
         tokio::time::timeout(TOKEN_BUDGET, async {
             // Holding this asynchronous lock across bounded HTTP is the single
             // refresh flight. Pre-arm cooldown so cancellation also backs off.
@@ -100,7 +188,7 @@ impl WeComSender {
             }
             state.cached = None;
             state.retry_at = now + TOKEN_BACKOFF;
-            if let Some(token) = self.fetch_token(now).await {
+            if let Some(token) = self.fetch_token(now, http_timeout).await {
                 let value = token.value.clone();
                 state.cached = Some(token);
                 state.retry_at = Instant::now();
@@ -114,7 +202,7 @@ impl WeComSender {
         .flatten()
     }
 
-    async fn fetch_token(&self, started: Instant) -> Option<CachedToken> {
+    async fn fetch_token(&self, started: Instant, http_timeout: Duration) -> Option<CachedToken> {
         let response = self
             .client
             .get(format!("{}/gettoken", self.api_base))
@@ -122,14 +210,15 @@ impl WeComSender {
                 ("corpid", self.corp_id.as_str()),
                 ("corpsecret", self.app_secret.as_str()),
             ])
+            .timeout(http_timeout)
             .send()
             .await
             .ok()?;
-        if response.status() != StatusCode::OK {
+        if response.status() != StatusCode::OK || !json_mime(response.headers()) {
             return None;
         }
         let bytes = response_body(response).await.ok()?;
-        let token: TokenEnvelope = serde_json::from_slice(&bytes).ok()?;
+        let token: TokenEnvelope = decode_object(&bytes).ok()?;
         if token.errcode != 0
             || token.expires_in <= TOKEN_EXPIRY_MARGIN
             || token.access_token.is_empty()
@@ -196,11 +285,14 @@ impl WeComSender {
         if !status.is_success() && !status.is_client_error() {
             return unknown("unexpected_http_status");
         }
+        if !json_mime(response.headers()) {
+            return unknown("invalid_response_type");
+        }
         let body = match response_body(response).await {
             Ok(body) => body,
             Err(code) => return unknown(code),
         };
-        let Ok(envelope) = serde_json::from_slice::<MessageEnvelope>(&body) else {
+        let Ok(envelope) = decode_object::<MessageEnvelope>(&body) else {
             return unknown("invalid_response");
         };
         if matches!(envelope.errcode, 40_014 | 42_001) {
@@ -223,6 +315,47 @@ impl WeComSender {
             }
         }
     }
+}
+
+fn json_mime(headers: &HeaderMap) -> bool {
+    let mut values = headers.get_all(reqwest::header::CONTENT_TYPE).iter();
+    values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        && values.next().is_none()
+}
+
+fn decode_object<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    ensure!(
+        bytes
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(b'{'),
+        "object required"
+    );
+    // Every object boundary reads original bytes: Value would erase duplicates.
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+#[derive(Deserialize)]
+struct AgentEnvelope {
+    errcode: i64,
+    agentid: u32,
+    close: u8,
+    allow_userinfos: Box<RawValue>,
+}
+
+#[derive(Deserialize)]
+struct AllowedMembers {
+    user: Box<RawValue>,
+}
+
+#[derive(Deserialize)]
+struct Member {
+    userid: String,
 }
 
 #[derive(Deserialize)]
@@ -346,7 +479,12 @@ mod tests {
     }
     impl Reply {
         fn raw(status: u16, headers: &str, body: &str) -> Self {
-            Self { wire:Some(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",body.len()).into_bytes()), gate:None }
+            Self::typed(status, headers, body, Some("application/json"))
+        }
+        fn typed(status: u16, headers: &str, body: &str, content_type: Option<&str>) -> Self {
+            let content_type =
+                content_type.map_or_else(String::new, |value| format!("Content-Type: {value}\r\n"));
+            Self { wire:Some(format!("HTTP/1.1 {status} Test\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",body.len()).into_bytes()), gate:None }
         }
         fn json(value: &Value) -> Self {
             Self::raw(200, "", &value.to_string())
@@ -471,6 +609,417 @@ mod tests {
     }
     fn receipt(id: &str) -> Reply {
         Reply::json(&json!({"errcode":0,"errmsg":"ok","msgid":id}))
+    }
+
+    fn agent(members: &[&str]) -> Value {
+        // Actual agent/get fields, including department/tag visibility which
+        // cannot substitute for explicit members. No Corp/Bot/Chat echoes.
+        json!({
+            "errcode":0,"errmsg":"ok","agentid":1_000_002,"close":0,
+            "allow_userinfos":{"user":members.iter().map(|userid| json!({"userid":userid})).collect::<Vec<_>>()},
+            "allow_partys":{"partyid":[1]},"allow_tags":{"tagid":[7]}
+        })
+    }
+
+    fn members() -> Vec<String> {
+        vec!["member.one@example.com".into(), "second-user".into()]
+    }
+
+    #[tokio::test]
+    async fn verifies_official_app_visibility_then_reuses_token_without_sending_at_startup() {
+        let server = Server::new(vec![
+            token("token?&=+#/"),
+            Reply::typed(
+                200,
+                "",
+                &agent(&["Member.One@Example.Com", "SECOND-User", "extra"]).to_string(),
+                Some("Application/JSON; charset=utf-8"),
+            ),
+            Reply::json(&agent(&["MEMBER.One@example.com", "second-user"])),
+            receipt("future-message"),
+        ])
+        .await;
+        let sender = server.sender();
+        sender.verify_installation(&members()).await.unwrap();
+        sender.verify_installation(&members()).await.unwrap();
+        let requests = server.captured();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].path, "/cgi-bin/gettoken");
+        assert_eq!(requests[0].query["corpid"], "wwtestcorp");
+        assert_eq!(requests[0].query["corpsecret"], SECRET);
+        for request in &requests[1..] {
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.path, "/cgi-bin/agent/get");
+            assert_eq!(
+                request.query,
+                BTreeMap::from([
+                    ("access_token".into(), "token?&=+#/".into()),
+                    ("agentid".into(), "1000002".into()),
+                ])
+            );
+            assert!(request.authorization.is_none());
+            assert!(request.body.is_none());
+        }
+        assert_eq!(
+            sender
+                .send(&destination(), "future independent message")
+                .await,
+            DeliveryOutcome::Delivered {
+                receipt: "future-message".into()
+            }
+        );
+        assert_eq!(server.captured().len(), 4);
+        assert_eq!(server.captured()[3].path, "/cgi-bin/message/send");
+        assert_eq!(server.captured()[3].query["access_token"], "token?&=+#/");
+    }
+
+    #[tokio::test]
+    async fn invalid_required_members_fail_before_credentials_and_three_hundred_are_supported() {
+        let server = Server::new(vec![]).await;
+        let sender = server.sender();
+        let mut invalid = vec![
+            vec![],
+            vec!["member".into(), "member".into()],
+            vec!["member".into(), "Member".into()],
+            (0..301).map(|n| format!("member{n}")).collect(),
+        ];
+        invalid.extend(
+            [
+                "",
+                "Member",
+                "@all",
+                " member",
+                "member|other",
+                "成员",
+                "member\n",
+            ]
+            .map(|id| vec![id.into()]),
+        );
+        invalid.push(vec!["x".repeat(65)]);
+        for required in invalid {
+            assert_eq!(
+                sender
+                    .verify_installation(&required)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "WeCom installation verification failed"
+            );
+        }
+        assert!(server.captured().is_empty());
+        let required = (0..300).map(|n| format!("member{n}")).collect::<Vec<_>>();
+        let visible = required.iter().map(String::as_str).collect::<Vec<_>>();
+        let server = Server::new(vec![token("token"), Reply::json(&agent(&visible))]).await;
+        server
+            .sender()
+            .verify_installation(&required)
+            .await
+            .unwrap();
+        assert_eq!(server.captured().len(), 2);
+        // Keep the existing documented bounded visible-ASCII secret grammar.
+        for secret in ["x".into(), "x".repeat(4096)] {
+            assert!(WeComSender::new(INSTALLATION, secret, server.base.clone(), true).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn verification_requires_the_right_active_app_and_every_explicit_member() {
+        let good = agent(&["member.one@example.com", "second-user"]);
+        let mut cases = Vec::new();
+        for (key, value) in [
+            ("errcode", json!(40_014)),
+            ("agentid", json!(1_000_003)),
+            ("agentid", json!("1000002")),
+            ("close", json!(1)),
+            ("close", json!(false)),
+            ("allow_userinfos", json!({"user":[]})),
+            (
+                "allow_userinfos",
+                json!({"user":[{"userid":"member.one@example.com"}]}),
+            ),
+            (
+                "allow_userinfos",
+                json!({"user":[{"userid":"member.one@example.com"},{"userid":"second-user"},{"userid":"SECOND-USER"}]}),
+            ),
+            (
+                "allow_userinfos",
+                json!({"user":[{"userid":"member.one@example.com"},{"userid":"second-user"},{"userid":"@all"}]}),
+            ),
+        ] {
+            let mut response = good.clone();
+            response[key] = value;
+            cases.push(response);
+        }
+        for missing in ["agentid", "close", "allow_userinfos"] {
+            let mut response = good.clone();
+            response.as_object_mut().unwrap().remove(missing);
+            cases.push(response);
+        }
+        for response in cases {
+            let server = Server::new(vec![token("token"), Reply::json(&response)]).await;
+            let error = server
+                .sender()
+                .verify_installation(&members())
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), "WeCom installation verification failed");
+            assert_eq!(server.captured().len(), 2);
+            assert!(server
+                .captured()
+                .iter()
+                .all(|request| request.method == "GET"));
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_identity_objects_preserve_raw_duplicates_and_reject_positional_arrays() {
+        for body in [
+            "[0,1000002,0,{\"user\":[{\"userid\":\"member\"}]}]",
+            "{\"errcode\":0,\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":[{\"userid\":\"member\"}]}}",
+            "{\"errcode\":0,\"agentid\":1,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":[{\"userid\":\"member\"}]}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":1,\"close\":0,\"allow_userinfos\":{\"user\":[{\"userid\":\"member\"}]}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{},\"allow_userinfos\":{\"user\":[{\"userid\":\"member\"}]}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":[[{\"userid\":\"member\"}]]}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":[],\"user\":[{\"userid\":\"member\"}]}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":{\"userid\":\"member\"}}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":[[\"member\"]]}}",
+            "{\"errcode\":0,\"agentid\":1000002,\"close\":0,\"allow_userinfos\":{\"user\":[{\"userid\":\"other\",\"userid\":\"member\"}]}}",
+        ] {
+            let server = Server::new(vec![token("token"), Reply::raw(200, "", body)]).await;
+            assert_eq!(
+                server.sender().verify_installation(&["member".into()]).await.unwrap_err().to_string(),
+                "WeCom installation verification failed"
+            );
+            assert_eq!(server.captured().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn installation_http_mime_redirect_and_body_limits_are_fail_closed() {
+        let good = agent(&["member"]);
+        let body = good.to_string();
+        for reply in [
+            Reply::typed(200, "", &body, None),
+            Reply::typed(200, "", &body, Some("text/plain")),
+            Reply::raw(200, "Content-Type: application/json\r\n", &body),
+            Reply::raw(200, "Content-Type: text/html\r\n", &body),
+            Reply::raw(302, "Location: https://attacker.invalid/steal\r\n", &body),
+            Reply::raw(401, "", &body),
+            Reply::raw(429, "", &body),
+            Reply::raw(500, "", &body),
+            Reply::raw(200, "", &"x".repeat(64 * 1024 + 1)),
+            Reply {
+                wire: None,
+                gate: None,
+            },
+        ] {
+            let server = Server::new(vec![token("private-token"), reply]).await;
+            assert_eq!(
+                server
+                    .sender()
+                    .verify_installation(&["member".into()])
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "WeCom installation verification failed"
+            );
+            assert_eq!(server.captured().len(), 2);
+        }
+        // The complete response, including ignored official descriptive fields,
+        // can reach the byte boundary; exceeding it cannot certify an identity.
+        let mut padded = good;
+        padded["name"] = json!("");
+        let overhead = padded.to_string().len();
+        padded["name"] = json!("x".repeat(64 * 1024 - overhead));
+        assert_eq!(padded.to_string().len(), 64 * 1024);
+        let server = Server::new(vec![token("token"), Reply::json(&padded)]).await;
+        server
+            .sender()
+            .verify_installation(&["member".into()])
+            .await
+            .unwrap();
+        assert_eq!(server.captured().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn original_token_and_receipt_objects_require_unique_json_mime_and_identity_fields() {
+        let token_body = json!({"errcode":0,"access_token":"token","expires_in":7200}).to_string();
+        for reply in [
+            Reply::raw(200, "", "[0,\"token\",7200]"),
+            Reply::raw(200, "", "{\"errcode\":40014,\"errcode\":0,\"access_token\":\"token\",\"expires_in\":7200}"),
+            Reply::raw(200, "", "{\"errcode\":0,\"access_token\":\"bad\",\"access_token\":\"token\",\"expires_in\":7200}"),
+            Reply::raw(200, "", "{\"errcode\":0,\"access_token\":\"token\",\"expires_in\":1,\"expires_in\":7200}"),
+            Reply::typed(200, "", &token_body, None),
+            Reply::typed(200, "", &token_body, Some("text/html")),
+            Reply::raw(200, "Content-Type: application/json\r\n", &token_body),
+        ] {
+            let server = Server::new(vec![reply]).await;
+            let sender = server.sender();
+            assert!(sender.verify_installation(&["member".into()]).await.is_err());
+            assert_eq!(sender.send(&destination(), "later").await, rejected("credential_unavailable"));
+            assert_eq!(server.captured().len(), 1);
+        }
+        let body = "{\"errcode\":0,\"msgid\":\"receipt\"}";
+        for reply in [
+            Reply::raw(200, "", "[0,\"receipt\",null,null,null,null]"),
+            Reply::raw(
+                200,
+                "",
+                "{\"errcode\":40014,\"errcode\":0,\"msgid\":\"receipt\"}",
+            ),
+            Reply::raw(
+                200,
+                "",
+                "{\"errcode\":0,\"msgid\":\"one\",\"msgid\":\"receipt\"}",
+            ),
+            Reply::raw(
+                200,
+                "",
+                "{\"errcode\":0,\"msgid\":\"receipt\",\"invaliduser\":null,\"invaliduser\":\"\"}",
+            ),
+            Reply::typed(200, "", body, None),
+            Reply::typed(200, "", body, Some("text/html")),
+            Reply::raw(200, "Content-Type: application/json\r\n", body),
+        ] {
+            let server = Server::new(vec![token("token"), reply, receipt("independent")]).await;
+            let sender = server.sender();
+            assert!(matches!(
+                sender.send(&destination(), "first").await,
+                DeliveryOutcome::Unknown { .. }
+            ));
+            assert_eq!(
+                server.captured().len(),
+                2,
+                "ambiguous receipt does not trigger any retry"
+            );
+            assert_eq!(
+                sender.send(&destination(), "separate delivery").await,
+                DeliveryOutcome::Delivered {
+                    receipt: "independent".into()
+                }
+            );
+            assert_eq!(
+                server.captured().len(),
+                3,
+                "malformed auth response cannot evict cached credentials"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_verification_uses_one_refresh_and_cancellation_retains_backoff() {
+        let server = Server::new(vec![
+            token("token"),
+            Reply::json(&agent(&["member"])),
+            Reply::json(&agent(&["member"])),
+        ])
+        .await;
+        let sender = Arc::new(server.sender());
+        let mut tasks = JoinSet::new();
+        for _ in 0..2 {
+            let sender = sender.clone();
+            tasks.spawn(async move { sender.verify_installation(&["member".into()]).await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+        assert_eq!(server.captured().len(), 3);
+        assert_eq!(
+            server
+                .captured()
+                .iter()
+                .filter(|request| request.path.ends_with("/gettoken"))
+                .count(),
+            1
+        );
+
+        let gate = Arc::new(Semaphore::new(0));
+        let server = Server::new(vec![token("token").gated(gate)]).await;
+        let sender = Arc::new(server.sender());
+        let active = sender.clone();
+        let task =
+            tokio::spawn(async move { active.verify_installation(&["member".into()]).await });
+        server.wait_requests(1).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(sender
+            .verify_installation(&["member".into()])
+            .await
+            .is_err());
+        assert_eq!(
+            sender.send(&destination(), "later").await,
+            rejected("credential_unavailable")
+        );
+        assert_eq!(server.captured().len(), 1);
+
+        // Canceling the read-only agent lookup does not detach work or discard
+        // a successfully obtained token. A future explicit verification can use it.
+        let gate = Arc::new(Semaphore::new(0));
+        let server = Server::new(vec![
+            token("token"),
+            Reply::json(&agent(&["member"])).gated(gate.clone()),
+            Reply::json(&agent(&["member"])),
+        ])
+        .await;
+        let sender = Arc::new(server.sender());
+        let active = sender.clone();
+        let task =
+            tokio::spawn(async move { active.verify_installation(&["member".into()]).await });
+        server.wait_requests(2).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        gate.add_permits(1);
+        sender
+            .verify_installation(&["member".into()])
+            .await
+            .unwrap();
+        assert_eq!(server.captured().len(), 3);
+        assert_eq!(server.captured()[2].path, "/cgi-bin/agent/get");
+    }
+
+    #[tokio::test]
+    async fn startup_bounds_token_wait_and_each_actual_http_request() {
+        let server = Server::new(vec![]).await;
+        let sender = Arc::new(server.sender());
+        let lock = sender.token.lock().await;
+        tokio::time::pause();
+        let active = sender.clone();
+        let task =
+            tokio::spawn(async move { active.verify_installation(&["member".into()]).await });
+        tokio::task::yield_now().await;
+        let started = Instant::now();
+        tokio::time::advance(VERIFICATION_HTTP_BUDGET + Duration::from_millis(1)).await;
+        assert!(task.await.unwrap().is_err());
+        assert!(started.elapsed() <= VERIFICATION_HTTP_BUDGET + Duration::from_millis(100));
+        drop(lock);
+        tokio::time::resume();
+        assert!(server.captured().is_empty());
+        for token_stage in [true, false] {
+            let gate = Arc::new(Semaphore::new(0));
+            let replies = if token_stage {
+                vec![token("token").gated(gate)]
+            } else {
+                vec![token("token"), Reply::json(&agent(&["member"])).gated(gate)]
+            };
+            let server = Server::new(replies).await;
+            let sender = Arc::new(server.sender());
+            let active = sender.clone();
+            let task =
+                tokio::spawn(async move { active.verify_installation(&["member".into()]).await });
+            server.wait_requests(if token_stage { 1 } else { 2 }).await;
+            tokio::time::pause();
+            let started = Instant::now();
+            tokio::time::advance(VERIFICATION_HTTP_BUDGET + Duration::from_millis(1)).await;
+            let error = task.await.unwrap().unwrap_err();
+            let elapsed = started.elapsed();
+            tokio::time::resume();
+            assert!(
+                elapsed <= VERIFICATION_HTTP_BUDGET + Duration::from_millis(100),
+                "startup HTTP must not wait for the longer send or overall deadline"
+            );
+            assert_eq!(error.to_string(), "WeCom installation verification failed");
+            assert_eq!(server.captured().len(), if token_stage { 1 } else { 2 });
+        }
     }
 
     #[tokio::test]

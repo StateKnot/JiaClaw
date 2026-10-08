@@ -455,4 +455,35 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 当前最小修订仍仅在 fixture：写锁用例只允许精确 HTTP 503 的 admission_failed 或 ingress_deadline，其他 503 立即失败；保留写锁直到网关进程确认退出并排空，再核对完整 hold、事件计数、消息 4001 不存在、model/send 全不变，才 rollback 释放锁，重启后重复核对。静态 `SQL_BUSY` 诊断只输出白名单 code、drained 和 unchanged。验收最终持久状态，不把 HTTP 回调截止当作在途 SQL 已取消的证明；所有 callback 1 秒断言、900 ms、SQL 250 ms、1000/1001、busy 重试八次/2.5 秒/全组 32 次及真实 reader-slot 分支保留，生产没有变更。本次完整 11 组一次运行退出码 0、全部通过，前后二进制仍为上述 SHA256。本机 SQL_BUSY 明确 admission_failed/process_exited，完整原队列、hold/model/send 在持锁退出和重启后不变；实际 reader-slot busy 一次，仍精确 12+988=1000、第 1001 条 queue_full。未强制本机产生 deadline，不把本机成功外推为已确定 macOS 耗时阶段。
 
-**上述本地源码、首版及第一次 fixture 修订的整机验收已完成，PR #85 两轮 CI 均有明确 macOS 失败；当前最小修订的本地整机已通过；本提交准备时第三轮 exact-head CI 待核对，最终固定提交结果见 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85)，不使用旧 head 局部成功代替。** 终验由交付 PR 核对固定 head，再于下批回填，避免为记录自身 SHA 重复变更提交；不会用上批 Discord 通过作为飞书入口认证。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、平台 token/限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。
+2026-10-08 11:35 UTC 回填最终证据：[PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85) 当前固定 head `80a8bb03d391cd27bde8f03034aa2c5081d441f4` 的 [CI 37767529821](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821) 已 completed/success，三个作业全部成功，没有把前两轮局部成功作为最终验收。
+
+| 最终作业 | 实际执行证据 |
+|---|---|
+| [macOS 113278716859](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278716859) | 默认并行 Rust 1097 项（373/123/601）、新增飞书 11 组与所有该平台强制后续步骤通过；SQL_BUSY 实际 ingress_deadline，持锁停机确认 process_exited、队列仍 12、完整效果不变，再释放/重启核对 |
+| [Ubuntu 113278717605](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278717605) | 默认并行 Rust 1098 项（374/123/601，含 Linux 专项）、飞书 11 组及全部强制进程回归、Chromium、真实 Docker 通过；SQL_BUSY 实际 admission_failed，同样确认进程终止及持久效果不变 |
+| [container 113278717131](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278717131) | 非 root/只读根镜像与限额卷/私网网关通过，含 schema 6 永久 App 预留、撤销/重启、默认关闭和真实 ENOSPC；未配置飞书渠道 runtime，不能据此认证容器内收发或共享卷压力 |
+
+上述两种精确 503 的实际跨平台结果支持 fixture 的最终持久态合同，没有确定首轮未记录状态的 429 原因，也没有定位 macOS 整体截止的具体调度阶段。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、正常运行期 token 到期刷新、平台限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。
+
+## 企业微信启动校验批次
+
+2026-10-08 11:35 UTC 官方 GitHub API 核对：附着 PR #58–#85 均 OPEN draft，各自当前 head 检查 SUCCESS，无 review/thread；本批基于 PR #85 上述最终已验证提交。StateKnot main 已推进至 `a312b0c2d09cd6d695b37b8d4163cddb910bdf6a`，十二项检查成功，#148 typed Schema 方向修复已合并但未发布；当前精确 alpha.1 HTTP MCP 直接使用远端原始 Schema，不调用 typed registry，因此无需为该修复升级。release/#140 不变，Brokerrouter main/#31/#41/PR #40 不变；main 六项与 PR 六项 FAILURE 的全部 annotations 均明确付款/额度导致作业未启动，无已执行测试失败证据。固定源码与能力边界见 [StateKnot](stateknot-gaps.md) 和 [Brokerrouter](brokerrouter-gaps.md)，没有新增或重复 issue。
+
+本批交付 standalone 企业微信的实际 `serve` 前置校验：本地渠道/API/gateway 授权完成后，在 Agent/MCP、会话数据库、HTTP 监听和所有 worker 前核对专用凭据、固定且启用的 AgentID 与人员可见范围。入站、会话和定时授权成员去重并集最多 300 个；不根据部门/标签推断成员，平台人员响应归一并拒绝重复。启动整体 30 秒、token 含锁等待与应用查询各 5 秒，64 KiB 原始 JSON/关键字段/MIME 合同也用于既有 token 和发送响应；凭据查询不会发送消息、自动重发或记录秘密。
+
+本批最终本地证据：
+
+- 完整默认并行 `CARGO_INCREMENTAL=0 cargo test --workspace --locked` 1105 项通过（library 373 / core 123 / host 609），既有真实 Docker 一项本机 ignored。新增八组真实 HTTP 单元测试包括正确应用/全部成员、原始身份对象/MIME/重复字段、并发 token singleflight、取消退避及前置请求期限；fmt、Clippy 必需 correctness/suspicious 检查与 locked build 通过。
+- 最终二进制 SHA256 `a6a42a66d6439ba4fb2a29dcb93f93f1204330ad28a686504a8276ff5ad5a5fc` 的 `wecom_startup.py` 正式脚本六组/32 负例一次全部通过（26.52 秒）。成功用真实 GET token→应用与含 scheduled-only 成员的完整并集；未配置企业微信没有平台/模型请求。负例覆盖原始 JSON/MIME/HTTP/身份/可见范围/大小，并验证失败前无监听、SQLite、MEMORY、MCP/模型或发送效果，以及已有真实数据库/工作区不变。
+- 真实阻塞 token/app 查询的 SIGTERM 进程退出通过，没有启动监听或后台效果。token 头等待和 agent 部分正文分别观察到请求至失败退出 5.016 / 5.021 秒，从进程启动至退出为 5.261 / 5.216 秒；均未由 fixture 释放请求，且满足整体 30 秒。该 wall-clock 观察不等于实时系统零调度延迟保证。
+- 同一二进制旧 `wecom.py` 一次退出码 0、64.89 秒，包含既有 OpenSSL/XML、加密回调、成员大小写/去重、原生工具、token 复用、分片、独立相同消息、发送间隔、unknown/SIGKILL 恢复和精确定时通知。
+- 新增停发维护路径使用原 SQLite/原管理 API Key、无 WeCom 凭据、`http.channels=[]`、scheduler/HEARTBEAT 关闭。HTTP 两次完整 unknown 审计相同；一秒观察无 token/agent/model/send，正常 SIGTERM 后确认实际进程退出，再核对全部额度账本及未知请求的空完成时间占额不变。恢复原配置重新执行 token/agent GET 校验，仍不重放原 unknown。该证据不确认原平台请求终止，也不授权自动清理未知状态。[维护边界](wecom.md#恢复与定时通知)
+- 同一冻结二进制五套既有回归全部一次通过，最终 runner 与每套退出码均为 0：WeCom 64.89 秒、MCP 2.47 秒、e2e 0.46 秒、channels 33.98 秒、scheduled_delivery 37.92 秒。每套前后二进制哈希一致，不沿用上批结果或在验收中重建 artifact。
+
+两次初始失败及测试修订保留：新 startup fixture 在已停止的真实 WAL 数据库、无 WAL/SHM sidecar 情况下用 Python `mode=ro` 重新打开失败。停机后同一文件 URI 的 A/B 观察中，原 mode=ro 与规范 as_uri 的 mode=ro 均失败，而非创建的 mode=rw 配合 query_only 返回 integrity_check=ok、完整 14 张表，数据库文件哈希不变。修订仅针对 fixture 的 VFS 观察路径：正式脚本只在实际进程退出后用非创建 mode=rw/query_only 读取并关闭；移除一次性 A/B 探针后六组正式脚本仍通过。生产 bundled SQLite 3.51.3 没有变更，没有把观察失败称为生产数据库修复。
+
+旧 WeCom 新维护 helper 初次错误地要求 scheduler-disabled DTO 含 `state`，实际既有合同在 scheduler.enabled=false 时返回精确 HTTP 404，导致 KeyError。仅修正测试断言为 404，正式完整旧 WeCom 一次通过；没有新增 DTO、改变服务语义或延长生产/fixture 超时。
+
+本提交准备时最终跨平台 CI pending，固定 head 结果以本批 draft PR 为准，交付核对后于下批文档回填，避免为记录自身 SHA 循环提交；不猜 PR 编号或用飞书 final CI 替代本批证据。校验失败拒绝整个服务，坏 Secret 不会开放 HTTP 诊断；上述维护配置与请求终止/人工核对是不同层次。
+
+本批不改变未知发送人工核对、200 个预留/24 小时/4 秒额度或独立重复消息语义；不增加独立用户企业微信 registry/后端 owner、私有队列与后台准入，不计为完整 tenant WeCom。真实生产 API、企业认证、动态可见范围/成员许可、可信出口 IP、公开 TLS/客户端收发、运行期 token 到期刷新、容器渠道 runtime 压力及供应商认证仍未完成。
