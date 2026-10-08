@@ -521,3 +521,39 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 新十组的最终源码证据包含真实模型POST/平台POST后的SIGKILL原UUID核对、维护前submitting/in_flight/NULL快照及恢复后unknown/needs_review、物理移除全部安装凭据的离线核对、purge后metadata/额度相同、user-disable和不可逆撤销、完整Unicode渲染与4秒间隔，以及真实写锁保持到网关退出后核对零新增效果。最终库历史仅剩940条可预留新身份，全部实际加密准入、下一条精确queue_full、原MsgId重复仍200，未编辑时钟/额度/hold或假造满额。
 
 真实生产安装/许可/动态可见范围、公开TLS与终端收发、正常token到期刷新、接收额度及共享卷/容器runtime压力、付费供应商联合认证仍未完成。公开指南见[独立用户企业微信](tenant-wecom.md)；本提交准备时最终CI pending，以本批draft PR固定head为准，后续批次回填，不用PR #86旧范围代替此批交付。
+
+## 独立用户企业微信最终 CI 回填
+
+2026-10-08 14:39 UTC 当前官方 PR/CI 核对：PR #87 OPEN/draft，head `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`、base `db802c46b8726e2dfbaf9defb1eebddb043619c7`。[CI 37787484242](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242) 第一次运行三项完成成功。CI实际checkout merge `b35104ed9bbde064b7bc85daed964ef75e3e6eb1` 的 tree `6a349f6f629fc15cd9c9ffd45d26a78466646e81` 与冻结本地源码完全一致，parents 精确为上述 head/base。本地工作区 clean、15个生产/fixture source SHA 和生产二进制前后未变。
+
+同一二进制旧13套 standalone、八套 gateway/tenant实际进程全部一次通过，分别374.488/428.480秒；每套完整日志SHA与binary前后SHA复核，不改deadline、不重试、不在验收中构建。
+
+| 最终作业 | 完整日志核对的实际结果 |
+|---|---|
+| [macOS 113345874473](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874473) | library373/core123/host662，共1158；29项强制Python步骤（旧28+新1）成功；WeCom十组完整、实际940身份后精确queue_full、满额重复ACK保留。浏览器与真实Docker为Linux专项，明确skipped。 |
+| [Ubuntu 113345874820](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874820) | library374/core123/host662，共1159；同样29项/WeCom十组/940全部通过；四项真实Chromium PASS，另单独执行既有ignored Docker隔离/超时/输出/清理测试 PASS（10.44秒）。 |
+| [container 113345874791](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874791) | 非root/只读rootfs、私网/限额卷；schema7 Corp/Agent永久身份与撤销重启、默认关闭、在线维护锁拒绝、停机无Secret四种空inspect实际通过。真实ENOSPC写57,028,608字节、文件系统58,675,200字节、df可用0，其它租户仍可用。未启用WeCom平台runtime，不能外推容器收发压力。 |
+
+最终三份完整日志SHA256（macOS/Ubuntu/container）：`df3d74314097c91e69a48a64b270b79d962623b59ba8b5014b0e7c0d2964d44c` / `412287fd6187e0df674c4fc4bff265984ba0533e3e4d51f8ba79184f9af28657` / `d764538f5733331528aad4fad356d16d9cac85de7d00b5f42588997ca1016d5d`。旧Slack staging lock测试两平台实际ok，先前本地EAGAIN原因仍未知，不把后续通过称为已定位或修复。
+
+独立agent源码审查已完成；GitHub无人工/代码review或inline findings，唯一CodeRabbit评论说明draft不自动审，是信息提示，外部CodeRabbit审查未执行。保留draft、未合并/公开Release；真实安装、动态范围/许可、公开TLS/客户端、正常token到期刷新、容器启用WeCom runtime与供应商认证仍开放。
+
+## 钉钉原始报文合同批次
+
+2026-10-08 14:39 UTC 官方预检：PR #58–#87 均 OPEN/draft、各自当前head CI成功、无实质review/thread；CodeRabbit仅draftskip信息。StateKnot main `83802cb3202bf9cb860c6357a94abc80408b1f88`与13:51快照相同，release alpha.1/#140未变；最新HTTP MCP源与实际alpha.1 Cargo缓存字节相同，digest见[上游状态](stateknot-gaps.md)。Brokerrouter main/#31/#41/PR#40未变化，十二条失败annotation均付款/额度未启动；没有新的可消费durable原生输出或stdio合同，不提交重复issue。
+
+本批修复现有standalone钉钉原始JSON/MIME与回执合同：标准Serde struct visitor可以接收完整位置数组，现要求root/text及token/send为原始对象、拒绝critical duplicates和唯一JSON MIME。关键重复包括null→值和Unicode转义同名，附加平台metadata/可选null保持兼容。code与任何字符串processQueryKey（包括空串）矛盾时unknown；原有三类失败名单和精确已知HTTP/code拒绝白名单保留。平台MAC仍只覆盖timestamp/ClientSecret，严格对象不替代受控HTTPS正文完整性；未新增token-only的安装证明或独立用户渠道。
+
+最终本地默认并行`CARGO_INCREMENTAL=0 cargo test --workspace --locked`1163项（library373/core123/host667）全通过，原真实Docker一项本机ignored。fmt、必需correctness/suspicious Clippy与locked build全通过，既有style warnings保留。新真实HTTP unit三组含12个token和17个receipt负例，合法唯一MIME/metadata/缓存正例，以及callback原始root/text对象与Mime两组通过；token12秒、退避30秒、HTTP10秒与64KiB响应、单尝试/无跳转/无隐藏retry均未改。
+
+正式整机使用冻结binary SHA256 `ea37d64a682f0599ce0148e43f366628a6967c77f057a8b10807963953a77635`；fixture SHA256 `30ba7fa10c436849d6f1ff63d9b02985cd4fb29574f2f3f7d2d4b5a064cf535e`。完整`tests/dingtalk.py`一次exit0、147.87秒，日志SHA256 `0f4b7ae2e527d3be4fd222bf59081990fb36e94857be150f9a4ceb7c2f27adda`，binary/三份source前后相同。
+
+- 九个合法签名原始callback负例实际返回401，事件/model/token/send完整计数零增；有效单JSON charset正例走同一路径和获准真实成员。
+- 六类token对象/重复字段/MIME/code矛盾负例各用真实新serve冷缓存、正常7200expiry；native tools完成后恰一次mint、消息POST零。原v4 delivery UUID/attempt1/permanent_failed、完成后至少4秒持久cooldown、重投无新执行、停机WAL观察及重启不重放均通过，没有改时钟或短expiry造结果。
+- 七类send原始形状/重复键/双MIME/code矛盾（含空receipt）均实际抵达固定batchSend一次，保存原UUID/attempt1/unknown与空回执；同MsgID重复无SQL/model/platform增量，同成员后续事件等待人工核对。
+- send_array在真实停止进程后用非创建mode=rw/query_only读取完整WAL，核对original unknown/cooldown，再物理移除DingTalk运行配置/Secret并关闭scheduler/HEARTBEAT；HTTP原对象与整份SQLite/cooldown前后相同，model/token/send零增；恢复原配置仍不重放，显式cancel才允许原待处理消息继续。无secret指钉钉平台凭据，不移除管理API或fixture provider鉴权。
+- filteredStaffIdList三种合法absent/null/[]各真实送达一次；非空列表继续unknown。旧case-preserving成员、原生clock/json、独立相同消息、UTF16分片、4秒间隔、真实model/send POST后SIGKILL、精确定时成员与环境凭据路径全部保留并通过。
+
+同一冻结binary的五套相关旧进程回归全一次通过，实际合计79.647秒：e2e0.465、MCP1.315、channels28.086、scheduled_delivery31.841、wecom_startup17.727（原六组/32负例）；每套前后binary/log/script SHA核对。临时`/tmp`runner最初Popen参数拼写在任何测试启动前失败，仅修runner并运行正式完整五套，不把该初始化失败计作已执行回归或生产修复。
+
+两位独立agent分别审root callback/fixture和sender，未发现明确blocking finding；未把作者自审当成独立sender review。提交准备时本批固定head跨平台CI pending，最终结果以本批draft PR为准；当前30分钟完整test job和20分钟container预算、原生产/fixture期限不变。真实Docker/Chromium由Linux CI实际验证。本批不增加tenant安装/权限证明、正常到期refresh、真实私聊/平台额度、容器启用DingTalk runtime或供应商生产资格。[合同范围](dingtalk.md#本批协议修复与安装证明的区别)

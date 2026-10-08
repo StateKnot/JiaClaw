@@ -2,15 +2,20 @@
 """Real binary + disposable localhost DingTalk app and native-model fixtures.
 
 Python 3 standard library only. No live DingTalk credentials, accounts or messages.
+This proves standalone wire and recovery contracts, not a tenant gateway or a
+live enterprise installation, public TLS ingress, license or client delivery.
 """
 import base64
 import copy
+from contextlib import closing
 import hashlib
 import hmac
+import http.client
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -18,6 +23,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -33,6 +39,7 @@ model_calls, platform_calls, token_calls, gates = {}, {}, [], {}
 fixture_errors, all_sends, callback_signatures = [], [], []
 fixture_lock = threading.Lock()
 process, base = None, None
+token_response_case = 'normal'
 
 
 def gate(case):
@@ -49,10 +56,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def respond(self, status, body):
-        raw = json.dumps(body).encode()
+    def respond(self, status, body=None, *, raw=None, content_types=('application/json',)):
+        if raw is None:
+            raw = json.dumps(body).encode()
         self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
+        for content_type in content_types:
+            self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -70,7 +79,28 @@ class Handler(BaseHTTPRequestHandler):
                 assert body == {'appKey': client_id, 'appSecret': app_secret}
                 assert not self.headers.get('Authorization')
                 token_calls.append(time.monotonic())
-                return self.respond(200, {'accessToken': access_token, 'expireIn': 7200})
+                token = {'accessToken': access_token, 'expireIn': 7200}
+                with fixture_lock:
+                    token_case = token_response_case
+                if token_case == 'token_array':
+                    return self.respond(200, [access_token, 7200, None])
+                if token_case == 'token_duplicate':
+                    raw = ('{"accessToken":' + json.dumps(access_token)
+                           + ',"accessToken":' + json.dumps(access_token) + ',"expireIn":7200}').encode()
+                    return self.respond(200, raw=raw)
+                if token_case == 'token_duplicate_expiry':
+                    raw = ('{"accessToken":' + json.dumps(access_token)
+                           + ',"expireIn":7200,"expireIn":7200}').encode()
+                    return self.respond(200, raw=raw)
+                if token_case == 'token_mime_text':
+                    return self.respond(200, token, content_types=('application/json', 'text/plain'))
+                if token_case == 'token_mime_json':
+                    return self.respond(200, token, content_types=('application/json', 'application/json'))
+                if token_case == 'token_code_conflict':
+                    return self.respond(200, {**token, 'code': 'invalidClientIdOrSecret',
+                                              'message': private_error + access_token})
+                assert token_case == 'normal', 'unknown token fixture mode'
+                return self.respond(200, token, content_types=('application/json; charset=utf-8',))
             assert self.path == '/v1.0/robot/oToMessages/batchSend'
             assert self.headers['x-acs-dingtalk-access-token'] == access_token
             assert not self.headers.get('Authorization')
@@ -97,6 +127,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(429, {'code': 'Throttling', 'message': private_error})
             receipt = {'processQueryKey': 'fixture-' + uuid.uuid4().hex,
                        'invalidStaffIdList': [], 'flowControlledStaffIdList': [], 'filteredStaffIdList': []}
+            if case == 'send_array':
+                return self.respond(200, [receipt['processQueryKey'], [], [], [], None])
+            if case == 'send_duplicate_receipt':
+                raw = ('{"processQueryKey":null,"processQueryKey":'
+                       + json.dumps(receipt['processQueryKey']) + ',"filteredStaffIdList":[]}').encode()
+                return self.respond(200, raw=raw)
+            if case == 'send_duplicate_filter':
+                raw = ('{"processQueryKey":' + json.dumps(receipt['processQueryKey'])
+                       + ',"filteredStaffIdList":null,"filteredStaffIdList":[]}').encode()
+                return self.respond(200, raw=raw)
+            if case == 'send_mime_text':
+                return self.respond(200, receipt, content_types=('application/json', 'text/plain'))
+            if case == 'send_mime_json':
+                return self.respond(200, receipt, content_types=('application/json', 'application/json'))
+            if case in ['send_code_receipt', 'send_code_empty_receipt']:
+                if case == 'send_code_empty_receipt':
+                    receipt['processQueryKey'] = ''
+                return self.respond(400, {**receipt, 'code': 'invalidParameter.msgParam.invalid',
+                                         'message': private_error + access_token})
+            if case == 'filter_omitted':
+                del receipt['filteredStaffIdList']
+            elif case == 'filter_null':
+                receipt['filteredStaffIdList'] = None
             if case == 'invalid_user':
                 receipt['invalidStaffIdList'] = body['userIds']
             if case == 'flow_controlled':
@@ -109,7 +162,7 @@ class Handler(BaseHTTPRequestHandler):
                 gate(case).wait(timeout=90)
             if case == 'same' and len(platform_calls[case]) == 1:
                 time.sleep(.5)  # Pacing starts after receipt, not before this delay.
-            self.respond(200, receipt)
+            self.respond(200, receipt, content_types=('application/json; charset=utf-8',))
             record['completed_at'] = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -188,7 +241,7 @@ try:
                     return response.status, json.loads(raw)
                 return response.status, raw.decode()
 
-        def start():
+        def start(expected_channel_state='running', jobs_enabled=True):
             global process, base, log
             config.write_text(json.dumps(settings))
             log = root / ('server-' + uuid.uuid4().hex + '.log')
@@ -202,8 +255,12 @@ try:
                 match = re.search(r'HTTP 服务已启动于 (http://127\.0\.0\.1:[1-9][0-9]*)', log.read_text())
                 if match:
                     base = match.group(1)
-                    assert request('/api/channels/status')[1]['state'] == 'running'
-                    assert request('/api/jobs/status')[1]['state'] == 'running'
+                    assert request('/api/channels/status')[1]['state'] == expected_channel_state
+                    jobs_status, jobs = request('/api/jobs/status')
+                    if jobs_enabled:
+                        assert jobs_status == 200 and jobs['state'] == 'running'
+                    else:
+                        assert jobs_status == 404
                     return
                 time.sleep(.05)
             raise AssertionError('startup timeout: ' + log.read_text())
@@ -240,7 +297,8 @@ try:
                     'sessionWebhook': fixture_base + '/forbidden-callback?token=' + callback_secret,
                     'sessionWebhookExpiredTime': int(time.time() * 1000) + 600000}
 
-        def webhook(body, bad_signature=False, stale=False, missing_header=False):
+        def webhook(body, bad_signature=False, stale=False, missing_header=False, *,
+                    raw=None, content_types=('application/json',)):
             timestamp = str(int(time.time() * 1000) - (7200000 if stale else 0))
             signature = base64.b64encode(hmac.new(app_secret.encode(),
                 (timestamp + '\n' + app_secret).encode(), hashlib.sha256).digest()).decode()
@@ -248,17 +306,37 @@ try:
             headers = {'timestamp': timestamp, 'sign': 'invalid' if bad_signature else signature}
             if missing_header:
                 del headers['sign']
-            return request('/hooks/dingtalk', 'POST', body, authenticated=False, extra_headers=headers)
+            # http.client preserves both original JSON bytes and repeated MIME
+            # headers; dict/json or urllib's header map would erase that input.
+            if raw is None:
+                raw = json.dumps(body).encode()
+            url = urllib.parse.urlsplit(base)
+            connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+            try:
+                connection.putrequest('POST', '/hooks/dingtalk')
+                for name, value in headers.items():
+                    connection.putheader(name, value)
+                for content_type in content_types:
+                    connection.putheader('Content-Type', content_type)
+                connection.putheader('Content-Length', str(len(raw)))
+                connection.endheaders(raw)
+                response = connection.getresponse()
+                received = response.read()
+                if 'application/json' in response.headers.get('Content-Type', '') and received:
+                    return response.status, json.loads(received)
+                return response.status, received.decode()
+            finally:
+                connection.close()
 
         def events():
             status, value = request('/api/channels/events?limit=100')
             assert status == 200, (status, value)
             return value
 
-        def admit(body):
+        def admit(body, **wire):
             ids = {event['id'] for event in events()}
             before = time.monotonic()
-            status, value = webhook(body)
+            status, value = webhook(body, **wire)
             assert status == 200 and value == '', (status, value)
             # Local regression target, not an undocumented platform deadline.
             assert time.monotonic() - before < 2
@@ -281,6 +359,36 @@ try:
             assert ''.join(item['text'] for item in items) == reply(case)
             assert called(case) == expected_calls
             return items
+
+        def counters():
+            with fixture_lock:
+                return {'token': len(token_calls), 'send': len(all_sends),
+                        'model': sum(len(calls) for calls in model_calls.values())}
+
+        def offline(event_id):
+            assert process.poll() is not None, 'SQLite observer requires actual process exit'
+            database = root / 'state' / 'sessions.sqlite3'
+            assert database.is_file(), 'actual persistent database missing'
+            # The process has exited. Noncreating rw allows SQLite's VFS to
+            # open WAL facilities on supported builds; SQL remains read-only.
+            # Do not use immutable: recovery evidence includes committed WAL.
+            with closing(sqlite3.connect(database.as_uri() + '?mode=rw', uri=True)) as conn:
+                conn.execute('PRAGMA query_only=ON')
+                conn.row_factory = sqlite3.Row
+                records = [dict(row) for row in conn.execute(
+                    'SELECT id,event_id,state,attempts,receipt,started_ms,finished_ms '
+                    'FROM channel_outbox WHERE event_id=? ORDER BY ordinal', (event_id,))]
+                cooldown = conn.execute(
+                    "SELECT until_ms FROM channel_cooldowns WHERE channel='dingtalk' AND installation_id=?",
+                    (installation,)).fetchone()
+                return {'deliveries': records, 'cooldown_until_ms': cooldown[0] if cooldown else None}
+
+        def original_delivery(items, expected):
+            assert len(items) == 1, 'expected one original standalone delivery'
+            item = items[0]
+            assert str(uuid.UUID(item['id'])) == item['id'] and uuid.UUID(item['id']).version == 4
+            assert item['state'] == expected and item['attempts'] == 1
+            return item['id']
 
         # Fail closed before making an auth/message request. Environment from
         # the developer machine cannot supply a real credential fallback.
@@ -320,8 +428,76 @@ try:
             assert webhook(altered)[0] in [200, 400, 401, 403]
         assert model_calls == {} and platform_calls == {} and token_calls == []
 
+        encoded = json.dumps(invalid, separators=(',', ':')).encode()
+        # Supply every positional field in the old typed DTO's exact order,
+        # with valid content/identities. Rejection must come from wire shape,
+        # rather than a missing field or an invalid MAC.
+        positional = [invalid['robotCode'], invalid['chatbotCorpId'], invalid['senderCorpId'],
+                      invalid['senderStaffId'], invalid['conversationType'], invalid['conversationId'],
+                      invalid['msgId'], invalid['msgtype'], invalid['text'], None]
+        wire_cases = [
+            ('root_array', json.dumps(positional).encode(), ('application/json',)),
+            ('text_array', json.dumps({**invalid, 'text': [invalid['text']['content']]}).encode(),
+             ('application/json',)),
+            ('duplicate_robot', encoded.replace(b'"robotCode":',
+             b'"robotCode":' + json.dumps(robot_code).encode() + b',"robotCode":', 1),
+             ('application/json',)),
+            ('duplicate_msgid', encoded.replace(b'"msgId":', b'"msgId":null,"msgId":', 1),
+             ('application/json',)),
+            ('duplicate_content', encoded.replace(b'"content":',
+             b'"content":"dingtalk-fixture:rejected","content":', 1), ('application/json',)),
+            ('mime_text', encoded, ('application/json', 'text/plain')),
+            ('mime_json', encoded, ('application/json', 'application/json')),
+            ('non_json_mime', encoded, ('text/plain',)),
+            ('missing_mime', encoded, ()),
+        ]
+        before_events, before_effects = events(), counters()
+        for name, raw, content_types in wire_cases:
+            status, _ = webhook(invalid, raw=raw, content_types=content_types)
+            assert status == 401, ('callback wire rejection', name, status)
+            assert events() == before_events and counters() == before_effects, ('callback effects', name)
+        print('DingTalk original signed root/text objects, duplicates and unique JSON MIME: passed', flush=True)
+
+        token_cases = ['token_array', 'token_duplicate', 'token_duplicate_expiry',
+                       'token_mime_text', 'token_mime_json', 'token_code_conflict']
+        stop()
+        for case in token_cases:
+            with fixture_lock:
+                token_response_case = case
+            start()  # A real new sender has no cached token; no short expiry/clock injection.
+            before_effects = counters()
+            body = payload(case)
+            item_event = admit(body)
+            items = eventually(lambda: state(item_event['id'], 'permanent_failed'), case + ' token rejection')
+            delivery_id = original_delivery(items, 'permanent_failed')
+            assert items[0]['error'] == 'credential_unavailable' and items[0]['receipt'] is None
+            assert called(case) == 2 and sent(case) == 0
+            assert counters() == {**before_effects, 'token': before_effects['token'] + 1,
+                                  'model': before_effects['model'] + 2}
+            before_events = events()
+            assert webhook(body) == (200, '')
+            assert events() == before_events and deliveries(event_id=item_event['id']) == items
+            assert len(token_calls) == before_effects['token'] + 1 and sent(case) == 0
+            stop()
+            persisted_failure = offline(item_event['id'])
+            assert persisted_failure['deliveries'][0]['id'] == delivery_id
+            assert persisted_failure['deliveries'][0]['state'] == 'permanent_failed'
+            assert persisted_failure['deliveries'][0]['attempts'] == 1
+            assert persisted_failure['cooldown_until_ms'] >= persisted_failure['deliveries'][0]['finished_ms'] + 4000
+            before_restart = counters()
+            start()
+            assert state(item_event['id'], 'permanent_failed') and counters() == before_restart
+            assert request('/api/channels/deliveries/' + delivery_id + '/resolve', 'POST',
+                           {'action': 'cancel'})[0] == 204
+            stop()
+        with fixture_lock:
+            token_response_case = 'normal'
+        start()
+        token_before_ack = len(token_calls)
+        print('DingTalk six original token object/duplicate/MIME failures: no message POST or retry; durable UUID/cooldown: passed', flush=True)
+
         first_body = payload('ack', content='dingtalk-fixture:ack <literal> & plain text')
-        first = admit(first_body)
+        first = admit(first_body, content_types=('application/json; charset=utf-8',))
         assert first['spec']['sender_id'] == first['spec']['destination']['conversation_id'] == 'Alice@Example.COM'
         assert first['spec']['destination']['thread_id'] is None
         assert callback_secret not in json.dumps(first)
@@ -334,7 +510,7 @@ try:
         assert webhook(changed)[0] == 409
         gate('ack').set()
         delivered(first['id'], 'ack')
-        assert len(token_calls) == 1
+        assert len(token_calls) == token_before_ack + 1
 
         # Independent event IDs with identical text remain distinct local sends.
         same_a = admit(payload('same'))
@@ -343,7 +519,13 @@ try:
         delivered(same_b['id'], 'same', expected_calls=4)
         assert same_a['id'] != same_b['id'] and sent('same') == 2
         assert platform_calls['same'][0]['body'] == platform_calls['same'][1]['body']
-        assert len(token_calls) == 1
+        assert len(token_calls) == token_before_ack + 1
+
+        for case in ['filter_omitted', 'filter_null', 'filter_empty']:
+            item_event = admit(payload(case))
+            items = delivered(item_event['id'], case)
+            original_delivery(items, 'delivered')
+            assert sent(case) == 1 and len(token_calls) == token_before_ack + 1
 
         long_event = admit(payload('long', sender='Long.User'))
         parts = delivered(long_event['id'], 'long')
@@ -353,10 +535,20 @@ try:
         assert sent('long') == len(parts)
         assert all(b['at'] - a['completed_at'] >= 3.8 for a, b in zip(all_sends, all_sends[1:]))
 
+        send_wire_cases = ['send_array', 'send_duplicate_receipt', 'send_duplicate_filter',
+                           'send_mime_text', 'send_mime_json', 'send_code_receipt', 'send_code_empty_receipt']
         for case in ['unknown', 'unknown_client', 'rate_unknown', 'invalid_user',
-                     'flow_controlled', 'filtered_user', 'missing_receipt']:
-            item_event = admit(payload(case))
+                     'flow_controlled', 'filtered_user', 'missing_receipt'] + send_wire_cases:
+            body = payload(case)
+            item_event = admit(body)
             items = eventually(lambda: state(item_event['id'], 'unknown'), case + ' unknown')
+            delivery_id = original_delivery(items, 'unknown')
+            assert items[0]['receipt'] is None
+            if case in send_wire_cases:
+                before_events, before_effects = events(), counters()
+                assert webhook(body) == (200, '')
+                assert events() == before_events and counters() == before_effects
+                assert deliveries(event_id=item_event['id']) == items
             if case == 'unknown':
                 stop(kill=True)
                 start()
@@ -366,12 +558,52 @@ try:
                 other_event = admit(payload('other_user', sender='Long.User'))
                 delivered(other_event['id'], 'other_user')
                 assert sent('review_wait') == 0
+            if case == 'send_array':
+                stop()
+                stopped = offline(item_event['id'])
+                assert stopped['deliveries'][0]['id'] == delivery_id
+                assert stopped['deliveries'][0]['state'] == 'unknown'
+                assert stopped['deliveries'][0]['attempts'] == 1
+                assert stopped['cooldown_until_ms'] >= stopped['deliveries'][0]['finished_ms'] + 4000
+                saved_settings = copy.deepcopy(settings)
+                saved_env = env.copy()
+                settings['http']['channels'] = []
+                settings['http'].pop('dingtalk_app_secret', None)
+                settings['scheduler']['enabled'] = False
+                settings['heartbeat'] = {'enabled': False}
+                env.pop('JIACLAW_DINGTALK_APP_SECRET', None)
+                before_maintenance = counters()
+                start(expected_channel_state='disabled', jobs_enabled=False)
+                assert app_secret not in config.read_text() and access_token not in config.read_text()
+                status, reviewed = request('/api/channels/deliveries/' + delivery_id)
+                assert status == 200 and reviewed == items[0]
+                assert request('/hooks/dingtalk', 'POST', {}, authenticated=False)[0] == 404
+                time.sleep(.2)
+                assert counters() == before_maintenance
+                stop()
+                assert offline(item_event['id']) == stopped
+                settings.clear()
+                settings.update(saved_settings)
+                env.clear()
+                env.update(saved_env)
+                start()
+                assert state(item_event['id'], 'unknown') and counters() == before_maintenance
+                wire_wait = admit(payload('wire_wait'))
+                eventually(lambda: state(wire_wait['id'], 'pending'), 'wire unknown blocks same recipient')
+                assert called('wire_wait') == 2 and sent('wire_wait') == 0
             time.sleep(.2)
             assert called(case) == 2 and sent(case) == 1
-            assert request('/api/channels/deliveries/' + items[0]['id'] + '/resolve', 'POST',
+            assert request('/api/channels/deliveries/' + delivery_id + '/resolve', 'POST',
                            {'action': 'cancel'})[0] == 204
             if case == 'unknown':
                 delivered(waiting_event['id'], 'review_wait')
+            if case == 'send_array':
+                delivered(wire_wait['id'], 'wire_wait')
+            if case in send_wire_cases:
+                cancelled = deliveries(event_id=item_event['id'])
+                assert original_delivery(cancelled, 'cancelled') == delivery_id
+                assert called(case) == 2 and sent(case) == 1
+        print('DingTalk seven original send object/duplicate/MIME/conflicting receipts: one POST and unknown hold; original UUID/cooldown and credential-free stopped maintenance: passed', flush=True)
 
         submitting = admit(payload('submitting'))
         eventually(lambda: sent('submitting') == 1, 'request received by platform')
@@ -440,6 +672,7 @@ try:
         print('DingTalk signed headers, case-preserving identity, durable ACK/dedup and native tools: passed')
         print('DingTalk fixed endpoints/token reuse, UTF-16 split, spacing and unknown/crash recovery: passed')
         print('DingTalk exact scheduled recipients, ignored callback URLs, environment credentials and secret handling: passed')
+        print('DingTalk filtered recipient lists omitted/null/empty accepted; nonempty fails closed: passed')
 finally:
     if process and process.poll() is None:
         process.kill()
