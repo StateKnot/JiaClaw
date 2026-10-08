@@ -725,6 +725,7 @@ mod tests {
                 control: Arc::new(tokio::sync::Semaphore::new(8)),
                 scheduled_jobs: false,
                 telegram: None,
+                slack: None,
             });
             let (release, receiver) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();
@@ -808,6 +809,7 @@ mod tests {
             control: Arc::new(tokio::sync::Semaphore::new(8)),
             scheduled_jobs: true,
             telegram: None,
+            slack: None,
         });
         let id = Uuid::new_v4();
         for (method, path) in [

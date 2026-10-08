@@ -62,7 +62,7 @@ pub(super) struct Runtime {
 fn now_ms() -> i64 {
     crate::scheduler::now_ms()
 }
-fn secret_file(path: &std::path::Path) -> Result<String> {
+pub(super) fn secret_file(path: &std::path::Path) -> Result<String> {
     let metadata = path
         .symlink_metadata()
         .context("inspect Telegram secret file")?;
@@ -857,52 +857,24 @@ pub(super) fn admin(config: &Config, binding_id: Uuid, action: AdminAction) -> R
     };
     Ok(json!({"binding_id":binding_id.to_string(),"result":value}))
 }
-/// A Telegram user's hold cannot be cleared while its local queues need review.
-/// Hold the gateway process lock through registry clearing to close restart races.
+#[cfg(test)]
 pub(super) fn review_guard(
     config: &Config,
     registry: &Registry,
     user: Uuid,
 ) -> Result<Option<File>> {
+    super::channel_review_guard(config, registry, user)
+}
+pub(super) fn review_pending(config: &Config, registry: &Registry, user: Uuid) -> Result<()> {
     let Some(binding) = registry
         .list_telegram_bindings()?
         .into_iter()
         .find(|b| b.user_id == user)
     else {
-        return Ok(None);
+        return Ok(());
     };
-    let guard = stopped(config)?;
-    registry.recover_writes()?;
     let store = TelegramStore::open(&config.registry_path, &binding)?;
-    let mut offset = 0;
-    loop {
-        let events = store.inner.list_channel_events(100, offset)?;
-        ensure!(
-            events.iter().all(|e| e.status != "processing"
-                && (e.status != "needs_review" || e.reviewed_ms.is_some())),
-            "review/cancel unresolved Telegram events before clearing the hold"
-        );
-        if events.len() < 100 {
-            break;
-        }
-        offset += 100;
-    }
-    let mut offset = 0;
-    loop {
-        let deliveries = store.inner.list_channel_deliveries(None, 100, offset)?;
-        ensure!(
-            deliveries.iter().all(|d| !matches!(
-                d.state.as_str(),
-                "submitting" | "unknown" | "permanent_failed" | "expired"
-            )),
-            "resolve or cancel unresolved Telegram deliveries before clearing the hold"
-        );
-        if deliveries.len() < 100 {
-            break;
-        }
-        offset += 100;
-    }
-    Ok(Some(guard))
+    super::review_queue(&store.inner)
 }
 
 #[cfg(test)]
@@ -1029,6 +1001,7 @@ mod tests {
                 control: Arc::new(Semaphore::new(1)),
                 scheduled_jobs: false,
                 telegram: Some(runtime),
+                slack: None,
             });
             (state, installation)
         }

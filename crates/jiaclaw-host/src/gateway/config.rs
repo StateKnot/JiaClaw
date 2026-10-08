@@ -9,7 +9,7 @@ use std::{
     fs::File,
     io::Read,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -37,6 +37,9 @@ pub struct Config {
     /// Dedicated Telegram private-chat installations, authorized by immutable registry bindings.
     #[serde(default)]
     pub telegram: Vec<TelegramConfig>,
+    /// Dedicated Slack app installations, each bound to one user and private DM.
+    #[serde(default)]
+    pub slack: Vec<SlackConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -60,6 +63,21 @@ pub struct TelegramConfig {
 }
 fn telegram_api() -> String {
     "https://api.telegram.org".into()
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlackConfig {
+    pub binding_id: String,
+    pub bot_token_file: PathBuf,
+    pub signing_secret_file: PathBuf,
+    #[serde(default = "slack_api")]
+    pub api_base: String,
+    #[serde(default)]
+    pub allow_loopback: bool,
+}
+fn slack_api() -> String {
+    "https://slack.com/api".into()
 }
 
 fn default_bind() -> String {
@@ -166,6 +184,46 @@ impl Config {
                 entry.allow_loopback,
             )?;
         }
+        ensure!(
+            self.slack.len() <= 32,
+            "at most 32 Slack bindings are supported"
+        );
+        ensure!(
+            self.slack.is_empty() || self.request_timeout_seconds >= 150,
+            "Slack requires request_timeout_seconds >= 150"
+        );
+        let mut slack_ids = HashSet::new();
+        for entry in &self.slack {
+            ensure!(
+                uuid::Uuid::parse_str(&entry.binding_id).is_ok_and(|id| !id.is_nil()
+                    && id.get_variant() == uuid::Variant::RFC4122
+                    && id.to_string() == entry.binding_id),
+                "Slack binding_id must be a canonical non-nil RFC4122 UUID"
+            );
+            ensure!(
+                slack_ids.insert(&entry.binding_id),
+                "duplicate Slack binding_id"
+            );
+            ensure!(
+                [&entry.bot_token_file, &entry.signing_secret_file]
+                    .into_iter()
+                    .all(|path| path.is_absolute()
+                        && path.file_name().is_some()
+                        && !path
+                            .components()
+                            .any(|part| matches!(part, Component::ParentDir))),
+                "Slack secret paths must be absolute without parent traversal"
+            );
+            ensure!(
+                entry.api_base.len() <= 2048,
+                "Slack API base exceeds its size limit"
+            );
+            crate::outbound::validate_api_base(
+                crate::channel_types::Channel::Slack,
+                &entry.api_base,
+                entry.allow_loopback,
+            )?;
+        }
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
@@ -249,6 +307,7 @@ mod tests {
         assert_eq!(c.request_timeout_seconds, 180);
         assert_eq!(c.max_in_flight, 16);
         assert!(!c.scheduled_jobs);
+        assert!(c.slack.is_empty());
         c.scheduled_jobs = true;
         c.request_timeout_seconds = 149;
         assert!(c.validate().is_err());
@@ -439,6 +498,104 @@ mod tests {
         for value in [json!(null), json!(1), json!("true")] {
             let mut input = telegram_value();
             input["telegram"][0]["allow_loopback"] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err());
+        }
+    }
+
+    fn slack_value() -> serde_json::Value {
+        let mut input = value();
+        input["slack"] = json!([{"binding_id":"12345678-1234-4234-9234-123456789012","bot_token_file":"/tmp/bot.token","signing_secret_file":"/tmp/signing.secret"}]);
+        input
+    }
+
+    #[test]
+    fn slack_configuration_requires_bounded_canonical_bindings_paths_and_explicit_loopback() {
+        let c = config(slack_value());
+        c.validate().unwrap();
+        assert_eq!(c.slack[0].api_base, "https://slack.com/api");
+        assert!(!c.slack[0].allow_loopback);
+        for id in [
+            "",
+            "00000000-0000-0000-0000-000000000000",
+            "ABCDEF01-2345-4678-9ABC-DEF012345678",
+            "abcdef01-2345-4678-1abc-def012345678",
+            "not-uuid",
+        ] {
+            let mut c = config(slack_value());
+            c.slack[0].binding_id = id.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(slack_value());
+        c.request_timeout_seconds = 149;
+        assert!(c.validate().is_err());
+        c.request_timeout_seconds = 150;
+        c.validate().unwrap();
+        c.slack.push(c.slack[0].clone());
+        assert!(c.validate().is_err());
+        let mut c = config(slack_value());
+        c.slack = (0..32)
+            .map(|_| {
+                let mut entry = c.slack[0].clone();
+                entry.binding_id = uuid::Uuid::new_v4().to_string();
+                entry
+            })
+            .collect();
+        c.validate().unwrap();
+        c.slack.push(c.slack[0].clone());
+        assert!(c.validate().is_err());
+        for url in [
+            "https://other.example/api",
+            "http://localhost:8080/api",
+            "https://slack.com/other",
+            "https://secret@slack.com/api",
+            "https://slack.com/api?secret=token",
+            "https://slack.com/api#secret",
+            "http://127.0.0.1:8080/other",
+        ] {
+            let mut c = config(slack_value());
+            c.slack[0].api_base = url.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(slack_value());
+        c.slack[0].api_base = "http://127.0.0.1:8080/api".into();
+        assert!(c.validate().is_err());
+        c.slack[0].allow_loopback = true;
+        c.validate().unwrap();
+        for path in ["relative.secret", "/tmp/../secret", "/"] {
+            for signing in [false, true] {
+                let mut c = config(slack_value());
+                if signing {
+                    c.slack[0].signing_secret_file = path.into();
+                } else {
+                    c.slack[0].bot_token_file = path.into();
+                }
+                assert!(c.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn slack_configuration_rejects_inline_credentials_and_caller_owned_identity() {
+        for (field, value) in [
+            ("bot_token", json!("secret")),
+            ("signing_secret", json!("secret")),
+            ("team_id", json!("T1")),
+            ("app_id", json!("A1")),
+            ("bot_user_id", json!("U1")),
+            ("bot_id", json!("B1")),
+            ("sender_id", json!("U2")),
+            ("conversation_id", json!("D1")),
+            ("backend_id", json!("other")),
+            ("user_id", json!("other")),
+            ("enabled", json!(true)),
+        ] {
+            let mut input = slack_value();
+            input["slack"][0][field] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err(), "{field}");
+        }
+        for value in [json!(null), json!(1), json!("true")] {
+            let mut input = slack_value();
+            input["slack"][0]["allow_loopback"] = value;
             assert!(serde_json::from_value::<Config>(input).is_err());
         }
     }

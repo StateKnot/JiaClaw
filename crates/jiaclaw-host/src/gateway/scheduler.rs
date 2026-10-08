@@ -444,6 +444,7 @@ mod tests {
             control: Arc::new(Semaphore::new(8)),
             scheduled_jobs: true,
             telegram: None,
+            slack: None,
         });
         (state, user, fake, server)
     }

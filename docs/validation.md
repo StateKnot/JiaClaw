@@ -356,3 +356,22 @@ Ubuntu 的既有 tenant Telegram 基本流程在消息已 delivered 后，等待
 最终二进制定向 SQL 故障注入亦退出码 0：在临时 registry 中，仅对发件回执后的 hold 删除设置失败 trigger；本机平台 fixture 的 delivery 已为 delivered、尝试次数为 1，但 finish 收到 `SQLITE_ABORT` 后保留原 in_flight hold，原 20 秒结算 guard 按预期失败，没有释放锁或重发。诊断只记录静态 `registry_storage`、`known=true` 及匹配的 request/user ID，默认审计元数据保留对应 `telegram_send` 关联。该场景的 stdout 与 gateway 日志均未包含注入的私密错误正文/note、一次性 Key/模型/后端/Bot/webhook Secret 或基本场景 prompt 标记；显式 notes 查询仍遵循前述私密管理边界。
 
 这项故障注入证明诊断可关联真实失败并保留保守停止语义，不能证明首轮 Ubuntu CI 的未知 hold 超时由同一原因引起或已修复。最终 CI 结果将在 PR 记录对应精确 head，并由下一批验证记录回填，避免为记录自身 SHA 反复改提交；完整多用户里程碑与真实供应商/渠道认证仍未完成。
+
+## 独立用户 Slack 批次
+
+2026-10-08 04:38 UTC 回访核对：附着 PR #58–#82 均仍为 OPEN draft，当前 head 检查成功，无 review/thread。PR #82 最终 head `32c5830cc1f6caf008b39149f884bc6b464aac24` 已通过 [CI 37726979505](https://github.com/jiawenyao401/JiaClaw/actions/runs/37726979505)：container job `113147283883`、macOS `113147284066`、Ubuntu `113147284088` 均 completed/success。默认并行 Rust、Telegram、审计、浏览器和真实 Docker/限额卷验收通过；这没有确定首轮 Ubuntu Telegram 超时原因，也不认证全部共享磁盘或供应商能力。
+
+StateKnot main 更新至 `c9318368bbb70fbf6f9318deb961bd2c450227ee`，仅 #141 依赖/CI 管理修改，无 runtime/integration 合同变化；最新仍 0.1.0-alpha.1，#140 OPEN。Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc` 未变，无 release，#31/#41 OPEN，PR #40 仍 draft 未合并。没有新可消费的 durable 原生 Schema 合同，继续精确 HTTP MCP 依赖，不提交重复 issue。
+
+本批实现默认关闭的独立用户 Slack；生产配置、范围、容量和人工恢复见[指南](tenant-slack.md)。registry schema 4 保留旧 Key 权限/hold/审计/Telegram，永久预留专用 App 与固定用户/后端/工作区/Bot/成员/DM。原始签名、四次平台身份握手、2.8 秒 ACK、私有队列、共享执行授权和离线复核接入实际路径；后端 protocol 2 永久预留同一身份，request UUIDv7/平台 event ID/固定会话受限，记录与结果原子提交。metadata 收据只是核对依据，没有自动重放或清 hold。
+
+本机验证已完成：
+
+- 全量 Rust 串行 975 项通过（library 372、core 123、host 480），1 项真实 Docker 专项本机 ignored，交给 Linux CI；最终谓词整理及测试锁作用域修订后，runtime 六项定向复验通过。fmt、所需 Clippy correctness/suspicious、锁定构建、Python 语法与 diff-check 通过；仍有 style/pedantic warnings。首次未提升权限的本机全量运行因 localhost/FIFO 被沙箱拒绝而失败；完整验证使用已授权的本地 fixture 权限，没有将权限失败归因于产品。
+- 新 registry 十项、SlackStore 八项、runtime 六项、后端七项及 recorded claim 三项测试覆盖 schema 1/2/3 升级与失败回滚、专用 App 终身唯一、owner/OR REPLACE 防改绑、普通/Telegram/未来版本库拒绝、文件权限/链接/独占锁、真实 64 MiB SQLITE_FULL 和 claim 双向事务回滚；处理中的原 request、admitted/completed 收据跨重开保持，不重放模型。
+- 最终二进制 `tenant_slack.py` 八组全部通过、退出码 0，运行前后 SHA256 `bd4c3f27ff5906c717d48e42a3869c9ffff2f058ef76c4b87120b7b1f62b5574` 一致。两个真实 JiaClaw 后端、localhost Brokerrouter/Slack 协议 fixture、实际 SQLite/CLI 验证四次平台身份握手、U/W ID、签名/重复头/过期/篡改/2 秒正文/64 KiB/2.8 秒 ACK、普通格式块只用 text、纯文本转义、固定收发与会话隔离。
+- 真实 registry BEGIN IMMEDIATE 持锁期间，错误 MAC 仍直接 401，rollback 后 audit/hold/队列/模型/发送不变；同 App 跨工作区绑定也被真实 CLI 拒绝。仅剩只读 HTTP Key 时，独立 Slack 授权仍生效；用户禁用和共享 hold 阻止下一次准入。
+- 未知第一片阻挡后续片，429 绝对冷却跨重启、五次上限，停机 inspect/resolve/cancel/purge 和 review-clear 保留原关联；真正 SIGKILL 网关而模型继续提交、真正 SIGKILL 已发 POST，两种恢复均保留原 request ID，无模型或平台自动重发。后端 metadata 从 admitted 到 completed 可核对但不自动解 hold。永久撤销、owner 错误交换、在线维护锁及日志隐私断言通过。
+- 同一最终二进制的既有十套进程回归全通过、退出码 0：user_gateway、read_only_keys 五组、gateway_audit 四组、tenant_cron 四组、tenant_telegram 七组、mcp、native_tools、e2e、channels、scheduled_delivery。所有模型/平台调用为本机合成凭据，没有真实安装或付费供应商调用。
+
+新 Slack fixture 已加入 Ubuntu/macOS CI；真实限额卷 container 验收增加 schema 4 App 预留/撤销/重启、默认关闭及私有路由拒绝，但没有配置 Slack runtime，不能据此认证其容器内收发或共享网关卷压力。本机未执行 Linux 容器组；本批最终精确提交的 CI 结果将在 PR 核对并由下一批文档回填。协议 fixture 不认证真实 Slack 安装或 StateKnot durable。

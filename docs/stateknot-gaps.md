@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对日期：2026-10-08；上游 main：`fbd629d73e50610dc8f4889b47e05f698cc110e7`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/README.md)。
+核对日期：2026-10-08；上游 main：`c9318368bbb70fbf6f9318deb961bd2c450227ee`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/c9318368bbb70fbf6f9318deb961bd2c450227ee/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/c9318368bbb70fbf6f9318deb961bd2c450227ee/README.md)。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -8,7 +8,7 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 2026-10-03 回访核对：main、v0.1.0-alpha.1 和 #140 状态未变化；优先保持已接入 HTTP MCP 的回归，durable 继续受 Brokerrouter #41 原生输出合同阻挡。
 
-2026-10-08 再次通过 GitHub 官方 API 核对：main SHA 与最新 prerelease 版本未变化，#140 仍 OPEN 且无回复；main 当前检查 rollup 为 SUCCESS。没有新上游合同或认证证据；本批只读 API Key 属于应用权限接线。
+2026-10-08 04:38 UTC 回访通过 GitHub 官方 API 核对：main 推进至上述 SHA，合并 #141 仅更新依赖 pin/lockfile、setup-uv 与 Dependabot；README 与 runtime/integrations 源码合同未变。最新 prerelease 仍为 0.1.0-alpha.1，#140 仍 OPEN 且无回复，main 检查 SUCCESS。不会将应用精确依赖切换到浮动 main；新依赖提交没有解除 stdio/durable 门槛。
 
 ## MCP 现状与新议题
 
@@ -28,4 +28,4 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
 
-独立用户 Telegram 的 registry 准入、私有 inbox/outbox 与人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。本次 main/release/#140 无变化，不能将此渠道切片计为上游运行时认证。
+独立用户 Telegram 的 registry 准入、私有 inbox/outbox 与人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。本次 main 仅依赖治理变化，release/#140 未变；独立用户 Slack 同样只属于应用准入，不计为上游运行时认证。

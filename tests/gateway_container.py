@@ -487,6 +487,32 @@ try:
     wait_gateway()
     assert request('/api/sessions', issued['alice']['token'])[0] == 401
     assert messages(a) == a_history and messages(b) == b_history
+    # Schema 4 bindings persist on the real bounded gateway volume; runtime stays
+    # explicitly off. Platform ingress/provisioning is qualified separately.
+    slack_binding = admin('slack-bind', '--user', issued['alice']['user_id'],
+                          '--team-id', 'TCONTAINER', '--app-id', 'ACONTAINER',
+                          '--bot-user-id', 'WBOTCONTAINER', '--bot-id', 'BCONTAINER',
+                          '--sender-id', 'UHUMANCONTAINER', '--conversation-id', 'DCONTAINER')
+    assert slack_binding['backend_id'] == 'alice' and slack_binding['enabled']
+    assert admin('slack-bindings')['bindings'] == [slack_binding]
+    assert request('/hooks/slack/' + slack_binding['id'], method='POST', data={})[0] == 404
+    for path in ['/internal/channels/slack/status', '/internal/channels/slack-binding',
+                 '/internal/channels/slack/execute', '/api/gateway/slack-bindings']:
+        assert request(path, a)[0] == 404, path
+    admin('slack-revoke', '--binding', slack_binding['id'])
+    docker('restart', gateway_name)
+    wait_gateway()
+    restored_binding = admin('slack-bindings')['bindings'][0]
+    assert restored_binding == dict(slack_binding, enabled=False)
+    rejected_binding = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'slack-bind',
+                              '--config', '/etc/jiaclaw/gateway.json', '--user', issued['bob']['user_id'],
+                              '--team-id', 'TCONTAINER', '--app-id', 'ACONTAINER',
+                              '--bot-user-id', 'WBOTCONTAINER', '--bot-id', 'BCONTAINER',
+                              '--sender-id', 'UBOBCONTAINER', '--conversation-id', 'DBOBCONTAINER', check=False)
+    assert rejected_binding.returncode != 0, 'revoked installation was reassigned'
+    assert admin('slack-bindings')['bindings'] == [restored_binding]
+    assert messages(a) == a_history and messages(b) == b_history
+    print('PASS: schema 4 Slack immutable reservation and revocation survive real bounded-volume restart; default-off ingress and private routes stay unavailable')
     # Persisted admission is observed through the real admin API before SIGKILL.
     # Pausing only this fixture backend holds the write without vendor calls.
     docker('pause', backend_names['alice'])

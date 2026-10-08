@@ -603,12 +603,51 @@ pub(super) fn enqueue_job_delivery(
     Ok(())
 }
 
-// Only the private gateway Telegram store creates this ledger. Keep these
-// checks inside the same IMMEDIATE transaction as the claim; ordinary channel
-// callers never touch the table.
+// Only private gateway channel stores create these ledgers. The selected table
+// is an internal enum, never client input. Checks and insertion share the claim's
+// IMMEDIATE transaction; ordinary channel callers never touch either table.
 pub(super) const MAX_TELEGRAM_OPERATIONS: usize = 16_000;
+pub(super) const MAX_SLACK_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 
-fn check_recorded_claim(conn: &Connection, request_id: &str) -> Result<()> {
+#[derive(Clone, Copy)]
+enum RecordedChannel {
+    Telegram,
+    Slack,
+}
+impl RecordedChannel {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Telegram => "gateway_telegram_operations",
+            Self::Slack => "gateway_slack_operations",
+        }
+    }
+    fn channel(self) -> Channel {
+        match self {
+            Self::Telegram => Channel::Telegram,
+            Self::Slack => Channel::Slack,
+        }
+    }
+    fn full_message(self) -> &'static str {
+        match self {
+            Self::Telegram => {
+                "Telegram operation ledger is full; reconcile and purge reviewed events"
+            }
+            Self::Slack => "Slack operation ledger is full; reconcile and purge reviewed events",
+        }
+    }
+    fn capacity(self) -> usize {
+        match self {
+            Self::Telegram => MAX_TELEGRAM_OPERATIONS,
+            Self::Slack => MAX_SLACK_OPERATIONS,
+        }
+    }
+}
+
+fn check_recorded_claim(
+    conn: &Connection,
+    request_id: &str,
+    ledger: RecordedChannel,
+) -> Result<()> {
     let id = uuid::Uuid::parse_str(request_id)?;
     ensure!(
         id.get_version_num() == 7
@@ -617,20 +656,20 @@ fn check_recorded_claim(conn: &Connection, request_id: &str) -> Result<()> {
         "recorded channel request must be a canonical UUIDv7"
     );
     let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM gateway_telegram_operations WHERE request_id=?1)",
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE request_id=?1)",
+            ledger.table()
+        ),
         [request_id],
         |row| row.get(0),
     )?;
     ensure!(!exists, "recorded channel request ID was already used");
     let count: usize = conn.query_row(
-        "SELECT count(*) FROM gateway_telegram_operations",
+        &format!("SELECT count(*) FROM {}", ledger.table()),
         [],
         |row| row.get(0),
     )?;
-    ensure!(
-        count < MAX_TELEGRAM_OPERATIONS,
-        "Telegram operation ledger is full; reconcile and purge reviewed events"
-    );
+    ensure!(count < ledger.capacity(), "{}", ledger.full_message());
     Ok(())
 }
 
@@ -736,18 +775,25 @@ impl SessionStore {
         now: i64,
         request_id: &str,
     ) -> Result<Option<ChannelEvent>> {
-        self.claim_channel_event_impl(now, Some(request_id))
+        self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Telegram)))
+    }
+    pub(super) fn claim_slack_event_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Slack)))
     }
     fn claim_channel_event_impl(
         &mut self,
         now: i64,
-        request_id: Option<&str>,
+        recorded: Option<(&str, RecordedChannel)>,
     ) -> Result<Option<ChannelEvent>> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(request_id) = request_id {
-            check_recorded_claim(&tx, request_id)?;
+        if let Some((request_id, ledger)) = recorded {
+            check_recorded_claim(&tx, request_id, ledger)?;
         }
         expire_tokens(&tx, now)?;
         let active: usize = tx.query_row(
@@ -772,12 +818,12 @@ impl SessionStore {
             return Ok(None);
         };
         tx.execute("UPDATE channel_events SET status='processing',started_ms=?2 WHERE id=?1 AND status='received'",params![event.id,now])?;
-        if let Some(request_id) = request_id {
+        if let Some((request_id, ledger)) = recorded {
             ensure!(
-                event.spec.destination.channel == Channel::Telegram,
-                "recorded event claims require a Telegram event"
+                event.spec.destination.channel == ledger.channel(),
+                "recorded event claim channel differs from its private ledger"
             );
-            tx.execute("INSERT INTO gateway_telegram_operations(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'event',?2,NULL,1,?3)",
+            tx.execute(&format!("INSERT INTO {}(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'event',?2,NULL,1,?3)", ledger.table()),
                 params![request_id,event.id,now])?;
         }
         event.status = "processing".into();
@@ -871,18 +917,25 @@ impl SessionStore {
         now: i64,
         request_id: &str,
     ) -> Result<Option<ChannelDelivery>> {
-        self.claim_channel_delivery_impl(now, Some(request_id))
+        self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Telegram)))
+    }
+    pub(super) fn claim_slack_delivery_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Slack)))
     }
     fn claim_channel_delivery_impl(
         &mut self,
         now: i64,
-        request_id: Option<&str>,
+        recorded: Option<(&str, RecordedChannel)>,
     ) -> Result<Option<ChannelDelivery>> {
         let tx = self
             .channel_conn_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(request_id) = request_id {
-            check_recorded_claim(&tx, request_id)?;
+        if let Some((request_id, ledger)) = recorded {
+            check_recorded_claim(&tx, request_id, ledger)?;
         }
         expire_tokens(&tx, now)?;
         // In-flight/unknown requests retain credit indefinitely. A receipt or
@@ -917,12 +970,12 @@ impl SessionStore {
                 .ok_or_else(|| anyhow::anyhow!("WeCom budget timestamp overflow"))?;
             tx.execute("INSERT INTO wecom_send_reservations(installation_id,delivery_id,attempt,reserved_ms) VALUES(?1,?2,?3,?4)", params![record.destination.installation_id,record.id,record.attempts+1,now])?;
         }
-        if let Some(request_id) = request_id {
+        if let Some((request_id, ledger)) = recorded {
             ensure!(
-                record.destination.channel == Channel::Telegram && record.event_id.is_some(),
-                "recorded delivery claims require an inbound Telegram event"
+                record.destination.channel == ledger.channel() && record.event_id.is_some(),
+                "recorded delivery claim requires an inbound event in its private ledger channel"
             );
-            tx.execute("INSERT INTO gateway_telegram_operations(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'delivery',?2,?3,?4,?5)",
+            tx.execute(&format!("INSERT INTO {}(request_id,kind,event_id,delivery_id,attempt,claimed_ms) VALUES(?1,'delivery',?2,?3,?4,?5)", ledger.table()),
                 params![request_id,record.event_id,record.id,record.attempts + 1,now])?;
         }
         record.state = "submitting".into();
@@ -3529,5 +3582,241 @@ mod tests {
                 .state,
             "cancelled"
         );
+    }
+    fn recorded_ledgers(db: &SessionStore) {
+        for table in ["gateway_telegram_operations", "gateway_slack_operations"] {
+            db.channel_conn().unwrap().execute_batch(&format!("CREATE TABLE {table}(request_id TEXT PRIMARY KEY NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','delivery')),event_id TEXT NOT NULL REFERENCES channel_events(id) ON DELETE CASCADE,delivery_id TEXT REFERENCES channel_outbox(id) ON DELETE CASCADE,attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 5),claimed_ms INTEGER NOT NULL,CHECK((kind='event' AND delivery_id IS NULL AND attempt=1) OR (kind='delivery' AND delivery_id IS NOT NULL)));" )).unwrap();
+        }
+    }
+    fn ledger_count(db: &SessionStore, table: &str) -> usize {
+        db.channel_conn()
+            .unwrap()
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+    fn slack_spec(event: &str) -> EventSpec {
+        let mut event = spec(event);
+        event.destination.channel = Channel::Slack;
+        event.destination.installation_id = "T0123".into();
+        event.destination.conversation_id = "D0123".into();
+        event
+    }
+    #[test]
+    fn recorded_slack_and_telegram_claims_preserve_separate_atomic_request_ledgers() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db
+            .accept_channel_event(slack_spec("EvRecorded123"), 0)
+            .unwrap();
+        let request = uuid::Uuid::now_v7().to_string();
+        let claimed = db.claim_slack_event_recorded(0, &request).unwrap().unwrap();
+        assert_eq!(accepted.id, claimed.id);
+        assert_eq!(claimed.status, "processing");
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 1);
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
+        let association: (String, String, i64) = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT kind,event_id,attempt FROM gateway_slack_operations WHERE request_id=?1",
+                [&request],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(association, ("event".into(), accepted.id.clone(), 1));
+        db.complete_channel_event(
+            &accepted.id,
+            None,
+            "completed",
+            vec!["hello".into()],
+            None,
+            1,
+        )
+        .unwrap();
+        let send_id = uuid::Uuid::now_v7().to_string();
+        let send = db
+            .claim_slack_delivery_recorded(2, &send_id)
+            .unwrap()
+            .unwrap();
+        let association: (String,String,String,u32) = db.channel_conn().unwrap().query_row("SELECT kind,event_id,delivery_id,attempt FROM gateway_slack_operations WHERE request_id=?1",[&send_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+        assert_eq!(
+            association,
+            ("delivery".into(), accepted.id, send.id.clone(), 1)
+        );
+        db.finish_channel_delivery(
+            &send.id,
+            1,
+            "retry_wait",
+            None,
+            Some("rate_limited".into()),
+            Some(2000),
+            3,
+        )
+        .unwrap();
+        let retry_id = uuid::Uuid::now_v7().to_string();
+        let retry = db
+            .claim_slack_delivery_recorded(2003, &retry_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.attempts, 2);
+        assert_eq!(retry.id, send.id);
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 3);
+        delivered(&mut db, &retry, 2004);
+        let accepted = db.accept_channel_event(spec("tg-recorded"), 2005).unwrap();
+        let request = uuid::Uuid::now_v7().to_string();
+        assert_eq!(
+            db.claim_channel_event_recorded(2005, &request)
+                .unwrap()
+                .unwrap()
+                .id,
+            accepted.id
+        );
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 1);
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 3);
+        db.complete_channel_event(
+            &accepted.id,
+            None,
+            "completed",
+            vec!["old shape".into()],
+            None,
+            2006,
+        )
+        .unwrap();
+        let send_id = uuid::Uuid::now_v7().to_string();
+        assert_eq!(
+            db.claim_channel_delivery_recorded(2007, &send_id)
+                .unwrap()
+                .unwrap()
+                .destination
+                .channel,
+            Channel::Telegram
+        );
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 2);
+    }
+    #[test]
+    fn recorded_wrong_channel_and_failed_ledger_insert_roll_back_claim_and_pacing() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db.accept_channel_event(spec("wrong-channel"), 0).unwrap();
+        assert!(db
+            .claim_slack_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
+        let claimed = db
+            .claim_channel_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(
+            &claimed.id,
+            None,
+            "completed",
+            vec!["hello".into()],
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(db
+            .claim_slack_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let pending = db
+            .list_channel_deliveries(Some(&accepted.id), 10, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(pending.state, "pending");
+        assert_eq!(pending.attempts, 0);
+        let cooldowns: usize = db
+            .channel_conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM channel_cooldowns", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(cooldowns, 0);
+        let delivery = db
+            .claim_channel_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        delivered(&mut db, &delivery, 3);
+        let next = db
+            .accept_channel_event(slack_spec("EvFailLedger123"), 4)
+            .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_slack_operation BEFORE INSERT ON gateway_slack_operations BEGIN SELECT RAISE(ABORT,'fixture ledger failure'); END;").unwrap();
+        assert!(db
+            .claim_slack_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&next.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_slack_operation;")
+            .unwrap();
+        db.claim_slack_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(&next.id, None, "completed", vec!["hello".into()], None, 5)
+            .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_slack_operation BEFORE INSERT ON gateway_slack_operations BEGIN SELECT RAISE(ABORT,'fixture ledger failure'); END;").unwrap();
+        assert!(db
+            .claim_slack_delivery_recorded(6, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let pending = db
+            .list_channel_deliveries(Some(&next.id), 10, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(pending.state, "pending");
+        assert_eq!(pending.attempts, 0);
+        let slack_cooldowns: usize = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM channel_cooldowns WHERE channel='slack'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(slack_cooldowns, 0);
+    }
+    #[test]
+    fn recorded_slack_capacity_and_reused_or_noncanonical_requests_fail_before_claim() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db
+            .accept_channel_event(slack_spec("EvBounded123"), 0)
+            .unwrap();
+        for request in [
+            uuid::Uuid::new_v4().to_string(),
+            "0195CA8E-0000-7000-8000-00000000000A".into(),
+        ] {
+            assert!(db.claim_slack_event_recorded(0, &request).is_err());
+            assert_eq!(
+                db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+                "received"
+            );
+        }
+        let used = uuid::Uuid::now_v7().to_string();
+        db.channel_conn().unwrap().execute("INSERT INTO gateway_slack_operations(request_id,kind,event_id,attempt,claimed_ms) VALUES(?1,'event',?2,1,0)",params![used,accepted.id]).unwrap();
+        assert!(db.claim_slack_event_recorded(0, &used).is_err());
+        db.channel_conn().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_slack_operations(request_id,kind,event_id,attempt,claimed_ms) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),'event',?1,1,0 FROM n",[&accepted.id]).unwrap();
+        assert_eq!(
+            ledger_count(&db, "gateway_slack_operations"),
+            MAX_SLACK_OPERATIONS
+        );
+        assert!(db
+            .claim_slack_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
     }
 }

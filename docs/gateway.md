@@ -2,7 +2,7 @@
 
 `jiaclaw gateway` 为个人 API Key 绑定一个专属 JiaClaw 后端。每个用户使用不同的进程、工作区、SQLite 会话、身份/记忆文件和 Brokerrouter 虚拟 Key。网关负责鉴权、固定后端映射和不确定写入暂停；隔离依赖本页的容器、网络、存储与运维配置，不能只给同一个后端换两个 Key。
 
-支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key 已通过 PR #81 最终跨平台、Chromium 与真实容器 CI，具体权限见下文。本轮增加可信管理员的按用户审计查询，双后端真实进程四组及 Rust 回归已在本机通过；最终跨平台与真实容器 CI 待核对。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
+支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key 已通过 PR #81 最终跨平台、Chromium 与真实容器 CI，具体权限见下文。可信管理员审计查询已通过 PR #82 最终跨平台及真实容器 CI。本批增加默认关闭的[独立用户 Slack 私聊](tenant-slack.md)，固定专用 App/工作区/Bot/成员/DM，以同一 hold 准入。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
 ## 请求与身份合同
 
@@ -15,7 +15,7 @@
 | `POST /api/chat` | 仅 JSON，必须明确 session_id；stream=true 和 SSE Accept 拒绝 |
 | `GET/POST /api/sessions`、`GET/DELETE /api/sessions/{id}` | 仅操作当前 Key 所属的独立后端 |
 | `/api/sessions/{id}/export`、`POST /api/sessions/import` | 支持受限 JSON/JSONL；只允许约定的 format/id/overwrite 查询参数 |
-| 显式后台扩展 | scheduled_jobs 开放受限用户任务接口；telegram 仅开放配置绑定的 POST /hooks/telegram/{binding UUID}；各有独立授权，见专门指南 |
+| 显式后台扩展 | scheduled_jobs 开放受限用户任务接口；telegram/slack 仅开放配置绑定的 POST /hooks/{渠道}/{binding UUID}；各有独立授权，见专门指南 |
 | 其他路径 | 不代理，返回 404；包括单实例渠道管理、metrics、工具/技能管理和任意 URL |
 
 会话 ID 限 1–128 个 ASCII 字母、数字、短横线、下划线、点；保留值 `.`、`..`、`import` 不可使用，不接受编码路径绕过。两个用户可以使用相同的 session ID，记录仍位于不同数据库。工作台切换或鉴权失败时清除上一身份的会话/消息/输入状态。
@@ -119,13 +119,13 @@ jiaclaw gateway user-enable --config /etc/jiaclaw/gateway.json --user YOUR_USER_
 
 `key-list --user` 返回 `{keys: [...]}`，每项仅含 `key_id`、`user_id`、`read_only`、`created_ms`、`revoked_ms`，不返回 Token 或 verifier；`--limit` 默认为 20、范围 1–100，`--offset` 为 0–1024。该列表沿用有界 Key 历史，不能作为永久撤销审计档案。禁用用户、撤销 Key 对之后的准入生效；只读 Key 的存在或所有 Key 被撤销都不取消另行授权的 cron/Telegram 后台工作。停止这些工作须使用相应任务/绑定管理或禁用用户，已经提交的外部请求仍须核对。
 
-registry 自动从 schema 1/2 事务迁移到 schema 3，既有 Key 保持完整权限，保留原身份、撤销状态、hold 和 Telegram 绑定。升级前停机备份；旧二进制拒绝 schema 3，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
+registry 自动从 schema 1/2/3 事务迁移到 schema 4，既有 Key 保持完整权限，保留原身份、撤销状态、hold 和 Telegram/Slack 绑定。升级前停机备份；旧二进制拒绝 schema 4，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
 
 网关 registry 放在独立 `/data/gateway/registry.sqlite3`，目录须为当前 UID 私有 0700、数据库 0600；首次创建会设置这些权限。`/data` 卷本身必须可由 10001 创建该子目录。网关进程有独立锁，禁止第二个 serve 同时打开同一 registry；普通用户/Key/绑定管理使用短 SQLite 事务；Telegram 离线审计、resolve/cancel/purge 和对应用户的 review-clear 则要求停止网关并取得该服务锁。
 
 ## 按用户查询管理审计
 
-可信管理员可在 registry 所在的受保护主机或网关容器运行 `gateway audit-list`；没有公共 HTTP 路由或工作台入口，个人 API Key 不能调用此管理命令。禁用用户仍可查询，查询不会启用用户、解除 hold 或重放任何工作。无需新增 registry schema；当前仍为 schema 3。
+可信管理员可在 registry 所在的受保护主机或网关容器运行 `gateway audit-list`；没有公共 HTTP 路由或工作台入口，个人 API Key 不能调用此管理命令。禁用用户仍可查询，查询不会启用用户、解除 hold 或重放任何工作。审计本身不新增 schema；当前 Slack 身份扩展使用 schema 4。
 
 ```sh
 jiaclaw gateway audit-list --config /etc/jiaclaw/gateway.json \
@@ -160,7 +160,7 @@ jiaclaw gateway review-clear --config /etc/jiaclaw/gateway.json \
 
 生产 Compose 给网关 320 秒正常停止宽限，为最大 300 秒后端转发期限、请求体读取和排空保留余量；后端 35 秒与其 30 秒本地优雅退出相配。更新时先排空并停止网关，再停止后端；不要反过来让已转发请求失去接收方。强制停止会保守留下 hold。
 
-备份前停止网关和后端，分别备份 registry（含 WAL/SHM）、各自完整 `/data` 和所需 Secret，保持所有权/私有权限。启用 Telegram 时还须备份 registry 旁整个 telegram 目录（各绑定库及其 WAL/SHM）。这些库不是一个跨服务事务；网关队列各文件逻辑私有，但共享网关限额卷，不具备逐用户物理磁盘隔离。恢复旧 registry 会回退 Key 撤销、用户禁用和 hold 记录，不能直接恢复对外服务；必须重新核对恢复点之后的 Key/准入/外部效果，执行必要撤销并确认后端空闲。恢复旧后端库也不能撤回模型/工具效果。限额满、权限错误或迁移失败须保持拒绝准入并修复，不删除审计来继续执行。
+备份前停止网关和后端，分别备份 registry（含 WAL/SHM）、各自完整 `/data` 和所需 Secret，保持所有权/私有权限。启用 Telegram/Slack 时还须备份 registry 旁整个 telegram/slack 目录（各绑定库及其 WAL/SHM）。这些库不是一个跨服务事务；网关队列各文件逻辑私有，但共享网关限额卷，不具备逐用户物理磁盘隔离。恢复旧 registry 会回退 Key 撤销、用户禁用和 hold 记录，不能直接恢复对外服务；必须重新核对恢复点之后的 Key/准入/外部效果，执行必要撤销并确认后端空闲。恢复旧后端库也不能撤回模型/工具效果。限额满、权限错误或迁移失败须保持拒绝准入并修复，不删除审计来继续执行。
 
 卸载或重建网络时先停止服务，再移除本项目规则，最后删除网络；不要在运行期间解除保护：
 

@@ -22,7 +22,8 @@ const MAX_ACTIVE_KEYS: i64 = 8;
 const MAX_KEYS: i64 = 1024;
 const MAX_AUDIT_EVENTS: i64 = 4096;
 const MAX_TELEGRAM_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 3;
+const MAX_SLACK_BINDINGS: i64 = 32;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -50,6 +51,23 @@ pub struct TelegramBindingSummary {
     pub backend_id: String,
     pub bot_id: String,
     pub sender_id: String,
+    pub enabled: bool,
+}
+
+/// Permanent dedicated Slack installation and private direct-message ownership.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SlackBindingSummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub backend_id: String,
+    pub team_id: String,
+    pub app_id: String,
+    pub bot_user_id: String,
+    pub bot_id: String,
+    pub sender_id: String,
+    pub conversation_id: String,
     pub enabled: bool,
 }
 
@@ -245,6 +263,7 @@ impl Registry {
             tx.execute_batch(SCHEMA)?;
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
+            tx.execute_batch(SCHEMA_V4)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -257,8 +276,11 @@ impl Registry {
             }
             if version < 3 {
                 tx.execute_batch(SCHEMA_V3)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
+            if version < 4 {
+                tx.execute_batch(SCHEMA_V4)?;
+            }
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let corrupt = tx
             .prepare("PRAGMA foreign_key_check")?
@@ -774,6 +796,177 @@ impl Registry {
         Ok(binding)
     }
 
+    /// Bind an enabled user's dedicated backend to one permanent Slack app installation and DM.
+    pub fn add_slack_binding(
+        &self,
+        user_id: Uuid,
+        team_id: &str,
+        app_id: &str,
+        bot_user_id: &str,
+        bot_id: &str,
+        sender_id: &str,
+        conversation_id: &str,
+    ) -> Result<SlackBindingSummary> {
+        for (value, prefix) in [
+            (team_id, b'T'),
+            (app_id, b'A'),
+            (bot_user_id, b'U'),
+            (bot_id, b'B'),
+            (sender_id, b'U'),
+            (conversation_id, b'D'),
+        ] {
+            ensure!(
+                canonical_slack_id(value, prefix),
+                "invalid canonical Slack ID"
+            );
+        }
+        ensure!(
+            sender_id != bot_user_id,
+            "Slack sender must differ from the bot user"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let backend_id: String = tx
+            .query_row(
+                "SELECT backend_id FROM users WHERE id=?1 AND enabled=1",
+                [user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("enabled gateway user not found")?;
+        let count: i64 =
+            tx.query_row("SELECT count(*) FROM slack_bindings", [], |row| row.get(0))?;
+        ensure!(
+            count < MAX_SLACK_BINDINGS,
+            "gateway Slack lifetime binding limit reached"
+        );
+        let reserved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM slack_bindings WHERE user_id=?1 OR app_id=?2)",
+            params![user_id.to_string(), app_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !reserved,
+            "gateway Slack user or app is permanently reserved, including revoked bindings"
+        );
+        let summary = SlackBindingSummary {
+            id: Uuid::new_v4(),
+            user_id,
+            backend_id,
+            team_id: team_id.into(),
+            app_id: app_id.into(),
+            bot_user_id: bot_user_id.into(),
+            bot_id: bot_id.into(),
+            sender_id: sender_id.into(),
+            conversation_id: conversation_id.into(),
+            enabled: true,
+        };
+        let now = now_ms();
+        tx.execute("INSERT INTO slack_bindings(id,user_id,backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id,enabled,created_ms,updated_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?10)",
+            params![summary.id.to_string(),user_id.to_string(),summary.backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id,now])?;
+        audit(
+            &tx,
+            user_id,
+            None,
+            None,
+            "slack_binding_added",
+            Some(&summary.id.to_string()),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    /// Bounded lifetime history, including permanently revoked installations.
+    pub fn list_slack_bindings(&self) -> Result<Vec<SlackBindingSummary>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT id,user_id,backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id,enabled FROM slack_bindings ORDER BY created_ms,id LIMIT 32")?;
+        let rows = statement.query_map([], slack_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Permanently revoke future admissions without altering already admitted work or its hold.
+    pub fn revoke_slack_binding(&self, binding_id: Uuid) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user, enabled): (String, bool) = tx
+            .query_row(
+                "SELECT user_id,enabled FROM slack_bindings WHERE id=?1",
+                [binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("gateway Slack binding not found")?;
+        if enabled {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE slack_bindings SET enabled=0,updated_ms=MAX(updated_ms,?2) WHERE id=?1",
+                params![binding_id.to_string(), now],
+            )?;
+            audit(
+                &tx,
+                uuid(user)?,
+                None,
+                None,
+                "slack_binding_revoked",
+                Some(&binding_id.to_string()),
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Live ingress identity only; the write transaction must recheck it before every effect.
+    pub fn slack_authorized(&self, binding_id: Uuid) -> Result<Option<SlackBindingSummary>> {
+        slack_on(&self.connection()?, binding_id)
+    }
+
+    /// Recheck enabled ownership and acquire the same hold used by HTTP, cron and Telegram.
+    /// Audit stores only immutable binding/object UUIDs; prompts and credentials stay out.
+    pub fn admit_slack(
+        &self,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+    ) -> Result<SlackBindingSummary> {
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "Slack request ID must be RFC4122 UUIDv7"
+        );
+        ensure!(
+            matches!(operation, "slack_execute" | "slack_send"),
+            "invalid Slack admission operation"
+        );
+        let object =
+            Uuid::parse_str(object_id).context("Slack object ID must be a canonical UUID")?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "Slack object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let binding = slack_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, binding.user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        audit(
+            &tx,
+            binding.user_id,
+            None,
+            Some(request_id),
+            operation,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
     /// Read live key/user state for every request. No successful-authentication cache exists.
     pub fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let Some(parsed) = keys::parse(token) else {
@@ -963,6 +1156,69 @@ fn telegram_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelegramBindingSumm
 fn telegram_on(conn: &Connection, binding_id: Uuid) -> Result<Option<TelegramBindingSummary>> {
     Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.bot_id,b.sender_id,b.enabled FROM telegram_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
         [binding_id.to_string()],telegram_row).optional()?)
+}
+
+fn canonical_slack_id(value: &str, prefix: u8) -> bool {
+    (2..=64).contains(&value.len())
+        && (value.as_bytes()[0] == prefix || (prefix == b'U' && value.as_bytes()[0] == b'W'))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+fn slack_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SlackBindingSummary> {
+    let invalid = |index| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid gateway Slack binding identity",
+            )),
+        )
+    };
+    let id = |index| -> rusqlite::Result<Uuid> {
+        let text: String = row.get(index)?;
+        Uuid::parse_str(&text)
+            .ok()
+            .filter(|id| {
+                !id.is_nil() && id.get_variant() == uuid::Variant::RFC4122 && id.to_string() == text
+            })
+            .ok_or_else(|| invalid(index))
+    };
+    let platform_id = |index, prefix| -> rusqlite::Result<String> {
+        let text: String = row.get(index)?;
+        if !canonical_slack_id(&text, prefix) {
+            return Err(invalid(index));
+        }
+        Ok(text)
+    };
+    let bot_user_id = platform_id(5, b'U')?;
+    let sender_id = platform_id(7, b'U')?;
+    if bot_user_id == sender_id {
+        return Err(invalid(7));
+    }
+    let enabled: i64 = row.get(9)?;
+    if !matches!(enabled, 0 | 1) {
+        return Err(invalid(9));
+    }
+    Ok(SlackBindingSummary {
+        id: id(0)?,
+        user_id: id(1)?,
+        backend_id: row.get(2)?,
+        team_id: platform_id(3, b'T')?,
+        app_id: platform_id(4, b'A')?,
+        bot_user_id,
+        bot_id: platform_id(6, b'B')?,
+        sender_id,
+        conversation_id: platform_id(8, b'D')?,
+        enabled: enabled == 1,
+    })
+}
+
+fn slack_on(conn: &Connection, binding_id: Uuid) -> Result<Option<SlackBindingSummary>> {
+    Ok(conn.query_row("SELECT b.id,b.user_id,b.backend_id,b.team_id,b.app_id,b.bot_user_id,b.bot_id,b.sender_id,b.conversation_id,b.enabled FROM slack_bindings b JOIN users u ON u.id=b.user_id AND u.backend_id=b.backend_id WHERE b.id=?1 AND b.enabled=1 AND u.enabled=1",
+        [binding_id.to_string()], slack_row).optional()?)
 }
 
 fn insert_hold(tx: &Transaction<'_>, user_id: Uuid, request_id: Uuid, now: i64) -> Result<()> {
@@ -1228,6 +1484,35 @@ CREATE TRIGGER api_key_access_immutable BEFORE UPDATE OF read_only ON api_keys
  BEGIN SELECT RAISE(ABORT,'gateway key access is immutable'); END;
 ";
 
+// Each user requires a dedicated app: Slack's Events Request URL and signing
+// secret belong to the app, including all its workspace installations.
+// App and user reservations remain permanent after revocation.
+const SCHEMA_V4: &str = "
+CREATE TABLE slack_bindings(
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL UNIQUE, backend_id TEXT NOT NULL,
+ team_id TEXT NOT NULL CHECK(length(team_id) BETWEEN 2 AND 64 AND length(team_id)=length(CAST(team_id AS BLOB)) AND substr(team_id,1,1)='T' AND team_id NOT GLOB '*[^A-Z0-9]*'),
+ app_id TEXT NOT NULL CHECK(length(app_id) BETWEEN 2 AND 64 AND length(app_id)=length(CAST(app_id AS BLOB)) AND substr(app_id,1,1)='A' AND app_id NOT GLOB '*[^A-Z0-9]*'),
+ bot_user_id TEXT NOT NULL CHECK(length(bot_user_id) BETWEEN 2 AND 64 AND length(bot_user_id)=length(CAST(bot_user_id AS BLOB)) AND substr(bot_user_id,1,1) IN ('U','W') AND bot_user_id NOT GLOB '*[^A-Z0-9]*'),
+ bot_id TEXT NOT NULL CHECK(length(bot_id) BETWEEN 2 AND 64 AND length(bot_id)=length(CAST(bot_id AS BLOB)) AND substr(bot_id,1,1)='B' AND bot_id NOT GLOB '*[^A-Z0-9]*'),
+ sender_id TEXT NOT NULL CHECK(length(sender_id) BETWEEN 2 AND 64 AND length(sender_id)=length(CAST(sender_id AS BLOB)) AND substr(sender_id,1,1) IN ('U','W') AND sender_id NOT GLOB '*[^A-Z0-9]*' AND sender_id<>bot_user_id),
+ conversation_id TEXT NOT NULL CHECK(length(conversation_id) BETWEEN 2 AND 64 AND length(conversation_id)=length(CAST(conversation_id AS BLOB)) AND substr(conversation_id,1,1)='D' AND conversation_id NOT GLOB '*[^A-Z0-9]*'),
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+ UNIQUE(app_id),
+ FOREIGN KEY(user_id,backend_id) REFERENCES users(id,backend_id) ON DELETE RESTRICT);
+CREATE TRIGGER slack_binding_lifetime_limit BEFORE INSERT ON slack_bindings WHEN (SELECT count(*) FROM slack_bindings)>=32
+ BEGIN SELECT RAISE(ABORT,'Slack lifetime binding limit reached'); END;
+CREATE TRIGGER slack_binding_no_replace BEFORE INSERT ON slack_bindings
+ WHEN EXISTS(SELECT 1 FROM slack_bindings WHERE id=NEW.id OR user_id=NEW.user_id OR app_id=NEW.app_id)
+ BEGIN SELECT RAISE(ABORT,'Slack binding reservations are permanent'); END;
+CREATE TRIGGER slack_binding_immutable BEFORE UPDATE OF id,user_id,backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id ON slack_bindings
+ WHEN NEW.id IS NOT OLD.id OR NEW.user_id IS NOT OLD.user_id OR NEW.backend_id IS NOT OLD.backend_id OR NEW.team_id IS NOT OLD.team_id OR NEW.app_id IS NOT OLD.app_id OR NEW.bot_user_id IS NOT OLD.bot_user_id OR NEW.bot_id IS NOT OLD.bot_id OR NEW.sender_id IS NOT OLD.sender_id OR NEW.conversation_id IS NOT OLD.conversation_id
+ BEGIN SELECT RAISE(ABORT,'Slack binding ownership is immutable'); END;
+CREATE TRIGGER slack_binding_no_reactivate BEFORE UPDATE OF enabled ON slack_bindings WHEN OLD.enabled=0 AND NEW.enabled<>0
+ BEGIN SELECT RAISE(ABORT,'Slack binding revocation is permanent'); END;
+CREATE TRIGGER slack_binding_no_delete BEFORE DELETE ON slack_bindings
+ BEGIN SELECT RAISE(ABORT,'Slack binding reservations are permanent'); END;
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1253,6 +1538,671 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    fn slack_binding(registry: &Registry, user: Uuid, number: usize) -> SlackBindingSummary {
+        registry
+            .add_slack_binding(
+                user,
+                &format!("T{number}"),
+                &format!("A{number}"),
+                &format!("U{number}0"),
+                &format!("B{number}"),
+                &format!("U{number}1"),
+                &format!("D{number}"),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn slack_bindings_accept_canonical_u_and_w_user_prefixes_and_full_bounded_ids() {
+        for (bot, sender) in [
+            ("U10", "U11"),
+            ("W10", "W11"),
+            ("U10", "W11"),
+            ("W10", "U11"),
+        ] {
+            let fixture = Fixture::new();
+            let user = fixture.registry.add_user("alice").unwrap();
+            let binding = fixture
+                .registry
+                .add_slack_binding(user.user_id, "T1", "A1", bot, "B1", sender, "D1")
+                .unwrap();
+            assert_eq!(
+                fixture.registry.slack_authorized(binding.id).unwrap(),
+                Some(binding)
+            );
+            let other = fixture.registry.add_user("bob").unwrap();
+            let long = |prefix| format!("{prefix}{}", "0".repeat(63));
+            let max = fixture
+                .registry
+                .add_slack_binding(
+                    other.user_id,
+                    &long('T'),
+                    &long('A'),
+                    &long('W'),
+                    &long('B'),
+                    &long('U'),
+                    &long('D'),
+                )
+                .unwrap();
+            assert_eq!(
+                fixture.registry.slack_authorized(max.id).unwrap(),
+                Some(max)
+            );
+        }
+    }
+
+    #[test]
+    fn slack_ownership_and_revocation_survive_key_changes_and_cannot_be_replaced() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user_with_access("alice", true).unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let tg = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        let binding = slack_binding(registry, alice.user_id, 1);
+        assert_eq!(
+            registry.slack_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        assert!(registry
+            .add_slack_binding(alice.user_id, "T2", "A2", "U20", "B2", "U21", "D2")
+            .is_err());
+        assert!(registry
+            .add_slack_binding(bob.user_id, "T1", "A1", "U30", "B3", "U31", "D3")
+            .is_err());
+        // The app's single callback URL cannot serve another dedicated user,
+        // including installations in a different workspace.
+        assert!(registry
+            .add_slack_binding(bob.user_id, "T2", "A1", "U20", "B2", "U21", "D2")
+            .is_err());
+        let other = slack_binding(registry, bob.user_id, 2);
+        let rotated = registry.rotate(alice.key_id).unwrap();
+        registry.revoke(rotated.key_id).unwrap();
+        assert_eq!(
+            registry.slack_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        let conn = registry.connection().unwrap();
+        for sql in [
+            "UPDATE slack_bindings SET id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'",
+            "UPDATE slack_bindings SET user_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'",
+            "UPDATE slack_bindings SET backend_id='changed'",
+            "UPDATE slack_bindings SET team_id='T99'",
+            "UPDATE slack_bindings SET app_id='A99'",
+            "UPDATE slack_bindings SET bot_user_id='U99'",
+            "UPDATE slack_bindings SET bot_id='B99'",
+            "UPDATE slack_bindings SET sender_id='U99'",
+            "UPDATE slack_bindings SET conversation_id='D99'",
+            "DELETE FROM slack_bindings",
+            "UPDATE users SET backend_id='changed' WHERE backend_id='alice'",
+            "INSERT OR REPLACE INTO slack_bindings SELECT * FROM slack_bindings LIMIT 1",
+        ] {
+            assert!(conn.execute(sql, []).is_err(), "{sql}");
+        }
+        registry.revoke_slack_binding(binding.id).unwrap();
+        registry.revoke_slack_binding(binding.id).unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        registry.set_enabled(alice.user_id, true).unwrap();
+        registry.add_key(alice.user_id).unwrap();
+        assert!(registry.slack_authorized(binding.id).unwrap().is_none());
+        assert!(conn
+            .execute(
+                "UPDATE slack_bindings SET enabled=1 WHERE id=?1",
+                [binding.id.to_string()]
+            )
+            .is_err());
+        assert!(registry
+            .add_slack_binding(alice.user_id, "T3", "A2", "U30", "B3", "U31", "D3")
+            .is_err());
+        let charlie = registry.add_user("charlie").unwrap();
+        assert!(registry
+            .add_slack_binding(charlie.user_id, "T3", "A1", "U30", "B3", "U31", "D3")
+            .is_err());
+        let history = registry.list_slack_bindings().unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(
+            !history
+                .iter()
+                .find(|item| item.id == binding.id)
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(registry.slack_authorized(other.id).unwrap(), Some(other));
+        assert_eq!(registry.telegram_authorized(tg.id).unwrap(), Some(tg));
+        let audit = registry.audit_list(alice.user_id, 0, 100, true).unwrap();
+        let revoked: Vec<_> = audit
+            .events
+            .iter()
+            .filter(|event| event.action == "slack_binding_revoked")
+            .collect();
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(
+            revoked[0].note.as_deref(),
+            Some(binding.id.to_string().as_str())
+        );
+        let encoded = serde_json::to_string(&history).unwrap();
+        assert!(!encoded.contains(&alice.token) && !encoded.contains("verifier"));
+        drop(conn);
+        assert_eq!(
+            Registry::open(&registry.path)
+                .unwrap()
+                .list_slack_bindings()
+                .unwrap(),
+            history
+        );
+    }
+
+    #[test]
+    fn slack_ids_and_admission_metadata_fail_before_any_hold_or_audit() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let ids = ["T1", "A1", "U10", "B1", "U11", "D1"];
+        for index in 0..ids.len() {
+            for bad in [
+                "",
+                "T",
+                "wrong-secret-value",
+                "t123",
+                "Té",
+                "T1\0",
+                "T1\n",
+                "T 1",
+                "T-1",
+            ] {
+                let mut candidate = ids;
+                candidate[index] = bad;
+                assert!(registry
+                    .add_slack_binding(
+                        alice.user_id,
+                        candidate[0],
+                        candidate[1],
+                        candidate[2],
+                        candidate[3],
+                        candidate[4],
+                        candidate[5]
+                    )
+                    .is_err());
+            }
+            let over = format!("{}{}", ids[index].chars().next().unwrap(), "1".repeat(64));
+            let mut candidate = ids;
+            candidate[index] = &over;
+            assert!(registry
+                .add_slack_binding(
+                    alice.user_id,
+                    candidate[0],
+                    candidate[1],
+                    candidate[2],
+                    candidate[3],
+                    candidate[4],
+                    candidate[5]
+                )
+                .is_err());
+        }
+        assert!(registry
+            .add_slack_binding(alice.user_id, "T1", "A1", "U1", "B1", "U1", "D1")
+            .is_err());
+        assert!(registry
+            .add_slack_binding(Uuid::new_v4(), "T1", "A1", "U10", "B1", "U11", "D1")
+            .is_err());
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry
+            .add_slack_binding(alice.user_id, "T1", "A1", "U10", "B1", "U11", "D1")
+            .is_err());
+        registry.set_enabled(alice.user_id, true).unwrap();
+        assert!(registry.list_slack_bindings().unwrap().is_empty());
+        let binding = slack_binding(registry, alice.user_id, 1);
+        let before =
+            serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                .unwrap();
+        for (request, operation, object) in [
+            (Uuid::new_v4(), "slack_execute", binding.id.to_string()),
+            (Uuid::nil(), "slack_send", binding.id.to_string()),
+            (Uuid::now_v7(), "telegram_send", binding.id.to_string()),
+            (Uuid::now_v7(), "secret-operation", binding.id.to_string()),
+            (Uuid::now_v7(), "slack_send", "secret-object".into()),
+            (Uuid::now_v7(), "slack_send", Uuid::nil().to_string()),
+            (
+                Uuid::now_v7(),
+                "slack_send",
+                "ABCDEF01-2345-4678-9ABC-DEF012345678".into(),
+            ),
+            (
+                Uuid::now_v7(),
+                "slack_send",
+                "abcdef01-2345-4678-1abc-def012345678".into(),
+            ),
+        ] {
+            assert!(registry
+                .admit_slack(binding.id, request, operation, &object)
+                .is_err());
+        }
+        let mut non_rfc = *Uuid::now_v7().as_bytes();
+        non_rfc[8] = 0;
+        assert!(registry
+            .admit_slack(
+                binding.id,
+                Uuid::from_bytes(non_rfc),
+                "slack_send",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn slack_shares_admission_with_http_cron_and_telegram_and_preserves_review_after_restart() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let binding = slack_binding(registry, alice.user_id, 1);
+        let tg = registry
+            .add_telegram_binding(alice.user_id, "101", "201")
+            .unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.slack_authorized(binding.id).unwrap().is_none());
+        assert_eq!(
+            registry
+                .admit_slack(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "slack_execute",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        registry.set_enabled(alice.user_id, true).unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_slack(
+                binding.id,
+                request,
+                "slack_execute",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        assert!(registry.slack_authorized(binding.id).unwrap().is_some());
+        assert_eq!(
+            registry
+                .admit_slack(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "slack_send",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Held)
+        );
+        assert!(registry
+            .admit_write(&principal(registry, &alice), Uuid::new_v4())
+            .is_err());
+        assert!(registry
+            .admit_scheduled(alice.user_id, "alice", Uuid::now_v7())
+            .is_err());
+        assert!(registry
+            .admit_telegram(tg.id, Uuid::now_v7(), "telegram_send", &tg.id.to_string())
+            .is_err());
+        let other = Uuid::now_v7();
+        registry.admit_scheduled(bob.user_id, "bob", other).unwrap();
+        registry.finish_write(bob.user_id, other, true).unwrap();
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert_eq!(reopened.recover_writes().unwrap(), 1);
+        reopened.finish_write(alice.user_id, request, true).unwrap();
+        let hold = reopened
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.user_id == alice.user_id)
+            .unwrap()
+            .hold
+            .unwrap();
+        assert_eq!(hold.request_id, request);
+        assert_eq!(hold.state, "needs_review");
+        reopened.revoke_slack_binding(binding.id).unwrap();
+        reopened.set_enabled(alice.user_id, false).unwrap();
+        reopened.set_enabled(alice.user_id, true).unwrap();
+        assert_eq!(
+            reopened
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|item| item.user_id == alice.user_id)
+                .unwrap()
+                .hold
+                .unwrap()
+                .request_id,
+            request
+        );
+        reopened
+            .clear_review(
+                alice.user_id,
+                "Stopped both channel queues and reconciled external effect",
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .admit_slack(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "slack_send",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        let audit = reopened.audit_list(alice.user_id, 0, 100, true).unwrap();
+        let admitted = audit
+            .events
+            .iter()
+            .find(|event| event.action == "slack_execute")
+            .unwrap();
+        assert!(admitted.key_id.is_none());
+        assert_eq!(
+            admitted.request_id.as_deref(),
+            Some(request.to_string().as_str())
+        );
+        let note: serde_json::Value =
+            serde_json::from_str(admitted.note.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            note,
+            serde_json::json!({"binding_id":binding.id.to_string(),"object_id":binding.id.to_string()})
+        );
+    }
+
+    #[test]
+    fn slack_and_foreground_concurrent_admission_have_one_winner() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let binding = slack_binding(registry, user.user_id, 1);
+        let owner = principal(registry, &user);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|index| {
+                let registry = registry.clone();
+                let barrier = barrier.clone();
+                let owner = owner.clone();
+                let binding = binding.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if index == 0 {
+                        registry.admit_write(&owner, Uuid::now_v7())
+                    } else {
+                        registry
+                            .admit_slack(
+                                binding.id,
+                                Uuid::now_v7(),
+                                "slack_execute",
+                                &binding.id.to_string(),
+                            )
+                            .map(|_| ())
+                    }
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.as_ref().err().is_some_and(|error| error
+                    .downcast_ref::<WriteAdmissionError>(
+                ) == Some(
+                    &WriteAdmissionError::Held
+                )))
+                .count(),
+            1
+        );
+        assert!(registry.list().unwrap()[0].hold.is_some());
+    }
+
+    #[test]
+    fn slack_audit_failure_rolls_back_binding_revocation_and_admission() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        let fail = "CREATE TRIGGER fail_slack_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected audit storage failure'); END";
+        conn.execute_batch(fail).unwrap();
+        assert!(registry
+            .add_slack_binding(user.user_id, "T1", "A1", "U10", "B1", "U11", "D1")
+            .is_err());
+        assert!(registry.list_slack_bindings().unwrap().is_empty());
+        conn.execute_batch("DROP TRIGGER fail_slack_audit").unwrap();
+        let binding = slack_binding(registry, user.user_id, 1);
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        conn.execute_batch(fail).unwrap();
+        assert!(registry.revoke_slack_binding(binding.id).is_err());
+        assert_eq!(
+            registry.slack_authorized(binding.id).unwrap(),
+            Some(binding.clone())
+        );
+        assert!(registry
+            .admit_slack(
+                binding.id,
+                Uuid::now_v7(),
+                "slack_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn slack_lifetime_limit_counts_revoked_bindings_and_database_rejects_invalid_ids() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        for number in 0..32 {
+            let user = registry.add_user(&format!("backend-{number}")).unwrap();
+            let binding = slack_binding(registry, user.user_id, number);
+            registry.revoke_slack_binding(binding.id).unwrap();
+        }
+        assert_eq!(registry.list_slack_bindings().unwrap().len(), 32);
+        let user = registry.list().unwrap()[0].user_id;
+        assert!(registry
+            .add_slack_binding(user, "T999", "A1", "U990", "B99", "U991", "D99")
+            .unwrap_err()
+            .to_string()
+            .contains("lifetime"));
+        let conn = registry.connection().unwrap();
+        assert!(conn.execute("INSERT INTO slack_bindings(id,user_id,backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'backend-0','T999','A1','U10','B1','U11','D1',1,0,0)", params![Uuid::new_v4().to_string(), user.to_string()]).is_err());
+        drop(conn);
+        let fixture = Fixture::new();
+        let user = fixture.registry.add_user("alice").unwrap();
+        let conn = fixture.registry.connection().unwrap();
+        for bad in ["t1", "Té", "T1\0", "T1\n", "T-1", "T"] {
+            assert!(conn.execute("INSERT INTO slack_bindings(id,user_id,backend_id,team_id,app_id,bot_user_id,bot_id,sender_id,conversation_id,enabled,created_ms,updated_ms) VALUES(?1,?2,'alice',?3,'A1','U10','B1','U11','D1',1,0,0)", params![Uuid::new_v4().to_string(),user.user_id.to_string(),bad]).is_err());
+        }
+        assert!(fixture.registry.list_slack_bindings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_slack_owner_rows_cannot_authorize_an_effect_or_create_a_hold() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        let binding = slack_binding(registry, user.user_id, 1);
+        let before =
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints=ON; DROP TRIGGER slack_binding_immutable;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE slack_bindings SET sender_id='w-secret-value' WHERE id=?1",
+            [binding.id.to_string()],
+        )
+        .unwrap();
+        assert!(registry.list_slack_bindings().is_err());
+        assert!(registry.slack_authorized(binding.id).is_err());
+        assert!(registry
+            .admit_slack(
+                binding.id,
+                Uuid::now_v7(),
+                "slack_execute",
+                &binding.id.to_string()
+            )
+            .is_err());
+        assert!(registry.list().unwrap()[0].hold.is_none());
+        assert_eq!(
+            serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap()).unwrap(),
+            before
+        );
+        conn.execute("UPDATE slack_bindings SET sender_id='U11',enabled=2", [])
+            .unwrap();
+        assert!(registry.list_slack_bindings().is_err());
+        assert!(registry.slack_authorized(binding.id).unwrap().is_none());
+        conn.execute(
+            "UPDATE slack_bindings SET enabled=1,id='bbbbbbbb-bbbb-4bbb-1bbb-bbbbbbbbbbbb'",
+            [],
+        )
+        .unwrap();
+        assert!(registry.list_slack_bindings().is_err());
+    }
+
+    #[test]
+    fn slack_schema_four_migrates_all_supported_versions_without_changing_prior_authority_or_holds()
+    {
+        for version in 1..=3 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry
+                .add_user_with_access("alice", version == 3)
+                .unwrap();
+            let bob = registry.add_user("bob").unwrap();
+            registry.revoke(bob.key_id).unwrap();
+            registry.set_enabled(bob.user_id, false).unwrap();
+            if version >= 2 {
+                let tg = registry
+                    .add_telegram_binding(alice.user_id, "101", "201")
+                    .unwrap();
+                registry.revoke_telegram_binding(tg.id).unwrap();
+            }
+            let request = Uuid::now_v7();
+            registry
+                .admit_scheduled(alice.user_id, "alice", request)
+                .unwrap();
+            let users = serde_json::to_value(registry.list().unwrap()).unwrap();
+            let keys =
+                serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap();
+            let tg = registry.list_telegram_bindings().unwrap();
+            let audit =
+                serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            if version < 3 {
+                conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
+            }
+            if version == 1 {
+                conn.execute_batch(
+                    "DROP TABLE telegram_bindings; DROP INDEX users_identity_backend;",
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", version).unwrap();
+            drop(conn);
+            assert!(registry.list().is_err());
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert_eq!(
+                serde_json::to_value(migrated.list().unwrap()).unwrap(),
+                users
+            );
+            assert_eq!(
+                serde_json::to_value(migrated.list_keys(alice.user_id, 100, 0).unwrap()).unwrap(),
+                keys
+            );
+            assert_eq!(migrated.list_telegram_bindings().unwrap(), tg);
+            assert_eq!(
+                serde_json::to_value(migrated.audit_list(alice.user_id, 0, 100, true).unwrap())
+                    .unwrap(),
+                audit
+            );
+            assert!(migrated.list_slack_bindings().unwrap().is_empty());
+            assert_eq!(principal(&migrated, &alice).read_only, version == 3);
+            assert!(migrated.authenticate(&bob.token).unwrap().is_none());
+            let binding = slack_binding(&migrated, alice.user_id, 1);
+            assert_eq!(
+                migrated
+                    .admit_slack(
+                        binding.id,
+                        Uuid::now_v7(),
+                        "slack_execute",
+                        &binding.id.to_string()
+                    )
+                    .unwrap_err()
+                    .downcast_ref::<WriteAdmissionError>(),
+                Some(&WriteAdmissionError::Held)
+            );
+            assert_eq!(
+                migrated
+                    .connection()
+                    .unwrap()
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                4
+            );
+        }
+    }
+
+    #[test]
+    fn slack_schema_four_failure_rolls_back_every_prior_migration_step() {
+        for version in 1..=3 {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let user = registry.add_user("alice").unwrap();
+            let conn = registry.connection().unwrap();
+            conn.execute_batch("DROP TABLE slack_bindings").unwrap();
+            if version < 3 {
+                conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only;").unwrap();
+            }
+            if version == 1 {
+                conn.execute_batch(
+                    "DROP TABLE telegram_bindings; DROP INDEX users_identity_backend;",
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", version).unwrap();
+            // Conflict late in v4, after its table and earlier triggers were created.
+            conn.execute_batch("CREATE TRIGGER slack_binding_no_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+            let schema: String = conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)", [], |row| row.get(0)).unwrap();
+            assert!(Registry::open(&registry.path).is_err());
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(conn.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name)", [], |row| row.get::<_,String>(0)).unwrap(), schema);
+            conn.execute_batch("DROP TRIGGER slack_binding_no_delete")
+                .unwrap();
+            drop(conn);
+            let migrated = Registry::open(&registry.path).unwrap();
+            assert!(!principal(&migrated, &user).read_only);
+            assert!(migrated.list_slack_bindings().unwrap().is_empty());
+            assert!(migrated.list_telegram_bindings().unwrap().is_empty());
+        }
     }
 
     #[test]
@@ -1879,7 +2829,7 @@ mod tests {
         let bindings = registry.list_telegram_bindings().unwrap();
         let conn = registry.connection().unwrap();
         let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
-        conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
+        conn.execute_batch("DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
         drop(conn);
         assert!(registry.authenticate(&active.token).is_err());
         let migrated = Registry::open(&registry.path).unwrap();
@@ -1928,7 +2878,7 @@ mod tests {
         let registry = &fixture.registry;
         let active = registry.add_user("alice").unwrap();
         let conn = registry.connection().unwrap();
-        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+        conn.execute_batch("DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
         // The v2 schema and v3 column are created before the v3 trigger conflicts.
         // Both must be rolled back together with user_version.
         assert!(Registry::open(&registry.path).is_err());
@@ -2449,9 +3399,9 @@ mod tests {
         let audit_before: i64 = conn
             .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
             .unwrap();
-        // No bindings exist. Removing the v2/v3 objects reconstructs the exact
+        // No bindings exist. Removing the v2/v3/v4 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
-        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
+        conn.execute_batch("DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(
             registry.list().is_err(),

@@ -7,6 +7,8 @@ mod keys;
 mod proxy;
 mod registry;
 mod scheduler;
+mod slack;
+mod slack_store;
 mod telegram;
 mod telegram_store;
 
@@ -39,6 +41,7 @@ struct State {
     control: Arc<Semaphore>,
     scheduled_jobs: bool,
     telegram: Option<Arc<telegram::Runtime>>,
+    slack: Option<Arc<slack::Runtime>>,
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -56,6 +59,68 @@ fn private_file(path: &std::path::Path) -> Result<File> {
         options.mode(0o600);
     }
     options.open(path).context("open gateway process lock")
+}
+
+/// The process lock spans both channel queue checks and the registry hold clear.
+fn channel_review_guard(
+    config: &Config,
+    registry: &Registry,
+    user: uuid::Uuid,
+) -> Result<Option<File>> {
+    if !registry
+        .list_telegram_bindings()?
+        .iter()
+        .any(|b| b.user_id == user)
+        && !registry
+            .list_slack_bindings()?
+            .iter()
+            .any(|b| b.user_id == user)
+    {
+        return Ok(None);
+    }
+    let guard = private_file(&config.registry_path.with_extension("gateway.lock"))?;
+    guard
+        .try_lock_exclusive()
+        .context("stop gateway before reviewing channel queues")?;
+    registry.recover_writes()?;
+    telegram::review_pending(config, registry, user)?;
+    slack::review_pending(config, registry, user)?;
+    Ok(Some(guard))
+}
+fn review_queue(store: &crate::store::SessionStore) -> Result<()> {
+    for offset in (0..=10_000).step_by(100) {
+        let events = store.list_channel_events(100, offset)?;
+        anyhow::ensure!(
+            events.iter().all(|e| e.status != "processing"
+                && (e.status != "needs_review" || e.reviewed_ms.is_some())),
+            "review or cancel unresolved channel events before clearing the hold"
+        );
+        if events.len() < 100 {
+            break;
+        }
+        anyhow::ensure!(
+            offset < 10_000,
+            "channel event inspection capacity exceeded"
+        );
+    }
+    for offset in (0..=10_000).step_by(100) {
+        let deliveries = store.list_channel_deliveries(None, 100, offset)?;
+        anyhow::ensure!(
+            deliveries.iter().all(|d| !matches!(
+                d.state.as_str(),
+                "submitting" | "unknown" | "permanent_failed" | "expired"
+            )),
+            "resolve or cancel unresolved channel deliveries before clearing the hold"
+        );
+        if deliveries.len() < 100 {
+            break;
+        }
+        anyhow::ensure!(
+            offset < 10_000,
+            "channel delivery inspection capacity exceeded"
+        );
+    }
+    Ok(())
 }
 
 pub(super) async fn serve(config: Config) -> Result<()> {
@@ -166,6 +231,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     }
     let telegram =
         telegram::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
+    let slack = slack::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     drop(unique_tokens);
     let capacity = u32::try_from(config.max_in_flight).context("gateway capacity overflow")?;
     let state = Arc::new(State {
@@ -177,6 +243,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         control: Arc::new(Semaphore::new(8)),
         scheduled_jobs: config.scheduled_jobs,
         telegram,
+        slack,
     });
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
@@ -193,22 +260,30 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             "/hooks/telegram/:binding_id",
             axum::routing::post(telegram::ingress),
         )
+        .route(
+            "/hooks/slack/:binding_id",
+            axum::routing::post(slack::ingress),
+        )
         .fallback(proxy::handle)
         .with_state(Arc::clone(&state));
     let scheduled = scheduler::start(Arc::clone(&state));
     let stop_scheduled = scheduled.stopper();
     let telegram = telegram::start(Arc::clone(&state));
     let stop_telegram = telegram.stopper();
+    let slack = slack::start(Arc::clone(&state));
+    let stop_slack = slack.stopper();
     tracing::info!("isolated user gateway listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown().await;
             stop_scheduled.stop();
             stop_telegram.stop();
+            stop_slack.stop();
         })
         .await?;
     let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
     let _ = telegram.shutdown(timeout + Duration::from_secs(5)).await;
+    let _ = slack.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
     let _drain = tokio::time::timeout(

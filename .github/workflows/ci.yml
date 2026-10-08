@@ -42,6 +42,7 @@ jobs:
       - run: python3 tests/gateway_audit.py target/debug/jiaclaw
       - run: python3 tests/tenant_cron.py target/debug/jiaclaw
       - run: python3 tests/tenant_telegram.py target/debug/jiaclaw
+      - run: python3 tests/tenant_slack.py target/debug/jiaclaw
       - run: python3 tests/scheduler.py target/debug/jiaclaw
       - name: Select OpenSSL 3 for channel signature fixtures
         if: runner.os == 'macOS'
