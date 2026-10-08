@@ -24,7 +24,8 @@ import uuid
 
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/jiaclaw").resolve()
 ENV = {key: value for key, value in os.environ.items() if not key.startswith("JIACLAW_")}
-ENV.update(JIACLAW_LOG_LEVEL="off", HTTP_PROXY="http://127.0.0.1:1",
+ENV.update(JIACLAW_LOG_LEVEL="off,jiaclaw::gateway::telegram=error", JIACLAW_LOG_FORMAT="json",
+           HTTP_PROXY="http://127.0.0.1:1",
            HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1", NO_PROXY="")
 CLIENT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 LOCK = threading.Lock()
@@ -98,6 +99,45 @@ def stop(process, kill=False):
         process.kill()
         process.wait(timeout=5)
         raise AssertionError("gateway/backend failed graceful shutdown")
+
+
+
+def finish_log_metadata(path, request_id, user_id):
+    """Extract only the fixed Telegram settlement event from a bounded log tail."""
+    if request_id is None:
+        return []
+    try:
+        with path.open("rb") as source:
+            size = source.seek(0, os.SEEK_END)
+            start = max(0, size - 64 * 1024)
+            source.seek(start)
+            lines = source.read(64 * 1024).splitlines()
+            if start:
+                lines = lines[1:]  # A truncated first record is not evidence.
+    except OSError:
+        return []
+    allowed_codes = {"io_busy", "io_task_failed", "registry_busy", "registry_storage",
+                     "registry_io", "registry_validation"}
+    found = []
+    for line in lines:
+        if len(line) > 8 * 1024:
+            continue
+        try:
+            record = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        fields = record.get("fields")
+        if (record.get("target") != "jiaclaw::gateway::telegram" or record.get("level") != "ERROR"
+                or not isinstance(fields, dict)
+                or fields.get("message") != "Telegram write hold requires administrator review"
+                or fields.get("request_id") != request_id or fields.get("user_id") != user_id
+                or type(fields.get("code")) is not str or fields["code"] not in allowed_codes
+                or type(fields.get("known")) is not bool):
+            continue
+        found.append({key: fields[key] for key in ("code", "request_id", "user_id", "known")})
+    return found[-8:]
 
 
 def model_count(who, marker=None):
@@ -285,8 +325,65 @@ def main():
                     found = deliveries(who, update)
                     return found if found and all(item["state"] == "delivered" for item in found) else None
                 result = wait(complete, who + " delivered " + str(update), 25)
-                wait(lambda: hold(who) is None, who + " settled hold")
+                try:
+                    wait(lambda: hold(who) is None, who + " settled hold")
+                except AssertionError:
+                    # Outbox and registry commits are separate transactions.
+                    # Keep the original failure and expose only bounded state
+                    # metadata, never queue text, credentials or private notes.
+                    settlement_diagnostics(who, update)
+                    raise
                 return result
+
+            def settlement_diagnostics(who, update):
+                diagnostic = {"tenant": who, "update_id": update}
+                try:
+                    current = hold(who)
+                    diagnostic["hold"] = None if current is None else {
+                        key: current.get(key) for key in
+                        ("request_id", "state", "admitted_ms", "updated_ms")}
+                    if current is not None:
+                        reason = current.get("reason")
+                        diagnostic["hold"]["reason"] = reason if reason in {
+                            "request_in_flight", "backend_outcome_unknown", "gateway_restarted"
+                        } else "unrecognized_reason"
+                    known_states = {"pending", "submitting", "delivered", "retry_wait", "unknown",
+                                    "permanent_failed", "expired", "cancelled"}
+                    known_errors = {"binding_mismatch", "rate_limited", "transport_error", "http_server_error",
+                                    "http_client_error", "unexpected_http_status", "response_too_large",
+                                    "response_read_error", "invalid_response", "invalid_receipt",
+                                    "telegram_error", "invalid_rate_limit"}
+                    diagnostic["deliveries"] = [{
+                        **{key: item.get(key) for key in ("id", "ordinal", "attempts", "started_ms", "finished_ms")},
+                        "state": item["state"] if item.get("state") in known_states else "unrecognized_state",
+                        "error": None if item.get("error") is None else
+                            (item["error"] if item["error"] in known_errors else "unrecognized_error")
+                    } for item in deliveries(who, update)[:16]]
+                    diagnostic["finish_errors"] = finish_log_metadata(
+                        root / "gateway.log", current.get("request_id") if current else None,
+                        users[who]["user_id"])
+                    # The administrator CLI validates metadata and omits note
+                    # extraction by default. Failures reveal only an exit code.
+                    audit = subprocess.run([str(BINARY), "gateway", "audit-list", "--config", str(cfg),
+                                            "--user", users[who]["user_id"], "--limit", "100"],
+                                           env=ENV, text=True, capture_output=True, timeout=15)
+                    diagnostic["audit_exit_code"] = audit.returncode
+                    if audit.returncode == 0 and len(audit.stdout.encode()) <= 512 * 1024:
+                        page = json.loads(audit.stdout)
+                        assert page["notes_included"] is False
+                        request_id = current.get("request_id") if current else None
+                        matches = [item for item in page["events"] if item.get("request_id") == request_id
+                                   and request_id is not None]
+                        known_actions = {"telegram_execute", "telegram_send", "write_completed",
+                                         "write_needs_review", "write_recovered_for_review", "write_review_cleared"}
+                        diagnostic["audit"] = [{
+                            **{key: item.get(key) for key in ("seq", "user_id", "key_id", "request_id", "created_ms")},
+                            "action": item["action"] if item.get("action") in known_actions else "unrecognized_action"
+                        } for item in matches[:8]]
+                        diagnostic["audit_has_more"] = page["has_more"]
+                except Exception as error:
+                    diagnostic["diagnostic_error"] = type(error).__name__
+                print("SETTLEMENT DIAGNOSTIC " + json.dumps(diagnostic, sort_keys=True), flush=True)
 
             def hold(who):
                 records = rows(Path(settings["registry_path"]), "SELECT * FROM write_holds WHERE user_id=?", (users[who]["user_id"],))

@@ -330,7 +330,7 @@ PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 3711
 
 本批基于 PR #81 的最终已验证提交，增加 `gateway audit-list`：按用户过滤的同一 SQLite 读快照、有限页、十进制字符串序号/游标/全局水位、保留缺口标记及默认不提取私密 notes。当前仍为 registry schema 3，没有新增公共 HTTP 或 UI 权限；disabled 用户可由可信管理员查询，读取不改变授权、hold 或后台工作。
 
-最终本机验证：
+初次提交的本机验证（936 项，后续修订结果见本节末尾）：
 
 - `cargo test --workspace --locked`：936 项通过（library 372、core 123、host 441），1 项真实 Docker 测试在本机忽略，留给 Linux CI 实测；fmt、所需 Clippy correctness/suspicious 检查和锁定 host 构建通过。
 - 新 `tests/gateway_audit.py` 使用两个实际后端、私有 SQLite 与 localhost 模型，四组全部通过、退出码 0。在线路径验证在途写入、Key 轮换与完成事件共享原 request ID；本机供应商 fixture 的 503 保留未知 hold、人工核对 note 的默认隐藏与显式 JSON 转义返回、disabled 用户管理员可查及公共 HTTP 404；按用户过滤的升序分页、尾页全局水位、空页、非法参数/未来游标和未知用户拒绝。
@@ -340,3 +340,19 @@ PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 3711
 - `gateway_container.py` 新增管理员审计元数据分页、只读 Key 生命周期、SIGKILL 后原 request ID 恢复、私密 notes 的 JSON 返回、空尾页及 disabled 用户重启后查询断言，`py_compile` 通过。本机 macOS 未执行该 Linux 限额卷/私网容器组；实际验收以本批最终 head CI 为准。
 
 新进程 fixture 已加入跨平台 CI。最终提交的 Ubuntu、macOS 与真实容器检查仍待核对，将在 PR 记录精确 head 和运行结果；不将单页查询计为完整、防篡改或可自动恢复的审计历史。未调用付费供应商或真实渠道。
+
+### CI 暴露问题与诊断
+
+首轮 [CI 37723633396](https://github.com/jiawenyao401/JiaClaw/actions/runs/37723633396) 对应 head `da1434374b5f1a660fe1f6513cd1891948753500`；该轮 container 作业 `113136703895` 已成功，实际覆盖限额卷审计分页、只读 Key 生命周期、SIGKILL 后原 request ID/hold 的核对、显式私密 notes、空尾页及 disabled 用户重启查询。真实 ENOSPC 在 58,675,200 字节文件系统写入 57,028,608 字节后出现，`df` 剩余 0；另一用户与 registry 仍可处理，撤销/禁用持久保留。这是首轮固定提交的容器证据，不代表修订后的最终 head 已通过。
+
+macOS 的既有 semantic 取消生命周期测试暴露了测试同步竞争：`Weak::upgrade()==None` 只观察强引用归零，不能作为结构字段或 `spawn_blocking` 捕获的 Store 已完成析构、所有权锁已释放的同步点。测试已改为在原 5 秒预算内等待实际 Store 打开成功，仅重试明确的所有权忙错误，其他错误立即失败；在途 busy、取消后保留所有权和最终收据断言保持。修复后该严格用例连续 30/30、全量 936 项 Rust 均通过，没有修改生产锁或释放语义。
+
+Ubuntu 的既有 tenant Telegram 基本流程在消息已 delivered 后，等待 hold 结算的原 20 秒预算内失败，原因尚未确定。修改诊断前，本机完整七组和基本流程 20/20 均通过，不能据此将 CI 失败归因于 SQLite、容量或声明问题已经修复。已补充有界诊断：生产 finish 失败只记录静态错误类别、request/user ID 和 known 状态；fixture 使用默认不包含 note 的管理员审计元数据核对。保留原 hold、锁、超时和成功断言，不重放未知工作。诊断修订后的最终二进制进程回归已完成，精确 head CI 仍待核对；真实供应商和完整多用户认证状态不变。
+
+诊断修订后的本机检查：`cargo test --workspace --locked -- --test-threads=1` 全量串行 937 项通过（library 372、core 123、host 442），1 项真实 Docker 测试本机 ignored 留给 Linux CI；fmt、所需 Clippy correctness/suspicious、锁定 host 构建、Python 语法编译和 diff-check 均通过。937 相比初次 936 新增一项静态 finish 错误类别测试，生产诊断不会输出私密错误正文。
+
+本机默认并行运行曾在既有 MCP fixture 的 1 秒初始化截止时间和请求头跟踪 fixture 的 1 秒 guard 失败，MCP 在四线程复验亦失败，而该 MCP 用例隔离运行通过（1.92 秒）。未修改 MCP 实现、生产截止时间或这些 fixture；串行通过不能证明默认并行问题已经解决。最终 CI 继续采用默认并行，须核对其真实结果。最终二进制的五套进程验收已全部通过、退出码 0：`gateway_audit.py` 四组、`user_gateway.py` 整套、`read_only_keys.py` 五组、`tenant_cron.py` 四组和 `tenant_telegram.py` 七组。最终提交的跨平台/容器 CI 仍待核对。
+
+最终二进制定向 SQL 故障注入亦退出码 0：在临时 registry 中，仅对发件回执后的 hold 删除设置失败 trigger；本机平台 fixture 的 delivery 已为 delivered、尝试次数为 1，但 finish 收到 `SQLITE_ABORT` 后保留原 in_flight hold，原 20 秒结算 guard 按预期失败，没有释放锁或重发。诊断只记录静态 `registry_storage`、`known=true` 及匹配的 request/user ID，默认审计元数据保留对应 `telegram_send` 关联。该场景的 stdout 与 gateway 日志均未包含注入的私密错误正文/note、一次性 Key/模型/后端/Bot/webhook Secret 或基本场景 prompt 标记；显式 notes 查询仍遵循前述私密管理边界。
+
+这项故障注入证明诊断可关联真实失败并保留保守停止语义，不能证明首轮 Ubuntu CI 的未知 hold 超时由同一原因引起或已修复。最终 CI 结果将在 PR 记录对应精确 head，并由下一批验证记录回填，避免为记录自身 SHA 反复改提交；完整多用户里程碑与真实供应商/渠道认证仍未完成。
