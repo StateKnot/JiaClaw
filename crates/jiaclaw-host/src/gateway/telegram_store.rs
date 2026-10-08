@@ -269,6 +269,7 @@ impl TelegramStore {
         ownership
             .try_lock_exclusive()
             .context("another process owns this Telegram channel database")?;
+        let ownership = crate::store::DatabaseOwnership::new(ownership);
         verify_sidecars(&path)?;
         let (file, created) = create_private_file(&path)?;
         ensure!(

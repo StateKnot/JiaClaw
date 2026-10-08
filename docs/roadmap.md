@@ -4,7 +4,7 @@
 
 | 顺序 | 能力 | 状态 | 完成标准 / 当前证据 |
 |---|---|---|---|
-| 1 | copy | 实现并本地验收 | 二进制文件、64 MiB 上限、越界/链接拒绝、原子覆盖与并发不覆盖 |
+| 1 | copy | 已迁移共享 I/O 与写锁；本批本机验收通过 | [复制合同](workspace-files.md)：十二个主文件工具共用八槽；copy/file_copy 共用目录句柄、1024字节/64组件路径与单链接普通文件检查，最多实际读取64 MiB+1拦截源增长；原子不覆盖/覆盖和四种参数组合。最终证据见[验证记录](validation.md#复制共享-io-与写锁批次) |
 | 1a | stat / tree | 实现并本机验收 | [只读元数据与目录树](workspace-files.md#stat--tree-元数据与目录树合同)：独立配置开关、目录句柄、叶子链接不跟随、严格参数及完整路径/扫描/输出预算；本机 884 项 Rust、新工具六组与七套既有进程回归通过，PR #79 最终 head 的 Linux/macOS 与真实容器 CI 已通过 |
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
@@ -77,4 +77,11 @@ PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 第 11 组千条准入意外收
 
 2026-10-08 14:39 UTC 钉钉批次预检：PR #58–#87 各自当前 head CI 成功，均 OPEN draft，无代码 review/thread；PR #87 唯一 CodeRabbit 信息评论说明 draft 不自动审，未将它当成外部审查完成。PR #87 head `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e` 的 [CI 37787484242](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242) 第一次运行全部成功，macOS1158/Ubuntu1159 Rust、每平台29进程步骤、新WeCom十组与实际940身份 headroom、Linux Chromium/真实Docker和container registry/维护/限额卷均有完整日志证据；容器未启用WeCom收发 runtime，真实企业认证仍开放。StateKnot main `83802cb3202bf9cb860c6357a94abc80408b1f88` 的 #153 仅现有类型测试盘点/fixtures/CI/docs，未改当前消费的原始 HTTP MCP Schema；alpha.1/#140不变。Brokerrouter main/#31/#41/PR#40不变，十二项失败 annotation 均付款/额度未启动。
 
-本轮钉钉已实际加严standalone原始回调/token/send对象与唯一JSON MIME，含糊code+字符串receipt进入unknown，保留单次请求与原UUID/cooldown/无钉钉凭据维护。最终本地1163 Rust、fmt/必需Clippy/locked build、新完整147.87秒真实进程与五套旧回归全通过；提交准备时本批固定head CI待核对，结果见draft PR与[验证记录](validation.md#钉钉原始报文合同批次)。这不记为独立用户钉钉完成：当前app/detail只有固定SDK的shape，正式最小权限/机器人适用性及凭据↔robot↔CorpID完整证明仍未核实。下一步先完成本批固定head CI并复核安装read合同，继续可独立推进的路由/流式/多模态治理身份与上游durable门槛，不造token-only安装gate或重发未知操作。
+本轮钉钉已实际加严standalone原始回调/token/send对象与唯一JSON MIME，含糊code+字符串receipt进入unknown，保留单次请求与原UUID/cooldown/无钉钉凭据维护。最终本地1163 Rust、fmt/必需Clippy/locked build、新完整147.87秒真实进程与五套旧回归全通过；[PR #88](https://github.com/jiawenyao401/JiaClaw/pull/88) 固定 head `4f62ecf2ae471899aa5233e24796a71e57bd4a40` 的三项最终 CI 已通过，详见[最终回填](validation.md#钉钉原始报文最终-ci-回填)。这不记为独立用户钉钉完成：15:39 UTC 已取得正式 CorpID-bound GetToken 授权合同，但尚未接线/真实认证；app/detail 的正式最小权限、独立机器人适用性及凭据→机器人完整证明仍待核实。[安装边界](dingtalk.md#本批协议修复与安装证明的区别)
+
+15:36 UTC 当前两框架固定 main/release/议题未出现可消费的新合同。本批修复实测的应用 copy 缺陷：旧二进制可复制 fixture 所有的外部 hardlink 哨兵，混合参数被 native Schema 错拒；现在注册的两个名称实际进入共享八槽与工作区写锁，保持二进制/64 MiB/原子发布合同，取消后锁和许可由真实阻塞工作持有直到结束。初版已通过本机1169项 Rust和新七组，PR #89首CI暴露旧Telegram同步重开锁失败；已实际fork/dup与旧SessionStore定向重现close-only生命周期缺口，改为SQLite连接先关、所有权guard后显式解锁并覆盖六入口错误路径。最终本机1171项Rust、必需检查、同一新冻结binary的七组copy与17套旧进程回归均通过；原CI具体fork重叠未证明，新head三作业仍按本批最终证据验收。下一步完成此批交付后继续核实钉钉完整安装身份链，以及已有网关流式合同的应用接线与治理身份；HTTP MCP pin 保留，stdio/外部写入、子 Agent/durable、真实供应商、WhatsApp资格与多模态仍开放。没有恢复用户要求保持暂停的自动回访。
+
+数据库所有权修订CI的Linux/容器通过，macOS Rust1171与copy七组通过，但旧飞书第11组跨连接占槽就绪断言失败（其后9个Python跳过）。已把TCP写出观察改为固定Hyper1.11.1的真实100 Continue屏障，原250/650/900ms预算及busy/1000队列/无副作用断言全部保留；同一生产binary的修订后飞书完整11组本地一次PASS（119.517秒），生产源码/依赖未再改。先前17套完整回归及两次CI失败证据保留，最新fixture提交三作业待最终验证；详见[跨连接屏障修订](validation.md#复制批次跨连接验收屏障修订)。剩余合同/真实认证与下一步依上段，不将旧head的成功代替新head验收。
+
+
+跨连接屏障提交的两平台全部Cargo/30进程测试（含copy七组、飞书11组）均已通过，但macOS整项作业在所有步骤及清理结束时碰到30分钟总预算，官方明确timeout、整体取消。只修CI完整test作业容量为有上限40分钟，全部生产/fixture截止和30强制步骤不改；生产binary/依赖/源码及飞书fixture保持冻结。新提交的三项CI仍须完整通过，不能把旧head的步骤成功当作整体资格；见[作业容量修订](validation.md#复制批次完整-ci-作业容量修订)。剩余能力/真实认证和用户的自动回访暂停约束不变。

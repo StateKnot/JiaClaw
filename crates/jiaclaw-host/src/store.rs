@@ -18,8 +18,29 @@ pub(super) enum SessionStore {
     Memory(HashMap<String, SessionRecord>),
     Sqlite {
         conn: Connection,
-        _ownership: Option<std::fs::File>,
+        // Fields drop in declaration order: close SQLite before releasing ownership.
+        _ownership: Option<DatabaseOwnership>,
     },
+}
+
+/// An already-acquired database lifetime lock. Never clone or expose the handle.
+/// CLOEXEC does not prevent a concurrent fork from retaining its open description;
+/// closing only this descriptor would leave the flock held until that child execs.
+pub(super) struct DatabaseOwnership {
+    file: std::fs::File,
+}
+impl DatabaseOwnership {
+    pub(super) fn new(file: std::fs::File) -> Self {
+        Self { file }
+    }
+}
+impl Drop for DatabaseOwnership {
+    fn drop(&mut self) {
+        // Unlock this description explicitly; do not wait for inherited aliases.
+        // A release failure cannot be reported from Drop; closing the owned handle
+        // still follows and a subsequent opener continues to fail closed if busy.
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
 }
 fn now_ms() -> i64 {
     i64::try_from(
@@ -69,6 +90,7 @@ impl SessionStore {
             }
             let file = options.open(lock_path)?;
             fs2::FileExt::try_lock_exclusive(&file).context("another JiaClaw process owns this session database; use HTTP APIs while serve is running")?;
+            let ownership = DatabaseOwnership::new(file);
             // Create private state before SQLite opens it (WAL inherits DB mode).
             let mut db_options = std::fs::OpenOptions::new();
             db_options
@@ -82,7 +104,7 @@ impl SessionStore {
                 db_options.mode(0o600);
             }
             db_options.open(path)?;
-            Some(file)
+            Some(ownership)
         };
         Self::open_with_ownership(path, ownership)
     }
@@ -91,7 +113,7 @@ impl SessionStore {
     /// Gateway channel stores validate their private file identity under that same lock.
     pub(super) fn open_with_ownership(
         path: &Path,
-        ownership: Option<std::fs::File>,
+        ownership: Option<DatabaseOwnership>,
     ) -> Result<Self> {
         let mut conn = Connection::open(path).context("open session SQLite database")?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -450,6 +472,79 @@ mod tests {
             11
         );
         drop(conn);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retained_ownership_description_does_not_outlive_store() {
+        let dir =
+            std::env::temp_dir().join(format!("jiaclaw-lock-retained-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("sessions.sqlite3");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .insert("retained".into(), message("committed"))
+            .unwrap();
+        // dup and fork retain the same open file description, even with CLOEXEC.
+        // No sleep or a guessed overlap with another test's subprocess is needed.
+        let retained = match &store {
+            SessionStore::Sqlite {
+                _ownership: Some(guard),
+                ..
+            } => guard.file.try_clone().unwrap(),
+            _ => panic!("expected database ownership"),
+        };
+        assert!(SessionStore::open(&path).is_err());
+        drop(store);
+        let reopened = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.get("retained").unwrap().unwrap().messages[0].content,
+            "committed"
+        );
+        assert!(SessionStore::open(&path).is_err());
+        drop(retained);
+        assert!(SessionStore::open(&path).is_err());
+        drop(reopened);
+        drop(SessionStore::open(&path).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_open_releases_ownership_with_retained_description_and_preserves_schema() {
+        let dir =
+            std::env::temp_dir().join(format!("jiaclaw-lock-failed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("sessions.sqlite3");
+        drop(SessionStore::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version=11;").unwrap();
+        drop(conn);
+        let lock_path = path.with_extension("sqlite3.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&file).unwrap();
+        let retained = file.try_clone().unwrap();
+        let owner = DatabaseOwnership::new(file);
+        assert!(SessionStore::open_with_ownership(&path, Some(owner)).is_err());
+        let next = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&next).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            11
+        );
+        drop(conn);
+        drop(retained);
+        fs2::FileExt::unlock(&next).unwrap();
+        drop(next);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

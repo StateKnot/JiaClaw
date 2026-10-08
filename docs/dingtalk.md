@@ -107,3 +107,7 @@ python3 tests/dingtalk.py target/debug/jiaclaw
 2026-10-08 14:39 UTC 正式目录与固定SDK核对：内部token仅返回accessToken/expireIn；全企业`allInnerApps`和新版`scopes`不能独自证明当前凭据对应配置robotCode/CorpID。固定SDK存在`GET /v1.0/microApp/app/detail`（[原始定义](https://github.com/alibabacloud-go/dingtalk/blob/1986c966942afc67b8ccae59d29d57989a45fe76/micro_app_1_0/client.go#L8826)），但完整官方目录未取得它的最小权限及企业内部独立机器人适用性证据；这不是平台“不支持”的证明，也不能猜权限或仅mint token来宣称完整启动校验。本批不添加未经核实的安装gate、不将独立用户钉钉标完成。[新版应用范围](https://open.dingtalk.com/document/development/obtains-the-application-visible-range.md)
 
 完整本地与固定提交验收见[验证记录](validation.md#钉钉原始报文合同批次)。可信TLS入口仍必需：严格JSON形状不改变平台MAC只覆盖timestamp/ClientSecret、不覆盖正文的原始事实。
+
+15:39 UTC 取得新的正式[统一 GetToken 合同](https://open.dingtalk.com/document/development/api-gettoken.md)：内部应用可以使用 `POST /v1.0/oauth2/{corpId}/token`，权限为 `permission-qyapi_base`，内部应用须填写本企业 CorpID。请求 JSON 是 `client_id` / `client_secret` / `grant_type: "client_credentials"`，响应为 `access_token` / `expires_in`。因此后续显式安装验证可以把配置 CorpID 纳入凭据授权合同；这是根据文档的推断，尚未使用真实凭据验证错误 CorpID 的拒绝行为，也不是 token 返回身份或机器人归属证明。正式 Markdown 15341 字节，SHA256 `27d47e820723328352ce7c278a181e37c3748f3bb60dea9f063e47efa8872f69`；固定 SDK 的 OAuth2 定义提供 shape 对照，SDK 请求正文 metadata 的矛盾以正式 JSON 文档为准。
+
+当前生产代码仍使用原 camel-case token 接口，没有静默替换端点或 DTO。完整凭据→当前应用→机器人证明仍缺 `app/detail` 的正式最小权限和独立内部机器人的适用性；不能把 GetToken 的权限猜成 app/detail 权限。公开 API Explorer 元数据检索没有取得该合同，不代表平台不支持。正式 CorpID 指南的工作台 H5 `$CORPID$` 替换也不是服务端安装证明。本次只读取公开文档/SDK，未调用真实业务 API；独立用户钉钉继续待实现和认证。PR #88 固定 head 三项 CI 已通过，范围见[最终回填](validation.md#钉钉原始报文最终-ci-回填)。

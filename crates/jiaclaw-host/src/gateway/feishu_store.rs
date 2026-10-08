@@ -533,6 +533,7 @@ impl FeishuStore {
         ownership
             .try_lock_exclusive()
             .context("another process owns this Feishu channel database")?;
+        let ownership = crate::store::DatabaseOwnership::new(ownership);
         match fs::symlink_metadata(&path) {
             Ok(_) => {
                 ensure!(
