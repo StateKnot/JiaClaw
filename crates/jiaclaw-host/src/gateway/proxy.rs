@@ -727,6 +727,7 @@ mod tests {
                 telegram: None,
                 slack: None,
                 discord: None,
+                feishu: None,
             });
             let (release, receiver) = std::sync::mpsc::channel();
             let (started, ready) = tokio::sync::oneshot::channel();
@@ -812,6 +813,7 @@ mod tests {
             telegram: None,
             slack: None,
             discord: None,
+            feishu: None,
         });
         let id = Uuid::new_v4();
         for (method, path) in [

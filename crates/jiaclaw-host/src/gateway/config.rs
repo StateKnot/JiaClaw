@@ -43,6 +43,9 @@ pub struct Config {
     /// Dedicated user-installable Discord applications, each bound to one private bot DM.
     #[serde(default)]
     pub discord: Vec<DiscordConfig>,
+    /// Dedicated Feishu enterprise applications, each bound to one user and private chat.
+    #[serde(default)]
+    pub feishu: Vec<FeishuConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -96,6 +99,22 @@ pub struct DiscordConfig {
 }
 fn discord_api() -> String {
     "https://discord.com/api/v10".into()
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeishuConfig {
+    pub binding_id: String,
+    pub app_secret_file: PathBuf,
+    pub encrypt_key_file: PathBuf,
+    pub verification_token_file: PathBuf,
+    #[serde(default = "feishu_api")]
+    pub api_base: String,
+    #[serde(default)]
+    pub allow_loopback: bool,
+}
+fn feishu_api() -> String {
+    "https://open.feishu.cn/open-apis".into()
 }
 
 fn default_bind() -> String {
@@ -278,6 +297,50 @@ impl Config {
             );
             crate::outbound::validate_api_base(
                 crate::channel_types::Channel::Discord,
+                &entry.api_base,
+                entry.allow_loopback,
+            )?;
+        }
+        ensure!(
+            self.feishu.len() <= 32,
+            "at most 32 Feishu bindings are supported"
+        );
+        ensure!(
+            self.feishu.is_empty() || self.request_timeout_seconds >= 150,
+            "Feishu requires request_timeout_seconds >= 150"
+        );
+        let mut feishu_ids = HashSet::new();
+        for entry in &self.feishu {
+            ensure!(
+                uuid::Uuid::parse_str(&entry.binding_id).is_ok_and(|id| !id.is_nil()
+                    && id.get_variant() == uuid::Variant::RFC4122
+                    && id.to_string() == entry.binding_id),
+                "Feishu binding_id must be a canonical non-nil RFC4122 UUID"
+            );
+            ensure!(
+                feishu_ids.insert(&entry.binding_id),
+                "duplicate Feishu binding_id"
+            );
+            ensure!(
+                [
+                    &entry.app_secret_file,
+                    &entry.encrypt_key_file,
+                    &entry.verification_token_file,
+                ]
+                .into_iter()
+                .all(|path| path.is_absolute()
+                    && path.file_name().is_some()
+                    && !path
+                        .components()
+                        .any(|part| matches!(part, Component::ParentDir))),
+                "Feishu secret paths must be absolute without parent traversal"
+            );
+            ensure!(
+                entry.api_base.len() <= 2048,
+                "Feishu API base exceeds its size limit"
+            );
+            crate::outbound::validate_api_base(
+                crate::channel_types::Channel::Feishu,
                 &entry.api_base,
                 entry.allow_loopback,
             )?;
@@ -658,6 +721,110 @@ mod tests {
             assert!(serde_json::from_value::<Config>(input).is_err());
         }
     }
+    fn feishu_value() -> serde_json::Value {
+        let mut input = value();
+        input["feishu"] = json!([{"binding_id":"12345678-1234-4234-9234-123456789012",
+            "app_secret_file":"/private/app.secret","encrypt_key_file":"/private/encrypt.key",
+            "verification_token_file":"/private/verification.token"}]);
+        input
+    }
+
+    #[test]
+    fn feishu_configuration_is_opt_in_and_bounds_identity_paths_and_network() {
+        assert!(config(value()).feishu.is_empty());
+        let c = config(feishu_value());
+        c.validate().unwrap();
+        assert_eq!(c.feishu[0].api_base, "https://open.feishu.cn/open-apis");
+        assert!(!c.feishu[0].allow_loopback);
+        for id in [
+            "",
+            "00000000-0000-0000-0000-000000000000",
+            "ABCDEF01-2345-4678-9ABC-DEF012345678",
+            "abcdef01-2345-4678-1abc-def012345678",
+            "not-uuid",
+        ] {
+            let mut c = config(feishu_value());
+            c.feishu[0].binding_id = id.into();
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(feishu_value());
+        c.request_timeout_seconds = 149;
+        assert!(c.validate().is_err());
+        c.request_timeout_seconds = 150;
+        c.validate().unwrap();
+        c.feishu.push(c.feishu[0].clone());
+        assert!(c.validate().is_err());
+        let mut c = config(feishu_value());
+        c.feishu = (0..32)
+            .map(|_| {
+                let mut entry = c.feishu[0].clone();
+                entry.binding_id = uuid::Uuid::new_v4().to_string();
+                entry
+            })
+            .collect();
+        c.validate().unwrap();
+        c.feishu.push(c.feishu[0].clone());
+        assert!(c.validate().is_err());
+        for url in [
+            "https://open.larksuite.com/open-apis",
+            "https://other.example/open-apis",
+            "https://open.feishu.cn/other",
+            "https://secret@open.feishu.cn/open-apis",
+            "https://open.feishu.cn/open-apis?secret=token",
+            "https://open.feishu.cn/open-apis#secret",
+            "http://localhost:8080/open-apis",
+            "http://127.0.0.1:8080/other",
+        ] {
+            let mut c = config(feishu_value());
+            c.feishu[0].api_base = url.into();
+            c.feishu[0].allow_loopback = true;
+            assert!(c.validate().is_err());
+        }
+        let mut c = config(feishu_value());
+        c.feishu[0].api_base = "http://127.0.0.1:8080/open-apis".into();
+        assert!(c.validate().is_err());
+        c.feishu[0].allow_loopback = true;
+        c.validate().unwrap();
+        for path in ["relative.secret", "/tmp/../secret", "/"] {
+            for field in 0..3 {
+                let mut c = config(feishu_value());
+                match field {
+                    0 => c.feishu[0].app_secret_file = path.into(),
+                    1 => c.feishu[0].encrypt_key_file = path.into(),
+                    _ => c.feishu[0].verification_token_file = path.into(),
+                }
+                assert!(c.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn feishu_configuration_never_accepts_inline_credentials_or_binding_authority() {
+        for (field, value) in [
+            ("app_secret", json!("secret")),
+            ("encrypt_key", json!("secret")),
+            ("verification_token", json!("secret")),
+            ("state_key_file", json!("/private/key")),
+            ("app_id", json!("cli_app")),
+            ("tenant_key", json!("tenant")),
+            ("bot_open_id", json!("ou_bot")),
+            ("human_open_id", json!("ou_human")),
+            ("chat_id", json!("oc_chat")),
+            ("backend_id", json!("other")),
+            ("user_id", json!("other")),
+            ("enabled", json!(true)),
+        ] {
+            let mut input = feishu_value();
+            input["feishu"][0][field] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err(), "{field}");
+        }
+        for value in [json!(null), json!(1), json!("true")] {
+            let mut input = feishu_value();
+            input["feishu"][0]["allow_loopback"] = value;
+            assert!(serde_json::from_value::<Config>(input).is_err());
+        }
+    }
+
     fn discord_value() -> serde_json::Value {
         let mut input = value();
         input["discord"] = json!([{"binding_id":"12345678-1234-4234-9234-123456789012","bot_token_file":"/tmp/bot.token","state_key_file":"/tmp/signing.secret"}]);

@@ -446,6 +446,7 @@ mod tests {
             telegram: None,
             slack: None,
             discord: None,
+            feishu: None,
         });
         (state, user, fake, server)
     }

@@ -1003,6 +1003,7 @@ mod tests {
                 telegram: Some(runtime),
                 slack: None,
                 discord: None,
+                feishu: None,
             });
             (state, installation)
         }

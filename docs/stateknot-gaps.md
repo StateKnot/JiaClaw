@@ -14,6 +14,8 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 这些是实际源码增量，不能再说本轮只有依赖变化；但公开 release 仍为 `0.1.0-alpha.1`，不包含新 JWT/JWKS profile。JiaClaw 未认证或接入该身份 profile，当前永久渠道映射与租户容器隔离不能据此改称框架身份接线。此 delta 没有修改现成 durable graph/native schema 或 MCP transport；#140 仍 OPEN、无回复，Brokerrouter #41 仍阻止当前原生输出合同。保留精确 HTTP MCP 依赖，不自动切换浮动 main。
 
+08:23 UTC 飞书批次通过官方 GitHub API 复核：本文 main、release、#140 与十二项成功检查均未变化；没有新增可消费 runtime/native Schema/stdio 合同。本批私聊身份与后端 protocol 4 属于应用接线，不新增上游缺陷议题。
+
 ## MCP 现状与新议题
 
 上游 integrations 已有受限的无状态 Streamable HTTP MCP 客户端（协议 `2026-07-28`、有界 discovery/list/call、HTTPS/字面量 loopback 约束），目前没有本地 stdio 客户端。
@@ -32,4 +34,4 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 
 现成 `ProviderNativeAgentGraph` 只接受模型原生 JSON Schema 最终输出；Brokerrouter 当前拒绝该合同，新增跟踪 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)。先补齐受治理的模型合同，再接 admission/driver/store；不能把旧文本 tool loop 包装成该 durable graph。
 
-独立用户 Telegram/Slack/Discord 的 registry 准入、私有 inbox/outbox、加密凭据和人工 hold 属于 JiaClaw 应用接线；没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。
+独立用户 Telegram/Slack/Discord/飞书的 registry 准入、私有 inbox/outbox、原请求收据与人工 hold 属于 JiaClaw 应用接线；Discord 单独加密短期凭据，飞书业务文本仍为明文。没有切换到 StateKnot durable driver，也未扩大 HTTP MCP 工具权限。新源码 JWT/JWKS 身份是后续固定版本、可信身份部署和授权接线的可评估能力，不认证当前个人 Agent 恢复语义。

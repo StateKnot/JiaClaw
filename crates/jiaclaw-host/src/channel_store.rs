@@ -605,16 +605,18 @@ pub(super) fn enqueue_job_delivery(
 
 // Only private gateway channel stores create these ledgers. The selected table
 // is an internal enum, never client input. Checks and insertion share the claim's
-// IMMEDIATE transaction; ordinary channel callers never touch either table.
+// IMMEDIATE transaction; ordinary channel callers never touch these tables.
 pub(super) const MAX_TELEGRAM_OPERATIONS: usize = 16_000;
 pub(super) const MAX_SLACK_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 pub(super) const MAX_DISCORD_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
+pub(super) const MAX_FEISHU_OPERATIONS: usize = MAX_TELEGRAM_OPERATIONS;
 
 #[derive(Clone, Copy)]
 enum RecordedChannel {
     Telegram,
     Slack,
     Discord,
+    Feishu,
 }
 impl RecordedChannel {
     fn table(self) -> &'static str {
@@ -622,6 +624,7 @@ impl RecordedChannel {
             Self::Telegram => "gateway_telegram_operations",
             Self::Slack => "gateway_slack_operations",
             Self::Discord => "gateway_discord_operations",
+            Self::Feishu => "gateway_feishu_operations",
         }
     }
     fn channel(self) -> Channel {
@@ -629,6 +632,7 @@ impl RecordedChannel {
             Self::Telegram => Channel::Telegram,
             Self::Slack => Channel::Slack,
             Self::Discord => Channel::Discord,
+            Self::Feishu => Channel::Feishu,
         }
     }
     fn full_message(self) -> &'static str {
@@ -640,6 +644,7 @@ impl RecordedChannel {
             Self::Discord => {
                 "Discord operation ledger is full; reconcile and purge reviewed events"
             }
+            Self::Feishu => "Feishu operation ledger is full; reconcile and purge reviewed events",
         }
     }
     fn capacity(self) -> usize {
@@ -647,6 +652,7 @@ impl RecordedChannel {
             Self::Telegram => MAX_TELEGRAM_OPERATIONS,
             Self::Slack => MAX_SLACK_OPERATIONS,
             Self::Discord => MAX_DISCORD_OPERATIONS,
+            Self::Feishu => MAX_FEISHU_OPERATIONS,
         }
     }
 }
@@ -799,6 +805,13 @@ impl SessionStore {
     ) -> Result<Option<ChannelEvent>> {
         self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Discord)))
     }
+    pub(super) fn claim_feishu_event_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        self.claim_channel_event_impl(now, Some((request_id, RecordedChannel::Feishu)))
+    }
     fn claim_channel_event_impl(
         &mut self,
         now: i64,
@@ -947,6 +960,13 @@ impl SessionStore {
         request_id: &str,
     ) -> Result<Option<ChannelDelivery>> {
         self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Discord)))
+    }
+    pub(super) fn claim_feishu_delivery_recorded(
+        &mut self,
+        now: i64,
+        request_id: &str,
+    ) -> Result<Option<ChannelDelivery>> {
+        self.claim_channel_delivery_impl(now, Some((request_id, RecordedChannel::Feishu)))
     }
     fn claim_channel_delivery_impl(
         &mut self,
@@ -3610,6 +3630,7 @@ mod tests {
             "gateway_telegram_operations",
             "gateway_slack_operations",
             "gateway_discord_operations",
+            "gateway_feishu_operations",
         ] {
             db.channel_conn().unwrap().execute_batch(&format!("CREATE TABLE {table}(request_id TEXT PRIMARY KEY NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','delivery')),event_id TEXT NOT NULL REFERENCES channel_events(id) ON DELETE CASCADE,delivery_id TEXT REFERENCES channel_outbox(id) ON DELETE CASCADE,attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 5),claimed_ms INTEGER NOT NULL,CHECK((kind='event' AND delivery_id IS NULL AND attempt=1) OR (kind='delivery' AND delivery_id IS NOT NULL)));" )).unwrap();
         }
@@ -4002,5 +4023,200 @@ mod tests {
         );
         assert_eq!(ledger_count(&db, "gateway_slack_operations"), 0);
         assert_eq!(ledger_count(&db, "gateway_telegram_operations"), 0);
+    }
+    fn recorded_feishu_spec(event: &str) -> EventSpec {
+        let mut event = spec(event);
+        event.destination.channel = Channel::Feishu;
+        event.destination.installation_id = "cli_fixture:tenant_fixture".into();
+        event.destination.conversation_id = "oc_private".into();
+        event
+    }
+    #[test]
+    fn recorded_feishu_claim_and_send_retry_preserve_atomic_ids_across_recovery() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db
+            .accept_channel_event(recorded_feishu_spec("om_message"), 0)
+            .unwrap();
+        let request = uuid::Uuid::now_v7().to_string();
+        let event = db
+            .claim_feishu_event_recorded(0, &request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.id, accepted.id);
+        assert_eq!(ledger_count(&db, "gateway_feishu_operations"), 1);
+        for table in [
+            "gateway_telegram_operations",
+            "gateway_slack_operations",
+            "gateway_discord_operations",
+        ] {
+            assert_eq!(ledger_count(&db, table), 0);
+        }
+        db.complete_channel_event(
+            &event.id,
+            None,
+            "completed",
+            vec!["reply".into(), "second".into()],
+            None,
+            1,
+        )
+        .unwrap();
+        let send_request = uuid::Uuid::now_v7().to_string();
+        let delivery = db
+            .claim_feishu_delivery_recorded(2, &send_request)
+            .unwrap()
+            .unwrap();
+        let recorded: (String, String, String, u32) = db.channel_conn().unwrap().query_row("SELECT kind,event_id,delivery_id,attempt FROM gateway_feishu_operations WHERE request_id=?1", [&send_request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(
+            recorded,
+            ("delivery".into(), event.id.clone(), delivery.id.clone(), 1)
+        );
+        db.finish_channel_delivery(
+            &delivery.id,
+            1,
+            "retry_wait",
+            None,
+            Some("rate_limited".into()),
+            Some(2000),
+            3,
+        )
+        .unwrap();
+        let retry = db
+            .claim_feishu_delivery_recorded(2003, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.id, delivery.id);
+        assert_eq!(retry.attempts, 2);
+        assert_eq!(ledger_count(&db, "gateway_feishu_operations"), 3);
+        // A crash after the real send claim keeps its original operation and
+        // unknown outcome; a later part cannot bypass that uncertainty.
+        assert_eq!(db.recover_channels(5000).unwrap(), (0, 1));
+        assert_eq!(
+            db.list_channel_deliveries(Some(&event.id), 10, 0).unwrap()[0].state,
+            "unknown"
+        );
+        assert!(db
+            .claim_feishu_delivery_recorded(6000, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .is_none());
+        assert_eq!(ledger_count(&db, "gateway_feishu_operations"), 3);
+    }
+    #[test]
+    fn recorded_feishu_channel_mismatch_and_operation_fault_roll_back_claim_and_pacing() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let wrong = db.accept_channel_event(spec("wrong-channel"), 0).unwrap();
+        assert!(db
+            .claim_feishu_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&wrong.id).unwrap().unwrap().status,
+            "received"
+        );
+        let event = db
+            .claim_channel_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(
+            &event.id,
+            None,
+            "completed",
+            vec!["old channel".into()],
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(db
+            .claim_feishu_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let delivery = db
+            .claim_channel_delivery_recorded(2, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        delivered(&mut db, &delivery, 3);
+        let accepted = db
+            .accept_channel_event(recorded_feishu_spec("om_message"), 4)
+            .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_feishu_operation BEFORE INSERT ON gateway_feishu_operations BEGIN SELECT RAISE(ABORT,'fixture operation failure'); END;").unwrap();
+        assert!(db
+            .claim_feishu_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+            "received"
+        );
+        assert_eq!(ledger_count(&db, "gateway_feishu_operations"), 0);
+        db.channel_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_feishu_operation")
+            .unwrap();
+        db.claim_feishu_event_recorded(4, &uuid::Uuid::now_v7().to_string())
+            .unwrap()
+            .unwrap();
+        db.complete_channel_event(
+            &accepted.id,
+            None,
+            "completed",
+            vec!["reply".into()],
+            None,
+            5,
+        )
+        .unwrap();
+        db.channel_conn().unwrap().execute_batch("CREATE TRIGGER reject_feishu_operation BEFORE INSERT ON gateway_feishu_operations BEGIN SELECT RAISE(ABORT,'fixture operation failure'); END;").unwrap();
+        assert!(db
+            .claim_feishu_delivery_recorded(6, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        let pending = db
+            .list_channel_deliveries(Some(&accepted.id), 10, 0)
+            .unwrap()
+            .remove(0);
+        assert_eq!(pending.state, "pending");
+        assert_eq!(pending.attempts, 0);
+        let cooldown: usize = db
+            .channel_conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM channel_cooldowns WHERE channel='feishu'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cooldown, 0);
+    }
+    #[test]
+    fn recorded_feishu_full_and_duplicate_operation_ledgers_never_partially_claim() {
+        let mut db = database();
+        recorded_ledgers(&db);
+        let accepted = db
+            .accept_channel_event(recorded_feishu_spec("om_message"), 0)
+            .unwrap();
+        for request in [
+            uuid::Uuid::new_v4().to_string(),
+            "0195CA8E-0000-7000-8000-00000000000A".into(),
+        ] {
+            assert!(db.claim_feishu_event_recorded(0, &request).is_err());
+        }
+        let used = uuid::Uuid::now_v7().to_string();
+        db.channel_conn().unwrap().execute("INSERT INTO gateway_feishu_operations(request_id,kind,event_id,attempt,claimed_ms) VALUES(?1,'event',?2,1,0)", params![used, accepted.id]).unwrap();
+        assert!(db.claim_feishu_event_recorded(0, &used).is_err());
+        db.channel_conn().unwrap().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<15999) INSERT INTO gateway_feishu_operations(request_id,kind,event_id,attempt,claimed_ms) SELECT '0195ca8e-0000-7000-8000-'||printf('%012x',x),'event',?1,1,0 FROM n", [&accepted.id]).unwrap();
+        assert_eq!(
+            ledger_count(&db, "gateway_feishu_operations"),
+            MAX_FEISHU_OPERATIONS
+        );
+        assert!(db
+            .claim_feishu_event_recorded(0, &uuid::Uuid::now_v7().to_string())
+            .is_err());
+        assert_eq!(
+            db.get_channel_event(&accepted.id).unwrap().unwrap().status,
+            "received"
+        );
+        for table in [
+            "gateway_telegram_operations",
+            "gateway_slack_operations",
+            "gateway_discord_operations",
+        ] {
+            assert_eq!(ledger_count(&db, table), 0);
+        }
     }
 }

@@ -642,12 +642,35 @@ try:
         start()
         timeout_id = admit('telegram', payload('telegram', 'timeout'))
         eventually(lambda: event(timeout_id)['status'] == 'needs_review', 'bounded channel Agent timeout')
-        assert observed('timeout') == 2 and deliveries(timeout_id) == [] and sent('timeout') == 0
+        # The same deadline covers preparation and the whole native tool loop.
+        # It may expire before either model POST; already submitted unknown work
+        # is separately exercised by the processing_crash gate above.
+        timeout_baseline = observed('timeout')
+        timeout_snapshot = event(timeout_id)
+        timeout_rows = deliveries(timeout_id)
+        assert timeout_baseline in range(3) and timeout_rows == [] and sent('timeout') == 0, {
+            'status': timeout_snapshot['status'],
+            'error': 'agent_failed_or_deadline_expired' if timeout_snapshot.get('error') ==
+                     'agent failed or deadline expired; external outcome may be unknown'
+                     else 'other_channel_error',
+            'model_requests': timeout_baseline,
+            'delivery_count': len(timeout_rows), 'send_count': sent('timeout'),
+        }
         gate('timeout').set()
         stop()
         settings['http']['channels'][0]['timeout_secs'] = 30
         start()
-        assert event(timeout_id)['status'] == 'needs_review' and observed('timeout') == 2
+        timeout_snapshot = event(timeout_id)
+        timeout_rows = deliveries(timeout_id)
+        assert (timeout_snapshot['status'] == 'needs_review' and
+                observed('timeout') == timeout_baseline and timeout_rows == [] and sent('timeout') == 0), {
+            'status': timeout_snapshot['status'],
+            'error': 'agent_failed_or_deadline_expired' if timeout_snapshot.get('error') ==
+                     'agent failed or deadline expired; external outcome may be unknown'
+                     else 'other_channel_error',
+            'model_requests': observed('timeout'), 'original_model_requests': timeout_baseline,
+            'delivery_count': len(timeout_rows), 'send_count': sent('timeout'),
+        }
 
         # One fixture-only SQLite trigger makes the final event update fail
         # after session/outbox writes. Their transaction must roll back together.

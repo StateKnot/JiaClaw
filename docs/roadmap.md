@@ -16,7 +16,7 @@
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
-| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)已分别通过 PR #71/#80/#81/#82/#83 最终 CI；本批[Discord](tenant-discord.md)接入专用 USER_INSTALL App、固定人的 Bot DM/文本命令、加密私有队列和停机核对，本机九组及完整回归通过，跨平台结果以本批 draft PR 最终 CI 为准。其他渠道后台及真实供应商联合认证待完成 |
+| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)、[Discord](tenant-discord.md)已分别通过 PR #71/#80/#81/#82/#83/#84 最终 CI。本批[飞书](tenant-feishu.md)接专用企业自建 App、固定人/p2p 文本、私有队列和停机核对，验收进行中；其他渠道后台及真实供应商联合认证待完成 |
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
@@ -27,7 +27,7 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 本批修改改善单机应用的可运行性与安全边界；完整个人 Agent 生产认证仍未完成。最新固定版本、检查证据和障碍见 [StateKnot](stateknot-gaps.md) 和 [Brokerrouter](brokerrouter-gaps.md)。
 
-本批完成独立用户 Discord 的最终整机、跨平台与真实容器验收后，继续其他独立用户渠道；真实 Telegram/Slack/Discord 安装、TLS 延迟与终端收发分别认证。持续复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定合同；已新增的 StateKnot 源码 JWT/JWKS 能力另计版本/身份部署接线，不代替当前租户隔离。钉钉当前限内部机器人 HTTP 私聊/定时文本，真实安装、字段稳定性及限额仍须认证。WhatsApp 须先核实 Cloud API 通用 AI 资格、主体/地区、客户服务窗口、模板授权与未知投递语义，不能外推 3P Agents 条款。外部写工具、子 Agent 和运行恢复仍须满足 durable/治理身份；用户 hold 不表示能恢复或重放工具执行。
+本批完成独立用户飞书的整机、跨平台与容器范围验收，再推进其他独立用户渠道；真实 Telegram/Slack/Discord/飞书安装、TLS 延迟与终端收发分别认证。飞书只用已核对的 token/Bot/tenant/p2p Chat 合同与签名事件关联，不添加群字段或通讯录权限。持续复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定合同；StateKnot 源码 JWT/JWKS 能力另计固定版本/身份部署接线，不代替当前租户隔离。钉钉当前限内部机器人 HTTP 私聊/定时文本，真实安装、字段稳定性及限额仍须认证。WhatsApp 须先核实 Cloud API 通用 AI 资格、主体/地区、客户服务窗口、模板授权与未知投递语义，不能外推 3P Agents 条款。外部写工具、子 Agent 和运行恢复仍须满足 durable/治理身份；用户 hold 不表示能恢复或重放工具执行。
 
 本批先收紧既有 MEMORY / SOUL / USER / HEARTBEAT 文件边界：配置路径接线、有界读取、统一写入上限、目录句柄约束、原子发布、协作追加锁和初始化保留；新增整机 fixture 与 747 项 Rust 回归已在本机通过，跨平台/真实容器以本批 draft PR 最终 head CI 为准。这是语义记忆前置修复，不能据此将 embeddings 或向量检索标记完成。
 
@@ -59,4 +59,10 @@ Discord Bot 定时文字补齐独立目的地/guild 授权、每次发送前验�
 
 Slack 批次基于 PR #82 已验证 head，交付默认关闭的[独立用户 Slack](tenant-slack.md)：专用 App、固定工作区/成员/DM、四次平台身份握手、原始签名和 2.8 秒 ACK、私有 inbox/outbox、共享用户 hold 与 UUIDv7 操作账本；后端请求记录与会话结果同事务提交，未知结果不自动重发。独立复核后补齐 owner 暂存事务与原子不覆盖发布；继承的 SQLite WAL-reset 风险通过精确升级 bundled 3.51.3 移除。修订后 984 项 Rust、fmt/Clippy/锁定构建、同一最终二进制新八组及十五套旧进程回归通过。PR #83 最终 head `af9265ccc5e321ab98e0916f0deac2164b2780b3` 已通过 [CI 37735649553](https://github.com/jiawenyao401/JiaClaw/actions/runs/37735649553) 的 Ubuntu/macOS/container；真实 Slack 安装与容器内 Slack runtime 压力认证仍另计。人工清 hold 已检查全部保留 Telegram/Slack 队列。
 
-2026-10-08 Discord 批次基于上述固定 head，接入默认关闭的[独立用户 Bot DM 命令](tenant-discord.md)：完整永久身份、签名持久准入、ephemeral original/followup、原密钥加密队列、protocol 3 元数据核对与撤销后无 Secret 的停机检查。私有库 21 项、本机默认并行 1042 项 Rust、新整机九组与旧进程十六套全部通过，最后重建二进制哈希保持一致；fmt/必需 Clippy/locked 全目标检查及构建通过。模型后到期提交保留人工 hold；真实平台和供应商认证仍未完成。最终跨平台/真实容器证据在本批 draft PR 记录；不预记完整多用户渠道认证。上游 StateKnot main `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6` 新增源码级 JWT/JWKS profile、隐私编译测试与生产验收 ledger，未发布到 alpha.1；Brokerrouter 原生 Schema 缺口和 StateKnot stdio 议题未变化。应用入站/队列接线不等于 durable driver。
+2026-10-08 Discord 批次基于上述固定 head，接入默认关闭的[独立用户 Bot DM 命令](tenant-discord.md)：完整永久身份、签名持久准入、ephemeral original/followup、原密钥加密队列、protocol 3 元数据核对与撤销后无 Secret 的停机检查。私有库 21 项、本机默认并行 1042 项 Rust、新整机九组与旧进程十六套全部通过，最后重建二进制哈希保持一致；fmt/必需 Clippy/locked 全目标检查及构建通过。PR #84 最终 head `768da0eeff2219ec69d3ca36cd12fbcd8943e927` 已通过 [CI 37746206382](https://github.com/jiawenyao401/JiaClaw/actions/runs/37746206382) 的 Ubuntu/macOS/container。首轮 Mac 因整作业 20 分钟预算被取消，修订为 30 分钟后完整通过；没有修改生产/fixture 截止时间或省略测试。模型后到期提交保留人工 hold；真实平台、Discord 容器 runtime 压力和供应商认证仍未完成。上游 StateKnot main `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6` 的源码级 JWT/JWKS profile 未发布到 alpha.1；Brokerrouter 原生 Schema 缺口和 StateKnot stdio 议题未变化，应用入站/队列接线不等于 durable driver。
+
+飞书批次基于 PR #84 已验证 head，扩展 registry schema 6 与后端 protocol 4：固定 App/tenant/Bot/人/p2p Chat，900 ms 本地回调预算、共享准入、原请求收据、私有队列及撤销后的无 Secret 停机检查。官方 Bot Info 顶层响应和单聊缺省群字段已逐项核对，权限限于私聊接收、Bot 发送、Chat 与企业读取。review 后收紧原始 JSON、只读打开前 SQLite 文件头、完整 immutable owner schema、16 KiB 私有 prompt 和已准入结算的有界 I/O 等待；本机默认并行 1097 项 Rust、fmt、必需 Clippy 及 locked 全目标 check/build 已通过。首版同一生产二进制的新整机 11 组与旧进程 21 套通过；Brokerrouter fixture 等待与 channels deadline 次数断言仅在测试内修订，未确定首轮调度根因。
+
+PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 第 11 组千条准入意外收到 429 后失败且后续 skipped；原断言没记录 body.status，原因仍未知。第一次 fixture 修订增加 SQL 锁/停机排空、明确 `429 busy` 的有界同签名重试及精确 1000/1001 身份断言，本地 11 组一次通过且生产二进制哈希不变。第二轮 Ubuntu/容器仍成功，macOS 写锁用例收到 `503 ingress_deadline`（908 ms）而未满足测试只要求 admission_failed 的断言；整体回调截止不能等同单次 SQL 250 ms 截止，具体调度段未确定，也不解释第一次 429。
+
+当前仅把 fixture 写锁结果限定为 admission_failed 或 ingress_deadline 两种精确 503，持锁直到进程退出/排空、核对完整持久状态和零新增效果后再释放并重启核对；其他 503 仍失败。每次 1 秒、900 ms/SQL 250 ms、精确 1000/1001 和 busy 重试边界均保留。当前修订本地完整 11 组一次通过且二进制哈希不变；本提交准备时第三轮 exact-head CI 待核对，最终固定提交结果见 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85)，不能使用旧 head 局部成功代替。token 整机仅验正常 mint 的启动取消/截止和已知失效后的 terminal/no resend 核对，运行期正常到期刷新、真实平台和容器渠道 runtime 压力仍待认证；证据分层见[验证记录](validation.md)。08:23 UTC 上游 release/main/#140/#31/#41/PR #40 均未变化，没有新可消费 durable 原生输出合同。

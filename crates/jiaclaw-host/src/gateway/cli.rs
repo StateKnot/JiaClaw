@@ -316,6 +316,79 @@ pub enum Commands {
         #[arg(long)]
         event: String,
     },
+    /// Permanently bind a dedicated Feishu enterprise application and private chat to one user.
+    FeishuBind {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long)]
+        app_id: String,
+        #[arg(long)]
+        tenant_key: String,
+        #[arg(long)]
+        bot_open_id: String,
+        #[arg(long)]
+        human_open_id: String,
+        #[arg(long)]
+        chat_id: String,
+    },
+    /// List lifetime Feishu bindings, including permanent revocations; no credentials.
+    FeishuBindings {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Permanently revoke a Feishu installation without freeing its owner reservation.
+    FeishuRevoke {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+    },
+    /// Inspect private Feishu queues after stopping gateway; no credentials are printed.
+    FeishuInspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long, value_parser = ["events", "deliveries", "operations"])]
+        kind: String,
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=16000))]
+        offset: u16,
+    },
+    /// Record a verified Feishu receipt for an unknown send, without sending again.
+    FeishuResolve {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        receipt: String,
+    },
+    /// Cancel remaining Feishu sends after external review; requires stopped gateway.
+    FeishuCancel {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
+    /// Purge only fully resolved Feishu events, retaining dedup tombstones.
+    FeishuPurge {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        binding: Uuid,
+        #[arg(long)]
+        event: String,
+    },
     /// Clear an uncertain write hold only after checking that its backend is idle.
     ReviewClear {
         #[arg(long)]
@@ -688,6 +761,91 @@ pub async fn run(command: Commands) -> Result<()> {
             &Config::load(&config)?,
             binding,
             super::discord::AdminAction::Purge { event },
+        )?),
+        Commands::FeishuBind {
+            config,
+            user,
+            app_id,
+            tenant_key,
+            bot_open_id,
+            human_open_id,
+            chat_id,
+        } => {
+            let (config, registry) = registry(&config)?;
+            let owner = registry
+                .list()?
+                .into_iter()
+                .find(|entry| entry.user_id == user)
+                .context("gateway user not found")?;
+            ensure!(
+                config
+                    .backends
+                    .iter()
+                    .any(|entry| entry.id == owner.backend_id),
+                "user backend is not configured"
+            );
+            output(&serde_json::to_value(registry.add_feishu_binding(
+                user,
+                &app_id,
+                &tenant_key,
+                &bot_open_id,
+                &human_open_id,
+                &chat_id,
+            )?)?)
+        }
+        Commands::FeishuBindings { config } => {
+            let (_, registry) = registry(&config)?;
+            output(&json!({"bindings":registry.list_feishu_bindings()?}))
+        }
+        Commands::FeishuRevoke { config, binding } => {
+            let (_, registry) = registry(&config)?;
+            registry.revoke_feishu_binding(binding)?;
+            output(&json!({"binding_id":binding.to_string(),"revoked":true}))
+        }
+        Commands::FeishuInspect {
+            config,
+            binding,
+            kind,
+            event,
+            limit,
+            offset,
+        } => output(&super::feishu::admin(
+            &Config::load(&config)?,
+            binding,
+            super::feishu::AdminAction::Inspect {
+                kind,
+                event,
+                limit: usize::from(limit),
+                offset: usize::from(offset),
+            },
+        )?),
+        Commands::FeishuResolve {
+            config,
+            binding,
+            delivery,
+            receipt,
+        } => output(&super::feishu::admin(
+            &Config::load(&config)?,
+            binding,
+            super::feishu::AdminAction::Resolve { delivery, receipt },
+        )?),
+        Commands::FeishuCancel {
+            config,
+            binding,
+            event,
+        } => output(&super::feishu::admin(
+            &Config::load(&config)?,
+            binding,
+            super::feishu::AdminAction::Cancel { event },
+        )?),
+        Commands::FeishuPurge {
+            config,
+            binding,
+            event,
+        } => output(&super::feishu::admin(
+            &Config::load(&config)?,
+            binding,
+            super::feishu::AdminAction::Purge { event },
         )?),
         Commands::ReviewClear {
             config,
@@ -1067,6 +1225,183 @@ mod tests {
             binding,
             "--kind",
             "secrets"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn feishu_commands_require_full_explicit_ownership_and_no_credentials() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "feishu-bind",
+            "--config",
+            "c.json",
+            "--user",
+            user,
+            "--app-id",
+            "cli_app",
+            "--tenant-key",
+            "tenant",
+            "--bot-open-id",
+            "ou_bot",
+            "--human-open-id",
+            "ou_human",
+            "--chat-id",
+            "oc_chat",
+        ];
+        let Commands::FeishuBind {
+            app_id,
+            tenant_key,
+            bot_open_id,
+            human_open_id,
+            chat_id,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(
+            (
+                app_id.as_str(),
+                tenant_key.as_str(),
+                bot_open_id.as_str(),
+                human_open_id.as_str(),
+                chat_id.as_str()
+            ),
+            ("cli_app", "tenant", "ou_bot", "ou_human", "oc_chat")
+        );
+        for index in [4, 6, 8, 10, 12, 14] {
+            let mut missing = base.to_vec();
+            missing.drain(index..index + 2);
+            assert!(Args::try_parse_from(missing).is_err());
+        }
+        for forbidden in [
+            "--app-secret",
+            "--encrypt-key",
+            "--verification-token",
+            "--backend-id",
+            "--state-key",
+            "--token",
+        ] {
+            let mut extra = base.to_vec();
+            extra.extend([forbidden, "provided-secret"]);
+            assert!(Args::try_parse_from(extra).is_err());
+        }
+        for command in [
+            "feishu-bindings",
+            "feishu-revoke",
+            "feishu-inspect",
+            "feishu-resolve",
+            "feishu-cancel",
+            "feishu-purge",
+        ] {
+            assert!(Args::try_parse_from(["gateway", command]).is_err());
+        }
+        assert!(Args::try_parse_from(["gateway", "feishu-bindings", "--config", "c.json"]).is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "feishu-revoke",
+            "--config",
+            "c.json",
+            "--binding",
+            user
+        ])
+        .is_ok());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "feishu-resolve",
+            "--config",
+            "c.json",
+            "--binding",
+            user,
+            "--delivery",
+            user,
+            "--receipt",
+            "om_platformReceipt"
+        ])
+        .is_ok());
+        for command in ["feishu-cancel", "feishu-purge"] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                command,
+                "--config",
+                "c.json",
+                "--binding",
+                user,
+                "--event",
+                user
+            ])
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn feishu_inspection_pages_and_kinds_are_bounded_before_dispatch() {
+        let binding = "12345678-1234-4234-9234-123456789012";
+        for kind in ["events", "deliveries", "operations"] {
+            let Commands::FeishuInspect { limit, offset, .. } = Args::try_parse_from([
+                "gateway",
+                "feishu-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                kind,
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("wrong command")
+            };
+            assert_eq!((limit, offset), (20, 0));
+            assert!(Args::try_parse_from([
+                "gateway",
+                "feishu-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                kind,
+                "--limit",
+                "100",
+                "--offset",
+                "16000"
+            ])
+            .is_ok());
+        }
+        for (field, value) in [
+            ("--limit", "0"),
+            ("--limit", "101"),
+            ("--limit", "-1"),
+            ("--offset", "16001"),
+            ("--offset", "-1"),
+        ] {
+            assert!(Args::try_parse_from([
+                "gateway",
+                "feishu-inspect",
+                "--config",
+                "c.json",
+                "--binding",
+                binding,
+                "--kind",
+                "events",
+                field,
+                value
+            ])
+            .is_err());
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "feishu-inspect",
+            "--config",
+            "c.json",
+            "--binding",
+            binding,
+            "--kind",
+            "credentials"
         ])
         .is_err());
     }

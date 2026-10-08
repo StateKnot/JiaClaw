@@ -538,6 +538,32 @@ try:
     assert admin('discord-bindings')['bindings'] == [restored_discord]
     assert messages(a) == a_history and messages(b) == b_history
     print('PASS: schema 5 Discord application reservation survives bounded-volume restart/revocation; default-off/private routes refuse access')
+    # Feishu tenant reservations persist without opting into platform credentials.
+    # Signed ingress and actual platform lifecycle are exercised separately.
+    feishu_binding = admin('feishu-bind', '--user', issued['alice']['user_id'],
+                           '--app-id', 'cli_CONTAINER', '--tenant-key', 'tenant_container',
+                           '--bot-open-id', 'ou_bot_container', '--human-open-id', 'ou_human_container',
+                           '--chat-id', 'oc_container')
+    assert feishu_binding['backend_id'] == 'alice' and feishu_binding['enabled']
+    assert admin('feishu-bindings')['bindings'] == [feishu_binding]
+    assert request('/hooks/feishu/' + feishu_binding['id'], method='POST', data={})[0] == 404
+    for path in ['/internal/channels/feishu/status', '/internal/channels/feishu-binding',
+                 '/internal/channels/feishu/execute', '/api/gateway/feishu-bindings']:
+        assert request(path, a)[0] == 404, path
+    admin('feishu-revoke', '--binding', feishu_binding['id'])
+    docker('restart', gateway_name)
+    wait_gateway()
+    restored_feishu = admin('feishu-bindings')['bindings'][0]
+    assert restored_feishu == dict(feishu_binding, enabled=False)
+    rejected_feishu = docker('exec', gateway_name, '/usr/local/bin/jiaclaw', 'gateway', 'feishu-bind',
+                            '--config', '/etc/jiaclaw/gateway.json', '--user', issued['bob']['user_id'],
+                            '--app-id', 'cli_CONTAINER', '--tenant-key', 'tenant_bob_container',
+                            '--bot-open-id', 'ou_bot_container', '--human-open-id', 'ou_bob_container',
+                            '--chat-id', 'oc_bob_container', check=False)
+    assert rejected_feishu.returncode != 0, 'revoked Feishu application was reassigned'
+    assert admin('feishu-bindings')['bindings'] == [restored_feishu]
+    assert messages(a) == a_history and messages(b) == b_history
+    print('PASS: schema 6 Feishu application reservation survives bounded-volume restart/revocation; default-off/private routes refuse access')
     # Persisted admission is observed through the real admin API before SIGKILL.
     # Pausing only this fixture backend holds the write without vendor calls.
     docker('pause', backend_names['alice'])

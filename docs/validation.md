@@ -409,7 +409,7 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 - 最终重建二进制 SHA256 `e2f725408abce9eba8651ce6300e57c2ff2c122dc32eb5a415b23193703a3e06`：`tenant_discord.py` 九组完整通过；十六套旧进程回归全部通过（user_gateway、read_only_keys、gateway_audit、tenant_cron、tenant_telegram、tenant_slack、mcp、native_tools、e2e、channels、scheduled_delivery、memory_io、scheduler、model_routing、semantic_memory、model_calls）。每套和整体前后哈希相同，测试同步修订后再次 locked 构建仍产生相同二进制，没有使用旧 artifact 代替代码验收。
 - 新整机使用两个真实 JiaClaw 后端、真实 Ed25519 原始签名、真实原生工具往返和 SQLite；覆盖签名前的实际 registry 写竞争拒绝、User Install 与 DM/命令 identity、加密凭据/原 key 指纹、六片 Unicode ephemeral 回复、unknown PATCH/POST 的后续阻断及人工核对、429 重启/五次上限/到期 hold、模型与 PATCH/POST 中实际 SIGKILL、1000 条真实签名持久准入与第 1001 条拒绝、停机分页和 revoked/no-runtime 全保留队列检查。仅 localhost 合成凭据；SQLite 文件无明文 interaction 凭据，日志不含 Secrets，inspect 不含明文或密文 token。
 - 独立 review 修正了模型返回后、结果落盘时凭据期限已用尽却可能清 hold 的边界：获得结算槽和 store mutex 后重查发送余量，过期原子写 needs_review/无 outbox，慢提交后再保守保留 hold。真实私有库 recorded claim 回归覆盖已计算模型结果的到期提交。私有发送成功回执及 429 均要求 JSON 对象，拒绝 positional array，保留原字节重复字段拒绝。
-- CI 增加 Linux/macOS 的九组 Discord 整机验收；真实容器组新增 schema 5 App 预留、撤销重启、不可重分配、默认关闭和私有路由拒绝，保留硬配额卷与原停机 hold-clear 流程。容器案例不启用 Discord runtime，不能代替真实平台/TLS 或共享磁盘 runtime 压力认证。最终 exact-head CI 与 draft PR 链接在交付中核对，源文档下批回填，避免文档变更循环替换已验证 head。
+- CI 增加 Linux/macOS 的九组 Discord 整机验收；真实容器组新增 schema 5 App 预留、撤销重启、不可重分配、默认关闭和私有路由拒绝，保留硬配额卷与原停机 hold-clear 流程。容器案例不启用 Discord runtime，不能代替真实平台/TLS 或共享磁盘 runtime 压力认证。最终 exact-head CI 已在本节下文回填，不为记录自身 SHA 循环替换已验证 head。
 
 首轮本机默认并行全 workspace 出现两个旧短截止 fixture 失败：MCP `deadline_is_finite_and_not_retried` 的 initialize 到达 1 秒截止，Brokerrouter tracked_headers 的 POST 到达 1 秒截止。当时并发运行 outbound 等其他用例；后续独立默认并行再次只复现 MCP 的准备阶段超时。仅修正 MCP 测试：真实 connect/catalog、descriptor pin 与 schema 编译仍受默认 5 秒预算约束，测试实际 RemoteTool 的调用仍为 1 秒、elapsed<1800 ms、明确 remote outcome unknown 和实际 socket 请求仅一次。模块默认并行 11/11、独立连续 20/20 及最终完整默认并行 1042 项均通过。生产/SDK 超时和 CI 并行方式未改变；首次 tracked_headers 超时的具体调度原因未确定，未借该测试修订宣称其根因已解决。
 
@@ -417,4 +417,42 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 
 首轮 [CI 37743578880](https://github.com/jiawenyao401/JiaClaw/actions/runs/37743578880) 对应 head `765965c69352dfe1d948bf7450e4e044cb91770d`。Ubuntu job `113199709450` 全部成功（1043 项默认并行 Rust，含 Linux 专属 EXDEV；九组 Discord、全部旧进程、Chromium 与独立真实 Docker 沙箱），container job `113199709161` 成功（限额卷 App 预留/撤销/重启、停机维护及真实 ENOSPC）。macOS job `113199709457` 的默认并行 Rust 及九组 Discord 等前序测试均成功，在钉钉阶段因整作业的 20 分钟上限被取消，installer 未执行；GitHub 注释明确为 `The job has exceeded the maximum execution time of 20m0s`，不是已识别的测试断言失败。编译与新增强制验收使原整作业预算不足，测试作业改为有界 30 分钟；保留默认并行、每个 fixture/生产期限、完整测试清单及 container 的 20 分钟预算。该修订只改变 CI 资源预算和记录，生产二进制及本地哈希不变；最终新 head 仍须重新完成三项 CI，不借首轮局部成功宣称全部通过。
 
+2026-10-08 08:23 UTC 已回填终验：[PR #84](https://github.com/jiawenyao401/JiaClaw/pull/84) 最终 head `768da0eeff2219ec69d3ca36cd12fbcd8943e927` 的 [CI 37746206382](https://github.com/jiawenyao401/JiaClaw/actions/runs/37746206382) 完整成功；macOS job `113208183475`、Ubuntu job `113208183608`、container job `113208183208` 均 completed/success。包括默认并行 Rust、全部强制进程 fixture、Linux Chromium、真实 Docker 沙箱与限额卷验收；Mac 钉钉及 installer 也完成。容器仍未开启 Discord runtime，此成功不认证真实平台或全部共享磁盘压力。
+
 剩余：真实 Discord 安装/反代延迟/终端收发与供应商联合认证；其他独立用户渠道；StateKnot 固定版本 durable admission/driver/store、stdio、子 Agent，及逐 token 输出/媒体身份接线。应用 hold、加密 inbox/outbox 和元数据收据都没有赋予工具重放或自动恢复能力。
+
+## 独立用户飞书批次
+
+2026-10-08 08:23 UTC 官方 GitHub API 核对：附着 PR #58–#84 均 OPEN draft，各自当前 head 检查 SUCCESS，无 review/thread；本批基于上述 PR #84 最终已验证提交。StateKnot `9110ad7`、release alpha.1、#140，以及 Brokerrouter `e01ecb9`、无 release、#31/#41/PR #40 均未变化；再次核对 PR #40 Rust annotation，仍是付款/额度使作业未开始，没有据此报告代码失败或重复 issue。
+
+本批接入默认关闭的[独立用户飞书私聊](tenant-feishu.md)，registry schema 6 和后端 protocol 4 固定专用 App/tenant/Bot/人/p2p Chat；私有库 owner、录入/执行/发送与 shared hold、UUIDv7 原请求收据及撤销后无 Secret 的停机核对均采用明确边界。900 ms 本地回调总预算覆盖 URL challenge，普通事件仅持久接纳后 ACK。业务文本为明文，不把 Encrypt Key 入站加密外推为落盘加密。
+
+合同证据直接读取飞书官方 `.md` 文档及固定官方 Go SDK `99927aa13e271ea9fe03591204aad7bc6a2d869c`：Bot GET 顶层 `bot`、activate_status=2、无额外 scope；Tenant GET 的 `data.tenant.tenant_key`；Chat GET 的 `data.chat_mode=p2p` 与单聊缺省群字段；`im.message.receive_v1` 的固定 human/chat 关联及 message_id 去重；原始 SHA-256 签名、AES-CBC/IV、challenge 1 秒和普通事件 3 秒平台预算。最小权限仅私聊读取、机器人发送、Chat 与企业信息读取，不用通讯录/成员列表证明。官方字段与完整部署步骤见该指南的对应链接。
+
+本批已完成的本地源码证据：
+
+- Rust 1.88.0 的完整默认并行 `CARGO_INCREMENTAL=0 cargo test --workspace --locked`：1097 项通过（library 373 / core 123 / host 601），既有真实 Docker 一项本机 ignored。未以串行结果代替默认并行验收。
+- 独立 review 修正七处 parser/sender 边界和三处 backend/store 边界：关键 JSON 对象保留原字节并拒绝重复字段，平台身份/回执按真实响应解包；final SQLite 在只读打开前验证完整原始文件头，避免验证异库时创建 WAL sidecar；完整 owner 的不可替换/修改/删除 trigger schema 必须吻合，version 0 不收养外来 view 或其他 schema；私有入口和后端统一 16 KiB prompt。针对真实 SQLite 和协议对象的回归已包括在上述全量测试中。
+- 已准入的模型 completion、投递 settle 和 registry hold 结算等待同一有界 I/O 容量，取得许可最多 5 秒；阻塞任务持有许可至实际结束。暂时忙不会直接丢弃结算，失败仍保守保留人工核对状态，不把网关/后端两次提交当作跨库事务。
+- 首轮默认并行的旧 Brokerrouter tracked_headers 用例在外层 1 秒等待到期。仅把该测试的 fixture 等待改为有界 5 秒，保留 body barrier、durable 请求身份和实际单请求断言；锁定 artifact 独立连续 20/20 通过（总 13.14 秒），最终上述默认并行全量也通过。生产/SDK deadline 未改，具体调度原因未确定，不据此声称已修复生产问题。
+- fmt、locked 全目标 check（10.82 秒）、build（20.22 秒）和全目标 Clippy 必需 correctness/suspicious 检查（52.04 秒）通过，仍有 style/pedantic warnings。最终二进制 SHA256 为 `43f7ec3bdacb6d2258eef37e77c75377822493de5e134283712b8149ada93db6`；新 `tenant_feishu.py` 11/11 组、21 套既有进程回归最终全部通过，每套及分批整体前后哈希一致，没有在验收中重建或使用旧二进制代替。
+- 新整机使用两个真实 JiaClaw 后端、原生工具往返、真实 SQLite 和 OpenSSL 独立加密/原始签名。覆盖真实 Bot/tenant/p2p Chat 响应、challenge/正文期限、跨用户拒绝与异 owner、不同 event_id 的 message_id 去重、只读 HTTP Key 独立授权、用户 disable、unknown 片阻断、五次限流同 UUID/文本及持久冷却、模型/POST 中 SIGKILL、已知 token 失效、精确 chat 回执、不可逆 revoke、1000 条实际准入及第 1001 条拒绝、撤销/移除 runtime 后队列和停机 hold 核对。仅 localhost 合成凭据，不认证真实平台。
+- 21 套回归为 user_gateway、read_only_keys、gateway_audit、tenant_cron、tenant_telegram、tenant_slack、mcp、native_tools、e2e、channels、scheduled_delivery、memory_io、scheduler、model_routing、semantic_memory、model_calls、feishu、wecom、dingtalk、discord_scheduled、tenant_discord；初批九套成功，后续十一套成功，修订后的 channels 正式一次运行成功（28.13 秒）。
+
+既有 channels 首轮在 1 秒 Agent deadline 用例的“模型 HTTP 请求数必为 2”断言失败，当时没有记录实际次数。保留旧断言与同一 1 秒期限的诊断运行观察到 2 请求、0 outbox、0 send 并通过，不能据此声称已复现或确定首轮调度原因。仅修订测试的两处断言：deadline 到达时实际请求数可以为 0–2，记录该次数并验证重启不增加，仍要求 needs_review、零 outbox/send；既有 processing_crash 用例另行明确在第二个 HTTP 已提交后核对未知结果。生产实现、期限和 CI 并行方式未改，最终修订 fixture 上述正式运行通过。
+
+token 验收分层保留：通过的进程 fixture 使用正常 `expire=7200` mint，覆盖已知 `99991663` 失效后的 terminal/no resend、离线核对，以及启动 token HTTP 的真实取消/截止。Sender 单元测试另行覆盖 cache 失效、退避、取消及未来独立投递，不用成功 mint 的 61 秒寿命、修改 clock 或人工改 hold 来构造运行期刷新。官方自建 token 接口在剩余有效期不足 30 分钟时签发新 token，运行期正常到期刷新仍未取得真实平台整机认证。[官方 token 生命周期](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
+
+首轮 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85) 的 [CI 37759803423](https://github.com/jiawenyao401/JiaClaw/actions/runs/37759803423) 对应 exact head `ff4737a531f0a8ca70b3e903513e39b75164ddd8`，已 completed/failure。Ubuntu job `113253178887` 全部成功，包含新增飞书 11 组、全部强制进程回归、Chromium 与真实 Docker；container job `113253178575` 成功，覆盖 schema 6 永久 App 预留、撤销/重启、默认关闭及真实 ENOSPC，未据此认证渠道 runtime。
+
+macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准入循环在 `tenant_feishu.py:1078` 预期 HTTP 200、实际收到 429 后失败，后续 channels 等步骤 skipped。首版 helper 的断言没有输出 response `body.status`，当前不能区分 transient busy 与 queue_full，更不能据此确定调度、队列或生产根因。首轮 Linux/容器成功不能代替修订后最终 head 的三项完整验证。
+
+首轮后的第一次修订仅限 fixture：helper 输出白名单内的 `body.status`、HTTP 状态及 elapsed，不输出正文或 Secrets。测试当时要求真实 `BEGIN IMMEDIATE` 写锁期间只返回 `503 admission_failed`，断言队列/hold/model/send 未变；保持锁到网关停止并排空后再释放，重启后再次计数，避免把 HTTP 截止当作阻塞 SQL 已结束的证明。
+
+千条准入每条复用同一原始正文/签名 header，仅明确的 `429 busy` 可在 2.5 秒内至多尝试八次，全组至多 32 次 busy；逐次检查精确队列计数和唯一消息身份、hold/model/send 不变，queue_full、503、未知状态立即失败。用真实未读完的 challenge 占用 body-reader 槽、收到 busy 后有界释放，明确执行新重试分支；最终 1000 条事件必须等于原 ID 集合与新增 ID 集合的精确并集，第 1001 条必须 `429 queue_full`。生产实现、每次 1 秒断言、900 ms 回调预算、SQL 250 ms 和各项限额均未改。这增加确定的忙碌合同验收，不解释首次未记录状态的 429；修订后的完整 11 组一次运行退出码 0、全部通过，前后仍为同一生产二进制 SHA256 `43f7ec3bdacb6d2258eef37e77c75377822493de5e134283712b8149ada93db6`。实际 reader-slot 分支记录一次 `busy`，队列为 12、该新消息匹配数为 0、hold/model/send 未变；释放 challenge 后同 raw/header 接纳一次，988 个新增身份加原 12 个精确达到 1000，第 1001 条明确 queue_full。Python 语法和 diff-check 通过，没有重建生产二进制。
+
+第二轮 [CI 37763844564](https://github.com/jiawenyao401/JiaClaw/actions/runs/37763844564) 对应 exact head `890f47d53756faf5c3443ea4dd35812b57e136c6`。Ubuntu job `113266536157` 全部成功，含修订后的飞书 11 组、全部强制后续、Chromium 和真实 Docker；container job `113266535783` 成功。macOS job `113266536142` 的前 10 飞书组通过，第 11 组写锁用例预期 admission_failed，静态诊断实际为 HTTP 503、`ingress_deadline`、elapsed 908 ms，随后失败并跳过后续步骤。这确认到达整体 900 ms 回调截止；单次 SQLite 250 ms busy timeout 不能当作整体返回时限。具体排队、mutex 或 CPU 阶段未确定，更不证明首轮未知 429 的原因。
+
+当前最小修订仍仅在 fixture：写锁用例只允许精确 HTTP 503 的 admission_failed 或 ingress_deadline，其他 503 立即失败；保留写锁直到网关进程确认退出并排空，再核对完整 hold、事件计数、消息 4001 不存在、model/send 全不变，才 rollback 释放锁，重启后重复核对。静态 `SQL_BUSY` 诊断只输出白名单 code、drained 和 unchanged。验收最终持久状态，不把 HTTP 回调截止当作在途 SQL 已取消的证明；所有 callback 1 秒断言、900 ms、SQL 250 ms、1000/1001、busy 重试八次/2.5 秒/全组 32 次及真实 reader-slot 分支保留，生产没有变更。本次完整 11 组一次运行退出码 0、全部通过，前后二进制仍为上述 SHA256。本机 SQL_BUSY 明确 admission_failed/process_exited，完整原队列、hold/model/send 在持锁退出和重启后不变；实际 reader-slot busy 一次，仍精确 12+988=1000、第 1001 条 queue_full。未强制本机产生 deadline，不把本机成功外推为已确定 macOS 耗时阶段。
+
+**上述本地源码、首版及第一次 fixture 修订的整机验收已完成，PR #85 两轮 CI 均有明确 macOS 失败；当前最小修订的本地整机已通过；本提交准备时第三轮 exact-head CI 待核对，最终固定提交结果见 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85)，不使用旧 head 局部成功代替。** 终验由交付 PR 核对固定 head，再于下批回填，避免为记录自身 SHA 重复变更提交；不会用上批 Discord 通过作为飞书入口认证。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、平台 token/限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。

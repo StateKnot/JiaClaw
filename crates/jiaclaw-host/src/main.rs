@@ -1058,6 +1058,23 @@ fn build_router_with_body_limit(
             "/internal/channels/discord/requests/:request_id",
             get(tenant_channel::discord_receipt),
         )
+        .route(
+            "/internal/channels/feishu/status",
+            get(tenant_channel::feishu_status),
+        )
+        .route(
+            "/internal/channels/feishu-binding",
+            post(tenant_channel::feishu_bind).layer(DefaultBodyLimit::max(body_limit.min(4096))),
+        )
+        .route(
+            "/internal/channels/feishu/execute",
+            post(tenant_channel::feishu_chat)
+                .layer(DefaultBodyLimit::max(body_limit.min(128 * 1024))),
+        )
+        .route(
+            "/internal/channels/feishu/requests/:request_id",
+            get(tenant_channel::feishu_receipt),
+        )
         .route("/internal/scheduler/status", get(tenant_scheduler::status))
         .route(
             "/internal/scheduler/dispatch",
