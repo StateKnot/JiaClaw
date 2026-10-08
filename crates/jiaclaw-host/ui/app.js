@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const MISSING_ROUTE = Symbol('missing-route');
-let token = '', selected = null, connected = false, busy = false, sessionList = [];
+let token = '', selected = null, connected = false, busy = false, readOnly = false, sessionList = [];
 let identity = 0, operation = 0, scheduledJobs = false, jobList = [], selectedJob = null;
 let jobsOffset = 0, jobsNext = null, jobsPrevious = [], runsOffset = 0, runsNext = null, runsPrevious = [];
 let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted = false;
@@ -12,22 +12,24 @@ const clipped = (text, length) => { text = String(text || ''); return text.lengt
 const date = value => value == null ? '—' : new Date(value).toLocaleString();
 function status(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
 function controls() {
-  $('new-session').disabled = !connected || busy;
+  $('new-session').disabled = !connected || readOnly || busy;
+  $('access-mode').hidden = !connected || !readOnly;
+  $('job-create').hidden = readOnly;
   $('refresh').disabled = !connected || busy;
-  $('delete-session').disabled = !connected || !selected || busy;
-  $('message').disabled = !connected || !selected || busy;
-  $('send').disabled = !connected || !selected || busy;
+  $('delete-session').disabled = !connected || readOnly || !selected || busy;
+  $('message').disabled = !connected || readOnly || !selected || busy;
+  $('send').disabled = !connected || readOnly || !selected || busy;
   for (const button of $('sessions').querySelectorAll('button')) button.disabled = !connected || busy;
   for (const element of $('jobs-view').querySelectorAll('button,input,textarea,select')) element.disabled = !connected || !scheduledJobs || busy;
   $('jobs-prev').disabled ||= jobsPrevious.length === 0;
   $('jobs-next').disabled ||= jobsNext === null;
   $('runs-prev').disabled ||= runsPrevious.length === 0;
   $('runs-next').disabled ||= runsNext === null;
-  for (const element of $('job-form').querySelectorAll('button,input,textarea,select')) element.disabled ||= jobsHealth !== 'running' || !!pendingCreate;
-  $('job-toggle').disabled ||= !selectedJob || selectedJob.deleted || (!selectedJob.enabled && jobsHealth !== 'running');
+  for (const element of $('job-form').querySelectorAll('button,input,textarea,select')) element.disabled ||= readOnly || jobsHealth !== 'running' || !!pendingCreate;
+  $('job-toggle').disabled ||= readOnly || !selectedJob || selectedJob.deleted || (!selectedJob.enabled && jobsHealth !== 'running');
   $('job-create-check').disabled ||= !pendingCreate; $('job-create-abandon').disabled ||= !pendingCreate;
-  $('job-create-retry').disabled ||= !pendingCreate || !!pendingCreate.conflict || jobsHealth !== 'running';
-  $('job-delete').disabled ||= !selectedJob || selectedJob.deleted;
+  $('job-create-retry').disabled ||= readOnly || !pendingCreate || !!pendingCreate.conflict || jobsHealth !== 'running';
+  $('job-delete').disabled ||= readOnly || !selectedJob || selectedJob.deleted;
   $('runs-refresh').disabled ||= !selectedJob;
   for (const element of $('outbox-view').querySelectorAll('button,input,textarea')) element.disabled = !connected || !outboxEnabled || busy;
   $('outbox-prev').disabled ||= outboxOffset === 0;
@@ -39,7 +41,8 @@ function controls() {
   for (const id of ['chat-tab','jobs-tab','outbox-tab']) $(id).disabled = !connected || busy;
 }
 function clearIdentity() {
-  identity++; token = ''; connected = false; selected = null; sessionList = [];
+  identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
+  $('access-mode').hidden = true; $('job-create').hidden = false;
   scheduledJobs = false; jobList = []; selectedJob = null; jobsMode = null; jobsHealth = null; pendingCreate = null;
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
   outboxEnabled = false; deliveries = []; delivery = null; outboxOffset = 0; outboxNext = false; deliveryFresh = false;
@@ -55,6 +58,7 @@ function clearIdentity() {
   renderMessages([]); renderSessions();
 }
 async function api(path, method = 'GET', body, optional = false, timeout = 0, maxBytes = 0) {
+  if (readOnly && method !== 'GET') throw new ApiError('当前密钥仅允许查看；修改内容或运行模型需要完整权限密钥。', 403);
   const owner = identity, credential = token, controller = new AbortController();
   const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
   try {
@@ -127,7 +131,7 @@ async function select(id) {
   const session = await api(`/api/sessions/${encodeURIComponent(id)}`);
   selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
   showView('chat');
-  renderMessages(session.messages); renderSessions(); status('已连接 · 会话就绪');
+  renderMessages(session.messages); renderSessions(); status(readOnly ? '已连接 · 只读访问 · 会话就绪' : '已连接 · 会话就绪');
 }
 async function task(fn, replace = false) {
   if (busy && !replace) return;
@@ -141,6 +145,10 @@ $('connect-form').addEventListener('submit', event => {
   task(async () => {
     status('连接中…'); await refresh();
     const capabilities = await api('/api/gateway/capabilities', 'GET', undefined, true);
+    if (capabilities !== MISSING_ROUTE && (!capabilities || typeof capabilities.scheduled_jobs !== 'boolean' || (Object.hasOwn(capabilities, 'read_only') && typeof capabilities.read_only !== 'boolean'))) {
+      clearIdentity(); throw new Error('权限信息响应异常，请重新连接或联系管理员核对。');
+    }
+    readOnly = capabilities !== MISSING_ROUTE && capabilities.read_only === true;
     scheduledJobs = capabilities?.scheduled_jobs === true; jobsMode = scheduledJobs ? 'gateway' : null;
     if (capabilities === MISSING_ROUTE && token) {
       const scheduler = await jobsApi('/api/jobs/status', 'GET', undefined, [403,404]);
@@ -148,22 +156,23 @@ $('connect-form').addEventListener('submit', event => {
     }
     $('job-lookup').hidden = jobsMode !== 'standalone'; $('jobs-tab').hidden = !scheduledJobs;
     // Only the authenticated administrator endpoint grants this capability. Gateways deny it.
-    const channelStatus = token ? await api('/api/channels/status', 'GET', undefined, [403,404], 30000) : null;
+    const channelStatus = token && !readOnly ? await api('/api/channels/status', 'GET', undefined, [403,404], 30000) : null;
     outboxEnabled = channelStatus && ['running','failed','stopping','disabled'].includes(channelStatus.state);
     $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled;
-    connected = true; status('已连接 · 选择或新建会话');
+    connected = true; status(readOnly ? '已连接 · 只读访问 · 选择会话查看' : '已连接 · 选择或新建会话');
   }, true);
 });
 $('refresh').addEventListener('click', () => task(async () => { await refresh(); status('会话列表已更新'); }));
 $('new-session').addEventListener('click', () => task(async () => {
+  if (!connected || readOnly) return;
   const data = await api('/api/sessions', 'POST'); await refresh(); await select(data.session_id);
 }));
 $('delete-session').addEventListener('click', () => {
-  if (!connected || !selected || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
+  if (!connected || readOnly || !selected || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
   task(async () => { await api(`/api/sessions/${encodeURIComponent(selected)}`, 'DELETE'); selected = null; renderMessages([]); $('session-title').textContent = '开始一段对话'; await refresh(); status('会话已删除'); });
 });
 $('chat-form').addEventListener('submit', event => {
-  event.preventDefault(); const text = $('message').value.trim(); if (!connected || !text || !selected) return;
+  event.preventDefault(); const text = $('message').value.trim(); if (!connected || readOnly || !text || !selected) return;
   task(async () => {
     status('JiaClaw 正在处理…');
     await api('/api/chat', 'POST', { messages: [{ role: 'user', content: text }], session_id: selected, stream: false });
@@ -258,7 +267,7 @@ $('runs-next').addEventListener('click', () => task(async () => { if (runsNext !
 $('runs-prev').addEventListener('click', () => task(async () => { if (runsPrevious.length) await refreshRuns(runsPrevious.at(-1), runsPrevious.slice(0,-1)); }));
 $('runs-refresh').addEventListener('click', () => task(() => refreshRuns()));
 async function changeJob(action) {
-  if (!selectedJob) return;
+  if (!connected || readOnly || !selectedJob) return;
   const job = selectedJob, owner = identity;
   const warning = action === 'resume' ? `确认已核对上次运行、外部结果以及以下全部授权？恢复安排未来运行，不重放历史。\n${jobContract(job.spec)}` : action === 'delete' ? '删除任务并停止后续运行？运行记录会保留，已提交的工作可能继续。' : null;
   if (warning && !confirm(`${warning}\n任务 ID：${job.id}`)) return;
@@ -315,6 +324,7 @@ async function checkCreation() {
   }
 }
 async function submitCreation() {
+  if (!connected || readOnly) return;
   const attempt = pendingCreate; if (!attempt) return;
   try {
     const job = checkCreated(await jobsApi(`/api/jobs/${attempt.id}`, 'PUT', attempt.spec), attempt);
@@ -329,7 +339,7 @@ async function submitCreation() {
 }
 $('job-create-check').addEventListener('click', () => task(() => checkCreation()));
 $('job-create-retry').addEventListener('click', () => task(async () => {
-  if (!pendingCreate || pendingCreate.conflict || !confirm(`用原 ID 和原配置重试创建？已有任务不会被重新启用。\n${pendingCreate.id}`)) return;
+  if (readOnly || !pendingCreate || pendingCreate.conflict || !confirm(`用原 ID 和原配置重试创建？已有任务不会被重新启用。\n${pendingCreate.id}`)) return;
   await refreshJobsHealth(); if (jobsHealth !== 'running') throw new Error('调度器未运行，请先查询结果。');
   await submitCreation();
 }));
@@ -338,7 +348,7 @@ $('job-create-abandon').addEventListener('click', () => {
   pendingCreate = null; $('job-create-state').textContent = '已放弃本页跟踪；服务器任务未被取消。原 ID 仍可用于查询。'; controls();
 });
 $('job-form').addEventListener('submit', event => {
-  event.preventDefault(); if (!scheduledJobs || !connected || pendingCreate) return;
+  event.preventDefault(); if (!scheduledJobs || !connected || readOnly || pendingCreate) return;
   task(async () => {
     const name = $('job-name').value.trim(), prompt = $('job-prompt').value.trim();
     if (!name || new TextEncoder().encode(name).length > 128 || !prompt || new TextEncoder().encode(prompt).length > 32768) throw new Error('名称最多 128 UTF-8 字节，任务内容最多 32 KiB，且不能为空。');

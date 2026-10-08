@@ -307,4 +307,21 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - 本批既有 e2e、mcp、native_tools、user_gateway、tenant_cron、channels、scheduled_delivery 七套真实进程回归均通过、退出码 0。
 - JSON/YAML 示例解析与 docker compose 合并配置检查通过：六个 Secret 仅挂到网关，两个后端不含 Telegram Secret，原有限额卷与私网不变；没有据此声称新增 overlay 的容器启动或平台实测。
 
-跨平台、Chromium 与真实容器以本批 draft PR 最终 head CI 为准。部署与人工核对见[指南](tenant-telegram.md)；真实 Telegram、TLS/egress、共享网关卷压力与供应商联调不由本机协议 fixture 认证。
+PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/jiawenyao401/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。部署与人工核对见[指南](tenant-telegram.md)；真实 Telegram、TLS/egress、共享网关卷压力与供应商联调不由本机协议 fixture 认证。
+
+## 管理员签发只读 API Key 批次
+
+2026-10-08 复核附着 PR #58–#80：均为未合并 draft，当前 head 检查全部 SUCCESS，未有 review 或 review thread。PR #80 上述最终 head 与 CI 37113957145 均未变化；container、Ubuntu 和 macOS 三项仍为 completed/success。上游固定版本及现有议题本次未变化，见 [StateKnot](stateknot-gaps.md) 和 [Brokerrouter](brokerrouter-gaps.md)。
+
+本批基于已通过最终 CI 的 PR #80，实现 registry schema 3 的逐 Key 只读权限、管理员签发/轮换/分页列表、网关服务端拒绝修改及工作台只读状态。旧 schema 1/2 的 Key 默认保持完整权限；只读不脱敏已有内容，GET 的 TTL/访问维护和独立授权的 cron/Telegram 后台工作不受该 Key 的内容修改限制影响。
+
+最终本机验证：
+
+- `cargo test --workspace --locked`：928 项通过（library 372、core 123、host 433），1 项真实 Docker 测试在本机忽略，交给 Linux CI 实测；fmt、所需 Clippy correctness/suspicious 检查与锁定构建通过。
+- registry/CLI/proxy 测试覆盖 schema 1/2 升级保留、失败原子回滚、未知 schema 拒绝、权限不可变、轮换继承、伪造 Principal 拒绝及无 hold/audit 副作用、生命周期与有界无秘密列表；权限拒绝优先于请求正文与后端容量。
+- 最终二进制 `tests/read_only_keys.py` 五组通过：两个实际后端、私有 SQLite 与 localhost 模型；本人历史/JSON/JSONL 导出和任务读取，跨用户及 Header 伪造拒绝，八条修改路由 403、正文未提交也立即拒绝、用户内容/模型/hold/admission 未变；轮换/撤销/禁用、仅剩只读 Key 时独立授权 cron 继续、重启和停用能力保持。
+- 最终二进制 `tests/read_only_browser.cjs` 真实 Chromium 通过：实际网关/后端/已保存任务结果，只读提示和只读浏览、强制 DOM 操作零修改/零模型/零 hold，完整权限切换、过期能力响应不升级新身份、权限响应格式异常和撤销清除身份、内存密钥与移动布局。
+- 既有 `browser.cjs`、`outbox_browser.cjs`、`scheduler_browser.cjs` 通过。空或 204 权限响应现应清除身份并停用操作，旧 scheduler fixture 已按这一明确合同补充断言，仍仅真实 capability 404 允许 standalone 探测。
+- 既有 user_gateway、tenant_cron 四组及 tenant_telegram 七组真实进程回归通过。新增 `gateway_container.py` 验收在真实限额卷/私网容器中签发只读 Key、读取本用户数据、拒绝全部公开修改路由且无 hold、在线轮换继承及撤销；本机 macOS 未执行该 Linux 容器组，结果以本批 draft PR 最终 head CI 为准。
+
+本批新进程和浏览器 fixture 已加入 CI；跨平台、Chromium 与真实容器以本批 draft PR 最终 head 检查为准。协议 fixture 不替代真实供应商/渠道联调，也不将只读权限计为 StateKnot durable 或完整多用户后台认证。

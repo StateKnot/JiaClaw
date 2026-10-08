@@ -371,7 +371,7 @@ try:
     assert 'Bob' in json.dumps(b_history) and 'Alice' not in json.dumps(b_history)
     # The same hardened tenant volumes also persist gateway-admitted cron.
     # No provider call: each backend explicitly uses the deterministic stub.
-    assert request('/api/gateway/capabilities', a) == (200, {'scheduled_jobs': True})
+    assert request('/api/gateway/capabilities', a) == (200, {'scheduled_jobs': True, 'read_only': False})
     status, job = request('/api/jobs', a, 'POST', {
         'name': 'container clock', 'prompt': 'Report current time.',
         'schedule': {'kind': 'interval', 'seconds': 10},
@@ -402,6 +402,29 @@ try:
     status, settled_runs = request(job_path + '/runs?limit=5', a)
     assert status == 200 and settled_runs['items']
     settled_ids = {entry['id'] for entry in settled_runs['items']}
+    viewer = admin('key-add', '--user', issued['alice']['user_id'], '--read-only')
+    assert viewer['read_only'] is True
+    view_key = viewer['token']
+    assert request('/api/gateway/capabilities', view_key) == (200, {'scheduled_jobs': True, 'read_only': True})
+    assert messages(view_key) == a_history
+    assert request(job_path, view_key)[1] == paused_job
+    for denied_path, denied_method in [('/api/chat', 'POST'), ('/api/sessions', 'POST'),
+                                      ('/api/sessions/same', 'DELETE'), ('/api/sessions/import', 'POST'),
+                                      ('/api/jobs', 'POST'), (job_path, 'DELETE'),
+                                      (job_path + '/pause', 'POST'), (job_path + '/resume', 'POST')]:
+        assert request(denied_path, view_key, denied_method, {})[0] == 403, denied_path
+    assert messages(view_key) == a_history
+    assert not request(job_path, view_key)[1]['enabled']
+    assert next(user for user in admin('user-list')['users']
+                if user['user_id'] == viewer['user_id'])['hold'] is None
+    rotated_viewer = admin('key-rotate', '--key', viewer['key_id'])
+    assert rotated_viewer['read_only'] is True
+    assert request('/api/sessions', view_key)[0] == 401
+    assert messages(rotated_viewer['token']) == a_history
+    assert request('/api/chat', rotated_viewer['token'], 'POST', {})[0] == 403
+    admin('key-revoke', '--key', rotated_viewer['key_id'])
+    assert request('/api/sessions', rotated_viewer['token'])[0] == 401
+    print('PASS: real container read-only key reads its tenant, rejects all exposed mutations without hold, and preserves permission across live rotation/revocation')
     docker('restart', backend_names['alice'])
     wait_backend('alice')
     status, restored = request(job_path + '/runs?limit=5', a)

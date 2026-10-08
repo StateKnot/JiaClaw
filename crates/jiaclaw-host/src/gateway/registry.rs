@@ -22,7 +22,7 @@ const MAX_ACTIVE_KEYS: i64 = 8;
 const MAX_KEYS: i64 = 1024;
 const MAX_AUDIT_EVENTS: i64 = 4096;
 const MAX_TELEGRAM_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -30,6 +30,7 @@ pub struct Principal {
     pub user_id: Uuid,
     pub key_id: Uuid,
     pub backend_id: String,
+    pub read_only: bool,
 }
 
 /// User-owned cron identity; independent of any particular API key.
@@ -56,12 +57,14 @@ pub struct TelegramBindingSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteAdmissionError {
     Unauthorized,
+    ReadOnly,
     Held,
 }
 impl std::fmt::Display for WriteAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Unauthorized => "gateway credential is no longer authorized",
+            Self::ReadOnly => "gateway credential is read-only",
             Self::Held => "gateway user has an unresolved write",
         })
     }
@@ -89,6 +92,18 @@ pub struct UserSummary {
     pub active_keys: u32,
     pub revoked_keys: u32,
     pub hold: Option<WriteHoldSummary>,
+}
+
+/// Administrative key metadata. Tokens and verifier bytes are never exposed.
+#[derive(Debug, Serialize)]
+pub struct KeySummary {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub key_id: Uuid,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub read_only: bool,
+    pub created_ms: i64,
+    pub revoked_ms: Option<i64>,
 }
 
 fn serialize_uuid<S: Serializer>(id: &Uuid, serializer: S) -> Result<S::Ok, S::Error> {
@@ -201,15 +216,19 @@ impl Registry {
             );
             tx.execute_batch(SCHEMA)?;
             tx.execute_batch(SCHEMA_V2)?;
+            tx.execute_batch(SCHEMA_V3)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             ensure!(
-                (version == 1 || version == SCHEMA_VERSION) && application == APPLICATION_ID,
+                (1..=SCHEMA_VERSION).contains(&version) && application == APPLICATION_ID,
                 "unsupported gateway registry schema or database identity"
             );
             if version == 1 {
                 tx.execute_batch(SCHEMA_V2)?;
+            }
+            if version < 3 {
+                tx.execute_batch(SCHEMA_V3)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
         }
@@ -267,6 +286,11 @@ impl Registry {
 
     /// Provision an immutable user-to-backend binding and its first key atomically.
     pub fn add_user(&self, backend_id: &str) -> Result<IssuedKey> {
+        self.add_user_with_access(backend_id, false)
+    }
+
+    /// Provision a user and its first key with administrator-selected immutable access.
+    pub fn add_user_with_access(&self, backend_id: &str, read_only: bool) -> Result<IssuedKey> {
         ensure!(
             !backend_id.is_empty()
                 && backend_id.len() <= 64
@@ -276,7 +300,7 @@ impl Registry {
             "gateway backend ID must contain 1..64 ASCII letters, digits, underscores or hyphens"
         );
         let user_id = Uuid::new_v4();
-        let (issued, verifier) = keys::issue(user_id)?;
+        let (issued, verifier) = keys::issue(user_id, read_only)?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let count: i64 = tx.query_row("SELECT count(*) FROM users", [], |row| row.get(0))?;
@@ -299,7 +323,7 @@ impl Registry {
             Some(issued.key_id),
             None,
             "user_added",
-            None,
+            Some(access_note(read_only)),
             now,
         )?;
         tx.commit()?;
@@ -308,7 +332,12 @@ impl Registry {
 
     /// Issue another key for an enabled user, up to eight active keys.
     pub fn add_key(&self, user_id: Uuid) -> Result<IssuedKey> {
-        let (issued, verifier) = keys::issue(user_id)?;
+        self.add_key_with_access(user_id, false)
+    }
+
+    /// Issue an additional key with administrator-selected immutable access.
+    pub fn add_key_with_access(&self, user_id: Uuid, read_only: bool) -> Result<IssuedKey> {
+        let (issued, verifier) = keys::issue(user_id, read_only)?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         enabled_user(&tx, user_id)?;
@@ -320,7 +349,7 @@ impl Registry {
             Some(issued.key_id),
             None,
             "key_added",
-            None,
+            Some(access_note(read_only)),
             now,
         )?;
         tx.commit()?;
@@ -331,16 +360,17 @@ impl Registry {
     pub fn rotate(&self, key_id: Uuid) -> Result<IssuedKey> {
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let user: Option<String> = tx
+        let key: Option<(String, bool)> = tx
             .query_row(
-                "SELECT user_id FROM api_keys WHERE id=?1 AND revoked_ms IS NULL",
+                "SELECT user_id,read_only FROM api_keys WHERE id=?1 AND revoked_ms IS NULL",
                 [key_id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let user_id = uuid(user.context("active gateway key not found")?)?;
+        let (user, read_only) = key.context("active gateway key not found")?;
+        let user_id = uuid(user)?;
         enabled_user(&tx, user_id)?;
-        let (issued, verifier) = keys::issue(user_id)?;
+        let (issued, verifier) = keys::issue(user_id, read_only)?;
         let now = now_ms();
         tx.execute(
             "UPDATE api_keys SET revoked_ms=MAX(created_ms,?2) WHERE id=?1",
@@ -353,7 +383,7 @@ impl Registry {
             Some(key_id),
             None,
             "key_revoked_by_rotation",
-            None,
+            Some(access_note(read_only)),
             now,
         )?;
         audit(
@@ -362,11 +392,57 @@ impl Registry {
             Some(issued.key_id),
             None,
             "key_rotated",
-            None,
+            Some(access_note(read_only)),
             now,
         )?;
         tx.commit()?;
         Ok(issued)
+    }
+
+    /// List bounded key metadata, including revoked history, for one existing user.
+    pub fn list_keys(&self, user_id: Uuid, limit: usize, offset: usize) -> Result<Vec<KeySummary>> {
+        ensure!(
+            (1..=100).contains(&limit) && offset <= 1024,
+            "invalid key pagination"
+        );
+        let conn = self.connection()?;
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)",
+            [user_id.to_string()],
+            |row| row.get(0),
+        )?;
+        ensure!(exists, "gateway user not found");
+        let mut statement = conn.prepare(
+            "SELECT id,user_id,read_only,created_ms,revoked_ms FROM api_keys
+             WHERE user_id=?1 ORDER BY created_ms,id LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = statement.query_map(
+            params![
+                user_id.to_string(),
+                i64::try_from(limit)?,
+                i64::try_from(offset)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (key, user, read_only, created_ms, revoked_ms) = row?;
+            Ok(KeySummary {
+                key_id: uuid(key)?,
+                user_id: uuid(user)?,
+                read_only,
+                created_ms,
+                revoked_ms,
+            })
+        })
+        .collect()
     }
 
     /// Revoke an existing key; repeating revocation is harmless.
@@ -656,10 +732,10 @@ impl Registry {
             return Ok(None);
         };
         let conn = self.connection()?;
-        let stored = conn.query_row("SELECT k.user_id,u.backend_id,k.verifier,u.enabled,k.revoked_ms IS NULL FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?1", [parsed.key_id.to_string()], |row| {
-            Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Vec<u8>>(2)?,row.get::<_,bool>(3)?,row.get::<_,bool>(4)?))
+        let stored = conn.query_row("SELECT k.user_id,u.backend_id,k.verifier,u.enabled,k.revoked_ms IS NULL,k.read_only FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?1", [parsed.key_id.to_string()], |row| {
+            Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Vec<u8>>(2)?,row.get::<_,bool>(3)?,row.get::<_,bool>(4)?,row.get::<_,bool>(5)?))
         }).optional()?;
-        if let Some((user, backend_id, verifier, enabled, active)) = stored {
+        if let Some((user, backend_id, verifier, enabled, active, read_only)) = stored {
             let user_id = uuid(user)?;
             let valid = keys::matches(&parsed.verifier(user_id), &verifier);
             if valid && enabled && active {
@@ -667,6 +743,7 @@ impl Registry {
                     user_id,
                     key_id: parsed.key_id,
                     backend_id,
+                    read_only,
                 }));
             }
         } else {
@@ -680,9 +757,13 @@ impl Registry {
     pub fn admit_write(&self, principal: &Principal, request_id: Uuid) -> Result<()> {
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let authorized: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?1 AND u.id=?2 AND u.backend_id=?3 AND u.enabled=1 AND k.revoked_ms IS NULL)", params![principal.key_id.to_string(), principal.user_id.to_string(), principal.backend_id], |row| row.get(0))?;
-        if !authorized {
-            return Err(WriteAdmissionError::Unauthorized.into());
+        // The authenticated snapshot is not authority for a write: re-read the
+        // persisted access bit together with revocation and user state in this tx.
+        let read_only: Option<bool> = tx.query_row("SELECT k.read_only FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?1 AND u.id=?2 AND u.backend_id=?3 AND u.enabled=1 AND k.revoked_ms IS NULL", params![principal.key_id.to_string(), principal.user_id.to_string(), principal.backend_id], |row| row.get(0)).optional()?;
+        match read_only {
+            None => return Err(WriteAdmissionError::Unauthorized.into()),
+            Some(true) => return Err(WriteAdmissionError::ReadOnly.into()),
+            Some(false) => {}
         }
         let now = now_ms();
         insert_hold(&tx, principal.user_id, request_id, now)?;
@@ -692,7 +773,7 @@ impl Registry {
             Some(principal.key_id),
             Some(request_id),
             "write_admitted",
-            None,
+            Some(access_note(false)),
             now,
         )?;
         tx.commit()?;
@@ -879,15 +960,24 @@ fn insert_key(
         ensure!(remaining < MAX_KEYS, "gateway key history limit reached");
     }
     tx.execute(
-        "INSERT INTO api_keys(id,user_id,verifier,created_ms,revoked_ms) VALUES(?1,?2,?3,?4,NULL)",
+        "INSERT INTO api_keys(id,user_id,verifier,created_ms,revoked_ms,read_only) VALUES(?1,?2,?3,?4,NULL,?5)",
         params![
             issued.key_id.to_string(),
             issued.user_id.to_string(),
             verifier.as_slice(),
-            now
+            now,
+            issued.read_only
         ],
     )?;
     Ok(())
+}
+
+fn access_note(read_only: bool) -> &'static str {
+    if read_only {
+        r#"{"read_only":true}"#
+    } else {
+        r#"{"read_only":false}"#
+    }
 }
 
 fn audit(
@@ -938,6 +1028,15 @@ CREATE TRIGGER telegram_binding_no_delete BEFORE DELETE ON telegram_bindings
  BEGIN SELECT RAISE(ABORT,'Telegram binding reservations are permanent'); END;
 ";
 
+// Existing credentials retain full access. Access changes require issuing a new
+// key; rotation copies the persisted bit rather than accepting a new permission.
+const SCHEMA_V3: &str = "
+ALTER TABLE api_keys ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0 CHECK(read_only IN (0,1));
+CREATE TRIGGER api_key_access_immutable BEFORE UPDATE OF read_only ON api_keys
+ WHEN NEW.read_only IS NOT OLD.read_only
+ BEGIN SELECT RAISE(ABORT,'gateway key access is immutable'); END;
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,6 +1065,374 @@ mod tests {
     }
 
     #[test]
+    fn read_only_access_is_per_key_and_denied_admission_has_no_persisted_effects() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let full = registry.add_user("alice").unwrap();
+        let restricted = registry.add_key_with_access(full.user_id, true).unwrap();
+        assert!(!full.read_only);
+        assert!(!principal(registry, &full).read_only);
+        assert!(restricted.read_only);
+        let mut readonly = principal(registry, &restricted);
+        assert!(readonly.read_only);
+        // The persisted key permission is authority even if a caller forges its
+        // authenticated snapshot. Denial must precede all hold/audit mutations.
+        readonly.read_only = false;
+        let before = serde_json::to_value(registry.list().unwrap()).unwrap();
+        let conn = registry.connection().unwrap();
+        let audit_before: i64 = conn
+            .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            registry
+                .admit_write(&readonly, Uuid::new_v4())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::ReadOnly)
+        );
+        assert_eq!(
+            serde_json::to_value(registry.list().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            audit_before
+        );
+        let full_principal = principal(registry, &full);
+        let request = Uuid::new_v4();
+        registry.admit_write(&full_principal, request).unwrap();
+        // An existing full-key write hold never converts read-only denial into
+        // a hold error or changes the write that was already admitted.
+        assert_eq!(
+            registry
+                .admit_write(&readonly, Uuid::new_v4())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::ReadOnly)
+        );
+        assert_eq!(
+            registry.list().unwrap()[0]
+                .hold
+                .as_ref()
+                .unwrap()
+                .request_id,
+            request
+        );
+        registry.finish_write(full.user_id, request, true).unwrap();
+        registry.revoke(restricted.key_id).unwrap();
+        assert_eq!(
+            registry
+                .admit_write(&readonly, Uuid::new_v4())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn read_only_rotation_revocation_and_disable_preserve_access_and_other_keys() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let first = registry.add_user_with_access("alice", true).unwrap();
+        let full = registry.add_key(first.user_id).unwrap();
+        let other = Registry::open(&registry.path).unwrap();
+        let rotated = registry.rotate(first.key_id).unwrap();
+        assert!(rotated.read_only);
+        assert!(principal(&other, &rotated).read_only);
+        assert!(other.authenticate(&first.token).unwrap().is_none());
+        assert!(!principal(&other, &full).read_only);
+        registry.set_enabled(first.user_id, false).unwrap();
+        assert!(other.authenticate(&rotated.token).unwrap().is_none());
+        assert!(other.authenticate(&full.token).unwrap().is_none());
+        assert!(registry.rotate(rotated.key_id).is_err());
+        assert!(registry.add_key_with_access(first.user_id, true).is_err());
+        registry.set_enabled(first.user_id, true).unwrap();
+        assert!(principal(&other, &rotated).read_only);
+        registry.revoke(rotated.key_id).unwrap();
+        registry.revoke(rotated.key_id).unwrap();
+        assert!(other.authenticate(&rotated.token).unwrap().is_none());
+        assert!(!principal(&other, &full).read_only);
+        assert!(registry.rotate(rotated.key_id).is_err());
+        let conn = registry.connection().unwrap();
+        let notes: Vec<(String, String)> = conn.prepare(
+            "SELECT action,note FROM audit_events WHERE action IN ('user_added','key_added','key_rotated','key_revoked_by_rotation') ORDER BY seq"
+        ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(
+            notes,
+            vec![
+                ("user_added".into(), access_note(true).into()),
+                ("key_added".into(), access_note(false).into()),
+                ("key_revoked_by_rotation".into(), access_note(true).into()),
+                ("key_rotated".into(), access_note(true).into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn access_is_immutable_and_key_metadata_is_bounded_and_secret_free() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let restricted = registry.add_key_with_access(alice.user_id, true).unwrap();
+        let bob = registry.add_user_with_access("bob", true).unwrap();
+        registry.revoke(restricted.key_id).unwrap();
+        registry.set_enabled(alice.user_id, false).unwrap();
+        let conn = registry.connection().unwrap();
+        assert!(conn
+            .execute(
+                "UPDATE api_keys SET read_only=1 WHERE id=?1",
+                [alice.key_id.to_string()]
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE api_keys SET read_only=0 WHERE id=?1",
+                [restricted.key_id.to_string()]
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE api_keys SET read_only=2 WHERE id=?1",
+                [alice.key_id.to_string()]
+            )
+            .is_err());
+        let all = registry.list_keys(alice.user_id, 100, 0).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|key| key.user_id == alice.user_id));
+        assert!(all
+            .iter()
+            .any(|key| key.key_id == alice.key_id && !key.read_only && key.revoked_ms.is_none()));
+        assert!(all.iter().any(|key| key.key_id == restricted.key_id
+            && key.read_only
+            && key.revoked_ms.is_some()));
+        let first_page = registry.list_keys(alice.user_id, 1, 0).unwrap();
+        let second_page = registry.list_keys(alice.user_id, 1, 1).unwrap();
+        assert_eq!(first_page[0].key_id, all[0].key_id);
+        assert_eq!(second_page[0].key_id, all[1].key_id);
+        assert!(registry.list_keys(alice.user_id, 1, 2).unwrap().is_empty());
+        assert!(registry
+            .list_keys(alice.user_id, 1, 1024)
+            .unwrap()
+            .is_empty());
+        for (limit, offset) in [(0, 0), (101, 0), (1, 1025), (usize::MAX, 0)] {
+            assert!(registry.list_keys(alice.user_id, limit, offset).is_err());
+        }
+        assert!(registry.list_keys(Uuid::new_v4(), 20, 0).is_err());
+        let serialized = serde_json::to_value(all).unwrap();
+        for key in serialized.as_array().unwrap() {
+            assert_eq!(key.as_object().unwrap().len(), 5);
+            assert!(key.get("verifier").is_none());
+            assert!(key.get("token").is_none());
+        }
+        let output = serialized.to_string();
+        assert!(!output.contains(&alice.token));
+        assert!(!output.contains(&restricted.token));
+        assert!(!output.contains(&bob.user_id.to_string()));
+    }
+
+    #[test]
+    fn permission_lifecycle_audit_failure_rolls_back_user_key_and_rotation_atomically() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let readonly = registry.add_user_with_access("alice", true).unwrap();
+        let conn = registry.connection().unwrap();
+        // Fail only the final rotation audit, after its old-key revocation,
+        // insertion and first audit have succeeded inside the transaction.
+        conn.execute_batch("CREATE TRIGGER fail_rotation_audit BEFORE INSERT ON audit_events WHEN NEW.action='key_rotated' BEGIN SELECT RAISE(ABORT,'injected failure'); END").unwrap();
+        let before =
+            serde_json::to_value(registry.list_keys(readonly.user_id, 100, 0).unwrap()).unwrap();
+        let audit_before: i64 = conn
+            .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
+            .unwrap();
+        assert!(registry.rotate(readonly.key_id).is_err());
+        assert!(principal(registry, &readonly).read_only);
+        assert_eq!(
+            serde_json::to_value(registry.list_keys(readonly.user_id, 100, 0).unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            audit_before
+        );
+        conn.execute_batch("DROP TRIGGER fail_rotation_audit; CREATE TRIGGER fail_all_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected failure'); END").unwrap();
+        assert!(registry.add_user_with_access("bob", true).is_err());
+        assert!(registry
+            .add_key_with_access(readonly.user_id, true)
+            .is_err());
+        assert_eq!(registry.list().unwrap().len(), 1);
+        assert_eq!(
+            serde_json::to_value(registry.list_keys(readonly.user_id, 100, 0).unwrap()).unwrap(),
+            before
+        );
+        conn.execute_batch("DROP TRIGGER fail_all_audit").unwrap();
+        assert!(registry.rotate(readonly.key_id).unwrap().read_only);
+    }
+
+    #[test]
+    fn read_only_credentials_do_not_revoke_user_owned_background_authority() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let readonly = registry.add_user_with_access("alice", true).unwrap();
+        let binding = registry
+            .add_telegram_binding(readonly.user_id, "101", "201")
+            .unwrap();
+        let replacement = registry.rotate(readonly.key_id).unwrap();
+        registry.revoke(replacement.key_id).unwrap();
+        assert!(registry.authenticate(&replacement.token).unwrap().is_none());
+        assert_eq!(
+            registry.scheduled_users().unwrap(),
+            vec![ScheduledUser {
+                user_id: readonly.user_id,
+                backend_id: "alice".into()
+            }]
+        );
+        let cron = Uuid::now_v7();
+        registry
+            .admit_scheduled(readonly.user_id, "alice", cron)
+            .unwrap();
+        registry.finish_write(readonly.user_id, cron, true).unwrap();
+        let telegram = Uuid::now_v7();
+        registry
+            .admit_telegram(
+                binding.id,
+                telegram,
+                "telegram_execute",
+                &binding.id.to_string(),
+            )
+            .unwrap();
+        registry
+            .finish_write(readonly.user_id, telegram, true)
+            .unwrap();
+        registry.set_enabled(readonly.user_id, false).unwrap();
+        assert!(registry.scheduled_users().unwrap().is_empty());
+        assert_eq!(
+            registry
+                .admit_scheduled(readonly.user_id, "alice", Uuid::now_v7())
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+        assert_eq!(
+            registry
+                .admit_telegram(
+                    binding.id,
+                    Uuid::now_v7(),
+                    "telegram_execute",
+                    &binding.id.to_string()
+                )
+                .unwrap_err()
+                .downcast_ref::<WriteAdmissionError>(),
+            Some(&WriteAdmissionError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn schema_two_permission_migration_preserves_bindings_and_legacy_full_access() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let active = registry.add_user("alice").unwrap();
+        let revoked = registry.add_key(active.user_id).unwrap();
+        registry.revoke(revoked.key_id).unwrap();
+        let disabled = registry.add_user("bob").unwrap();
+        registry.set_enabled(disabled.user_id, false).unwrap();
+        let binding = registry
+            .add_telegram_binding(active.user_id, "101", "201")
+            .unwrap();
+        let request = Uuid::now_v7();
+        registry
+            .admit_scheduled(active.user_id, "alice", request)
+            .unwrap();
+        let users = serde_json::to_value(registry.list().unwrap()).unwrap();
+        let bindings = registry.list_telegram_bindings().unwrap();
+        let conn = registry.connection().unwrap();
+        let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
+        conn.execute_batch("DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
+        drop(conn);
+        assert!(registry.authenticate(&active.token).is_err());
+        let migrated = Registry::open(&registry.path).unwrap();
+        assert!(!principal(&migrated, &active).read_only);
+        assert!(migrated.authenticate(&revoked.token).unwrap().is_none());
+        assert!(migrated.authenticate(&disabled.token).unwrap().is_none());
+        assert_eq!(
+            serde_json::to_value(migrated.list().unwrap()).unwrap(),
+            users
+        );
+        assert_eq!(migrated.list_telegram_bindings().unwrap(), bindings);
+        assert_eq!(migrated.list_keys(active.user_id, 100, 0).unwrap().len(), 2);
+        assert!(migrated
+            .list_keys(active.user_id, 100, 0)
+            .unwrap()
+            .iter()
+            .all(|key| !key.read_only));
+        assert!(migrated
+            .list_keys(disabled.user_id, 100, 0)
+            .unwrap()
+            .iter()
+            .all(|key| !key.read_only));
+        let conn = migrated.connection().unwrap();
+        assert_eq!(conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get::<_, String>(0)).unwrap(), audits);
+        assert!(conn
+            .execute(
+                "UPDATE api_keys SET read_only=1 WHERE id=?1",
+                [active.key_id.to_string()]
+            )
+            .is_err());
+        drop(conn);
+        let reopened = Registry::open(&registry.path).unwrap();
+        assert!(!reopened.rotate(active.key_id).unwrap().read_only);
+        assert!(
+            reopened
+                .add_key_with_access(active.user_id, true)
+                .unwrap()
+                .read_only
+        );
+        assert_eq!(reopened.list_telegram_bindings().unwrap()[0].id, binding.id);
+    }
+
+    #[test]
+    fn schema_one_to_three_migration_is_atomic_when_later_schema_step_fails() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let active = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
+        // The v2 schema and v3 column are created before the v3 trigger conflicts.
+        // Both must be rolled back together with user_version.
+        assert!(Registry::open(&registry.path).is_err());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(!conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='telegram_bindings')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap());
+        assert!(!conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('api_keys') WHERE name='read_only')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap());
+        conn.execute_batch("DROP TRIGGER api_key_access_immutable")
+            .unwrap();
+        drop(conn);
+        let migrated = Registry::open(&registry.path).unwrap();
+        assert!(!principal(&migrated, &active).read_only);
+        assert!(migrated.list_telegram_bindings().unwrap().is_empty());
+        assert!(!migrated.rotate(active.key_id).unwrap().read_only);
+    }
+
+    #[test]
     fn live_key_rotation_revocation_and_user_disable_are_isolated() {
         let fixture = Fixture::new();
         let registry = &fixture.registry;
@@ -990,7 +1457,7 @@ mod tests {
         let replacement = registry.add_key(alice.user_id).unwrap();
         assert!(other.authenticate(&replacement.token).unwrap().is_some());
         assert!(other.authenticate("not-a-key").unwrap().is_none());
-        let (unknown, _) = keys::issue(Uuid::new_v4()).unwrap();
+        let (unknown, _) = keys::issue(Uuid::new_v4(), false).unwrap();
         assert!(other.authenticate(&unknown.token).unwrap().is_none());
         let stolen_id = alice
             .token
@@ -1274,7 +1741,8 @@ mod tests {
         let fixture = Fixture::new();
         assert!(Registry::open(Path::new("relative.sqlite3")).is_err());
         let conn = fixture.registry.connection().unwrap();
-        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
         assert!(Registry::open(&fixture.registry.path).is_err());
         assert!(fixture.registry.list().is_err());
         drop(conn);
@@ -1453,9 +1921,9 @@ mod tests {
         let audit_before: i64 = conn
             .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
             .unwrap();
-        // No bindings exist. Removing only the v2 objects reconstructs the exact
+        // No bindings exist. Removing the v2/v3 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
-        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; PRAGMA user_version=1;").unwrap();
+        conn.execute_batch("DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(
             registry.list().is_err(),
@@ -1473,7 +1941,7 @@ mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            2
+            SCHEMA_VERSION
         );
         assert_eq!(
             conn.query_row("SELECT count(*) FROM audit_events", [], |row| row

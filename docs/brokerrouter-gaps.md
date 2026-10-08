@@ -1,6 +1,6 @@
 # Brokerrouter 消费方状态
 
-核对日期：2026-10-03；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
+核对日期：2026-10-08；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
@@ -25,6 +25,8 @@
 2026-10-02 已通过 GitHub API 重新读取 main、issues、PR 和检查状态；main 仍为上述 SHA，#31/#41 仍 OPEN，#41 无回复。PR #40 的 6 个 CI 状态为 FAILURE；抽查 Rust 检查注释明确为 GitHub 账户付款/额度导致作业没有启动，不是测试执行后失败。当前不把 SSE 资源边界、MCP 治理恢复或真实供应商默认标记为生产验收完成。此次核对尚无 Brokerrouter GitHub release。
 
 2026-10-03 回访核对：main、#31/#41、PR #40 的提交和失败状态未变化，仍无 Release。本次未重跑上游或重复提交 issue；上述 CI 注释原因保留为前次检查证据。
+
+2026-10-08 再次通过 GitHub 官方 API 核对：main、#31/#41 和未合并 draft PR #40 的提交均未变化；#31 只有原有一条认证进度回复，#41 仍无回复，仍无 Release。main 与 PR #40 当前均有六个 FAILURE 检查；重新读取 PR #40 Rust 检查注释，作业仍因账户付款/额度未启动，不能解释为已执行的代码测试失败。本批不重复报 issue、不把未认证合同标为完成。
 
 ## 消费合同与下一步
 

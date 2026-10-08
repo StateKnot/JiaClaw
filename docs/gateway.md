@@ -2,7 +2,7 @@
 
 `jiaclaw gateway` 为个人 API Key 绑定一个专属 JiaClaw 后端。每个用户使用不同的进程、工作区、SQLite 会话、身份/记忆文件和 Brokerrouter 虚拟 Key。网关负责鉴权、固定后端映射和不确定写入暂停；隔离依赖本页的容器、网络、存储与运维配置，不能只给同一个后端换两个 Key。
 
-支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。本轮增加默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)，以永久身份绑定、同一用户 hold 和共享执行容量准入，本机七组整机验收通过，跨平台 CI 以本批最终 head 为准。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
+支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。本轮新增管理员签发的只读 Key，服务端、迁移、双用户进程与工作台已本地验收；跨平台及真实容器以本批最终 head CI 为准，具体权限见下文。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
 ## 请求与身份合同
 
@@ -85,11 +85,13 @@ docker compose --project-name jiaclaw-users --env-file deploy/gateway/.env \
   jiaclaw gateway user-add --config /etc/jiaclaw/gateway.json --backend alice
 ```
 
-首次签发输出一份 JSON：`user_id`、`key_id`、`token`。Token 只显示一次，通过受保护渠道交付给对应用户；不要留在终端录屏、工单或 shell 历史里。registry 只保存随机密钥的 verifier，不可恢复明文。每个 backend 只能绑定一个用户，不能利用新增用户绕过暂停状态。
+首次签发输出一份包含 `user_id`、`key_id`、`token`、`read_only` 的 JSON。Token 只显示一次，通过受保护渠道交付给对应用户；不要留在终端录屏、工单或 shell 历史里。registry 只保存随机密钥的 verifier，不可恢复明文。每个 backend 只能绑定一个用户，不能利用新增用户绕过暂停状态。
 
 ```sh
 jiaclaw gateway user-list --config /etc/jiaclaw/gateway.json
 jiaclaw gateway key-add --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID
+jiaclaw gateway key-add --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --read-only
+jiaclaw gateway key-list --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --limit 20 --offset 0
 jiaclaw gateway key-rotate --config /etc/jiaclaw/gateway.json --key YOUR_KEY_UUID
 jiaclaw gateway key-revoke --config /etc/jiaclaw/gateway.json --key YOUR_KEY_UUID
 jiaclaw gateway user-disable --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID
@@ -97,6 +99,26 @@ jiaclaw gateway user-enable --config /etc/jiaclaw/gateway.json --user YOUR_USER_
 ```
 
 以上简写均在 gateway 容器内执行，可使用前例的 `docker compose exec -T gateway` 前缀。Key rotation 在同一事务签发新 Key 并撤销旧 Key。运行中的网关每次准入读取最新用户/Key 状态，管理 CLI 可同时使用 registry；旧 Key 不须等待服务重启才失效。禁用用户阻止未来准入，但不撤回已提交的后端动作；重新启用不复活已撤销 Key。最多 32 用户、每用户 8 把 active Key、总 Key 历史 1024 条，较旧 revoked Key 可被清理；管理/写入审计保留最近 4096 条，长期记录需另行安全归档。
+
+### 只读 Key
+
+管理员可给 `user-add` 或 `key-add` 添加 `--read-only`。前者建立新用户并签发其首把只读 Key，后者为既有用户签发额外只读 Key；省略该选项仍签发原有完整权限 Key。同一用户可同时持有两种 Key，权限属于具体 Key，不能靠请求参数、Header 或浏览器修改。Key 创建后的权限不可修改，`key-rotate` 继承原权限；要改变权限须明确签发另一把 Key 并撤销旧 Key。
+
+| 使用只读 Key 的请求 | 行为 |
+|---|---|
+| 本用户会话列表、单会话及导出 GET | 沿用既有路径、格式、大小和身份约束 |
+| `GET /api/gateway/capabilities` | 返回 `{scheduled_jobs: bool, read_only: bool}`，工作台据此显示只读身份并禁用修改入口 |
+| 已启用 `scheduled_jobs` 的任务、运行与结果 GET | 仍限本用户后端及原有有界分页；未启用时不开放 |
+| 聊天、创建/删除/导入会话、创建/暂停/恢复/删除任务等已开放修改请求 | 服务端返回 403，不提交模型或后端内容变更；非法或未开放路径仍返回 404，UI 禁用不是权限边界 |
+| 其他 GET、内部路由与管理员接口 | 继续按原白名单拒绝，不因“只读”扩大访问面 |
+
+现有鉴权与容量限制仍适用；尚未取得网关认证容量时可返回 429，认证设施不可用时可返回 503。通过认证的只读修改请求在读正文、占用后端或写入 hold 之前被拒绝，拒绝不改变已有 hold。
+
+只读 Key 可读取已有会话、模型回复、工具结果与任务结果，并可导出原始内容，不会脱敏或生成公开分享链接。Key 仍是秘密凭证，不应放进 URL、静态文件或公开日志。这里的“只读”禁止使用者发起内容修改、模型请求及任务控制；既有 GET 可能触发 TTL 清理、访问时间更新等后端维护，不承诺数据库零写入。
+
+`key-list --user` 返回 `{keys: [...]}`，每项仅含 `key_id`、`user_id`、`read_only`、`created_ms`、`revoked_ms`，不返回 Token 或 verifier；`--limit` 默认为 20、范围 1–100，`--offset` 为 0–1024。该列表沿用有界 Key 历史，不能作为永久撤销审计档案。禁用用户、撤销 Key 对之后的准入生效；只读 Key 的存在或所有 Key 被撤销都不取消另行授权的 cron/Telegram 后台工作。停止这些工作须使用相应任务/绑定管理或禁用用户，已经提交的外部请求仍须核对。
+
+registry 自动从 schema 1/2 事务迁移到 schema 3，既有 Key 保持完整权限，保留原身份、撤销状态、hold 和 Telegram 绑定。升级前停机备份；旧二进制拒绝 schema 3，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
 
 网关 registry 放在独立 `/data/gateway/registry.sqlite3`，目录须为当前 UID 私有 0700、数据库 0600；首次创建会设置这些权限。`/data` 卷本身必须可由 10001 创建该子目录。网关进程有独立锁，禁止第二个 serve 同时打开同一 registry；普通用户/Key/绑定管理使用短 SQLite 事务；Telegram 离线审计、resolve/cancel/purge 和对应用户的 review-clear 则要求停止网关并取得该服务锁。
 

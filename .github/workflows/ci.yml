@@ -38,6 +38,7 @@ jobs:
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
+      - run: python3 tests/read_only_keys.py target/debug/jiaclaw
       - run: python3 tests/tenant_cron.py target/debug/jiaclaw
       - run: python3 tests/tenant_telegram.py target/debug/jiaclaw
       - run: python3 tests/scheduler.py target/debug/jiaclaw
@@ -59,6 +60,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/outbox_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/scheduler_browser.cjs target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/read_only_browser.cjs target/debug/jiaclaw
       - name: Real container sandbox acceptance
         if: runner.os == 'Linux'
         env:

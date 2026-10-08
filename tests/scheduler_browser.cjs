@@ -51,7 +51,11 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:false})}));await connect();assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);assert(!calls.some(call=>call.path==='/api/jobs/status'));await page.unroute('**/api/gateway/capabilities');
   for(const status of [200,204]){
    await page.route('**/api/gateway/capabilities',route=>route.fulfill({status,...(status===200?{contentType:'application/json',body:'null'}:{body:''})}));
-   await connect();assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);assert(!calls.some(call=>call.path==='/api/jobs/status'),'only an actual capability404 may trigger fallback');await page.unroute('**/api/gateway/capabilities');
+   // A present but malformed permission contract now clears identity instead of granting writes.
+   await page.locator('#api-token').fill(token);await page.getByRole('button',{name:'连接',exact:true}).click();
+   await page.waitForFunction(()=>document.getElementById('status').textContent.includes('权限信息响应异常'));
+   assert(await page.locator('#new-session').isDisabled());assert.strictEqual(await page.locator('#sessions button').count(),0);
+   assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);assert(!calls.some(call=>call.path==='/api/jobs/status'),'only an actual capability404 may trigger fallback');await page.unroute('**/api/gateway/capabilities');
   }
   // Old standalone status lacks the durable creation contract and stays hidden.
   await page.route('**/api/jobs/status',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({state:'running',max_concurrent_runs:4})}));await connect();assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);await page.unroute('**/api/jobs/status');
