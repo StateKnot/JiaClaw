@@ -146,6 +146,8 @@ Telegram/Slack/Discord/飞书/企业微信/钉钉每个安装可额外配置 `sc
 
 `jiaclaw gateway` 使用独立、严格校验的 JSON 配置与私有身份 SQLite，不读取上述 Agent 配置，也不创建共享 Agent。具体 `serve`、用户/Key 管理命令、限额、TLS/容器/磁盘隔离、未知写入恢复见[网关指南](gateway.md)。现有普通 `serve` 配置仍是一用户一实例。
 
+管理员可通过 `gateway user-add/key-add --read-only` 签发只读 Key；权限保存在 registry schema 3，轮换继承、不可原地修改。它只开放原有本用户 GET 白名单，不允许模型调用、会话修改或任务控制；不会脱敏历史，也不停止用户独立授权的后台任务。旧 schema 1/2 Key 迁移后保持完整权限，单实例 `http.api_token` 不受此功能影响。CLI 分页列表、工作台及维护写入边界见[Key 管理](gateway.md#只读-key)。
+
 `http.gateway_channel_chat` 默认 false。显式启用时仅开放受后端 Token 保护的内部 channel status/chat，固定 datetime_now/json_query、120 秒和 channel 路由；要求 SQLite、brokerrouter（离线可 stub）、关闭 standalone channels/HEARTBEAT/旧 inbound hook，scheduler 只能关闭或 gateway_driven。网关 JSON 的 `telegram` 默认为空，最多 32 条；条目只含 binding_id、两个 Secret 文件路径与固定 API origin 选项，用户/backend/bot/sender 来自不可变 registry。此分支的配置、64 MiB 主文件限制、共享网关盘、人工核对及 opt-in 示例见[独立用户 Telegram](tenant-telegram.md)。
 
 `[scheduler] gateway_driven` 默认 false；显式设为 true 时要求 `enabled=true`，后端只接受网关准入后的内部派发，不自主定时执行。网关 `scheduled_jobs` 默认 false；仅显式启用并通过后端模式检查后开放任务管理。此模式任务最长 120 秒，仅允许 datetime_now/json_query，禁止 delivery；完整配置和本批验收状态见[独立用户定时任务](tenant-cron.md)。

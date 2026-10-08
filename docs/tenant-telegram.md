@@ -9,7 +9,7 @@
 - 每个 registry 用户最多绑定一个 Bot；同一 Bot 不能绑定其他用户。backend 来自既有用户映射，不能通过消息或绑定配置指定。绑定 UUID、user/backend/bot/sender 不可修改；撤销也不释放用户/Bot 预留，不支持换用户重新收养旧队列。
 - bot_id 与 sender_id 使用无前导零的正整数数字 ID，不接受用户名。私聊的 `from.id` 和 `chat.id` 必须都等于绑定的 sender_id，`from.is_bot=false`，不接受线程或群聊。只处理 `message.text`，其他更新类型忽略。
 - 后端内部接口仅接受自己的 Bearer Token，并固定会话 `tg-<binding UUID 去连字符>`、`ModelPurpose::Channel`、工具 `datetime_now` / `json_query` 和关闭自动 skills。消息不能扩大工具权限、选择其他租户或改变模型路由。该会话仍属于同一用户，可由其既有会话管理入口查看；它不隔离这个用户自己的 Web 操作。
-- 用户 Key 轮换或撤销不会撤销 Bot 身份。要阻止未来准入，禁用用户或撤销绑定；撤销不能撤回已提交的模型/平台请求。用户重新启用不清 hold、不恢复撤销绑定。
+- 用户 Key 轮换、撤销或签发只读 Key 不会撤销 Bot 身份；Key 的只读权限只约束持该 Key 的 HTTP 请求，不改变独立绑定的后台授权。要阻止未来准入，禁用用户或撤销绑定；撤销不能撤回已提交的模型/平台请求。用户重新启用不清 hold、不恢复撤销绑定。
 - 单个后端最多一个共享执行请求；全局容量取网关配置。网关持久准入后只发一次后端 POST，客户端断开不会提前释放后台工作许可。后端执行预算 120 秒，网关内部请求期限 150 秒；配置 `request_timeout_seconds` 因而必须至少 150。
 
 ## 显式启用
@@ -58,7 +58,7 @@ JSON 入站最多 64 KiB，正文读取 10 秒，text 最多 16 KiB UTF-8；入�
 
 ## 持久状态、容量与未知结果
 
-每个绑定的文件固定为 registry 同级 `telegram/<binding UUID>.sqlite3`，目录 0700、文件 0600、拒绝符号/硬链接及特殊文件，服务持生命周期排他锁。owner protocol 1 校验不可变身份；内部 SessionStore 仍为 schema 10，registry 本批为 schema 2，不能把普通 session DB 或别人的库搬进来收养。
+每个绑定的文件固定为 registry 同级 `telegram/<binding UUID>.sqlite3`，目录 0700、文件 0600、拒绝符号/硬链接及特殊文件，服务持生命周期排他锁。owner protocol 1 校验不可变身份；内部 SessionStore 仍为 schema 10，registry 当前为 schema 3（只读 Key 迁移保留本批 schema 2 的绑定），不能把普通 session DB 或别人的库搬进来收养。
 
 | 边界 | 行为 |
 |---|---|
@@ -119,4 +119,4 @@ cancel 作用于整事件的未完成投递并标记人工审查，不删除已�
 python3 tests/tenant_telegram.py target/debug/jiaclaw
 ```
 
-本批存储定向七项和原有 channel_store 35 项已通过；覆盖 owner/锁/链接拒绝、claim 回滚及 SQLITE_FULL、重复关联 ID、容量满后审计/清理、重启恢复、purge 外键级联和发送提示。最终二进制整机七组通过：真实双后端及 native 工具、channel 路由、私有会话/队列、用户禁用与永久绑定撤销、未知发送离线核对、跨重启 429 冷却及第五次停止、SIGKILL 后保守 hold 与后端继续完成，均不自动重放；本批七套既有进程回归通过。跨平台和真实容器以本批 draft PR 最终 head CI 为准。真实 Telegram TLS/webhook、用户终端收发、代理配置及供应商计费需要单独授权验收。
+本批存储定向七项和原有 channel_store 35 项已通过；覆盖 owner/锁/链接拒绝、claim 回滚及 SQLITE_FULL、重复关联 ID、容量满后审计/清理、重启恢复、purge 外键级联和发送提示。最终二进制整机七组通过：真实双后端及 native 工具、channel 路由、私有会话/队列、用户禁用与永久绑定撤销、未知发送离线核对、跨重启 429 冷却及第五次停止、SIGKILL 后保守 hold 与后端继续完成，均不自动重放；本批七套既有进程回归通过。PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/jiawenyao401/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。真实 Telegram TLS/webhook、用户终端收发、代理配置及供应商计费需要单独授权验收。

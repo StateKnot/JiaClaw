@@ -18,6 +18,7 @@ pub struct IssuedKey {
     pub user_id: Uuid,
     pub key_id: Uuid,
     pub token: String,
+    pub read_only: bool,
 }
 
 pub(super) struct ParsedKey {
@@ -36,7 +37,7 @@ impl ParsedKey {
     }
 }
 
-pub(super) fn issue(user_id: Uuid) -> Result<(IssuedKey, [u8; 32])> {
+pub(super) fn issue(user_id: Uuid, read_only: bool) -> Result<(IssuedKey, [u8; 32])> {
     let mut secret = [0_u8; 32];
     SystemRandom::new()
         .fill(&mut secret)
@@ -48,6 +49,7 @@ pub(super) fn issue(user_id: Uuid) -> Result<(IssuedKey, [u8; 32])> {
         IssuedKey {
             user_id,
             key_id,
+            read_only,
             token: format!("jc1.{key_id}.{}", URL_SAFE_NO_PAD.encode(secret)),
         },
         verifier,
@@ -97,8 +99,8 @@ mod tests {
     #[test]
     fn credentials_are_canonical_random_and_bound_to_both_identities() {
         let user_id = Uuid::new_v4();
-        let (first, verifier) = issue(user_id).unwrap();
-        let (second, _) = issue(user_id).unwrap();
+        let (first, verifier) = issue(user_id, false).unwrap();
+        let (second, _) = issue(user_id, false).unwrap();
         assert_ne!(first.token, second.token);
         assert_eq!(first.token.len(), TOKEN_BYTES);
         let parsed = parse(&first.token).unwrap();
@@ -128,7 +130,7 @@ mod tests {
 
     #[test]
     fn authentication_headers_reject_duplicates_and_ambiguity() {
-        let (issued, _) = issue(Uuid::new_v4()).unwrap();
+        let (issued, _) = issue(Uuid::new_v4(), true).unwrap();
         let mut headers = HeaderMap::new();
         assert!(authorization_token(&headers).is_none());
         let bearer = HeaderValue::from_str(&format!("Bearer {}", issued.token)).unwrap();

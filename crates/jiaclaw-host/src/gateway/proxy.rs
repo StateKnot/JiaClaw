@@ -181,6 +181,12 @@ pub(super) async fn handle(
             )
         }
     };
+    // Key permissions are authority from the private registry, never request
+    // metadata. Reject before reading a body, taking backend capacity or
+    // persisting a hold; denied requests must not reach a tenant backend.
+    if principal.read_only && request.method() != Method::GET {
+        return error(StatusCode::FORBIDDEN, "read-only API key", request_id);
+    }
     let Some(backend) = state.backends.get(&principal.backend_id) else {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -241,7 +247,7 @@ pub(super) async fn handle(
     }
     if parts.uri.path() == "/api/gateway/capabilities" {
         return finish(
-            axum::Json(serde_json::json!({"scheduled_jobs":state.scheduled_jobs})).into_response(),
+            axum::Json(serde_json::json!({"scheduled_jobs":state.scheduled_jobs,"read_only":principal.read_only})).into_response(),
             request_id,
         );
     }
@@ -324,6 +330,9 @@ pub(super) async fn handle(
                     return match cause.downcast_ref::<WriteAdmissionError>() {
                         Some(WriteAdmissionError::Unauthorized) => {
                             error(StatusCode::UNAUTHORIZED, "invalid API key", request_id)
+                        }
+                        Some(WriteAdmissionError::ReadOnly) => {
+                            error(StatusCode::FORBIDDEN, "read-only API key", request_id)
                         }
                         Some(WriteAdmissionError::Held) => error(
                             StatusCode::CONFLICT,
@@ -756,6 +765,127 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         });
     }
+    #[tokio::test]
+    async fn read_only_denial_precedes_body_backend_capacity_and_hold() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root =
+            std::env::temp_dir().join(format!("jiaclaw-gateway-read-only-{}", Uuid::new_v4()));
+        let registry = super::super::registry::Registry::open(&root.join("registry.db")).unwrap();
+        let key = registry.add_user_with_access("alice", true).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().fallback(move || {
+                    let observed = observed.clone();
+                    async move {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        });
+        // An unavailable backend must not mask the permission rejection.
+        let permit = Arc::new(tokio::sync::Semaphore::new(1));
+        let occupied = permit.clone().acquire_owned().await.unwrap();
+        let backend = super::super::Backend {
+            url: format!("http://{address}").parse().unwrap(),
+            token: HeaderValue::from_static("Bearer private-backend"),
+            permit,
+            control: Arc::new(tokio::sync::Semaphore::new(2)),
+        };
+        let state = Arc::new(State {
+            registry,
+            backends: std::collections::HashMap::from([("alice".into(), backend)]),
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            timeout: Duration::from_secs(10),
+            control: Arc::new(tokio::sync::Semaphore::new(8)),
+            scheduled_jobs: true,
+            telegram: None,
+        });
+        let id = Uuid::new_v4();
+        for (method, path) in [
+            (Method::POST, "/api/chat".into()),
+            (Method::POST, "/api/sessions".into()),
+            (Method::POST, "/api/sessions/import".into()),
+            (Method::DELETE, "/api/sessions/same".into()),
+            (Method::POST, "/api/jobs".into()),
+            (Method::POST, format!("/api/jobs/{id}/pause")),
+            (Method::POST, format!("/api/jobs/{id}/resume")),
+            (Method::DELETE, format!("/api/jobs/{id}")),
+        ] {
+            let body = Body::from_stream(futures_util::stream::pending::<
+                Result<axum::body::Bytes, std::io::Error>,
+            >());
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::AUTHORIZATION, format!("Bearer {}", key.token))
+                .header("x-jiaclaw-read-only", "false")
+                .body(body)
+                .unwrap();
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                handle(ExtractState(state.clone()), request),
+            )
+            .await
+            .expect("permission denial must not poll an unfinished body");
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(state.registry.list().unwrap()[0].hold.is_none());
+        }
+        let request = Request::builder()
+            .uri("/api/gateway/capabilities")
+            .header(header::AUTHORIZATION, format!("Bearer {}", key.token))
+            .body(Body::empty())
+            .unwrap();
+        let response = handle(ExtractState(state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"scheduled_jobs":true,"read_only":true})
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // Full keys retain their permission, and metadata never needs backend IO.
+        let full = state.registry.add_key(key.user_id).unwrap();
+        let request = Request::builder()
+            .uri("/api/gateway/capabilities")
+            .header(header::AUTHORIZATION, format!("Bearer {}", full.token))
+            .body(Body::empty())
+            .unwrap();
+        let response = handle(ExtractState(state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"scheduled_jobs":true,"read_only":false})
+        );
+        // Permission failures apply only to actual exposed operations. Unknown
+        // routes retain the same unavailable result without authentication/body IO.
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/api/jobs/{id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {}", key.token))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            handle(ExtractState(state.clone()), request).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(occupied);
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn routes_are_canonical_and_explicit() {
         for path in [
@@ -895,7 +1025,7 @@ mod tests {
     #[test]
     fn authentication_header_is_unambiguous() {
         let mut headers = HeaderMap::new();
-        let (key, _) = super::super::keys::issue(Uuid::new_v4()).unwrap();
+        let (key, _) = super::super::keys::issue(Uuid::new_v4(), false).unwrap();
         headers.insert(
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", key.token)).unwrap(),

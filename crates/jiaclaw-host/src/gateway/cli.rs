@@ -25,6 +25,9 @@ pub enum Commands {
         config: PathBuf,
         #[arg(long)]
         backend: String,
+        /// Restrict this key to read-only HTTP access; user-owned background work is unchanged.
+        #[arg(long)]
+        read_only: bool,
     },
     /// Issue an additional key for an existing enabled user.
     KeyAdd {
@@ -32,8 +35,22 @@ pub enum Commands {
         config: PathBuf,
         #[arg(long)]
         user: Uuid,
+        /// Restrict this key to read-only HTTP access; user-owned background work is unchanged.
+        #[arg(long)]
+        read_only: bool,
     },
-    /// Atomically issue a replacement key and revoke the named old key.
+    /// List bounded key metadata for a user, including revoked keys; no credentials.
+    KeyList {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=1024))]
+        offset: u16,
+    },
+    /// Atomically replace a key, preserving its access and revoking the old key.
     KeyRotate {
         #[arg(long)]
         config: PathBuf,
@@ -164,25 +181,52 @@ fn output(value: &serde_json::Value) -> Result<()> {
 
 fn issued(key: IssuedKey) -> Result<()> {
     output(
-        &json!({"user_id":key.user_id.to_string(),"key_id":key.key_id.to_string(),"token":key.token}),
+        &json!({"user_id":key.user_id.to_string(),"key_id":key.key_id.to_string(),"token":key.token,"read_only":key.read_only}),
     )
 }
 
 pub async fn run(command: Commands) -> Result<()> {
     match command {
         Commands::Serve { config } => super::serve(Config::load(&config)?).await,
-        Commands::UserAdd { config, backend } => {
+        Commands::UserAdd {
+            config,
+            backend,
+            read_only,
+        } => {
             let config = Config::load(&config)?;
             ensure!(
                 config.backends.iter().any(|entry| entry.id == backend),
                 "backend is not configured"
             );
             let registry = Registry::open(&config.registry_path)?;
-            issued(registry.add_user(&backend)?)
+            issued(if read_only {
+                registry.add_user_with_access(&backend, true)?
+            } else {
+                registry.add_user(&backend)?
+            })
         }
-        Commands::KeyAdd { config, user } => {
+        Commands::KeyAdd {
+            config,
+            user,
+            read_only,
+        } => {
             let (_, registry) = registry(&config)?;
-            issued(registry.add_key(user)?)
+            issued(if read_only {
+                registry.add_key_with_access(user, true)?
+            } else {
+                registry.add_key(user)?
+            })
+        }
+        Commands::KeyList {
+            config,
+            user,
+            limit,
+            offset,
+        } => {
+            let (_, registry) = registry(&config)?;
+            output(
+                &json!({"keys":registry.list_keys(user,usize::from(limit),usize::from(offset))?}),
+            )
         }
         Commands::KeyRotate { config, key } => {
             let (_, registry) = registry(&config)?;
@@ -350,6 +394,100 @@ mod tests {
         ])
         .is_err());
         assert!(Args::try_parse_from(["gateway", "serve"]).is_err());
+    }
+
+    #[test]
+    fn permissions_default_to_full_and_rotation_cannot_upgrade_access() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        for read_only in [false, true] {
+            let mut add = vec![
+                "gateway",
+                "user-add",
+                "--config",
+                "c.json",
+                "--backend",
+                "alice",
+            ];
+            if read_only {
+                add.push("--read-only");
+            }
+            let Commands::UserAdd {
+                read_only: actual, ..
+            } = Args::try_parse_from(add).unwrap().command
+            else {
+                panic!("wrong command")
+            };
+            assert_eq!(actual, read_only);
+            let mut add = vec!["gateway", "key-add", "--config", "c.json", "--user", user];
+            if read_only {
+                add.push("--read-only");
+            }
+            let Commands::KeyAdd {
+                read_only: actual, ..
+            } = Args::try_parse_from(add).unwrap().command
+            else {
+                panic!("wrong command")
+            };
+            assert_eq!(actual, read_only);
+        }
+        assert!(Args::try_parse_from([
+            "gateway",
+            "key-rotate",
+            "--config",
+            "c.json",
+            "--key",
+            user,
+            "--read-only"
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "gateway",
+            "key-rotate",
+            "--config",
+            "c.json",
+            "--key",
+            user,
+            "--full-access"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn key_metadata_pagination_requires_user_and_bounded_values() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let Commands::KeyList { limit, offset, .. } =
+            Args::try_parse_from(["gateway", "key-list", "--config", "c.json", "--user", user])
+                .unwrap()
+                .command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!((limit, offset), (20, 0));
+        for (limit, offset) in [("1", "0"), ("100", "1024")] {
+            assert!(Args::try_parse_from([
+                "gateway", "key-list", "--config", "c.json", "--user", user, "--limit", limit,
+                "--offset", offset
+            ])
+            .is_ok());
+        }
+        for (limit, offset) in [
+            ("0", "0"),
+            ("101", "0"),
+            ("1", "1025"),
+            ("-1", "0"),
+            ("1", "-1"),
+        ] {
+            assert!(Args::try_parse_from([
+                "gateway", "key-list", "--config", "c.json", "--user", user, "--limit", limit,
+                "--offset", offset
+            ])
+            .is_err());
+        }
+        assert!(Args::try_parse_from(["gateway", "key-list", "--config", "c.json"]).is_err());
+        assert!(Args::try_parse_from([
+            "gateway", "key-list", "--config", "c.json", "--user", user, "--token", "secret"
+        ])
+        .is_err());
     }
 
     #[tokio::test]

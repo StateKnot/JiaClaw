@@ -1,12 +1,14 @@
 # StateKnot 集成状态
 
-核对日期：2026-10-03；上游 main：`fbd629d73e50610dc8f4889b47e05f698cc110e7`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/README.md)。
+核对日期：2026-10-08；上游 main：`fbd629d73e50610dc8f4889b47e05f698cc110e7`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/fbd629d73e50610dc8f4889b47e05f698cc110e7/README.md)。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
 JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HTTP MCP 客户端，工具链固定为 Rust 1.88.0。对话循环仍是已有的应用实现，不能声称由 StateKnot Graph Driver、TypedAgent 或 durable admission 驱动。SQLite 保存聊天、应用级调度和渠道收发状态；这些事务不等于 StateKnot 运行检查点或可恢复工具执行。
 
 2026-10-03 回访核对：main、v0.1.0-alpha.1 和 #140 状态未变化；优先保持已接入 HTTP MCP 的回归，durable 继续受 Brokerrouter #41 原生输出合同阻挡。
+
+2026-10-08 再次通过 GitHub 官方 API 核对：main SHA 与最新 prerelease 版本未变化，#140 仍 OPEN 且无回复；main 当前检查 rollup 为 SUCCESS。没有新上游合同或认证证据；本批只读 API Key 属于应用权限接线。
 
 ## MCP 现状与新议题
 
