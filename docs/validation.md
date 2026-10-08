@@ -365,7 +365,7 @@ StateKnot main 更新至 `c9318368bbb70fbf6f9318deb961bd2c450227ee`，仅 #141 �
 
 本批实现默认关闭的独立用户 Slack；生产配置、范围、容量和人工恢复见[指南](tenant-slack.md)。registry schema 4 保留旧 Key 权限/hold/审计/Telegram，永久预留专用 App 与固定用户/后端/工作区/Bot/成员/DM。原始签名、四次平台身份握手、2.8 秒 ACK、私有队列、共享执行授权和离线复核接入实际路径；后端 protocol 2 永久预留同一身份，request UUIDv7/平台 event ID/固定会话受限，记录与结果原子提交。metadata 收据只是核对依据，没有自动重放或清 hold。
 
-本机验证已完成：
+首版实现的本机验证已完成（下述二进制哈希对应首版，后续修订单独复验）：
 
 - 全量 Rust 串行 975 项通过（library 372、core 123、host 480），1 项真实 Docker 专项本机 ignored，交给 Linux CI；最终谓词整理及测试锁作用域修订后，runtime 六项定向复验通过。fmt、所需 Clippy correctness/suspicious、锁定构建、Python 语法与 diff-check 通过；仍有 style/pedantic warnings。首次未提升权限的本机全量运行因 localhost/FIFO 被沙箱拒绝而失败；完整验证使用已授权的本地 fixture 权限，没有将权限失败归因于产品。
 - 新 registry 十项、SlackStore 八项、runtime 六项、后端七项及 recorded claim 三项测试覆盖 schema 1/2/3 升级与失败回滚、专用 App 终身唯一、owner/OR REPLACE 防改绑、普通/Telegram/未来版本库拒绝、文件权限/链接/独占锁、真实 64 MiB SQLITE_FULL 和 claim 双向事务回滚；处理中的原 request、admitted/completed 收据跨重开保持，不重放模型。
@@ -375,3 +375,20 @@ StateKnot main 更新至 `c9318368bbb70fbf6f9318deb961bd2c450227ee`，仅 #141 �
 - 同一最终二进制的既有十套进程回归全通过、退出码 0：user_gateway、read_only_keys 五组、gateway_audit 四组、tenant_cron 四组、tenant_telegram 七组、mcp、native_tools、e2e、channels、scheduled_delivery。所有模型/平台调用为本机合成凭据，没有真实安装或付费供应商调用。
 
 新 Slack fixture 已加入 Ubuntu/macOS CI；真实限额卷 container 验收增加 schema 4 App 预留/撤销/重启、默认关闭及私有路由拒绝，但没有配置 Slack runtime，不能据此认证其容器内收发或共享网关卷压力。本机未执行 Linux 容器组；本批最终精确提交的 CI 结果将在 PR 核对并由下一批文档回填。协议 fixture 不认证真实 Slack 安装或 StateKnot durable。
+
+本批交付前 05:26 UTC 复核发现 StateKnot main 再推进到 `4e3c9e9194db524886ca795e5e2394be071ea202`；#145 只更新依赖 patch 与 Dependabot 分组，无运行合同源码变化，17 项 main 检查均成功，release/#140 未变。独立 review 修正 Slack review-clear 示例缺少必需的 `--confirm-backend-idle`；实际 fixture 已正确传此标志。
+
+首版 head `349a5f41a3a6cb3aeddd6372d9925fd78e822814` 的 [CI 37732172100](https://github.com/jiawenyao401/JiaClaw/actions/runs/37732172100) 中，Ubuntu job `113163547361` 全部成功；macOS job `113163547668` 与 container job `113163547629` 失败，不能把首版本机通过记为最终 CI 通过。容器的新 Slack 预留/撤销/重启组已通过，旧审计组却在已有保留 Slack 绑定后在线清 hold，正确触发停机锁拒绝。fixture 现在先断言在线拒绝不改变 hold/审计，再停止网关，以相同非 root/只读根文件系统/限额卷的维护容器清 hold，并重启继续原断言；不取消生产锁。
+
+macOS 的旧记忆并发追加测试在所有写线程 join 后立即取目录 flock，得到 EWOULDBLOCK。真实 fork/pipe 实验确认：带 CLOEXEC 的目录描述符仍能在子进程 exec/关闭前保留 flock 引用，父线程完成不是内核锁释放的充分条件。初始 CI 没有采集持锁进程，因此不认定具体 child 是该次失败原因。测试在原 200×2 ms 争抢预算内只重试固定 flock 上下文的 EWOULDBLOCK；其他错误立即失败，生产仍非阻塞。另以真实 dup 引用及释放同步验证等待内核锁，不增加 CI 截止时间或改为串行 CI。
+
+独立 review 发现首次初始化直接创建 final 文件会在 owner 提交前崩溃时留下不可收养空库。修订改为完整 owner 暂存事务、关闭/文件 fsync、同目录 NOREPLACE 发布和目录 fsync。恢复只接受有界私有空暂存库或 exact owner-only schema；部分写入、热 journal、WAL header/sidecar、外来 owner 均保留并拒绝，不改动未知 final。真实 WAL 主文件无 sidecar 的只读打开会创建 WAL，故增加打开前文件头检查及“不改变文件/sidecar”回归。详细人工处置边界见[Slack 指南](tenant-slack.md)。
+
+依赖复核确认首版锁定的 libsqlite3-sys 0.30.1 内含 SQLite 3.46.0，处于官方列出的 WAL-reset 并发 write/checkpoint 缺陷影响版本；本项目没有复现该罕见损坏。为移除已知风险，两处 rusqlite 精确升级为 0.39.0，锁定 libsqlite3-sys 0.37.0 / bundled SQLite 3.51.3，并显式保留 fallible_uint 的有检查整数转换。此缺陷是已有 SQLite 依赖风险，不是 StateKnot/Brokerrouter 合同缺陷。验证须在升级后重做，不能引用旧二进制哈希代替。rusqlite 上游只承诺发布时最新 stable，不保证 Rust 1.88；本项目的精确特性/依赖组合由实际 1.88.0 构建及同版本 CI 验收。[SQLite 官方缺陷和修复说明](https://sqlite.org/wal.html#the_wal_reset_bug)、[rusqlite v0.39.0](https://github.com/rusqlite/rusqlite/releases/tag/v0.39.0)
+
+修订后的最终源码验证完成：
+
+- 实际 Rust 1.88.0 全目标锁定 check、984 项完整串行 Rust（library 373、core 123、host 488；真实 Docker 一项本机 ignored）、fmt、所需 Clippy correctness/suspicious、锁定 build、Python 语法及 diff-check 均通过；仍有 style/pedantic warnings。SlackStore 原八项及新增七项全部通过；实际链接 SQLite 修复版本、负整数读取到 usize 拒绝、超 i64 的 u64 绑定拒绝和普通整数往返均验证。
+- macOS 真实 fork/pipe 验证锁引用机制；原并发追加与真实 dup 锁释放测试分别连续 30/30，最终 memory_io 模块默认并行 30 项通过。只改测试同步，不改变生产锁、CI 并行方式或原争抢预算。
+- 最终重建二进制 SHA256 `cb15ba29d69daf0c656193c5c94625a11ae0f703c7bef1104b08758b874f6c1e`：新 `tenant_slack.py` 八组完整通过，十五套既有进程回归全部通过（user_gateway、read_only_keys、gateway_audit、tenant_cron、tenant_telegram、mcp、native_tools、e2e、channels、scheduled_delivery、memory_io、scheduler、model_routing、semantic_memory、model_calls）。每套及整体运行前后哈希保持一致，未修改 fixture 或在验收中重建。所有调用仍为 localhost 合成凭据。
+- 最终只读复核确认 owner 发布、未知文件保留、严格锁竞争错误、真实维护容器及 SQLite 整数转换边界无剩余实质问题；维护容器采用追踪后显式删除，失败由原清理路径处理。最终 head 的 Ubuntu/macOS/真实容器 CI 结果在 draft PR #83 记录，下一批源文档回填，不能用首轮 Ubuntu 成功代替最终完整 CI。

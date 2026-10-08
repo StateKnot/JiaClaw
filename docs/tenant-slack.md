@@ -49,6 +49,8 @@ API Key 轮换、撤销或只读权限与已绑定的 Slack 后台授权独立�
 
 registry 事务升级至 schema 4，保留 schema 1/2/3 的用户、Key 权限、hold、审计及 Telegram 绑定。升级前停机备份，旧二进制不能打开 schema 4。每绑定库位于 registry 同级 `slack/{UUID}.sqlite3`：0700 目录、0600 单链接文件、生命周期排他锁；application ID 与 protocol 2 owner 全身份校验后才打开 SessionStore schema 10。拒绝普通会话库、Telegram 库、其他 owner 和未知版本；owner 不可修改、删除或替换。
 
+首次建库在同目录固定 `.sqlite3.initializing` 暂存文件中用 FULL 同步的 rollback journal 事务提交完整 owner，关闭 SQLite、同步文件后原子不覆盖地发布，再同步目录。暂存文件须为 0600 单链接普通文件且不超过 128 KiB；仅空暂存库或精确匹配当前 owner 和初始化 schema 的已提交暂存库可以继续。SQLite 打开前拒绝不完整/WAL 文件头及任何暂存 sidecar；final 不存在而留下 final sidecar 时也拒绝发布。部分事务、热 journal、外来身份或其他不符状态保留原文件，要求管理员停机一致备份并核对，不能删 journal 或换 owner 自动继续。既有 final（包括旧版遗留空文件）绝不作为新库收养；final 已存在时遗留暂存文件留供离线检查。这些边界不承诺所有断电状态自动恢复。
+
 | 容量 | 行为与维护 |
 |---|---|
 | 队列 | 1000 事件、10000 投递、10000 去重 tombstones，最短去重保留 7 天；满额拒绝新增 |
@@ -74,7 +76,7 @@ jiaclaw gateway slack-inspect --config /etc/jiaclaw/gateway.json --binding YOUR_
 jiaclaw gateway slack-resolve --config /etc/jiaclaw/gateway.json --binding YOUR_BINDING_UUID \
   --delivery YOUR_DELIVERY_UUID --receipt slack:1700000000.123456
 jiaclaw gateway slack-cancel --config /etc/jiaclaw/gateway.json --binding YOUR_BINDING_UUID --event YOUR_EVENT_UUID
-jiaclaw gateway review-clear --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --note '已核对原请求、平台回执和全部保留队列'
+jiaclaw gateway review-clear --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --confirm-backend-idle --note '已核对原请求、平台回执和全部保留队列'
 jiaclaw gateway slack-purge --config /etc/jiaclaw/gateway.json --binding YOUR_BINDING_UUID --event YOUR_EVENT_UUID
 jiaclaw gateway slack-revoke --config /etc/jiaclaw/gateway.json --binding YOUR_BINDING_UUID
 ```

@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
+    io::Read,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -17,6 +18,7 @@ use std::{
 const APPLICATION_ID: i32 = 0x4a43_534c;
 const MAX_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXISTING_WAL_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_INITIALIZING_BYTES: u64 = 128 * 1024;
 const OWNER_SCHEMA: &str = "
 CREATE TABLE gateway_slack_owner (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -168,6 +170,206 @@ fn verify_sidecars(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn require_no_initializing_sidecars(path: &Path) -> Result<()> {
+    for extra in ["-wal", "-shm", "-journal"] {
+        let sidecar = suffix(path, extra);
+        match fs::symlink_metadata(&sidecar) {
+            Ok(_) => {
+                let metadata = private_file(&sidecar)?;
+                ensure!(
+                    metadata.len() <= MAX_INITIALIZING_BYTES,
+                    "Slack initialization sidecar exceeds its bound"
+                );
+                anyhow::bail!("Slack initialization sidecars require offline administrator review");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn owner_schema(conn: &Connection) -> Result<Vec<(String, String, String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn verify_initializing_owner(conn: &Connection, binding: &SlackBindingSummary) -> Result<()> {
+    verify_owner(conn, binding)?;
+    let journal: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    ensure!(
+        journal == "delete",
+        "Slack staging owner requires a single-file DELETE journal"
+    );
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    ensure!(
+        version == 0,
+        "Slack staging database must contain only its initial owner"
+    );
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(OWNER_SCHEMA)?;
+    ensure!(
+        owner_schema(conn)? == owner_schema(&expected)?,
+        "Slack staging owner schema is incomplete or unrelated"
+    );
+    let count: i64 = conn.query_row("SELECT count(*) FROM gateway_slack_owner", [], |row| {
+        row.get(0)
+    })?;
+    ensure!(
+        count == 1,
+        "Slack staging database must contain exactly one owner"
+    );
+    Ok(())
+}
+
+fn write_initial_owner(conn: &mut Connection, binding: &SlackBindingSummary) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(OWNER_SCHEMA)?;
+    tx.execute(
+        "INSERT INTO gateway_slack_owner VALUES(1,2,?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            binding.id.to_string(),
+            binding.user_id.to_string(),
+            binding.backend_id,
+            binding.team_id,
+            binding.app_id,
+            binding.bot_user_id,
+            binding.bot_id,
+            binding.sender_id,
+            binding.conversation_id
+        ],
+    )?;
+    tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Only the fixed private staging path may resume an empty initialization. An
+/// existing final file is never adopted, even when it is empty. Staging with a
+/// sidecar may need SQLite recovery; reject it before any writable connection
+/// can change an unverified owner or partially committed schema.
+fn prepare_initial_owner(stage: &Path, binding: &SlackBindingSummary) -> Result<File> {
+    require_no_initializing_sidecars(stage)?;
+    let (file, _) = create_private_file(stage)?;
+    ensure!(
+        file.metadata()?.len() <= MAX_INITIALIZING_BYTES,
+        "Slack staging database exceeds 128 KiB"
+    );
+    if file.metadata()?.len() > 0 {
+        // SQLite READ_ONLY may still create WAL/SHM files in a writable
+        // directory. Reject WAL and incomplete headers before opening SQLite,
+        // so inspecting a foreign stage cannot change even its sidecars.
+        ensure!(
+            file.metadata()?.len() >= 100,
+            "Slack staging SQLite header is incomplete"
+        );
+        let mut header = [0_u8; 20];
+        (&file).read_exact(&mut header)?;
+        ensure!(
+            &header[..16] == b"SQLite format 3\0" && header[18] == 1 && header[19] == 1,
+            "Slack staging requires a complete rollback-journal SQLite header"
+        );
+    }
+    let needs_owner = {
+        let conn = Connection::open_with_flags(
+            stage,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        conn.busy_timeout(Duration::from_millis(250))?;
+        let application: i32 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let empty = application == 0 && version == 0 && owner_schema(&conn)?.is_empty();
+        if !empty {
+            verify_initializing_owner(&conn, binding)?;
+        }
+        empty
+    };
+    if needs_owner {
+        let mut conn = Connection::open_with_flags(
+            stage,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        conn.busy_timeout(Duration::from_millis(250))?;
+        let journal: String = conn.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
+        ensure!(
+            journal == "delete",
+            "Slack initialization requires a single-file DELETE journal"
+        );
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        write_initial_owner(&mut conn, binding)?;
+        conn.close()
+            .map_err(|(_, error)| error)
+            .context("Slack initialization connection failed to close")?;
+    }
+    {
+        let conn = Connection::open_with_flags(
+            stage,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        verify_initializing_owner(&conn, binding)?;
+        conn.close()
+            .map_err(|(_, error)| error)
+            .context("Slack initialization verification failed to close")?;
+    }
+    require_no_initializing_sidecars(stage)?;
+    let metadata = private_file(stage)?;
+    ensure!(
+        metadata.len() <= MAX_INITIALIZING_BYTES,
+        "Slack staging database exceeds 128 KiB"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata()?;
+        ensure!(
+            opened.dev() == metadata.dev() && opened.ino() == metadata.ino() && opened.nlink() == 1,
+            "Slack staging file changed during initialization"
+        );
+    }
+    file.sync_all()?;
+    Ok(file)
+}
+
+fn publish_initial_owner(stage: &Path, path: &Path) -> Result<()> {
+    let parent = path.parent().context("Slack database has no parent")?;
+    ensure!(
+        stage.parent() == Some(parent),
+        "Slack owner publication must stay in one directory"
+    );
+    let directory = File::open(parent)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        rustix::fs::renameat_with(
+            &directory,
+            stage
+                .file_name()
+                .context("Slack staging file has no name")?,
+            &directory,
+            path.file_name().context("Slack database has no name")?,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(std::io::Error::from)
+        .context("Slack owner publication cannot replace existing state")?;
+        directory.sync_all()?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        anyhow::bail!("atomic Slack owner publication requires Linux or macOS");
+    }
+}
+
 fn verify_owner(conn: &Connection, binding: &SlackBindingSummary) -> Result<()> {
     let application: i32 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
     ensure!(
@@ -203,7 +405,7 @@ fn verify_owner(conn: &Connection, binding: &SlackBindingSummary) -> Result<()> 
         // A crash after committing the owner, before SessionStore's atomic
         // migrations, is safe to resume. Never adopt other unversioned tables.
         let tables: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'",
             [],
             |r| r.get(0),
         )?;
@@ -290,40 +492,27 @@ impl SlackStore {
         ownership
             .try_lock_exclusive()
             .context("another process owns this Slack channel database")?;
-        verify_sidecars(&path)?;
-        let (file, created) = create_private_file(&path)?;
-        ensure!(
-            file.metadata()?.len() <= MAX_DATABASE_BYTES,
-            "Slack database exceeds 64 MiB"
-        );
-        drop(file);
-        if created {
-            let mut conn = Connection::open_with_flags(
-                &path,
-                OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                    | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )?;
-            conn.busy_timeout(Duration::from_millis(250))?;
-            conn.pragma_update(None, "synchronous", "FULL")?;
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch(OWNER_SCHEMA)?;
-            tx.execute(
-                "INSERT INTO gateway_slack_owner VALUES(1,2,?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![
-                    binding.id.to_string(),
-                    binding.user_id.to_string(),
-                    binding.backend_id,
-                    binding.team_id,
-                    binding.app_id,
-                    binding.bot_user_id,
-                    binding.bot_id,
-                    binding.sender_id,
-                    binding.conversation_id
-                ],
-            )?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.commit()?;
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                ensure!(
+                    private_file(&path)?.len() <= MAX_DATABASE_BYTES,
+                    "Slack database exceeds 64 MiB"
+                );
+                verify_sidecars(&path)?;
+                // Preserve any staging leftover for offline inspection. It has
+                // no authority over a final file that already exists.
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                require_no_initializing_sidecars(&path)?;
+                let stage = suffix(&path, ".initializing");
+                let staged_file = prepare_initial_owner(&stage, binding)?;
+                // Recheck before publication; a final-sidecar residue must never
+                // be applied to this new owner by SessionStore's SQLite open.
+                require_no_initializing_sidecars(&path)?;
+                publish_initial_owner(&stage, &path)?;
+                drop(staged_file);
+            }
+            Err(error) => return Err(error.into()),
         }
         {
             // Identity is checked before SessionStore can migrate or change the
@@ -481,6 +670,26 @@ mod tests {
                 .join("slack")
                 .join(format!("{}.sqlite3", self.binding.id))
         }
+        fn stage(&self) -> PathBuf {
+            suffix(&self.database(), ".initializing")
+        }
+        fn create_directory(&self) {
+            let parent = self.database().parent().unwrap().to_path_buf();
+            fs::create_dir(&parent).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        fn empty_stage(&self) {
+            self.create_directory();
+            drop(create_private_file(&self.stage()).unwrap());
+        }
+        fn committed_stage(&self) {
+            self.owner_only();
+            fs::rename(self.database(), self.stage()).unwrap();
+        }
         fn open(&self) -> SlackStore {
             SlackStore::open(&self.registry, &self.binding).unwrap()
         }
@@ -529,13 +738,7 @@ mod tests {
             event.id
         }
         fn owner_only(&self) {
-            let parent = self.database().parent().unwrap().to_path_buf();
-            fs::create_dir(&parent).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
-            }
+            self.create_directory();
             drop(create_private_file(&self.database()).unwrap());
             let conn = Connection::open(self.database()).unwrap();
             conn.execute_batch(OWNER_SCHEMA).unwrap();
@@ -556,6 +759,210 @@ mod tests {
             .unwrap();
             conn.pragma_update(None, "application_id", APPLICATION_ID)
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn staging_crashes_before_owner_and_after_commit_resume_without_orphan_accumulation() {
+        for committed in [false, true] {
+            let fixture = Fixture::new();
+            if committed {
+                fixture.committed_stage();
+            } else {
+                fixture.empty_stage();
+            }
+            assert!(!fixture.database().exists());
+            let store = fixture.open();
+            verify_owner(store.connection(), &fixture.binding).unwrap();
+            assert!(store.operations(100, 0).unwrap().is_empty());
+            assert!(!fixture.stage().exists());
+            assert!(!fs::read_dir(fixture.database().parent().unwrap())
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("initializing")));
+            drop(store);
+            drop(fixture.open());
+        }
+    }
+
+    #[test]
+    fn foreign_or_partial_staging_is_rejected_unchanged_before_any_writable_adoption() {
+        for kind in 0..10 {
+            let fixture = Fixture::new();
+            if (4..7).contains(&kind) {
+                fixture.committed_stage();
+            } else {
+                fixture.empty_stage();
+            }
+            let conn = Connection::open(fixture.stage()).unwrap();
+            match kind {
+                0 => conn.execute_batch("CREATE TABLE foreign_state(value TEXT)").unwrap(),
+                1 => conn.execute_batch("CREATE VIEW unrelated_view AS SELECT 1").unwrap(),
+                2 => conn.pragma_update(None,"application_id",123).unwrap(),
+                3 => conn.pragma_update(None,"user_version",1).unwrap(),
+                4 => conn.execute_batch("DROP TRIGGER gateway_slack_owner_immutable_update; UPDATE gateway_slack_owner SET backend_id='bob'").unwrap(),
+                5 => conn.execute_batch("DROP TRIGGER gateway_slack_owner_no_replace").unwrap(),
+                6 => conn.execute_batch("CREATE TABLE extra_state(value TEXT)").unwrap(),
+                7 => conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE foreign_wal(value TEXT); PRAGMA wal_checkpoint(TRUNCATE)").unwrap(),
+                9 => conn.execute_batch("CREATE TABLE sqliteforeign(value TEXT)").unwrap(),
+                _ => (),
+            }
+            drop(conn);
+            // A standalone checkpointed WAL-mode header must not make a
+            // read-only identity check create new sidecars.
+            if kind == 7 {
+                for extra in ["-wal", "-shm"] {
+                    let _ = fs::remove_file(suffix(&fixture.stage(), extra));
+                }
+            }
+            if kind == 8 {
+                fs::write(fixture.stage(), b"incomplete staging header").unwrap();
+            }
+            let before = fs::read(fixture.stage()).unwrap();
+            assert!(
+                SlackStore::open(&fixture.registry, &fixture.binding).is_err(),
+                "stage {kind}"
+            );
+            assert_eq!(fs::read(fixture.stage()).unwrap(), before, "stage {kind}");
+            for extra in ["-wal", "-shm", "-journal"] {
+                assert!(
+                    !suffix(&fixture.stage(), extra).exists(),
+                    "stage {kind} {extra}"
+                );
+            }
+            assert!(!fixture.database().exists());
+        }
+    }
+
+    #[test]
+    fn staging_and_unpublished_final_sidecars_require_review_without_changing_any_bytes() {
+        for staged in [false, true] {
+            for extra in ["-wal", "-shm", "-journal"] {
+                let fixture = Fixture::new();
+                fixture.committed_stage();
+                let path = if staged {
+                    fixture.stage()
+                } else {
+                    fixture.database()
+                };
+                let sidecar = suffix(&path, extra);
+                let (mut file, _) = create_private_file(&sidecar).unwrap();
+                use std::io::Write;
+                file.write_all(b"unverified sidecar residue").unwrap();
+                file.sync_all().unwrap();
+                drop(file);
+                let stage_before = fs::read(fixture.stage()).unwrap();
+                let sidecar_before = fs::read(&sidecar).unwrap();
+                assert!(
+                    SlackStore::open(&fixture.registry, &fixture.binding).is_err(),
+                    "{staged} {extra}"
+                );
+                assert_eq!(fs::read(fixture.stage()).unwrap(), stage_before);
+                assert_eq!(fs::read(sidecar).unwrap(), sidecar_before);
+                assert!(!fixture.database().exists());
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn atomic_owner_publication_never_replaces_an_existing_target() {
+        let fixture = Fixture::new();
+        fixture.committed_stage();
+        let before = fs::read(fixture.stage()).unwrap();
+        let (mut file, _) = create_private_file(&fixture.database()).unwrap();
+        use std::io::Write;
+        file.write_all(b"existing unrelated final state").unwrap();
+        drop(file);
+        let final_before = fs::read(fixture.database()).unwrap();
+        let error = publish_initial_owner(&fixture.stage(), &fixture.database()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(fixture.database()).unwrap(), final_before);
+        assert_eq!(fs::read(fixture.stage()).unwrap(), before);
+        assert!(SlackStore::open(&fixture.registry, &fixture.binding).is_err());
+        assert_eq!(fs::read(fixture.database()).unwrap(), final_before);
+        assert_eq!(fs::read(fixture.stage()).unwrap(), before);
+    }
+
+    #[test]
+    fn initial_owner_sql_failure_rolls_back_before_publication_and_a_clean_stage_can_retry() {
+        let fixture = Fixture::new();
+        fixture.empty_stage();
+        let mut conn = Connection::open(fixture.stage()).unwrap();
+        conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA max_page_count=1")
+            .unwrap();
+        assert!(write_initial_owner(&mut conn, &fixture.binding).is_err());
+        assert!(owner_schema(&conn).unwrap().is_empty());
+        assert_eq!(
+            conn.pragma_query_value(None, "application_id", |row| row.get::<_, i32>(0))
+                .unwrap(),
+            0
+        );
+        assert!(!fixture.database().exists());
+        conn.close().map_err(|(_, error)| error).unwrap();
+        // The failed transaction left no partial owner authority, so the next
+        // startup may safely commit the owner and publish this same stage.
+        drop(fixture.open());
+        assert!(fixture.database().exists());
+        assert!(!fixture.stage().exists());
+    }
+
+    #[test]
+    fn existing_final_ignores_staging_and_never_adopts_an_unknown_empty_final() {
+        let fixture = Fixture::new();
+        drop(fixture.open());
+        drop(create_private_file(&fixture.stage()).unwrap());
+        let conn = Connection::open(fixture.stage()).unwrap();
+        conn.execute_batch("CREATE TABLE unrelated(value TEXT)")
+            .unwrap();
+        drop(conn);
+        let before = fs::read(fixture.stage()).unwrap();
+        drop(fixture.open());
+        assert_eq!(fs::read(fixture.stage()).unwrap(), before);
+        let empty = Fixture::new();
+        empty.committed_stage();
+        drop(create_private_file(&empty.database()).unwrap());
+        let before = fs::read(empty.stage()).unwrap();
+        assert!(SlackStore::open(&empty.registry, &empty.binding).is_err());
+        assert!(fs::read(empty.database()).unwrap().is_empty());
+        assert_eq!(fs::read(empty.stage()).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_staging_rejects_links_permissions_and_small_resource_overflow_without_publication() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        for kind in 0..4 {
+            let fixture = Fixture::new();
+            fixture.empty_stage();
+            match kind {
+                0 => {
+                    fs::remove_file(fixture.stage()).unwrap();
+                    symlink(&fixture.registry, fixture.stage()).unwrap();
+                }
+                1 => fs::hard_link(fixture.stage(), fixture.directory.join("stage-alias")).unwrap(),
+                2 => {
+                    fs::set_permissions(fixture.stage(), fs::Permissions::from_mode(0o640)).unwrap()
+                }
+                _ => OpenOptions::new()
+                    .write(true)
+                    .open(fixture.stage())
+                    .unwrap()
+                    .set_len(MAX_INITIALIZING_BYTES + 1)
+                    .unwrap(),
+            }
+            assert!(
+                SlackStore::open(&fixture.registry, &fixture.binding).is_err(),
+                "stage {kind}"
+            );
+            assert!(!fixture.database().exists());
+            assert!(fs::symlink_metadata(fixture.stage()).is_ok());
         }
     }
     impl Drop for Fixture {

@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-核对日期：2026-10-08；上游 main：`c9318368bbb70fbf6f9318deb961bd2c450227ee`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/c9318368bbb70fbf6f9318deb961bd2c450227ee/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/c9318368bbb70fbf6f9318deb961bd2c450227ee/README.md)。
+核对日期：2026-10-08；上游 main：`4e3c9e9194db524886ca795e5e2394be071ea202`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/4e3c9e9194db524886ca795e5e2394be071ea202/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/4e3c9e9194db524886ca795e5e2394be071ea202/README.md)。
 
 旧结论“edition 2024 不稳定、crates 没发布”已经过时：上游已发布 `0.1.0-alpha.1`，要求 Rust 1.88+；发布追踪 [#92](https://github.com/StateKnot/StateKnot/issues/92) 已关闭。上游仍声明处于 pre-alpha/evaluation 阶段，没有生产支持承诺。
 
@@ -8,7 +8,7 @@ JiaClaw 已精确锁定 `stateknot-integrations = 0.1.0-alpha.1` 并使用其 HT
 
 2026-10-03 回访核对：main、v0.1.0-alpha.1 和 #140 状态未变化；优先保持已接入 HTTP MCP 的回归，durable 继续受 Brokerrouter #41 原生输出合同阻挡。
 
-2026-10-08 04:38 UTC 回访通过 GitHub 官方 API 核对：main 推进至上述 SHA，合并 #141 仅更新依赖 pin/lockfile、setup-uv 与 Dependabot；README 与 runtime/integrations 源码合同未变。最新 prerelease 仍为 0.1.0-alpha.1，#140 仍 OPEN 且无回复，main 检查 SUCCESS。不会将应用精确依赖切换到浮动 main；新依赖提交没有解除 stdio/durable 门槛。
+2026-10-08 04:38 UTC 回访核对 #141 的依赖/CI 更新；05:26 UTC 复核 main 再推进至上述 SHA，#145 仅更新 jsonschema/Tokio/Node 类型的 patch pin/lockfile 和 Dependabot 分组。README 与 runtime/integrations 源码合同均未变。最新 prerelease 仍为 0.1.0-alpha.1，#140 仍 OPEN 且无回复，main 检查 SUCCESS。不会将应用精确依赖切换到浮动 main；新依赖提交没有解除 stdio/durable 门槛。
 
 ## MCP 现状与新议题
 

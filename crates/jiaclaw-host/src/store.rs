@@ -339,6 +339,32 @@ impl SessionStore {
 mod tests {
     use super::*;
     use jiaclaw_core::MessageRole;
+
+    #[test]
+    fn sqlite_has_wal_reset_fix_and_checked_unsigned_conversions() {
+        // WAL-reset can corrupt concurrent write/checkpoint connections before
+        // SQLite 3.51.3. Test the linked engine and the explicit fallible_uint
+        // feature, rather than relying only on a manifest version string.
+        let conn = Connection::open_in_memory().unwrap();
+        let version: String = conn
+            .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+            .unwrap();
+        assert!(rusqlite::version_number() >= 3_051_003, "SQLite {version}");
+        assert!(matches!(
+            conn.query_row("SELECT -1", [], |row| row.get::<_, usize>(0)),
+            Err(rusqlite::Error::IntegralValueOutOfRange(_, -1))
+        ));
+        assert!(matches!(
+            conn.query_row("SELECT ?1", [u64::MAX], |row| row.get::<_, i64>(0)),
+            Err(rusqlite::Error::ToSqlConversionFailure(_))
+        ));
+        assert_eq!(
+            conn.query_row("SELECT ?1", [42_usize], |row| row.get::<_, usize>(0))
+                .unwrap(),
+            42
+        );
+    }
+
     fn message(content: &str) -> SessionRecord {
         SessionRecord::new(vec![ChatMessage {
             role: MessageRole::User,
