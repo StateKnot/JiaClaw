@@ -65,7 +65,7 @@ docker compose up --build -d
 - 内置 Web 聊天、会话创建/选择/删除，以及单实例管理员的 [发件箱审计与人工核对](docs/web-outbox.md)；同源 API，无前端构建依赖。
 - 持久化 cron/interval 多任务：鉴权管理、独立会话、运行记录、超时/重启中断暂停与显式恢复；[定时任务指南](docs/scheduler.md)。[单实例工作台](docs/standalone-scheduler.md)提供任务管理与持久创建身份，[独立用户任务](docs/tenant-cron.md)保留网关准入。
 - [MEMORY / SOUL / USER](docs/memory-files.md) 的受限文件读写、工作区技能与有界 HEARTBEAT；Telegram、Slack、Discord、[飞书](docs/feishu.md)、[企业微信自建应用](docs/wecom.md)和[钉钉企业内部机器人](docs/dingtalk.md)的授权入站去重、持久 outbox、回执核对与重启恢复，见[渠道配置](docs/channels.md)。
-- 多用户聊天入口：独立容器/卷/私有网络、哈希 Key 轮换撤销、管理员签发只读 Key、有界代理与未知写入核对；[部署与验收边界](docs/gateway.md)。默认关闭的[独立用户 Telegram 私聊](docs/tenant-telegram.md)增加固定 Bot/用户映射和持久私有队列，已通过 PR #80 跨平台 CI；本批只读 Key 验收状态见[验证记录](docs/validation.md)。
+- 多用户聊天入口：独立容器/卷/私有网络、哈希 Key 轮换撤销、管理员签发只读 Key、有界代理与未知写入核对；[部署与验收边界](docs/gateway.md)。默认关闭的[独立用户 Telegram 私聊](docs/tenant-telegram.md)增加固定 Bot/用户映射和持久私有队列，已通过 PR #80 跨平台 CI；只读 Key 已通过 PR #81 最终 CI；可信管理员可[按用户查询保留审计](docs/gateway.md#按用户查询管理审计)，当前批次验证状态见[验证记录](docs/validation.md)。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。
 
 显式 [Brokerrouter 语义记忆](docs/semantic-memory.md)、[模型调用收据](docs/model-calls.md)和受限独立用户定时任务已接线。MCP stdio、外部写工具的 durable admission、真正逐 token 流式、子 Agent、其他多用户后台/渠道身份绑定、WhatsApp 与多模态仍待完成；真实模型检索质量、供应商和渠道认证另行验收。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。

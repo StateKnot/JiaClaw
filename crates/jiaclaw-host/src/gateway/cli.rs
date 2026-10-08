@@ -50,6 +50,21 @@ pub enum Commands {
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=1024))]
         offset: u16,
     },
+    /// Query bounded retained audit metadata for one user; notes require explicit opt-in.
+    AuditList {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        user: Uuid,
+        /// Continue after this exact decimal sequence from a previous result.
+        #[arg(long, default_value_t = 0, value_parser = audit_after_seq)]
+        after_seq: u64,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        /// Include private administrator notes in the JSON output.
+        #[arg(long)]
+        include_notes: bool,
+    },
     /// Atomically replace a key, preserving its access and revoking the old key.
     KeyRotate {
         #[arg(long)]
@@ -163,6 +178,16 @@ pub enum Commands {
     },
 }
 
+fn audit_after_seq(raw: &str) -> std::result::Result<u64, String> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("audit cursor must contain decimal digits only".into());
+    }
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= i64::MAX as u64)
+        .ok_or_else(|| "audit cursor must be in 0..9223372036854775807".into())
+}
+
 fn registry(path: &std::path::Path) -> Result<(Config, Registry)> {
     let config = Config::load(path)?;
     let registry = Registry::open(&config.registry_path)?;
@@ -227,6 +252,17 @@ pub async fn run(command: Commands) -> Result<()> {
             output(
                 &json!({"keys":registry.list_keys(user,usize::from(limit),usize::from(offset))?}),
             )
+        }
+        Commands::AuditList {
+            config,
+            user,
+            after_seq,
+            limit,
+            include_notes,
+        } => {
+            let (_, registry) = registry(&config)?;
+            let page = registry.audit_list(user, after_seq, usize::from(limit), include_notes)?;
+            output(&serde_json::to_value(page).context("cannot serialize gateway audit result")?)
         }
         Commands::KeyRotate { config, key } => {
             let (_, registry) = registry(&config)?;
@@ -501,6 +537,68 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("--confirm-backend-idle"));
+    }
+
+    #[test]
+    fn audit_queries_require_user_and_exact_bounded_decimal_cursor() {
+        let user = "12345678-1234-4234-9234-123456789012";
+        let base = [
+            "gateway",
+            "audit-list",
+            "--config",
+            "c.json",
+            "--user",
+            user,
+        ];
+        let Commands::AuditList {
+            after_seq,
+            limit,
+            include_notes,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!((after_seq, limit, include_notes), (0, 20, false));
+        for cursor in ["0", "1", "9007199254740993", "9223372036854775807"] {
+            let mut args = base.to_vec();
+            args.extend(["--after-seq", cursor, "--limit", "100", "--include-notes"]);
+            let Commands::AuditList {
+                after_seq,
+                limit,
+                include_notes,
+                ..
+            } = Args::try_parse_from(args).unwrap().command
+            else {
+                panic!("wrong command")
+            };
+            assert_eq!(after_seq.to_string(), cursor);
+            assert_eq!((limit, include_notes), (100, true));
+        }
+        for cursor in [
+            "",
+            "+1",
+            "-1",
+            "1.0",
+            "0x1",
+            " 1",
+            "1 ",
+            "9223372036854775808",
+            "18446744073709551616",
+        ] {
+            let mut args = base.to_vec();
+            args.extend(["--after-seq", cursor]);
+            assert!(Args::try_parse_from(args).is_err());
+        }
+        for limit in ["0", "101", "-1"] {
+            let mut args = base.to_vec();
+            args.extend(["--limit", limit]);
+            assert!(Args::try_parse_from(args).is_err());
+        }
+        assert!(Args::try_parse_from(["gateway", "audit-list", "--config", "c.json"]).is_err());
+        let mut args = base.to_vec();
+        args.extend(["--token", "secret"]);
+        assert!(Args::try_parse_from(args).is_err());
     }
 
     #[test]

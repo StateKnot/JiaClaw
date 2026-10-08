@@ -106,6 +106,34 @@ pub struct KeySummary {
     pub revoked_ms: Option<i64>,
 }
 
+/// Bounded administrator audit metadata. Sequence values remain exact in JSON.
+#[derive(Debug, Serialize)]
+pub struct AuditEventSummary {
+    pub seq: String,
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub key_id: Option<String>,
+    pub request_id: Option<String>,
+    pub action: String,
+    pub created_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One consistent read snapshot of retained audit history, never an archive.
+#[derive(Debug, Serialize)]
+pub struct AuditPage {
+    #[serde(serialize_with = "serialize_uuid")]
+    pub user_id: Uuid,
+    pub events: Vec<AuditEventSummary>,
+    pub next_after_seq: String,
+    pub has_more: bool,
+    pub oldest_retained_seq: Option<String>,
+    pub latest_seq: String,
+    pub retention_gap: bool,
+    pub notes_included: bool,
+}
+
 fn serialize_uuid<S: Serializer>(id: &Uuid, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&id.to_string())
 }
@@ -443,6 +471,26 @@ impl Registry {
             })
         })
         .collect()
+    }
+
+    /// Read one user's audit metadata from a single snapshot. Notes require
+    /// explicit inclusion; this operation never changes authorization or holds.
+    pub fn audit_list(
+        &self,
+        user_id: Uuid,
+        after_seq: u64,
+        limit: usize,
+        include_notes: bool,
+    ) -> Result<AuditPage> {
+        ensure!(
+            (1..=100).contains(&limit) && i64::try_from(after_seq).is_ok(),
+            "invalid audit pagination"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let page = audit_page(&tx, user_id, after_seq, limit, include_notes)?;
+        tx.commit()?;
+        Ok(page)
     }
 
     /// Revoke an existing key; repeating revocation is harmless.
@@ -980,6 +1028,149 @@ fn access_note(read_only: bool) -> &'static str {
     }
 }
 
+fn audit_identity(value: String) -> Result<String> {
+    ensure!(
+        value.len() == 36 && Uuid::parse_str(&value).is_ok_and(|id| id.to_string() == value),
+        "invalid gateway audit identity"
+    );
+    Ok(value)
+}
+
+fn audit_page(
+    tx: &Transaction<'_>,
+    user_id: Uuid,
+    after_seq: u64,
+    limit: usize,
+    include_notes: bool,
+) -> Result<AuditPage> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)",
+        [user_id.to_string()],
+        |row| row.get(0),
+    )?;
+    ensure!(exists, "gateway user not found");
+    // AUTOINCREMENT retains the committed global watermark even when all
+    // business rows have been pruned. Reading MAX(seq) alone would lose it.
+    let (sequence_rows, watermark): (i64, Option<i64>) = tx.query_row(
+        "SELECT count(*),min(seq) FROM sqlite_sequence WHERE name='audit_events'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    ensure!(
+        (sequence_rows == 0 && watermark.is_none()) || (sequence_rows == 1 && watermark.is_some()),
+        "invalid gateway audit sequence state"
+    );
+    let latest = watermark.unwrap_or(0);
+    ensure!(latest >= 0, "invalid gateway audit sequence state");
+    let (oldest, newest): (Option<i64>, Option<i64>) =
+        tx.query_row("SELECT min(seq),max(seq) FROM audit_events", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+    ensure!(
+        oldest.is_none_or(|value| value > 0) && newest.is_none_or(|value| value <= latest),
+        "invalid gateway retained audit sequence state"
+    );
+    let latest_seq = u64::try_from(latest)?;
+    ensure!(
+        after_seq <= latest_seq,
+        "audit cursor exceeds current history; verify the registry and restore point"
+    );
+    let retention_gap = oldest.map_or(latest_seq > after_seq, |value| {
+        u64::try_from(value).is_ok_and(|oldest| oldest > after_seq + 1)
+    });
+    // CASE is lazy in SQLite: default queries never extract note values. Bounds
+    // are checked before allocating strings, including malformed administrator
+    // databases; explicit note inclusion must fail rather than truncate.
+    let mut statement = tx.prepare(
+        "SELECT seq,
+         CASE WHEN length(user_id)=36 THEN user_id ELSE NULL END,
+         CASE WHEN key_id IS NULL OR length(key_id)=36 THEN key_id ELSE '' END,
+         CASE WHEN request_id IS NULL OR length(request_id)=36 THEN request_id ELSE '' END,
+         CASE WHEN length(CAST(action AS BLOB)) BETWEEN 1 AND 128 THEN action ELSE NULL END,
+         created_ms,
+         CASE WHEN ?4 THEN CASE WHEN length(CAST(note AS BLOB)) BETWEEN 1 AND 512 THEN note ELSE NULL END ELSE NULL END,
+         CASE WHEN ?4 THEN note IS NOT NULL AND length(CAST(note AS BLOB)) NOT BETWEEN 1 AND 512 ELSE 0 END
+         FROM audit_events WHERE user_id=?1 AND seq>?2 ORDER BY seq ASC LIMIT ?3",
+    )?;
+    let mut rows = statement.query(params![
+        user_id.to_string(),
+        i64::try_from(after_seq)?,
+        i64::try_from(limit + 1)?,
+        include_notes,
+    ])?;
+    let mut events = Vec::with_capacity(limit + 1);
+    let mut previous = after_seq;
+    while let Some(row) = rows.next()? {
+        let seq = u64::try_from(row.get::<_, i64>(0)?)?;
+        ensure!(
+            seq > previous && seq <= latest_seq,
+            "invalid gateway audit sequence"
+        );
+        let owner = audit_identity(
+            row.get::<_, Option<String>>(1)?
+                .context("invalid gateway audit user identity")?,
+        )?;
+        ensure!(owner == user_id.to_string(), "invalid gateway audit owner");
+        let key_id = row
+            .get::<_, Option<String>>(2)?
+            .map(audit_identity)
+            .transpose()?;
+        let request_id = row
+            .get::<_, Option<String>>(3)?
+            .map(audit_identity)
+            .transpose()?;
+        let action = row
+            .get::<_, Option<String>>(4)?
+            .context("invalid gateway audit action size")?;
+        ensure!(
+            !action.chars().any(char::is_control),
+            "invalid gateway audit action"
+        );
+        let created_ms = row.get::<_, i64>(5)?;
+        ensure!(created_ms >= 0, "invalid gateway audit timestamp");
+        let note = row.get::<_, Option<String>>(6)?;
+        ensure!(!row.get::<_, bool>(7)?, "invalid gateway audit note size");
+        events.push(AuditEventSummary {
+            seq: seq.to_string(),
+            user_id,
+            key_id,
+            request_id,
+            action,
+            created_ms,
+            note,
+        });
+        previous = seq;
+    }
+    let has_more = events.len() > limit;
+    if has_more {
+        events.pop();
+    }
+    let next_after_seq = if has_more {
+        events
+            .last()
+            .context("missing gateway audit page cursor")?
+            .seq
+            .clone()
+    } else {
+        latest_seq.to_string()
+    };
+    let page = AuditPage {
+        user_id,
+        events,
+        next_after_seq,
+        has_more,
+        oldest_retained_seq: oldest.map(|seq| seq.to_string()),
+        latest_seq: latest_seq.to_string(),
+        retention_gap,
+        notes_included: include_notes,
+    };
+    ensure!(
+        serde_json::to_vec(&page)?.len() <= 512 * 1024,
+        "gateway audit page exceeds 512 KiB"
+    );
+    Ok(page)
+}
+
 fn audit(
     tx: &Transaction<'_>,
     user: Uuid,
@@ -1062,6 +1253,343 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    #[test]
+    fn audit_query_tracks_owned_key_lifecycle_and_unknown_write_without_changing_authority() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let readonly = registry.add_key_with_access(alice.user_id, true).unwrap();
+        let replacement = registry.rotate(alice.key_id).unwrap();
+        registry.revoke(readonly.key_id).unwrap();
+        let request_id = Uuid::new_v4();
+        registry
+            .admit_write(&principal(registry, &replacement), request_id)
+            .unwrap();
+        registry
+            .finish_write(alice.user_id, request_id, false)
+            .unwrap();
+        let before = serde_json::to_value(registry.list().unwrap()).unwrap();
+        let keys =
+            serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap();
+        let page = registry.audit_list(alice.user_id, 0, 100, false).unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.action.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "user_added",
+                "key_added",
+                "key_revoked_by_rotation",
+                "key_rotated",
+                "key_revoked",
+                "write_admitted",
+                "write_needs_review",
+            ]
+        );
+        assert!(page
+            .events
+            .iter()
+            .all(|event| event.user_id == alice.user_id));
+        assert!(page.events.iter().all(|event| event.note.is_none()));
+        assert!(!page.notes_included);
+        assert!(!page.has_more);
+        assert!(!page.retention_gap);
+        assert_eq!(page.oldest_retained_seq.as_deref(), Some("1"));
+        assert_eq!(page.next_after_seq, page.latest_seq);
+        let admission = page
+            .events
+            .iter()
+            .find(|event| event.action == "write_admitted")
+            .unwrap();
+        assert_eq!(
+            admission.request_id.as_deref(),
+            Some(request_id.to_string().as_str())
+        );
+        assert_eq!(
+            admission.key_id.as_deref(),
+            Some(replacement.key_id.to_string().as_str())
+        );
+        let bob_page = registry.audit_list(bob.user_id, 0, 100, true).unwrap();
+        assert_eq!(bob_page.events.len(), 1);
+        assert_eq!(bob_page.events[0].user_id, bob.user_id);
+        assert_eq!(
+            serde_json::to_value(registry.list().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(
+            serde_json::to_value(registry.list_keys(alice.user_id, 100, 0).unwrap()).unwrap(),
+            keys
+        );
+        assert!(registry.authenticate(&alice.token).unwrap().is_none());
+        assert!(registry.authenticate(&replacement.token).unwrap().is_some());
+        let output = serde_json::to_string(&page).unwrap();
+        assert!(!output.contains("verifier"));
+        assert!(!output.contains(&alice.token));
+        assert!(!output.contains(&readonly.token));
+        assert!(!output.contains(&replacement.token));
+        assert!(!output.contains(&bob.user_id.to_string()));
+    }
+
+    #[test]
+    fn audit_cursor_pagination_advances_only_delivered_rows_until_user_history_is_exhausted() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        registry.add_key(alice.user_id).unwrap();
+        registry.add_key(bob.user_id).unwrap();
+        registry.add_key(alice.user_id).unwrap();
+        registry.add_key(bob.user_id).unwrap();
+        let first = registry.audit_list(alice.user_id, 0, 1, false).unwrap();
+        assert_eq!(first.events[0].seq, "1");
+        assert_eq!(first.next_after_seq, "1");
+        assert!(first.has_more);
+        assert_eq!(first.latest_seq, "6");
+        let middle = registry.audit_list(alice.user_id, 1, 1, false).unwrap();
+        assert_eq!(middle.events[0].seq, "3");
+        assert_eq!(middle.next_after_seq, "3");
+        assert!(middle.has_more);
+        let last = registry.audit_list(alice.user_id, 3, 1, false).unwrap();
+        assert_eq!(last.events[0].seq, "5");
+        assert!(!last.has_more);
+        assert_eq!(last.next_after_seq, "6");
+        let empty = registry.audit_list(alice.user_id, 5, 100, false).unwrap();
+        assert!(empty.events.is_empty());
+        assert!(!empty.has_more);
+        assert_eq!(empty.next_after_seq, "6");
+        let current = registry.audit_list(alice.user_id, 6, 100, false).unwrap();
+        assert!(current.events.is_empty());
+        assert_eq!(current.next_after_seq, "6");
+        for (after, limit) in [(0, 0), (0, 101), (7, 1), (u64::MAX, 1)] {
+            assert!(registry
+                .audit_list(alice.user_id, after, limit, false)
+                .is_err());
+        }
+        assert!(registry.audit_list(Uuid::new_v4(), 0, 1, false).is_err());
+        registry.set_enabled(alice.user_id, false).unwrap();
+        assert!(registry.audit_list(alice.user_id, 6, 1, false).is_ok());
+    }
+
+    #[test]
+    fn audit_sequences_serialize_exactly_above_javascript_integer_precision() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq=?1 WHERE name='audit_events'",
+            [i64::MAX - 1],
+        )
+        .unwrap();
+        registry.add_key(alice.user_id).unwrap();
+        let page = registry.audit_list(alice.user_id, 1, 100, false).unwrap();
+        let maximum = i64::MAX.to_string();
+        assert_eq!(page.events[0].seq, maximum);
+        assert_eq!(page.latest_seq, maximum);
+        assert_eq!(page.next_after_seq, maximum);
+        let json = serde_json::to_value(&page).unwrap();
+        assert_eq!(json["latest_seq"].as_str(), Some(maximum.as_str()));
+        assert_eq!(json["next_after_seq"].as_str(), Some(maximum.as_str()));
+        assert_eq!(json["events"][0]["seq"].as_str(), Some(maximum.as_str()));
+        assert_eq!(json["oldest_retained_seq"].as_str(), Some("1"));
+        let end = registry
+            .audit_list(alice.user_id, i64::MAX as u64, 1, false)
+            .unwrap();
+        assert!(end.events.is_empty());
+        assert!(!end.retention_gap);
+    }
+
+    #[test]
+    fn audit_retention_gap_uses_global_history_and_survives_empty_retained_history() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1) INSERT INTO audit_events(user_id,action,created_ms) SELECT ?2,'seed',0 FROM n", params![MAX_AUDIT_EVENTS,bob.user_id.to_string()]).unwrap();
+        registry.add_key(bob.user_id).unwrap();
+        let page = registry.audit_list(alice.user_id, 0, 100, false).unwrap();
+        assert!(page.events.is_empty());
+        assert_eq!(page.oldest_retained_seq.as_deref(), Some("4"));
+        assert_eq!(page.latest_seq, (MAX_AUDIT_EVENTS + 3).to_string());
+        assert_eq!(page.next_after_seq, page.latest_seq);
+        assert!(page.retention_gap);
+        assert!(!page.has_more);
+        let adjacent = registry.audit_list(alice.user_id, 3, 100, false).unwrap();
+        assert!(!adjacent.retention_gap);
+        conn.execute("DELETE FROM audit_events", []).unwrap();
+        let empty = registry.audit_list(alice.user_id, 0, 100, false).unwrap();
+        assert!(empty.events.is_empty());
+        assert!(empty.oldest_retained_seq.is_none());
+        assert_eq!(empty.latest_seq, page.latest_seq);
+        assert_eq!(empty.next_after_seq, page.latest_seq);
+        assert!(empty.retention_gap);
+        assert!(
+            !registry
+                .audit_list(alice.user_id, empty.latest_seq.parse().unwrap(), 100, false)
+                .unwrap()
+                .retention_gap
+        );
+    }
+
+    #[test]
+    fn audit_page_metadata_and_rows_share_a_snapshot_while_another_connection_prunes() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let bob = registry.add_user("bob").unwrap();
+        let mut conn = registry.connection().unwrap();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .unwrap();
+        // Anchor the read snapshot before a committed writer advances sequence
+        // state and prunes every row that was previously visible to this reader.
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM users", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let writer = registry.clone();
+        let user = bob.user_id;
+        std::thread::spawn(move || {
+            let mut conn = writer.connection().unwrap();
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            tx.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1) INSERT INTO audit_events(user_id,action,created_ms) SELECT ?2,'seed',0 FROM n", params![MAX_AUDIT_EVENTS,user.to_string()]).unwrap();
+            audit(&tx, user, None, None, "seed", None, 0).unwrap();
+            tx.commit().unwrap();
+        }).join().unwrap();
+        let old = audit_page(&tx, alice.user_id, 0, 100, false).unwrap();
+        assert_eq!(old.latest_seq, "2");
+        assert_eq!(old.oldest_retained_seq.as_deref(), Some("1"));
+        assert_eq!(old.events.len(), 1);
+        assert_eq!(old.events[0].seq, "1");
+        assert_eq!(old.next_after_seq, "2");
+        assert!(!old.retention_gap);
+        tx.commit().unwrap();
+        let new = registry.audit_list(alice.user_id, 0, 100, false).unwrap();
+        assert_eq!(new.latest_seq, (MAX_AUDIT_EVENTS + 3).to_string());
+        assert_eq!(new.oldest_retained_seq.as_deref(), Some("4"));
+        assert!(new.events.is_empty());
+        assert!(new.retention_gap);
+    }
+
+    #[test]
+    fn audit_notes_are_omitted_by_default_and_explicit_output_is_bounded_escaped_json() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let note = "private evidence: \"quoted\"\n第二行 😀";
+        let mut conn = registry.connection().unwrap();
+        let tx = conn.transaction().unwrap();
+        audit(
+            &tx,
+            alice.user_id,
+            None,
+            None,
+            "operator_note",
+            Some(note),
+            0,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let hidden =
+            serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, false).unwrap())
+                .unwrap();
+        assert_eq!(hidden["notes_included"], false);
+        assert!(hidden["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event.get("note").is_none()));
+        assert!(!hidden.to_string().contains("private evidence"));
+        let visible = registry.audit_list(alice.user_id, 0, 100, true).unwrap();
+        assert!(visible.notes_included);
+        assert_eq!(visible.events[1].note.as_deref(), Some(note));
+        let json = serde_json::to_string(&visible).unwrap();
+        assert!(json.contains("\\n"));
+        assert!(json.contains("\\\"quoted\\\""));
+        assert!(!json.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["events"][1]["note"],
+            note
+        );
+        let maximum = "\0".repeat(512);
+        let tx = conn.transaction().unwrap();
+        for _ in 0..100 {
+            audit(
+                &tx,
+                alice.user_id,
+                None,
+                None,
+                "maximum_note",
+                Some(&maximum),
+                0,
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let page = registry.audit_list(alice.user_id, 2, 100, true).unwrap();
+        assert_eq!(page.events.len(), 100);
+        assert!(!page.has_more);
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 512 * 1024);
+        // Even an oversized corrupt note is neither fetched nor emitted by a
+        // default metadata query; explicit inclusion fails without truncation.
+        conn.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        conn.execute(
+            "UPDATE audit_events SET note=?1 WHERE seq=1",
+            ["oversized".repeat(256 * 1024)],
+        )
+        .unwrap();
+        assert!(registry.audit_list(alice.user_id, 0, 1, false).is_ok());
+        assert!(registry.audit_list(alice.user_id, 0, 1, true).is_err());
+    }
+
+    #[test]
+    fn audit_query_rejects_malformed_metadata_and_inconsistent_sequence_state() {
+        for (column, value) in [
+            ("key_id", "not-a-uuid".to_string()),
+            (
+                "request_id",
+                "ABCDEFAB-1234-4234-9234-123456789ABC".to_string(),
+            ),
+            ("action", "a".repeat(129)),
+            ("action", "line\nfeed".to_string()),
+        ] {
+            let fixture = Fixture::new();
+            let registry = &fixture.registry;
+            let alice = registry.add_user("alice").unwrap();
+            let conn = registry.connection().unwrap();
+            conn.execute(&format!("UPDATE audit_events SET {column}=?1"), [value])
+                .unwrap();
+            assert!(registry.audit_list(alice.user_id, 0, 1, false).is_err());
+        }
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let alice = registry.add_user("alice").unwrap();
+        let conn = registry.connection().unwrap();
+        conn.execute("UPDATE audit_events SET created_ms=-1", [])
+            .unwrap();
+        assert!(registry.audit_list(alice.user_id, 0, 1, false).is_err());
+        conn.execute("UPDATE audit_events SET created_ms=0", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq=0 WHERE name='audit_events'",
+            [],
+        )
+        .unwrap();
+        assert!(registry.audit_list(alice.user_id, 0, 1, false).is_err());
+        conn.execute("DELETE FROM audit_events", []).unwrap();
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq=NULL WHERE name='audit_events'",
+            [],
+        )
+        .unwrap();
+        assert!(registry.audit_list(alice.user_id, 0, 1, false).is_err());
     }
 
     #[test]
