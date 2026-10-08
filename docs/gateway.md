@@ -2,7 +2,7 @@
 
 `jiaclaw gateway` 为个人 API Key 绑定一个专属 JiaClaw 后端。每个用户使用不同的进程、工作区、SQLite 会话、身份/记忆文件和 Brokerrouter 虚拟 Key。网关负责鉴权、固定后端映射和不确定写入暂停；隔离依赖本页的容器、网络、存储与运维配置，不能只给同一个后端换两个 Key。
 
-支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。本轮新增管理员签发的只读 Key，服务端、迁移、双用户进程与工作台已本地验收；跨平台及真实容器以本批最终 head CI 为准，具体权限见下文。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
+支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key 已通过 PR #81 最终跨平台、Chromium 与真实容器 CI，具体权限见下文。本轮增加可信管理员的按用户审计查询，双后端真实进程四组及 Rust 回归已在本机通过；最终跨平台与真实容器 CI 待核对。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
 ## 请求与身份合同
 
@@ -92,6 +92,7 @@ jiaclaw gateway user-list --config /etc/jiaclaw/gateway.json
 jiaclaw gateway key-add --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID
 jiaclaw gateway key-add --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --read-only
 jiaclaw gateway key-list --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --limit 20 --offset 0
+jiaclaw gateway audit-list --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID --after-seq 0 --limit 20
 jiaclaw gateway key-rotate --config /etc/jiaclaw/gateway.json --key YOUR_KEY_UUID
 jiaclaw gateway key-revoke --config /etc/jiaclaw/gateway.json --key YOUR_KEY_UUID
 jiaclaw gateway user-disable --config /etc/jiaclaw/gateway.json --user YOUR_USER_UUID
@@ -121,6 +122,25 @@ jiaclaw gateway user-enable --config /etc/jiaclaw/gateway.json --user YOUR_USER_
 registry 自动从 schema 1/2 事务迁移到 schema 3，既有 Key 保持完整权限，保留原身份、撤销状态、hold 和 Telegram 绑定。升级前停机备份；旧二进制拒绝 schema 3，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
 
 网关 registry 放在独立 `/data/gateway/registry.sqlite3`，目录须为当前 UID 私有 0700、数据库 0600；首次创建会设置这些权限。`/data` 卷本身必须可由 10001 创建该子目录。网关进程有独立锁，禁止第二个 serve 同时打开同一 registry；普通用户/Key/绑定管理使用短 SQLite 事务；Telegram 离线审计、resolve/cancel/purge 和对应用户的 review-clear 则要求停止网关并取得该服务锁。
+
+## 按用户查询管理审计
+
+可信管理员可在 registry 所在的受保护主机或网关容器运行 `gateway audit-list`；没有公共 HTTP 路由或工作台入口，个人 API Key 不能调用此管理命令。禁用用户仍可查询，查询不会启用用户、解除 hold 或重放任何工作。无需新增 registry schema；当前仍为 schema 3。
+
+```sh
+jiaclaw gateway audit-list --config /etc/jiaclaw/gateway.json \
+  --user YOUR_USER_UUID --after-seq 0 --limit 20
+```
+
+`--after-seq` 默认为 0；传入上次的 `next_after_seq`，保留为十进制字符串，不经过 JavaScript `Number` 或浮点转换。`--limit` 默认为 20，范围 1–100。每页从同一个 SQLite 读快照查询该用户在游标之后的事件，按全局 `seq` 升序返回；存在更多该用户事件时 `has_more=true`，`next_after_seq` 为本页最后交付的序号。尾页的游标推进到该快照的全局 `latest_seq`，即使这期间只有其他用户事件，也无需反复扫描同一段历史。
+
+返回对象包含 `user_id`、`events`、`next_after_seq`、`has_more`、`oldest_retained_seq`、`latest_seq`、`retention_gap`、`notes_included`。事件仅含 `seq`、`user_id`、`key_id`、`request_id`、`action` 和 `created_ms`；没有关联 ID 的字段为 null。所有序号、游标和全局水位均为 JSON 十进制字符串，`oldest_retained_seq` 在无保留事件时为 null；毫秒时间戳仍为整数。默认不提取或返回 `note`，元数据不包含 Token 或 verifier。
+
+需要核对原有管理员证据时，可显式加 `--include-notes`，此时 `notes_included=true`，有 note 的事件包含该字段。notes 是私密管理内容：历史 operator note 可能包含正文或 Secret，开关不是脱敏承诺。只在受保护终端查看，若归档必须保护访问权限；不要直接粘贴到公开工单或日志。查询不修改原 note，也不把其内容作为命令执行。
+
+审计表仅保留全局最近 4096 条事件，其他用户的活动也会淘汰旧事件。`oldest_retained_seq` 与 `latest_seq` 都是全局水位；`retention_gap=true` 表示请求位置早于可能缺失的全局历史，不能据此断言该用户一定丢失了事件。查询不是永久归档或防篡改日志；需要长期审计时，须另行保管已导出的记录和游标，并保留每页的水位与缺口标记。
+
+未知用户、超出当前已提交全局水位的游标、参数越界或畸形查询数据会失败，不自动重置游标，不截断或跳过异常事件。单页最多 100 条且完整 JSON 不超过 512 KiB。恢复旧 registry 备份后，先核对备份身份、恢复点、既有导出和游标；“未来游标”拒绝能提示部分回退，但不能保证发现所有历史回滚，也不能证明旧备份完整。备份后的用户状态和外部效果仍按下面的恢复步骤逐项核对。
 
 ## 不确定写入、停机与恢复
 

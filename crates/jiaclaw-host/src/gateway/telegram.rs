@@ -43,6 +43,8 @@ use uuid::Uuid;
 const MAX_BODY: usize = 64 * 1024;
 const MAX_REPLY: usize = 2 * 1024 * 1024;
 const BACKEND_TIMEOUT: Duration = Duration::from_secs(150);
+const IO_CAPACITY_BUSY: &str = "Telegram I/O capacity busy";
+const IO_TASK_FAILED: &str = "Telegram I/O task failed";
 struct Installation {
     binding: TelegramBindingSummary,
     token: String,
@@ -235,13 +237,13 @@ async fn io<T: Send + 'static>(
         .io
         .clone()
         .try_acquire_owned()
-        .context("Telegram I/O capacity busy")?;
+        .context(IO_CAPACITY_BUSY)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         work()
     })
     .await
-    .context("Telegram I/O task failed")?
+    .context(IO_TASK_FAILED)?
 }
 fn answer(status: StatusCode, code: &'static str) -> Response {
     (status, Json(json!({"status":code}))).into_response()
@@ -472,6 +474,33 @@ async fn coordinate(state: Arc<State>, stop: Stop) {
     }
     while workers.join_next().await.is_some() {}
 }
+fn finish_error_code(error: &anyhow::Error) -> &'static str {
+    // Classify the typed cause without logging its message: SQLite and I/O
+    // errors may contain database paths, SQL, or other private values.
+    if let Some(error) = error.downcast_ref::<rusqlite::Error>() {
+        return match error {
+            rusqlite::Error::SqliteFailure(code, _)
+                if matches!(
+                    code.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) =>
+            {
+                "registry_busy"
+            }
+            _ => "registry_storage",
+        };
+    }
+    if error.downcast_ref::<std::io::Error>().is_some() {
+        return "registry_io";
+    }
+    // These two contexts belong to this module. Exact, top-level matching
+    // avoids treating arbitrary nested or partially matching text as a cause.
+    match error.to_string().as_str() {
+        IO_CAPACITY_BUSY => "io_busy",
+        IO_TASK_FAILED => "io_task_failed",
+        _ => "registry_validation",
+    }
+}
 async fn finish(
     state: &State,
     runtime: &Runtime,
@@ -481,13 +510,18 @@ async fn finish(
 ) {
     let registry = state.registry.clone();
     let user = binding.user_id;
-    if io(runtime, move || {
+    if let Err(error) = io(runtime, move || {
         registry.finish_write(user, request_id, known)
     })
     .await
-    .is_err()
     {
-        tracing::error!("Telegram write hold requires administrator review");
+        tracing::error!(
+            code = finish_error_code(&error),
+            request_id = %request_id,
+            user_id = %user,
+            known,
+            "Telegram write hold requires administrator review"
+        );
     }
 }
 async fn process(state: Arc<State>, stop: Stop, installation: Arc<Installation>) {
@@ -875,6 +909,72 @@ pub(super) fn review_guard(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn finish_error_codes_are_static_and_preserve_typed_cause_precedence() {
+        let secret = "provider-token SQL SELECT private_note FROM /private/user/registry.sqlite3";
+        let mut cases = Vec::new();
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_BUSY_SNAPSHOT,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+        ] {
+            cases.push((
+                anyhow::Error::from(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(code),
+                    Some(secret.into()),
+                ))
+                .context(IO_TASK_FAILED),
+                "registry_busy",
+            ));
+        }
+        cases.extend([
+            (
+                anyhow::Error::from(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                    Some(secret.into()),
+                ))
+                .context(secret),
+                "registry_storage",
+            ),
+            (
+                anyhow::Error::from(rusqlite::Error::InvalidQuery).context(secret),
+                "registry_storage",
+            ),
+            (
+                anyhow::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    secret,
+                ))
+                .context(IO_CAPACITY_BUSY),
+                "registry_io",
+            ),
+            (anyhow::anyhow!(secret), "registry_validation"),
+            (
+                anyhow::anyhow!("{IO_CAPACITY_BUSY}: {secret}"),
+                "registry_validation",
+            ),
+            (anyhow::anyhow!(secret).context(IO_CAPACITY_BUSY), "io_busy"),
+            (
+                anyhow::anyhow!(secret).context(IO_TASK_FAILED),
+                "io_task_failed",
+            ),
+            (
+                anyhow::anyhow!(secret)
+                    .context(IO_CAPACITY_BUSY)
+                    .context(secret),
+                "registry_validation",
+            ),
+        ]);
+        for (error, expected) in cases {
+            let code = finish_error_code(&error);
+            assert_eq!(code, expected);
+            assert!(!code.contains(secret));
+            assert!(!code.contains("SELECT"));
+            assert!(!code.contains("/private"));
+        }
+    }
 
     struct Fixture {
         directory: PathBuf,

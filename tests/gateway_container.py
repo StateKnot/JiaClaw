@@ -185,6 +185,37 @@ def admin(command, *args):
     return value
 
 
+def audit_history(user_id, limit=100, include_notes=False):
+    events = []
+    cursor = '0'
+    for _ in range(4097):
+        args = ['--user', user_id, '--after-seq', cursor, '--limit', str(limit)]
+        if include_notes:
+            args.append('--include-notes')
+        page = admin('audit-list', *args)
+        assert page['user_id'] == user_id and page['notes_included'] is include_notes
+        for field in ['next_after_seq', 'latest_seq']:
+            assert re.fullmatch(r'0|[1-9][0-9]*', page[field]), field
+        assert page['oldest_retained_seq'] is None or re.fullmatch(r'[1-9][0-9]*', page['oldest_retained_seq'])
+        assert len(page['events']) <= limit and not page['retention_gap'], page
+        for event in page['events']:
+            assert event['user_id'] == user_id and re.fullmatch(r'[1-9][0-9]*', event['seq'])
+            assert int(cursor) < int(event['seq']) <= int(page['latest_seq'])
+            assert include_notes or 'note' not in event
+        encoded = json.dumps(page)
+        assert all(secret not in encoded for secret in secrets), 'credential exposed by audit query'
+        assert 'verifier' not in encoded and 'token' not in encoded
+        events.extend(page['events'])
+        if not page['has_more']:
+            assert page['next_after_seq'] == page['latest_seq']
+            assert [int(event['seq']) for event in events] == sorted({int(event['seq']) for event in events})
+            return events, page
+        assert len(page['events']) == limit and page['next_after_seq'] == page['events'][-1]['seq']
+        assert int(page['next_after_seq']) > int(cursor)
+        cursor = page['next_after_seq']
+    raise AssertionError('audit pagination did not terminate within retained history')
+
+
 def chat(token, content, session='shared-id'):
     status, body = request('/api/chat', token, 'POST', {
         'session_id': session, 'messages': [{'role': 'user', 'content': content}],
@@ -424,6 +455,13 @@ try:
     assert request('/api/chat', rotated_viewer['token'], 'POST', {})[0] == 403
     admin('key-revoke', '--key', rotated_viewer['key_id'])
     assert request('/api/sessions', rotated_viewer['token'])[0] == 401
+    audit_events, _ = audit_history(issued['alice']['user_id'], limit=2)
+    key_events = [event for event in audit_events if event['key_id'] in [viewer['key_id'], rotated_viewer['key_id']]]
+    assert [event['action'] for event in key_events] == ['key_added', 'key_revoked_by_rotation', 'key_rotated', 'key_revoked']
+    assert all(event['key_id'] != issued['bob']['key_id'] for event in audit_events)
+    for path in ['/api/gateway/audit', '/api/audit']:
+        assert request(path, a)[0] == 404, 'administrator history exposed as a tenant route'
+    print('PASS: real quota-volume audit query pages canonical metadata, isolates users, omits notes and credentials, and exposes no tenant HTTP route')
     print('PASS: real container read-only key reads its tenant, rejects all exposed mutations without hold, and preserves permission across live rotation/revocation')
     docker('restart', backend_names['alice'])
     wait_backend('alice')
@@ -492,9 +530,22 @@ try:
     assert status == 409, (status, body)
     chat(b, 'Bob remains available while Alice requires review.', session='during-hold')
     assert messages(a) == a_history
+    review_note = 'Fixture backend was stopped and restarted; external work is disabled and reviewed. "核对"'
     admin('review-clear', '--user', issued['alice']['user_id'], '--confirm-backend-idle',
-          '--note', 'Fixture backend was stopped and restarted; external work is disabled and reviewed.')
+          '--note', review_note)
+    recovery_events, _ = audit_history(issued['alice']['user_id'])
+    recovered = next(event for event in reversed(recovery_events) if event['action'] == 'write_recovered_for_review')
+    lifecycle = [event for event in recovery_events if event['request_id'] == recovered['request_id']]
+    assert [event['action'] for event in lifecycle] == ['write_admitted', 'write_recovered_for_review', 'write_review_cleared']
+    private_events, _ = audit_history(issued['alice']['user_id'], include_notes=True)
+    assert next(event for event in reversed(private_events) if event['action'] == 'write_review_cleared')['note'] == review_note
+    _, bob_tail = audit_history(issued['bob']['user_id'])
     chat(a, 'Explicit new work after review.', session='after-review')
+    empty_bob = admin('audit-list', '--user', issued['bob']['user_id'], '--after-seq', bob_tail['next_after_seq'])
+    assert empty_bob['events'] == [] and not empty_bob['has_more']
+    assert int(empty_bob['next_after_seq']) > int(bob_tail['next_after_seq'])
+    assert empty_bob['next_after_seq'] == empty_bob['latest_seq']
+    print('PASS: persisted SIGKILL review lifecycle is correlated by request ID, notes require explicit inclusion, and empty filtered pages advance past other users')
     print('PASS: hardened containers, separate mounts/PID/private networks, per-user same-ID session isolation, live key rotation and restart persistence and stale-write review hold')
 
     # Only Alice's fresh 64 MiB ext4 filesystem is filled, never the host filesystem.
@@ -522,9 +573,13 @@ try:
     assert messages(a) == a_history
     admin('user-disable', '--user', issued['bob']['user_id'])
     assert request('/api/sessions', b)[0] == 401 and messages(a) == a_history
+    disabled_events, disabled_tail = audit_history(issued['bob']['user_id'])
+    assert disabled_events[-1]['action'] == 'user_disabled'
     docker('restart', gateway_name)
     wait_gateway()
     assert request('/api/sessions', b)[0] == 401 and messages(a) == a_history
+    restarted_events, restarted_tail = audit_history(issued['bob']['user_id'])
+    assert restarted_events == disabled_events and restarted_tail['latest_seq'] == disabled_tail['latest_seq']
     for name in containers:
         logs = docker('logs', name).stdout + docker('logs', name).stderr
         assert all(secret not in logs for secret in secrets), 'a credential appeared in container logs'

@@ -16,7 +16,7 @@
 | 8 | StateKnot durable + 委派 | 待认证/接线 | 原生输出合同缺口 [Brokerrouter #41](https://github.com/StateKnot/Brokerrouter/issues/41)；admission/driver/store、子任务身份、预算/并发/取消、恢复语义及上游生产门槛 |
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
-| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷，独立网关哈希 Key 轮换撤销及只读权限、受限代理、未知写入持久核对；[部署和验收范围](gateway.md)。受限用户定时任务已通过 PR #71 CI；[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI；本批只读 Key 的服务端权限、迁移、双用户进程与工作台已本地验收，最终 CI 待核对。其他渠道后台身份及真实供应商联合认证仍待完成 |
+| 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷，独立网关哈希 Key 轮换撤销及只读权限、受限代理、未知写入持久核对；[部署和验收范围](gateway.md)。受限用户定时任务已通过 PR #71 CI；[独立用户 Telegram 私聊](tenant-telegram.md)已通过 PR #80 最终 CI；只读 Key 的服务端权限、迁移、双用户进程与工作台已通过 PR #81 最终 CI；本批可信管理员审计查询已本地验证快照/游标/私密 notes，最终跨平台与真实容器 CI 待核对。其他渠道后台身份及真实供应商联合认证仍待完成 |
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
@@ -27,7 +27,7 @@ MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层�
 
 本批修改改善单机应用的可运行性与安全边界；完整个人 Agent 生产认证仍未完成。最新固定版本、检查证据和障碍见 [StateKnot](stateknot-gaps.md) 和 [Brokerrouter](brokerrouter-gaps.md)。
 
-下一批先复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定版本变化；durable 合同未满足期间，继续独立可交付的渠道与应用接线。钉钉本批只覆盖 HTTP 模式内部机器人私聊及定时文本通知；回调重投与字段稳定性、真实安装、平台限额和终端收发需独立认证。WhatsApp 接入须先核实当前 Cloud API 通用 AI 服务资格、部署主体/地区、身份、客户服务窗口、模板授权与未知投递语义，不能将独立 3P Agents 条款外推为 Cloud API 许可。模型路由已完成应用策略接线，后续保持网关治理边界，独立用户聊天入口已接线，继续推进多用户后台权限、真实模型语义检索认证或满足合同后的 durable 接入。网关保留未知写入的人工核对状态，不表示能够恢复/重放工具运行。
+下一批先复核 StateKnot #140、Brokerrouter #31/#41 与 PR #40 的固定版本变化；durable 合同未满足期间，下一项推进独立用户 Slack 后台接线：固定工作区/用户/目的地身份，在 registry 与私有队列之间核对同一操作；真实 Slack 安装、权限与终端收发认证另计。继续保持已有渠道和应用接线的回归。钉钉本批只覆盖 HTTP 模式内部机器人私聊及定时文本通知；回调重投与字段稳定性、真实安装、平台限额和终端收发需独立认证。WhatsApp 接入须先核实当前 Cloud API 通用 AI 服务资格、部署主体/地区、身份、客户服务窗口、模板授权与未知投递语义，不能将独立 3P Agents 条款外推为 Cloud API 许可。模型路由已完成应用策略接线，后续保持网关治理边界，独立用户聊天入口已接线，继续推进多用户后台权限、真实模型语义检索认证或满足合同后的 durable 接入。网关保留未知写入的人工核对状态，不表示能够恢复/重放工具运行。
 
 本批先收紧既有 MEMORY / SOUL / USER / HEARTBEAT 文件边界：配置路径接线、有界读取、统一写入上限、目录句柄约束、原子发布、协作追加锁和初始化保留；新增整机 fixture 与 747 项 Rust 回归已在本机通过，跨平台/真实容器以本批 draft PR 最终 head CI 为准。这是语义记忆前置修复，不能据此将 embeddings 或向量检索标记完成。
 
@@ -53,4 +53,6 @@ Discord Bot 定时文字补齐独立目的地/guild 授权、每次发送前验�
 
 本轮接入默认关闭的[独立用户 Telegram 私聊](tenant-telegram.md)：registry 固定 Bot/人/专属后端、后台准入复用用户 hold 与共享容量；每绑定私有 inbox/outbox 和操作关联，固定 channel 路由及 clock/json 工具。后端会话与网关队列不能跨库原子提交，未知结果须离线核对而不重放；网关队列盘仍为共享有限额卷。本机 918 项 Rust、fmt/Clippy/锁定构建通过；最终二进制新整机七组及本批七套既有进程回归通过。PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/jiawenyao401/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器；不标记完整多用户渠道或真实安装认证。
 
-本轮增加管理员签发的[只读 API Key](gateway.md#只读-key)：权限保存在 registry schema 3 并在轮换时继承，旧 Key 迁移保持完整权限；仅允许既有本用户 GET，不执行模型或用户内容修改。它不会脱敏历史，不改变 cron/Telegram 的独立授权，也不承诺 GET 触发的后端维护零写入。最终二进制双后端五组及真实 Chromium 只读验收通过；928 项 Rust、fmt/Clippy/锁定构建和现有三套工作台与三套用户后台进程回归通过。新增 Linux 实容器只读权限组和跨平台结果以本批最终 head CI 为准。
+本轮增加管理员签发的[只读 API Key](gateway.md#只读-key)：权限保存在 registry schema 3 并在轮换时继承，旧 Key 迁移保持完整权限；仅允许既有本用户 GET，不执行模型或用户内容修改。它不会脱敏历史，不改变 cron/Telegram 的独立授权，也不承诺 GET 触发的后端维护零写入。最终二进制双后端五组及真实 Chromium 只读验收通过；928 项 Rust、fmt/Clippy/锁定构建和现有三套工作台与三套用户后台进程回归通过。PR #81 最终 head `00d013c205e9c92b6649b8738d9d7d39bca966e5` 已通过 [CI 37715609778](https://github.com/jiawenyao401/JiaClaw/actions/runs/37715609778)，包含 Ubuntu、macOS、Chromium 与真实限额卷/私网容器只读权限组。
+
+本轮增加[可信管理员按用户审计查询](gateway.md#按用户查询管理审计)：同一读快照、有界页、精确字符串游标和全局保留水位，默认不提取私密 notes；不开放公共路由、不改变 schema 3 或用户权限。仅提供当前保留历史，恢复旧备份与长期归档仍需管理员核对。初次提交本机 936 项 Rust、双后端真实进程四组及四套用户回归通过；诊断修订后全量 Rust 串行 937 项及 fmt/Clippy/锁定构建通过，最终二进制新审计与四套用户回归共五套均通过。本机默认并行曾触发旧 fixture 的短截止时间失败，最终 CI 仍以默认并行验证。首轮固定提交的真实容器审计及 ENOSPC 已通过；macOS 的旧 semantic 测试同步竞争已修正，Ubuntu 的旧 Telegram hold 结算等待失败原因仍未确定；定向 SQL 故障注入已验证脱敏诊断和保守 hold，不据此声称该 CI 原因已解决。最终修订提交的跨平台与容器 CI 仍待核对，见[验证记录](validation.md#ci-暴露问题与诊断)。

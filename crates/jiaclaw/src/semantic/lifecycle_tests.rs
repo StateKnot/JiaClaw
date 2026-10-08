@@ -120,7 +120,26 @@ async fn cancelled_waiter_keeps_admission_and_store_ownership_until_worker_finis
     })
     .await
     .unwrap();
-    let reopened = Store::open(&workspace, &index_path).unwrap();
+    // Arc's last strong reference can disappear before another thread finishes
+    // dropping the store fields. Observe the actual ownership release instead
+    // of treating the weak count or completion notification as a destructor join.
+    let reopened = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match Store::open(&workspace, &index_path) {
+                Ok(store) => break store,
+                Err(error) => {
+                    assert!(
+                        matches!(&error, JiaClawError::ToolExecution(message)
+                            if message == "semantic store: another process owns semantic state; stop serve before using the CLI"),
+                        "unexpected semantic store reopen failure: {error}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+    })
+    .await
+    .expect("completed worker did not release semantic store ownership");
     assert!(reopened.pending().unwrap().is_none());
     assert_eq!(
         reopened.receipt(&operation).unwrap(),
