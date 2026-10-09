@@ -12,6 +12,8 @@
 
 初版真实binary的新七组一次通过：认证先于正文、实际门控前预览/两轮原生工具/原子done、显式取消后的原模型结算、实际正文消费者结束后才释放fixture gate、终态SQL失败无done、真实TCP小接收窗的写入backpressure日志/结果核对/容量恢复，以及活跃stream共用原停机宽限/重启关闭创建后原ID仍JSONlookup。慢读时不同平台缓冲可能在会话提交前或后触发；分别要求needs_review无历史或completed已提交，而完整done交付仍不是这两个事实的证明。旧HTTP七组也通过。固定最终源码的全Rust、完整33套和七项跨平台/候选资格仍以本批PR最终记录为准；未认证Web、租户、反向代理、真实供应商或StateKnot恢复。
 
+初版head `7b850128a56e7b5b74f0d4170a8c13fc08e7bcbb` 的完整本机1207 Rust与同一冻结binary的33套进程验收全部通过。候选CI37932679500在Intel macOS暴露已有Brokerrouter原期限测试的前置请求头失败：测试仅给真实HTTP握手100毫秒，尚未取得remote ID就超时，未进入所需的持久化等待阶段。修订先用既有生产请求预算获取真实header，再暂停测试时钟并跨过同一pending.deadline；不重设原期限，不放宽finish失败/门控正文/零重放断言。仅该库dev-dependency显式开启已使用的Tokio test-util，依赖版本/锁文件和生产期限不变。保留失败日志，修订后的完整固定head/33套/七项CI与四候选必须重新验收，不能借用初版其他平台成功。
+
 ## HTTP session 取消所有权最终 CI 回填
 
 [PR #94](https://github.com/StateKnot/JiaClaw/pull/94) 最终 head `e3986d6d3bb10532504de4d5d334a7447343cd19`、base `43cff1267ded9afeaf7a8dc1a028f82127e56eb4`、tree `a01a92187fbf1dc670505d2da76c1422e33002d6`、合并提交 `b9ccd5a26e3c3b023896e73c02758bdc7dc496bc` 已核对原始父提交与相同 tree。最终[普通 CI 37905394924](https://github.com/StateKnot/JiaClaw/actions/runs/37905394924) 三项成功，[原生候选 37905394930](https://github.com/StateKnot/JiaClaw/actions/runs/37905394930) 四项成功，公开发布作业 SKIPPED。macOS Rust1194、Linux1195；两平台全部31套Python通过，六项新真实SQL/StoreMutex/blocking-pool取消测试在六个平台作业均成功。Linux另过四套真实Chromium与单独启用的真实Docker，容器通过非root/只读根/命名卷恢复及私有gateway；镜像摘要 `dcbe7f77874893715a7af18fdd8012e0baa5197f1ecffcac5578b386e2a00f72`。
