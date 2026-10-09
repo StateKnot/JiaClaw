@@ -804,3 +804,5 @@ HTTP目录原四组增补实际历史删除后的永久身份/清理标志/原GE
 新增真实进程六组涵盖运行期锁排斥、无配置/无派发的分页与结果、备注字节限制/幂等/冲突、清理保留身份与历史、真实SIGKILL及关闭准入重启、非法文件/版本/表/触发器/权限/链接/FIFO/非WAL拒绝。首轮运行期快照相等断言失败，未记录变动字段；fixture补实际模型remote_id落盘屏障及失败快照输出后六组通过，生产二进制字节未改变，首轮具体调度根因未证实。后续复核将头读取FD在SQLite打开前关闭，避免同inode无关close影响进程级锁；最终新源码重新固定后完整检查与本批draft PR的官方CI/优化候选另计，不能借用首版或PR97资格。
 
 最终本地默认并行1210 Rust（396/123/691）、fmt/必需Clippy/locked build通过，冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 的八套相关进程回归（http_turn_cli/http_turns/http_turn_catalog/http_stream/cli_stream/e2e/mcp/installer）全部通过，其中维护六组包含实际非WAL拒绝。跨平台完整35套、Linux浏览器/真实Docker和四优化候选已接入强制CI，最终固定head资格按本批PR交付记录逐项核对；未以旧head或本地范围代替。
+
+首版 `53be3f4` 的Linux CI在维护第六组fixture `PRAGMA journal_mode=DELETE` 处报 `database is locked`，前五组已通过，后续旧套件跳过；失败[作业113952164189](https://github.com/StateKnot/JiaClaw/actions/runs/37969489857/job/113952164189)日志SHA256 `ed54575837d9c3fae9890f1673df272035129bd86f8c567c0732b95e18d36e0c`。已直接验证SQLite连接上下文只结束事务、不关闭连接，维护fixture使用明确close释放自身SQL/账本读连接，不再依赖不同Python版本的循环GC。全部断言/六组/SQL6秒与CLI10秒预算保持原样；同一冻结production binary六组复验通过，生产源码/依赖/二进制未改。修订fixture的新head完整CI与四平台资格另计，不将首版部分成功代替最终验收。

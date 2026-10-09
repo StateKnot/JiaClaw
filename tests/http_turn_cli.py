@@ -6,6 +6,7 @@ charges, container children or effects were reconciled. No credentials are read
 by the CLI, and no tool/model resumption is certified here.
 """
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -17,6 +18,24 @@ import http_turns as fixture
 
 FIELDS = {'id', 'session_id', 'created_ms', 'finished_ms', 'state',
           'session_committed', 'cancel_requested', 'result_purged', 'reviewed_ms'}
+
+
+class MaintenanceApp(fixture.App):
+    # A connection context manager ends the transaction, not the connection.
+    # Journal-mode conversion requires every fixture reader to actually close;
+    # never depend on interpreter-specific cyclic GC to release SQLite owners.
+    def sql(self, query, parameters=(), write=False):
+        with closing(sqlite3.connect(self.db, timeout=6)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = [dict(r) for r in connection.execute(query, parameters)]
+            if write:
+                connection.commit()
+            return rows
+
+    def ledger(self):
+        with closing(sqlite3.connect(self.directory / 'state/model-calls/index.sqlite3')) as connection:
+            connection.row_factory = sqlite3.Row
+            return [dict(r) for r in connection.execute('SELECT id,turn_id,body_hash,remote_id,state FROM model_calls ORDER BY seq')]
 
 
 def command(database, *args, error=None):
@@ -48,7 +67,7 @@ def snapshot(app):
 try:
     with tempfile.TemporaryDirectory(prefix='jiaclaw-http-maintenance-') as temporary:
         root = Path(temporary)
-        app = fixture.App(root, 'maintenance', timeout=15)
+        app = MaintenanceApp(root, 'maintenance', timeout=15)
         app.start()
         completed, completed_body = app.submit('cli-completed')
         app.terminal(completed)
