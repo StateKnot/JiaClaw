@@ -45,6 +45,7 @@ jobs:
       - run: python3 tests/http_turns.py target/debug/jiaclaw
       - run: python3 tests/http_stream.py target/debug/jiaclaw
       - run: python3 tests/http_turn_catalog.py target/debug/jiaclaw
+      - run: python3 tests/http_turn_cli.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
       - run: python3 tests/read_only_keys.py target/debug/jiaclaw
       - run: python3 tests/gateway_audit.py target/debug/jiaclaw

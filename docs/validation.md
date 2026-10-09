@@ -780,3 +780,29 @@ HTTP目录原四组增补实际历史删除后的永久身份/清理标志/原GE
 确切状态修订的本机第一次浏览器初验在原15秒actual server start期限超时，随后cleanup为SIGTERM -15，根因未证实。冻结binary SHA256 `595d1140e8c31af5a69a76c7c6219093746bad624c5e0e4f037f4e8c8024af63` 和原失败日志单独保留；同一字节/相同期限重跑，不能将后续成功记为已证明启动根因或放宽期限。最终完整源码、生产binary和七CI/四候选仍需独立资格化。
 
 同一595d binary在未改变期限/fixture的重跑中十二组Chromium全部成功，包括204/500仍hold、正常原GET404才结束；仅证明本次重跑通过，不证明首次启动超时根因。
+
+
+## Web 原请求目录最终 CI 回填
+
+2026-10-09 PR #97 最终 head `1072719fbfc3662b60f78f0ea2fa7b97215698d4`、tree `bcc17ffb654255dfab585c4676abb8e14f17aab5`，实际 CI merge `6ce0e35c412ccb3b87e10799b66d4ccea32e1882` 的父提交为 base `988d0cd04559e66c3d08bf7f21a0fc28825c17da` 和该 head。最终本机1210 Rust（396/123/691）、fmt/必需Clippy/locked build，冻结 binary SHA256 `595d1140e8c31af5a69a76c7c6219093746bad624c5e0e4f037f4e8c8024af63` 的34套进程、五套真实Chromium与parser全部通过，Web十二组含真实删除/清理和明确204/500前端故障核对。
+
+[CI 37963026557](https://github.com/StateKnot/JiaClaw/actions/runs/37963026557) 与[候选 37963026472](https://github.com/StateKnot/JiaClaw/actions/runs/37963026472) 共七个必需作业SUCCESS；两主平台各34个必需Python进程步骤全通过，macOS1210/Ubuntu1211 Rust，Linux另有五浏览器和真实Docker/ENOSPC。四优化候选均实际通过CLI/HTTP/HTTP-stream各七组、目录四组、parser及归档安装十三项。官方artifact ID/ZIP摘要与上传日志匹配，没有独立下载ZIP；公开Release步骤SKIPPED。
+
+| 候选 | 实际验收 tar.gz SHA256 | 官方构件 ID |
+|---|---|---|
+| aarch64-unknown-linux-gnu | `5fbe2f1d33a50f48c67f2d8ecebd52f7d253da2f39b1577c0c083a87708976d0` | 11632637907 |
+| aarch64-apple-darwin | `8659391740183f4b4363d9b342c805f3f0b7f95476510b699cc5d67177fd3480` | 11631889255 |
+| x86_64-unknown-linux-gnu | `648b3c8c90f9858f9bc9b6bb440c6258a396a40f01f1a7c46c9d5b4eb560630c` | 11631714479 |
+| x86_64-apple-darwin | `854f77d8070be38f0f3d3da7866e31acef9c26087c2fdd43025984ddefdfce63` | 11634075274 |
+
+旧270947e的历史删除/过期后错误hold、旧3a2df54的204/null混淆已分别先复现再修正，不借用这些旧head的成功。两次review字段fixture错误与历史fixture状态/观察错误分开保留，没有放宽生产守卫或截止。最终production binary曾在一次本机预检碰到原15秒启动超时，SIGTERM -15收尾，根因未确认；失败日志SHA256 `d6e0ad2ada6205590feef679e7dbbb1d79d56cedf8e1d484e159efb6c7c2bcb0`，同字节/同期限十二组复跑及最终完整cohort通过，不能据此声称已修复启动根因。原provider、tenant SSE、stdio/外部写入、durable及真实供应商认证仍开放。
+
+## 停机 HTTP 收据维护批次
+
+新增 `http-turns --database FILE list|get|review|purge-result`；只接应用持久身份，不使用有效模型配置/密钥，不打开模型/MCP/Agent。查询只读SQL，维护两操作显式确认，四命令共用与serve相同的独占生命周期锁；现有v11/WAL及完整HTTP schema校验拒绝旧版/未来版/网关渠道私库，不创建/迁移，不自动修改running。详见[维护合同](http-turns.md#服务停机后的本机维护)。
+
+新增真实进程六组涵盖运行期锁排斥、无配置/无派发的分页与结果、备注字节限制/幂等/冲突、清理保留身份与历史、真实SIGKILL及关闭准入重启、非法文件/版本/表/触发器/权限/链接/FIFO/非WAL拒绝。首轮运行期快照相等断言失败，未记录变动字段；fixture补实际模型remote_id落盘屏障及失败快照输出后六组通过，生产二进制字节未改变，首轮具体调度根因未证实。后续复核将头读取FD在SQLite打开前关闭，避免同inode无关close影响进程级锁；最终新源码重新固定后完整检查与本批draft PR的官方CI/优化候选另计，不能借用首版或PR97资格。
+
+最终本地默认并行1210 Rust（396/123/691）、fmt/必需Clippy/locked build通过，冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 的八套相关进程回归（http_turn_cli/http_turns/http_turn_catalog/http_stream/cli_stream/e2e/mcp/installer）全部通过，其中维护六组包含实际非WAL拒绝。跨平台完整35套、Linux浏览器/真实Docker和四优化候选已接入强制CI，最终固定head资格按本批PR交付记录逐项核对；未以旧head或本地范围代替。
+
+首版 `53be3f4` 的Linux CI在维护第六组fixture `PRAGMA journal_mode=DELETE` 处报 `database is locked`，前五组已通过，后续旧套件跳过；失败[作业113952164189](https://github.com/StateKnot/JiaClaw/actions/runs/37969489857/job/113952164189)日志SHA256 `ed54575837d9c3fae9890f1673df272035129bd86f8c567c0732b95e18d36e0c`。已直接验证SQLite连接上下文只结束事务、不关闭连接，维护fixture使用明确close释放自身SQL/账本读连接，不再依赖不同Python版本的循环GC。全部断言/六组/SQL6秒与CLI10秒预算保持原样；同一冻结production binary六组复验通过，生产源码/依赖/二进制未改。修订fixture的新head完整CI与四平台资格另计，不将首版部分成功代替最终验收。

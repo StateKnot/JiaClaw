@@ -62,6 +62,7 @@ mod discord_outbound;
 mod feishu;
 mod feishu_outbound;
 mod gateway;
+mod http_turn_cli;
 mod http_turn_store;
 mod http_turns;
 mod jobs;
@@ -219,6 +220,15 @@ enum Commands {
         action: ModelCallCommands,
         #[arg(short, long, value_name = "FILE", global = true)]
         config: Option<PathBuf>,
+    },
+
+    /// Maintain original standalone HTTP receipts while serve is stopped
+    HttpTurns {
+        /// Existing standalone session SQLite database; never created or migrated
+        #[arg(long, value_name = "FILE", global = true)]
+        database: Option<PathBuf>,
+        #[command(subcommand)]
+        action: http_turn_cli::Commands,
     },
 
     /// Agent 人格（SOUL.md）
@@ -440,6 +450,12 @@ async fn main() -> Result<()> {
             }
         },
         Commands::ModelCalls { action, config } => model_calls_command(config, action).await?,
+        Commands::HttpTurns { database, action } => {
+            http_turn_cli::run(
+                &database.context("http-turns requires --database FILE")?,
+                action,
+            )?;
+        }
         Commands::Soul { action } => match action {
             IdentityFileCommands::Show { config } => {
                 identity_show_command(config, IdentityShowKind::Soul)?;

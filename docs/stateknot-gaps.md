@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-10 停机维护批次官方再次复核：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、唯一alpha.1/#140 OPEN，Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41 OPEN、PR40未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388` 均未变化。附着PR58–97当前head CI全部SUCCESS、无代码review/thread；CodeRabbit的draft未审通知不算外部审查。新增本机HTTP收据维护只使用应用已有SQLite合同，不开Agent/MCP/模型账本，不自动中断/重放，也不冒充框架durable或stdio交付；PR97最终目录资格已[回填](validation.md#web-原请求目录最终-ci-回填)。
+
 2026-10-09 16:10 UTC 官方API再次固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`（比较identical、ahead0）、唯一alpha.1与#140 OPEN/无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release、#31 OPEN/一回复、#41 OPEN/无回复、PR40仍未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388`。未出现新消费合同，不重复建issue或浮动升级HTTP MCP。PR97先前6469最终七项CI/四优化候选已[回填](validation.md#web-原请求流式最终-ci-回填)；本批持久原请求目录/遗失编号恢复属于应用接线，不加载正文、不派发，不替代StateKnot durable、stdio/外部写入、原生Schema或供应商认证。
 
 2026-10-09 13:48 UTC 再次从官方 API 固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140（OPEN/无回复），Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release/#31（OPEN/一回复）/#41（OPEN/无回复）/未合并 draft PR40 head `7a7afea0244828851118ba32d1cf37d906a3f388`，均未变化。PR96最终七项CI及四平台候选已逐项回填；本批[Web流式](web-streaming.md)继续实际接线原身份、授权、取消和核对，属于应用能力，不重复提交框架缺陷。租户、真实供应商/代理、stdio/外部写入和 durable 仍保留独立门槛。
