@@ -41,7 +41,7 @@ jiaclaw chat --config "$HOME/.jiaclaw/config.toml" --session personal "你好"
 
 仓库已转入 [StateKnot 组织](https://github.com/StateKnot/JiaClaw)，现有检出与安装/发布状态见[迁移说明](docs/organization-migration.md)。
 
-版本 tag 触发四个平台的构建：Linux/macOS × x86_64/arm64，并生成含 `SHA256SUMS` 的 **draft Release**。维护者审核并公开 Release 后，可使用固定版本安装脚本：
+源码或发布链路变更的 PR 会先在 Linux/macOS × x86_64/arm64 四个平台原生构建 Release 二进制，实际安装最终归档并保留版本、源码和资产摘要证据，见[候选发布验收](docs/release-candidates.md)。版本 tag 使用相同构建/打包/安装步骤，之后生成含 `SHA256SUMS` 的 **draft Release**。维护者审核并公开 Release 后，可使用固定版本安装脚本：
 
 ```sh
 ./scripts/install.sh v0.1.0

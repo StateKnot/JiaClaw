@@ -24,7 +24,9 @@ Release draft 工作流已经使用运行时 `github.repository`，无需硬编�
 
 本批的本机结果和固定提交 CI 记录在交付 PR 正文与 checks 中；组织策略下的新 PR 必须实际执行 CI，旧提交成功不代替本批验收。没有触发 tag、合并 PR 或公开发布；这些证据不构成四平台公开资产、真实供应商、渠道、流式资源或 StateKnot durable 认证。
 
-本机 macOS arm64 已通过 74 项现有 outbound HTTP 单元测试、fmt、必需 Clippy 和 locked build。同一冻结二进制 SHA256 `2851942a166929f2dbcfa27c39c6ecea856e27413b5f395779bed1e76b5feac8` 的真实归档安装、E2E/SQLite 与 Discord 定时六组均通过。另对旧 head `e95a396` 的安装脚本仅替换下载 URL 以复用本地夹具，实际重现匹配校验和的错误版本会覆盖旧安装；新脚本则拒绝且原字节不变。该定向重现没有替换旧脚本的版本行为；四平台正式 Release build 尚未触发。
+本机 macOS arm64 已通过 74 项现有 outbound HTTP 单元测试、fmt、必需 Clippy 和 locked build。同一冻结二进制 SHA256 `2851942a166929f2dbcfa27c39c6ecea856e27413b5f395779bed1e76b5feac8` 的真实归档安装、E2E/SQLite 与 Discord 定时六组均通过。另对旧 head `e95a396` 的安装脚本仅替换下载 URL 以复用本地夹具，实际重现匹配校验和的错误版本会覆盖旧安装；新脚本则拒绝且原字节不变。该定向重现没有替换旧脚本的版本行为；该批四平台正式 Release build 未触发，后续候选验收单列于[发布记录](release-candidates.md)。
+
+[PR #90](https://github.com/StateKnot/JiaClaw/pull/90) 最终 head `08bff050ef3d7d1c77b2b95fe91880318de65cb2` 的 [CI 37876111419](https://github.com/StateKnot/JiaClaw/actions/runs/37876111419) 三项成功。实际 merge `4fd7aafc5e18eda37504029d707c7f5b4c468c9c` 的 tree `706f43e32144decb060a0a8ae7fb2bbbae350f8a` 与该 head 相同。Ubuntu 1172/macOS 1171 项 Rust、两平台全部30套 Python（实际候选安装含有效但版本错误的保留旧字节）、Ubuntu 四套 Chromium 与额外真实 Docker，以及独立 container 非 root/只读根/私网/限额卷/ENOSPC 全部通过。container 未运行渠道 runtime。03:16 UTC 再读取仍 OPEN/draft、成功且无代码 review/inline comment；不称外部审查完成。
 
 ## 上一批 copy 最终验收
 
@@ -42,6 +44,6 @@ Release draft 工作流已经使用运行时 `github.repository`，无需硬编�
 
 ## 上游与剩余工作
 
-本轮固定合同未变化：StateKnot main `83802cb3202bf9cb860c6357a94abc80408b1f88`、alpha.1、#140；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release、#31/#41 和 PR #40 head `7a7afea0244828851118ba32d1cf37d906a3f388`。StateKnot 当前十二项主 CI 与三个 Dependabot 检查成功；Brokerrouter main/PR 的十二项既有失败检查身份未变，保留先前付款/额度导致未启动的分类。
+组织迁移批次固定合同：StateKnot main `83802cb3202bf9cb860c6357a94abc80408b1f88`、alpha.1、#140；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release、#31/#41 和 PR #40 head `7a7afea0244828851118ba32d1cf37d906a3f388`。当时 StateKnot 十二项主 CI 与三个 Dependabot 检查成功；Brokerrouter main/PR 的十二项既有失败检查身份未变，保留先前付款/额度导致未启动的分类。后续 StateKnot #155 的实际 main 增量及十四项成功检查见[最新状态](stateknot-gaps.md)，没有升级当前 MCP pin。
 
 精确 HTTP MCP pin 保留，不重复提交相同 issue。下一批继续核实钉钉凭据到机器人的完整安装身份链，以及流式实际接线的治理和资源合同；stdio、外部写入、durable/子 Agent、WhatsApp、真实供应商、语义检索质量及多模态仍分别开放。组织归属不替代任何框架运行身份或认证。

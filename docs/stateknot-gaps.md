@@ -1,6 +1,6 @@
 # StateKnot 集成状态
 
-2026-10-09 再核对 main/release/#140 未变，保留精确 HTTP MCP pin。[组织迁移与最终 CI 回填](organization-migration.md)记录实际安装接线及未完成能力；迁移不等于 durable 或新框架身份认证。
+2026-10-09 03:16 UTC 再核对 main 为 `9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f`，alpha.1/release/#140 不变。[#155](https://github.com/StateKnot/StateKnot/pull/155) 修正 Failure/ToolError/CapabilityLifecycle 六个可选字段的序列化 Schema，并补齐有界 fuzz 与输出 Schema 清单；十四项 main checks 成功。既有输入 pins 与 wire bytes 不变，旧输出 pin 须启动拒绝，后续 typed registry 升级需新 Schema/Tool 版本并保留已准入旧合同，见[固定 RFC-0020](https://github.com/StateKnot/StateKnot/blob/9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f/docs/rfcs/0020-core-optional-output-schemas.md)。仍为未发布源码能力；HTTP MCP 客户端与现有 alpha.1 字节相同，83407字节/SHA256 `0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`。应用不调用 typed registry，保留精确 MCP pin，不将此变化误报为当前适配缺陷。[组织迁移与最终 CI 回填](organization-migration.md)保留实际认证范围。
 
 核对时间：2026-10-08 15:36 UTC；上游 main：`83802cb3202bf9cb860c6357a94abc80408b1f88`。证据来自 [Cargo.toml](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/Cargo.toml) 与 [README](https://github.com/StateKnot/StateKnot/blob/83802cb3202bf9cb860c6357a94abc80408b1f88/README.md)。公开 release 仍为 [v0.1.0-alpha.1](https://github.com/StateKnot/StateKnot/releases/tag/v0.1.0-alpha.1)，对应提交 `9f697735b8a0164197bd06697d07d8c63d169b68`；main 的增量不等于已发布依赖。
 
