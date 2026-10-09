@@ -27,6 +27,7 @@ use registry::Registry;
 use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
+    future::IntoFuture,
     io::Read,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -44,6 +45,7 @@ struct Backend {
 }
 struct State {
     registry: Registry,
+    admission: scheduler::Stop,
     backends: HashMap<String, Backend>,
     client: reqwest::Client,
     permits: Arc<Semaphore>,
@@ -57,6 +59,15 @@ struct State {
     discord: Option<Arc<discord::Runtime>>,
     feishu: Option<Arc<feishu::Runtime>>,
     wecom: Option<Arc<wecom::Runtime>>,
+}
+
+/// Every runtime registry clone retains this lease, including actual blocking DB
+/// work after its async waiter disappears. Last-owner drop explicitly unlocks.
+struct ProcessLock(File);
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 fn private_file(path: &std::path::Path) -> Result<File> {
@@ -161,6 +172,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     process_lock
         .try_lock_exclusive()
         .context("another gateway is using this registry")?;
+    let registry = registry.with_process_lock(Arc::new(ProcessLock(process_lock)));
     registry.recover_writes()?;
     // Reconstruct uncertain execution reservations before accepting new work.
     // An operator must check backend idleness, clear holds, then restart to reclaim.
@@ -286,6 +298,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let reserved_count = reserved.len().min(capacity);
     let state = Arc::new(State {
         registry,
+        admission: scheduler::Stop::new(),
         backends,
         client,
         permits: Arc::new(Semaphore::new(capacity - reserved_count)),
@@ -333,6 +346,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             get(wecom::ingress).post(wecom::ingress),
         )
         .fallback(proxy::handle)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            reject_after_close,
+        ))
         .with_state(Arc::clone(&state));
     let scheduled = scheduler::start(Arc::clone(&state));
     let stop_scheduled = scheduled.stopper();
@@ -347,35 +364,180 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let wecom = wecom::start(Arc::clone(&state));
     let stop_wecom = wecom.stopper();
     tracing::info!("isolated user gateway listening");
-    axum::serve(listener, app)
+    let (signal, stopped) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown().await;
-            stop_scheduled.stop();
-            stop_telegram.stop();
-            stop_slack.stop();
-            stop_discord.stop();
-            stop_feishu.stop();
-            stop_wecom.stop();
+            let _ = stopped.await;
         })
-        .await?;
-    let _ = scheduled.shutdown(timeout + Duration::from_secs(5)).await;
-    let _ = telegram.shutdown(timeout + Duration::from_secs(5)).await;
-    let _ = slack.shutdown(timeout + Duration::from_secs(5)).await;
-    let _ = discord.shutdown(timeout + Duration::from_secs(5)).await;
-    let _ = feishu.shutdown(timeout + Duration::from_secs(5)).await;
-    let _ = wecom.shutdown(timeout + Duration::from_secs(5)).await;
-    // Detached admitted work retains its permit even after its caller disconnects.
-    // On forced shutdown the durable hold remains for startup recovery.
-    let _drain = tokio::time::timeout(timeout + Duration::from_secs(5), async {
+        .into_future();
+    tokio::pin!(server);
+    let finished = tokio::select! {
+        result = &mut server => Some(result),
+        () = shutdown() => None,
+    };
+    // One deadline starts at the signal, before any mutex or transport drain.
+    // A slow downstream socket cannot postpone or reset a worker's grace.
+    let deadline = tokio::time::Instant::now() + timeout + Duration::from_secs(5);
+    state.admission.close();
+    for stop in [
+        stop_scheduled,
+        stop_telegram,
+        stop_slack,
+        stop_discord,
+        stop_feishu,
+        stop_wecom,
+    ] {
+        stop.close();
+    }
+    let _ = signal.send(());
+    tracing::info!("gateway closing admission; shared shutdown grace started");
+    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
+    let drain = async {
+        let workers = async {
+            tokio::join!(
+                scheduled.shutdown(remaining()),
+                telegram.shutdown(remaining()),
+                slack.shutdown(remaining()),
+                discord.shutdown(remaining()),
+                feishu.shutdown(remaining()),
+                wecom.shutdown(remaining()),
+            )
+        };
+        let http = async {
+            match finished {
+                Some(result) => result,
+                None => (&mut server).await,
+            }
+        };
+        let (http, workers) = tokio::join!(http, workers);
+        http?;
+        if workers != (true, true, true, true, true, true) {
+            tracing::warn!("gateway worker grace exhausted; original holds retained");
+        }
+        // Blocking control operations and admitted dispatch retain their actual
+        // permits. Unknown reservations are not treated as successful execution.
         while state.permits.available_permits() + state.reserved_turns.load(Ordering::Acquire)
             < capacity
+            || state.control.available_permits() != 8
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    })
-    .await;
-    drop(process_lock);
+        if workers == (true, true, true, true, true, true) {
+            tracing::info!("gateway HTTP and worker drain completed");
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    match tokio::time::timeout_at(deadline, drain).await {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("gateway shutdown grace exhausted; original admissions and unknown holds require reconciliation; no replay"),
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn closing_admission_does_not_wait_for_entered_database_work_or_admit_a_later_write() {
+        let root = std::env::temp_dir().join(format!("jiaclaw-close-{}", uuid::Uuid::new_v4()));
+        let registry = Registry::open(&root.join("registry.db")).unwrap();
+        let gate = scheduler::Stop::new();
+        let (entered, ready) = std::sync::mpsc::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let first_gate = gate.clone();
+        let first_registry = registry.clone();
+        let first = std::thread::spawn(move || {
+            first_gate.admit(|| {
+                entered.send(()).unwrap();
+                waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+                first_registry.add_user("already-entered").unwrap()
+            })
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        // This must return before the actual DB owner is released below.
+        gate.close();
+        let later_gate = gate.clone();
+        let later_registry = registry.clone();
+        let later = std::thread::spawn(move || {
+            later_gate.admit(|| later_registry.add_user("late").unwrap())
+        });
+        release.send(()).unwrap();
+        assert!(first.join().unwrap().is_some());
+        assert!(later.join().unwrap().is_none());
+        assert_eq!(registry.list().unwrap().len(), 1);
+        assert_eq!(registry.list().unwrap()[0].backend_id, "already-entered");
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_database_waiter_keeps_process_lease_until_actual_owner_settles() {
+        let root = std::env::temp_dir().join(format!("jiaclaw-lease-{}", uuid::Uuid::new_v4()));
+        let registry = Registry::open(&root.join("registry.db")).unwrap();
+        let lock_path = root.join("process.lock");
+        let file = private_file(&lock_path).unwrap();
+        file.try_lock_exclusive().unwrap();
+        let registry = registry.with_process_lock(Arc::new(ProcessLock(file)));
+        let contender = private_file(&lock_path).unwrap();
+        let actual_owner = registry.clone();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let (settled, completion) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                entered.send(()).unwrap();
+                waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+                actual_owner.add_user("settled").unwrap();
+                drop(actual_owner);
+                settled.send(()).unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        ready.await.unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        drop(registry);
+        assert!(contender.try_lock_exclusive().is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), completion)
+            .await
+            .unwrap()
+            .unwrap();
+        contender.try_lock_exclusive().unwrap();
+        assert_eq!(
+            Registry::open(&root.join("registry.db"))
+                .unwrap()
+                .list()
+                .unwrap()
+                .len(),
+            1
+        );
+        FileExt::unlock(&contender).unwrap();
+        drop(contender);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+async fn reject_after_close(
+    axum::extract::State(state): axum::extract::State<Arc<State>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if state.admission.is_stopped() {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            [
+                ("cache-control", "no-store"),
+                ("x-content-type-options", "nosniff"),
+            ],
+            axum::Json(serde_json::json!({"error":"gateway shutting down"})),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 async fn shutdown() {
     #[cfg(unix)]

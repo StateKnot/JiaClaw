@@ -412,7 +412,7 @@ impl Worker {
         self.stop.clone()
     }
     pub(super) async fn shutdown(mut self, grace: Duration) -> bool {
-        self.stop.stop();
+        self.stop.close();
         let Some(mut task) = self.task.take() else {
             return true;
         };
@@ -421,7 +421,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.stop.stop();
+        self.stop.close();
     }
 }
 pub(super) fn start(state: Arc<State>) -> Worker {
@@ -1001,6 +1001,7 @@ mod tests {
                 control: Arc::new(Semaphore::new(1)),
                 scheduled_jobs: false,
                 tracked_turns: false,
+                admission: crate::gateway::scheduler::Stop::new(),
                 reserved_turns: std::sync::atomic::AtomicUsize::new(0),
                 telegram: Some(runtime),
                 slack: None,

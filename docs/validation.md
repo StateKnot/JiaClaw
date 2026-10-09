@@ -895,3 +895,22 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 新CI配置每个native runner的Rust测试harness为一个worker，隔离不相关临时数据库/大文件fsync/有限全局工具worker夹具；全部用例仍必需执行，各用例内部原12写线程、两个准入竞争者、异步owner/取消等并发保持不变。没有skip、自动重试、扩充资源期限或运行时修改；20分钟container、40分钟主作业/候选预算不变。此配置限定验收证据，不作为并行负载性能认证；原并行完整本机1218结果与CI失败分别保留，未确认的旧锁/准入根因仍开放。新源码及CI配置重新完整资格化。
 
 最终诊断/CI配置源码的冻结binary SHA256 `7ece472200c5fd782eefffcdbe7860c0ff59d07addf804543c0e6745eefe4a2e`，新harness完整1218 Rust（396/123/699，core35.85s/host85.54s）、十组真实浏览器含两条超时边界、十二套相关旧回归、fmt/必需Clippy/locked build/parser八组全部通过；原并行1efef199本机记录独立保留。新head完整七作业/四归档资格待核对，未标旧锁或准入根因修复。
+
+## PR #99 工作台最终资格回填
+
+最终 head `273004a61819423f31bb9d11203922d2e516d82e`、tree `f1905191f5d047c22c432029b353794a7575a0b8`，实际 merge `e1fd41d6aea308ca128ec0d79cbd86e7ebb2e9bc`（base `c639255b2f126a67ae8eeb84b7c78a4a17455272` + 最终 head）。冻结本机 binary SHA256 `7ece472200c5fd782eefffcdbe7860c0ff59d07addf804543c0e6745eefe4a2e` 的完整1218 Rust/13相关套件/parser八组及fmt/必需Clippy通过。[CI 38000808432](https://github.com/StateKnot/JiaClaw/actions/runs/38000808432) 与[候选 38000808502](https://github.com/StateKnot/JiaClaw/actions/runs/38000808502) 的七执行作业全部 SUCCESS，两主平台各36必需Python、Ubuntu六浏览器（租户十组/原Web十二组）及实际Docker、独立container非root/只读根/命名卷/ENOSPC均通过；公开发布 SKIPPED，PR仍draft/未合并。
+
+| 平台 | 实际 tar.gz SHA256 | 作业 |
+|---|---|---|
+| aarch64-unknown-linux-gnu | `c59eb6d8b37e930edb3909b9bced51566465fa6ddef79a9f4ea902174bdcfd8a` | 114058322051 |
+| x86_64-unknown-linux-gnu | `97986c4536915efd0a56da7dab24fecaa3670d35f49f55c5bbc867d829d5af0c` | 114058322152 |
+| aarch64-apple-darwin | `257d217fddb3d3efd1c49202c32c7d3b4d3d5ebf3d98fd83db7444d331b99428` | 114058322222 |
+| x86_64-apple-darwin | `2aaca56b6750bd4a83bf7e98f7526c6a9f2e63b839d6c27a49005b2429d340de` | 114058322130 |
+
+官方Rust harness为单worker，各测试内部原并发及所有期限保留；该配置限定验收，不证明并行负载或旧文件锁/双准入失败根因已修复。上传ZIP摘要仅核对官方构件信息，未独立下载ZIP。租户SSE、durable、stdio/外部写入和供应商仍开放。
+
+## 网关共享停机期限批次
+
+准备租户SSE时实际复现应用网关旧停机缺陷：上述冻结7ece binary、四条已收到200头的1.9MiB真实慢读TCP连接，SIGTERM后18.009秒仍未退出，旧HTTP优雅关闭挡住后续worker drain。实际网关/信号/registry配合本机协议后端，不含native模型或供应商；本批先完成生产停机边界，不把租户SSE标记完成。共享期限、停机准入与真实owner锁语义见[gateway](gateway.md#不确定写入停机与恢复)。新增四组强制进程验收和两个数据库owner并发回归，最终固定源码/跨平台资格另行记录。首轮未提升回环监听权限的gateway Rust有7项PermissionDenied（229通过），不计代码资格；初轮新进程在临时user-add原15秒超时，未触及停机，根因未证明。均保留证据，不增加期限、不把后续成功作为根因修复。
+
+同一新增慢读验收在旧7ece字节上超出17秒外部观察界限，保持before失败。初版新夹具先误读user-list的包装DTO，后又以竞争GET作为正文准入屏障；实际TCP诊断证明GET先占槽位、原partial POST收到429。改用真实HTTP `100 Continue`证明认证handler已开始读取正文，后再停机并补齐；保留原503/无hold/无后端POST断言及所有期限。以上夹具错误不记为生产修复或完整初验通过。

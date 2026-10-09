@@ -581,9 +581,12 @@ async fn execute(
     let principal = p.clone();
     let s = body.session_id.clone();
     let h = hash.clone();
+    let admission = state.admission.clone();
     // Do not timeout/drop the actual blocking admission owner.
     let admitted = db(state.registry.clone(), control, move |r| {
-        r.admit_http_turn(&principal, id, &s, &h)
+        admission
+            .admit(|| r.admit_http_turn(&principal, id, &s, &h))
+            .unwrap_or_else(|| Err(anyhow::anyhow!("gateway shutting down")))
     })
     .await;
     match admitted {

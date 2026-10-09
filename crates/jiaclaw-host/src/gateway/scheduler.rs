@@ -38,12 +38,18 @@ impl Stop {
             wake: Notify::new(),
         }))
     }
+    #[cfg(test)]
     pub(super) fn stop(&self) {
+        self.close();
         let _guard = self
             .0
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    /// Close admission without waiting for a previously entered DB operation.
+    /// That operation retains its owner and must drain under the shared grace.
+    pub(super) fn close(&self) {
         self.0.stopped.store(true, Ordering::Release);
         self.0.wake.notify_waiters();
     }
@@ -71,11 +77,8 @@ impl Scheduler {
     pub(super) fn stopper(&self) -> Stop {
         self.stop.clone()
     }
-    pub(super) fn stop(&self) {
-        self.stop.stop();
-    }
     pub(super) async fn shutdown(mut self, grace: Duration) -> bool {
-        self.stop();
+        self.stop.close();
         let Some(mut task) = self.task.take() else {
             return true;
         };
@@ -86,7 +89,7 @@ impl Scheduler {
 }
 impl Drop for Scheduler {
     fn drop(&mut self) {
-        self.stop();
+        self.stop.close();
     }
 }
 
@@ -444,6 +447,7 @@ mod tests {
             control: Arc::new(Semaphore::new(8)),
             scheduled_jobs: true,
             tracked_turns: false,
+            admission: crate::gateway::scheduler::Stop::new(),
             reserved_turns: std::sync::atomic::AtomicUsize::new(0),
             telegram: None,
             slack: None,

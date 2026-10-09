@@ -77,3 +77,6 @@ HTTP MCP 已完成应用接线：名字空间、配置前置检查、逐工具�
 此前企业微信固定head PR #87 三项CI及旧21套回归已最终通过，见[最终回填](validation.md#独立用户企业微信最终-ci-回填)。本批钉钉原始JSON/MIME修复属于现有应用协议路径，不新增框架原生durable/stdio身份，亦不将钉钉的未知安装权限映射归因于StateKnot。
 
 15:36 UTC 复制批次重新核对官方 main/release/#140，与14:39快照 compare identical/ahead0；四份 runtime/integrations 合同源码字节未变。当前 HTTP MCP 与实际 alpha.1 缓存仍为83407字节、SHA256 `0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`，现有 raw descriptor/schema 路径不消费尚未发布的 typed registry。PR #58–#88 均 OPEN/draft、当前head CI成功；[PR #88最终三项验收](validation.md#钉钉原始报文最终-ci-回填)已补证。copy 的共享资源、锁和 Schema 参数修复属于实际应用接线缺陷，不新增框架 issue、不升级pin，也不替代 durable/stdio/外部写入认证。
+## 2026-10-10 本机回访（2026-10-09 UTC）
+
+重新读取两个上游main、release及 #140/#31/#41 与Brokerrouter #40：StateKnot `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d` / `v0.1.0-alpha.1`、Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc`无release，#40仍draft未合并；合同无新增。当前生产修订为JiaClaw网关慢读/停机准入应用缺陷，没有新增上游issue，不误报已有HTTP MCP/stream能力。durable/stdio/原生JSON Schema仍按原分项资格状态。

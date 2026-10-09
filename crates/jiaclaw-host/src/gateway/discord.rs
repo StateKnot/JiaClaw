@@ -817,7 +817,7 @@ impl Worker {
         self.stop.clone()
     }
     pub(super) async fn shutdown(mut self, grace: Duration) -> bool {
-        self.stop.stop();
+        self.stop.close();
         let Some(mut task) = self.task.take() else {
             return true;
         };
@@ -826,7 +826,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.stop.stop();
+        self.stop.close();
     }
 }
 pub(super) fn start(state: Arc<State>) -> Worker {
