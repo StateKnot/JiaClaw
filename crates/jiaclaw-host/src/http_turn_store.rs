@@ -7,7 +7,7 @@ use super::store::{now_ms, SessionStore};
 use anyhow::{ensure, Result};
 use jiaclaw_core::ChatMessage;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub(super) const MAX_IDENTITIES: usize = 10_000;
 pub(super) const MAX_RESULTS: usize = 32;
@@ -50,7 +50,8 @@ impl std::fmt::Display for Conflict {
 }
 impl std::error::Error for Conflict {}
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Receipt {
     pub id: String,
     pub session_id: String,

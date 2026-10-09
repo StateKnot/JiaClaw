@@ -26,7 +26,29 @@ const MAX_SLACK_BINDINGS: i64 = 32;
 const MAX_DISCORD_BINDINGS: i64 = 32;
 const MAX_FEISHU_BINDINGS: i64 = 32;
 const MAX_WECOM_BINDINGS: i64 = 32;
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HttpAdmissionError {
+    IdentityConflict,
+    Full,
+}
+impl std::fmt::Display for HttpAdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for HttpAdmissionError {}
+#[derive(Serialize)]
+pub(super) struct HttpAdmissionSummary {
+    pub id: String,
+    pub session_id: String,
+    pub created_ms: i64,
+}
+pub(super) struct HttpIdentity {
+    pub hash: String,
+    pub session: String,
+}
 
 /// Authenticated identity. Backend selection is never taken from client metadata.
 #[derive(Clone, Debug)]
@@ -318,6 +340,7 @@ impl Registry {
             tx.execute_batch(SCHEMA_V5)?;
             tx.execute_batch(SCHEMA_V6)?;
             tx.execute_batch(SCHEMA_V7)?;
+            tx.execute_batch(SCHEMA_V8)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -343,8 +366,12 @@ impl Registry {
             if version < 7 {
                 tx.execute_batch(SCHEMA_V7)?;
             }
+            if version < 8 {
+                tx.execute_batch(SCHEMA_V8)?;
+            }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
+        validate_http_schema(&tx)?;
         let corrupt = tx
             .prepare("PRAGMA foreign_key_check")?
             .query([])?
@@ -1570,6 +1597,126 @@ impl Registry {
         Ok(None)
     }
 
+    /// Reserve permanent HTTP identity and the shared write hold atomically.
+    /// An existing identity is lookup-only, even after review-clear or restart.
+    pub(super) fn admit_http_turn(
+        &self,
+        principal: &Principal,
+        id: Uuid,
+        session: &str,
+        hash: &str,
+    ) -> Result<bool> {
+        ensure!(
+            crate::jobs::valid_creation_id(&id.to_string())
+                && session
+                    .strip_prefix("http:")
+                    .is_some_and(crate::jobs::valid_creation_id)
+                && hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid HTTP admission identity"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        http_authority(&tx, principal, true)?;
+        let old: Option<(String, String)> = tx
+            .query_row(
+                "SELECT request_hash,session_id FROM http_turn_requests WHERE user_id=?1 AND id=?2",
+                params![principal.user_id.to_string(), id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some(old) = old {
+            if old.0 != hash || old.1 != session {
+                return Err(HttpAdmissionError::IdentityConflict.into());
+            }
+            return Ok(false);
+        }
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM http_turn_requests WHERE user_id=?1",
+            [principal.user_id.to_string()],
+            |r| r.get(0),
+        )?;
+        if count >= 10_000 {
+            return Err(HttpAdmissionError::Full.into());
+        }
+        let now = now_ms();
+        insert_hold(&tx, principal.user_id, id, now)?;
+        tx.execute("INSERT INTO http_turn_requests(user_id,id,session_id,request_hash,created_ms) VALUES(?1,?2,?3,?4,?5)",params![principal.user_id.to_string(),id.to_string(),session,hash,now])?;
+        audit(
+            &tx,
+            principal.user_id,
+            Some(principal.key_id),
+            Some(id),
+            "http_turn_admitted",
+            Some(access_note(false)),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub(super) fn http_turn_identity(
+        &self,
+        principal: &Principal,
+        id: Uuid,
+        write: bool,
+    ) -> Result<Option<HttpIdentity>> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+        http_authority(&tx, principal, write)?;
+        Ok(tx
+            .query_row(
+                "SELECT request_hash,session_id FROM http_turn_requests WHERE user_id=?1 AND id=?2",
+                params![principal.user_id.to_string(), id.to_string()],
+                |r| {
+                    Ok(HttpIdentity {
+                        hash: r.get(0)?,
+                        session: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub(super) fn http_turn_catalog(
+        &self,
+        principal: &Principal,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<HttpAdmissionSummary>, bool)> {
+        ensure!(
+            (1..=50).contains(&limit) && offset <= 10_000,
+            "invalid HTTP admission page"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+        http_authority(&tx, principal, false)?;
+        let mut query=tx.prepare("SELECT id,session_id,created_ms FROM http_turn_requests WHERE user_id=?1 ORDER BY created_ms DESC,id DESC LIMIT ?2 OFFSET ?3")?;
+        let rows = query.query_map(
+            params![principal.user_id.to_string(), limit + 1, offset],
+            |r| {
+                Ok(HttpAdmissionSummary {
+                    id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    created_ms: r.get(2)?,
+                })
+            },
+        )?;
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        Ok((rows, more))
+    }
+
+    pub(super) fn reserved_http_backends(&self) -> Result<Vec<String>> {
+        let c = self.connection()?;
+        let mut q = c.prepare("SELECT u.backend_id FROM users u JOIN write_holds h ON h.user_id=u.id JOIN http_turn_requests r ON r.user_id=h.user_id AND r.id=h.request_id ORDER BY u.backend_id LIMIT 32")?;
+        let rows = q.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Reserve the user's only write slot and recheck live authorization in the same transaction.
     pub fn admit_write(&self, principal: &Principal, request_id: Uuid) -> Result<()> {
         let mut conn = self.connection()?;
@@ -2232,6 +2379,52 @@ fn audit(
     Ok(())
 }
 
+fn http_authority(conn: &Connection, p: &Principal, write: bool) -> Result<()> {
+    let access:Option<bool>=conn.query_row("SELECT k.read_only FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?1 AND u.id=?2 AND u.backend_id=?3 AND u.enabled=1 AND k.revoked_ms IS NULL",params![p.key_id.to_string(),p.user_id.to_string(),p.backend_id],|r|r.get(0)).optional()?;
+    match access {
+        None => Err(WriteAdmissionError::Unauthorized.into()),
+        Some(true) if write => Err(WriteAdmissionError::ReadOnly.into()),
+        _ => Ok(()),
+    }
+}
+fn validate_http_schema(conn: &Connection) -> Result<()> {
+    fn shape(conn: &Connection) -> Result<Vec<(String, String, Option<String>)>> {
+        let mut stmt=conn.prepare("SELECT type,name,sql FROM sqlite_schema WHERE tbl_name IN ('http_turn_requests','write_holds') ORDER BY type,name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(SCHEMA)?;
+    expected.execute_batch(SCHEMA_V8)?;
+    ensure!(
+        shape(conn)? == shape(&expected)?,
+        "gateway HTTP admission schema mismatch"
+    );
+    Ok(())
+}
+const SCHEMA_V8:&str="
+CREATE TABLE http_turn_requests(
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ id TEXT NOT NULL CHECK(length(id)=36 AND substr(id,15,1)='4'),
+ session_id TEXT NOT NULL CHECK(length(session_id)=41 AND substr(session_id,1,5)='http:'),
+ request_hash TEXT NOT NULL CHECK(length(request_hash)=64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+ created_ms INTEGER NOT NULL, PRIMARY KEY(user_id,id));
+CREATE INDEX http_turn_requests_page ON http_turn_requests(user_id,created_ms DESC,id DESC);
+CREATE TRIGGER http_turn_requests_limit BEFORE INSERT ON http_turn_requests WHEN (SELECT count(*) FROM http_turn_requests WHERE user_id=NEW.user_id)>=10000
+ BEGIN SELECT RAISE(ABORT,'HTTP admission identity capacity reached'); END;
+CREATE TRIGGER http_turn_requests_immutable BEFORE UPDATE ON http_turn_requests
+ BEGIN SELECT RAISE(ABORT,'HTTP admission identities are permanent'); END;
+CREATE TRIGGER http_turn_requests_no_delete BEFORE DELETE ON http_turn_requests
+ BEGIN SELECT RAISE(ABORT,'HTTP admission identities are permanent'); END;
+ALTER TABLE write_holds RENAME TO write_holds_v7;
+CREATE TABLE write_holds(user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ request_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('in_flight','needs_review')),
+ reason TEXT NOT NULL CHECK(reason IN ('request_in_flight','backend_outcome_unknown','gateway_restarted')),
+ admitted_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
+INSERT INTO write_holds SELECT * FROM write_holds_v7;
+DROP TABLE write_holds_v7;
+";
+
 const SCHEMA: &str = "
 CREATE TABLE users(id TEXT PRIMARY KEY NOT NULL, backend_id TEXT NOT NULL UNIQUE,
  enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
@@ -2406,6 +2599,197 @@ mod tests {
 
     fn principal(registry: &Registry, issued: &IssuedKey) -> Principal {
         registry.authenticate(&issued.token).unwrap().unwrap()
+    }
+
+    fn downgrade_before_http(conn: &Connection) {
+        // Reconstruct the real historical global request constraint, preserving rows.
+        conn.execute_batch("DROP TABLE http_turn_requests;
+          ALTER TABLE write_holds RENAME TO fixture_v8_holds;
+          CREATE TABLE write_holds(user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+           request_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('in_flight','needs_review')),
+           reason TEXT NOT NULL CHECK(reason IN ('request_in_flight','backend_outcome_unknown','gateway_restarted')),
+           admitted_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
+          INSERT INTO write_holds SELECT * FROM fixture_v8_holds;
+          DROP TABLE fixture_v8_holds;").unwrap();
+    }
+
+    #[test]
+    fn http_identity_is_atomic_with_hold_and_survives_settlement_review_and_restart() {
+        let fixture = Fixture::new();
+        let r = &fixture.registry;
+        let alice = r.add_user("alice").unwrap();
+        let bob = r.add_user("bob").unwrap();
+        let a = principal(r, &alice);
+        let b = principal(r, &bob);
+        let id = Uuid::new_v4();
+        let session = format!("http:{}", Uuid::new_v4());
+        let hash = "a".repeat(64);
+        assert!(r.admit_http_turn(&a, id, &session, &hash).unwrap());
+        assert!(r.admit_http_turn(&b, id, &session, &hash).unwrap());
+        assert!(!r.admit_http_turn(&a, id, &session, &hash).unwrap());
+        assert_eq!(
+            r.admit_http_turn(&a, id, &session, &"b".repeat(64))
+                .unwrap_err()
+                .downcast_ref::<HttpAdmissionError>(),
+            Some(&HttpAdmissionError::IdentityConflict)
+        );
+        assert!(r.admit_write(&a, Uuid::new_v4()).is_err());
+        r.recover_writes().unwrap();
+        assert_eq!(r.reserved_http_backends().unwrap(), vec!["alice", "bob"]);
+        r.finish_write(a.user_id, id, true).unwrap();
+        assert!(r
+            .list()
+            .unwrap()
+            .iter()
+            .find(|u| u.user_id == a.user_id)
+            .unwrap()
+            .hold
+            .is_some());
+        r.clear_review(a.user_id, "Original backend inspected; no replay")
+            .unwrap();
+        assert_eq!(r.reserved_http_backends().unwrap(), vec!["bob"]);
+        let reopened = Registry::open(&r.path).unwrap();
+        assert_eq!(
+            reopened
+                .http_turn_identity(&a, id, false)
+                .unwrap()
+                .map(|i| i.hash),
+            Some(hash.clone())
+        );
+        assert!(!reopened.admit_http_turn(&a, id, &session, &hash).unwrap());
+        assert!(reopened
+            .list()
+            .unwrap()
+            .iter()
+            .find(|u| u.user_id == a.user_id)
+            .unwrap()
+            .hold
+            .is_none());
+        assert_eq!(
+            reopened.http_turn_catalog(&a, 1, 0).unwrap().0[0].id,
+            id.to_string()
+        );
+    }
+
+    #[test]
+    fn http_admission_failed_audit_rolls_back_both_identity_and_hold() {
+        let fixture = Fixture::new();
+        let r = &fixture.registry;
+        let user = r.add_user("alice").unwrap();
+        let p = principal(r, &user);
+        r.connection().unwrap().execute_batch("CREATE TRIGGER fixture_fail_http_audit BEFORE INSERT ON audit_events WHEN NEW.action='http_turn_admitted' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let id = Uuid::new_v4();
+        assert!(r
+            .admit_http_turn(&p, id, &format!("http:{}", Uuid::new_v4()), &"a".repeat(64))
+            .is_err());
+        assert!(r.http_turn_identity(&p, id, false).unwrap().is_none());
+        assert!(r.list().unwrap()[0].hold.is_none());
+    }
+
+    #[test]
+    fn http_live_permissions_and_tenant_catalog_are_rechecked() {
+        let fixture = Fixture::new();
+        let r = &fixture.registry;
+        let alice = r.add_user("alice").unwrap();
+        let bob = r.add_user_with_access("bob", true).unwrap();
+        let a = principal(r, &alice);
+        let b = principal(r, &bob);
+        let id = Uuid::new_v4();
+        let session = format!("http:{}", Uuid::new_v4());
+        assert!(r
+            .admit_http_turn(&b, id, &session, &"a".repeat(64))
+            .is_err());
+        r.admit_http_turn(&a, id, &session, &"a".repeat(64))
+            .unwrap();
+        assert!(r.http_turn_identity(&b, id, false).unwrap().is_none());
+        assert!(r.http_turn_catalog(&b, 50, 0).unwrap().0.is_empty());
+        r.revoke(alice.key_id).unwrap();
+        assert!(r.http_turn_identity(&a, id, false).is_err());
+        assert!(r.http_turn_catalog(&a, 50, 0).is_err());
+        assert!(r
+            .admit_http_turn(&a, Uuid::new_v4(), &session, &"a".repeat(64))
+            .is_err());
+        for (limit, offset) in [(0, 0), (51, 0), (1, 10001)] {
+            assert!(r.http_turn_catalog(&b, limit, offset).is_err());
+        }
+    }
+
+    #[test]
+    fn http_permanent_capacity_is_per_user_and_never_reserves_a_rejected_hold() {
+        let fixture = Fixture::new();
+        let r = &fixture.registry;
+        let alice = r.add_user("alice").unwrap();
+        let bob = r.add_user("bob").unwrap();
+        let mut c = r.connection().unwrap();
+        let tx = c.transaction().unwrap();
+        for _ in 0..10000 {
+            tx.execute(
+                "INSERT INTO http_turn_requests VALUES(?1,?2,?3,?4,0)",
+                params![
+                    alice.user_id.to_string(),
+                    Uuid::new_v4().to_string(),
+                    format!("http:{}", Uuid::new_v4()),
+                    "a".repeat(64)
+                ],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let a = principal(r, &alice);
+        let id = Uuid::new_v4();
+        let s = format!("http:{}", Uuid::new_v4());
+        assert_eq!(
+            r.admit_http_turn(&a, id, &s, &"a".repeat(64))
+                .unwrap_err()
+                .downcast_ref::<HttpAdmissionError>(),
+            Some(&HttpAdmissionError::Full)
+        );
+        assert!(r.list().unwrap().iter().all(|u| u.hold.is_none()));
+        assert!(r
+            .admit_http_turn(&principal(r, &bob), id, &s, &"b".repeat(64))
+            .unwrap());
+        let (page, more) = r.http_turn_catalog(&a, 50, 9950).unwrap();
+        assert_eq!(page.len(), 50);
+        assert!(!more);
+        assert!(c
+            .execute(
+                "DELETE FROM http_turn_requests WHERE user_id=?1",
+                [alice.user_id.to_string()]
+            )
+            .is_err());
+        assert!(c
+            .execute("UPDATE http_turn_requests SET created_ms=1", [])
+            .is_err());
+    }
+
+    #[test]
+    fn http_schema_eight_migrates_seven_and_rejects_changed_schema_without_new_hold() {
+        let fixture = Fixture::new();
+        let r = &fixture.registry;
+        let alice = r.add_user("alice").unwrap();
+        let p = principal(r, &alice);
+        let id = Uuid::new_v4();
+        r.admit_write(&p, id).unwrap();
+        let c = r.connection().unwrap();
+        downgrade_before_http(&c);
+        c.execute_batch("PRAGMA user_version=7").unwrap();
+        drop(c);
+        let migrated = Registry::open(&r.path).unwrap();
+        assert_eq!(
+            migrated.list().unwrap()[0]
+                .hold
+                .as_ref()
+                .unwrap()
+                .request_id,
+            id
+        );
+        assert!(migrated.http_turn_catalog(&p, 20, 0).unwrap().0.is_empty());
+        migrated
+            .connection()
+            .unwrap()
+            .execute_batch("DROP TRIGGER http_turn_requests_immutable")
+            .unwrap();
+        assert!(Registry::open(&r.path).is_err());
     }
 
     fn wecom_binding(registry: &Registry, user: Uuid, number: u32) -> WecomBindingSummary {
@@ -2814,6 +3198,7 @@ mod tests {
         if version < 6 {
             downgrade_before_feishu(conn, version);
         } else {
+            downgrade_before_http(&conn);
             conn.execute_batch("DROP TABLE wecom_bindings").unwrap();
             conn.pragma_update(None, "user_version", version).unwrap();
         }
@@ -2908,7 +3293,7 @@ mod tests {
                     .unwrap()
                     .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                7
+                SCHEMA_VERSION
             );
         }
     }
@@ -3325,6 +3710,7 @@ mod tests {
     }
 
     fn downgrade_before_feishu(conn: &Connection, version: i64) {
+        downgrade_before_http(&conn);
         conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings")
             .unwrap();
         if version < 5 {
@@ -3975,6 +4361,7 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
+            downgrade_before_http(&conn);
             conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
                 .unwrap();
             if version < 4 {
@@ -4042,6 +4429,7 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
+            downgrade_before_http(&conn);
             conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings")
                 .unwrap();
             if version < 4 {
@@ -4697,6 +5085,7 @@ mod tests {
                 serde_json::to_value(registry.audit_list(alice.user_id, 0, 100, true).unwrap())
                     .unwrap();
             let conn = registry.connection().unwrap();
+            downgrade_before_http(&conn);
             conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
@@ -4760,6 +5149,7 @@ mod tests {
             let registry = &fixture.registry;
             let user = registry.add_user("alice").unwrap();
             let conn = registry.connection().unwrap();
+            downgrade_before_http(&conn);
             conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings")
                 .unwrap();
             if version < 3 {
@@ -5416,6 +5806,7 @@ mod tests {
         let bindings = registry.list_telegram_bindings().unwrap();
         let conn = registry.connection().unwrap();
         let audits: String = conn.query_row("SELECT group_concat(action || coalesce(note,''), ';') FROM audit_events ORDER BY seq", [], |row| row.get(0)).unwrap();
+        downgrade_before_http(&conn);
         conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=2;").unwrap();
         drop(conn);
         assert!(registry.authenticate(&active.token).is_err());
@@ -5465,6 +5856,7 @@ mod tests {
         let registry = &fixture.registry;
         let active = registry.add_user("alice").unwrap();
         let conn = registry.connection().unwrap();
+        downgrade_before_http(&conn);
         conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1; CREATE TRIGGER api_key_access_immutable BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT,'migration conflict'); END;").unwrap();
         // The v2 schema and v3 column are created before the v3 trigger conflicts.
         // Both must be rolled back together with user_version.
@@ -5988,6 +6380,7 @@ mod tests {
             .unwrap();
         // No bindings exist. Removing the v2/v3/v4 objects reconstructs the exact
         // v1 schema with genuine keys, revoked state, audit and pending work.
+        downgrade_before_http(&conn);
         conn.execute_batch("DROP TABLE wecom_bindings; DROP TABLE feishu_bindings; DROP TABLE discord_bindings; DROP TABLE slack_bindings; DROP TABLE telegram_bindings; DROP INDEX users_identity_backend; DROP TRIGGER api_key_access_immutable; ALTER TABLE api_keys DROP COLUMN read_only; PRAGMA user_version=1;").unwrap();
         drop(conn);
         assert!(

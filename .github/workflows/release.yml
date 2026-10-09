@@ -17,6 +17,7 @@ on:
       - 'tests/http_stream.py'
       - 'tests/http_turn_catalog.py'
       - 'tests/http_turn_cli.py'
+      - 'tests/tenant_http_turns.py'
       - 'tests/turn_stream.cjs'
       - 'tests/turn_stream_browser.cjs'
       - 'tests/web_stream.py'
@@ -72,6 +73,7 @@ jobs:
           python3 tests/http_stream.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_catalog.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_cli.py "target/$TARGET/release/jiaclaw"
+          python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist

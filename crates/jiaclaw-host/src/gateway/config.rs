@@ -34,6 +34,9 @@ pub struct Config {
     /// Opt in to user-owned cron on backends configured in gateway-driven mode.
     #[serde(default)]
     pub scheduled_jobs: bool,
+    /// Explicit original HTTP admissions; JSON only, with permanent registry identity.
+    #[serde(default)]
+    pub tracked_turns: bool,
     /// Dedicated Telegram private-chat installations, authorized by immutable registry bindings.
     #[serde(default)]
     pub telegram: Vec<TelegramConfig>,

@@ -806,3 +806,33 @@ HTTP目录原四组增补实际历史删除后的永久身份/清理标志/原GE
 最终本地默认并行1210 Rust（396/123/691）、fmt/必需Clippy/locked build通过，冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 的八套相关进程回归（http_turn_cli/http_turns/http_turn_catalog/http_stream/cli_stream/e2e/mcp/installer）全部通过，其中维护六组包含实际非WAL拒绝。跨平台完整35套、Linux浏览器/真实Docker和四优化候选已接入强制CI，最终固定head资格按本批PR交付记录逐项核对；未以旧head或本地范围代替。
 
 首版 `53be3f4` 的Linux CI在维护第六组fixture `PRAGMA journal_mode=DELETE` 处报 `database is locked`，前五组已通过，后续旧套件跳过；失败[作业113952164189](https://github.com/StateKnot/JiaClaw/actions/runs/37969489857/job/113952164189)日志SHA256 `ed54575837d9c3fae9890f1673df272035129bd86f8c567c0732b95e18d36e0c`。已直接验证SQLite连接上下文只结束事务、不关闭连接，维护fixture使用明确close释放自身SQL/账本读连接，不再依赖不同Python版本的循环GC。全部断言/六组/SQL6秒与CLI10秒预算保持原样；同一冻结production binary六组复验通过，生产源码/依赖/二进制未改。修订fixture的新head完整CI与四平台资格另计，不将首版部分成功代替最终验收。
+
+
+## 停机 HTTP 维护最终 CI 回填
+
+PR #98 最终 head `c639255b2f126a67ae8eeb84b7c78a4a17455272`、tree `382c4242481ed684ed0f9a65eeaff9808116849e`，实际 merge `477c0856fba5ffef8b8c93c78e68be592bccea88` 的父提交为 base `1072719fbfc3662b60f78f0ea2fa7b97215698d4` 和最终 head。前述本机1210 Rust/八进程与冻结binary字节保持一致。
+
+[CI 37970714259](https://github.com/StateKnot/JiaClaw/actions/runs/37970714259) 与[候选 37970714302](https://github.com/StateKnot/JiaClaw/actions/runs/37970714302) 七必需作业全部SUCCESS；Linux1211/macOS1210 Rust、两主平台各35必需Python，Linux五浏览器及真实Docker、独立container非root/只读根/限额卷/ENOSPC均通过。四优化候选均实际通过维护六组、CLI/HTTP/stream各七组、目录四组、parser和归档安装十三项；公开Release作业SKIPPED，PR保持draft/未合并。
+
+| 候选 | 实际 tar.gz SHA256 | 官方作业 |
+|---|---|---|
+| aarch64-apple-darwin | `7c159d1f46e688b883b7a3ec154fcd244e0f9a5ddc9c4061961a8b1592715a6a` | 113956845446 |
+| x86_64-apple-darwin | `b6623751b60a65cebb6254e723858f124a917b4b2d9645ec36421e4b09ced3d7` | 113956845880 |
+| aarch64-unknown-linux-gnu | `d5f52b522e57df8c46d8dc714c83014b65d907f2dc37848ad4a688f5a19163bd` | 113956845970 |
+| x86_64-unknown-linux-gnu | `d554bba034f00b7411172b4e369116047340fb29b324d3b8616ea02381258361` | 113956846013 |
+
+首版53be3f4的非WAL fixture失败与最终明确关闭连接的修订分开保留；后续成功不证明首次快照调度根因。最终源与PR正文已读回核对，没有把旧失败/部分作业或未审draft当作最终资格。
+
+## 独立用户 HTTP 原请求批次
+
+新增[租户 JSON 原请求](tenant-http-turns.md)：私有模式握手、个人Key授权、同事务永久身份/用户hold、固定一次PUT、旧身份只GET、有限控制/执行owner、持久取消与人工审核。registry v8保留原历史并把write_holds的请求唯一性改为按用户，防止两个独立用户的同UUID互相影响。单实例/租户SSE、StateKnot durable、stdio/外部工具及真实供应商资格分别保留。
+
+真实新fixture在上一批冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 上，以有效同一配置明确拒绝启动：`tracked HTTP turns are not qualified for gateway-driven tenant backends`。此前一次fixture遗漏必需description字段和一次沙箱不允许loopback监听的失败不计为能力复现。开发中同UUID双用户单元测试实际发现旧全局hold唯一约束，v8事务迁移后两用户独立准入通过；旧1..7迁移fixture重建真实历史约束，不只改版本号。
+
+完整本机默认并行1218 Rust（396/123/699）、fmt、必需Clippy通过；第一次未提升本机监听权限的完整Rust有41项回环相关失败，不计作代码资格，权限下完整重跑成功。新增进程六组初验已通过，涵盖只读部分正文提前拒绝、原UUID/哈希/模型ledger、用户隔离/永久目录、取消hold、真实网关与后端SIGKILL、后台库丢失后零重放、审计失败原子回滚和启动/运行时模式漂移拒绝。最终冻结binary、相关既有进程、固定head完整七CI与四平台优化候选另行资格化；不借用首轮或PR98成功。
+
+资源复核补新增第七组：实际后端总预算30秒、网关原观察期限10秒，观察超时须保留全局/后端执行容量，控制查询仍可证明原owner活动；重启按持久hold恢复容量，关闭功能开关也不能旁路，完成原请求后仅人工空闲核对/clear与再次重启才可重领。此前首版38444de二进制的六组和旧回归不代替此修订最终资格。没有放宽后端/观察/fixture期限，新增有限容量语义正在重新固定源码验收。
+
+第七组在首版38444de冻结binary上实际复现：原后端active=true且网关已到10秒观察期限，新的用户PUT得到503（进入了后端模式握手），而应因仍保留全局容量返回429。资源修订的同场景七组实际通过，包括关闭功能、重启重建及核对后再次重启；该before日志不含第七组后续断言成功，不将它记为完整初版通过。源码最终完整资格重新计算。
+
+最终资源修订的生产源码完整1218 Rust（396/123/699）和必需Clippy再次通过。冻结交付binary SHA256 `a1a2c2923a7d222866884729c384073bb970c211f48ec853cec5814f1b1727a3`，新七组已在同源码构建上通过，并在该冻结字节上重新执行17套相关进程；初版38444de的17套成功仅保留为历史，不计作新binary最终通过。本批七官方CI/两平台36套/四优化候选接线已包含新七组，固定head资格待官方完整核对。

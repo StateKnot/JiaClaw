@@ -1000,6 +1000,8 @@ mod tests {
                 timeout: Duration::from_secs(180),
                 control: Arc::new(Semaphore::new(1)),
                 scheduled_jobs: false,
+                tracked_turns: false,
+                reserved_turns: std::sync::atomic::AtomicUsize::new(0),
                 telegram: Some(runtime),
                 slack: None,
                 discord: None,
