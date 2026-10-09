@@ -3,21 +3,26 @@
 
 //! Reviewed, read-only `StateKnot` Streamable HTTP MCP bindings.
 
-use crate::{Tool, ToolRegistry};
+use crate::{
+    schema_work::{process_workers, SchemaPhase, SchemaWorkers},
+    Tool, ToolRegistry,
+};
 use async_trait::async_trait;
 use jiaclaw_core::{JiaClawError, McpConfig, McpServerConfig};
 use serde_json::{json, Value};
 use stateknot_integrations::{
     mcp_tool_descriptor_digest, AnonymousMcpAuthorization, ApiKey, McpClient,
-    McpClientAuthorizationProvider, McpClientIdentity, McpClientOptions, McpTool, McpToolCall,
-    ProviderEndpoint, ProviderHttpOptions, StaticMcpBearerAuthorization,
+    McpClientAuthorizationProvider, McpClientIdentity, McpClientOptions, McpCompleteToolResult,
+    McpTool, McpToolCall, ProviderEndpoint, ProviderHttpOptions, StaticMcpBearerAuthorization,
 };
 use std::{collections::HashSet, sync::Arc, time::Duration};
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::Instant,
+};
 
 const MAX_ARGUMENT_BYTES: usize = 16 * 1024;
 const MAX_SCHEMA_BYTES: usize = 32 * 1024;
-
 fn configuration(message: &str) -> JiaClawError {
     JiaClawError::Configuration(format!("MCP: {message}"))
 }
@@ -186,6 +191,14 @@ pub(crate) async fn initialize(
     config: &McpConfig,
     registry: &mut ToolRegistry,
 ) -> Result<(), JiaClawError> {
+    initialize_with_workers(config, registry, process_workers()).await
+}
+
+async fn initialize_with_workers(
+    config: &McpConfig,
+    registry: &mut ToolRegistry,
+    workers: &SchemaWorkers,
+) -> Result<(), JiaClawError> {
     if config.servers.len() > 8 {
         return Err(configuration("at most eight servers are allowed"));
     }
@@ -207,7 +220,8 @@ pub(crate) async fn initialize(
     }
     let mut pending: Vec<Box<dyn Tool>> = Vec::new();
     for server in &config.servers {
-        let tools = tokio::time::timeout(Duration::from_secs(server.timeout_secs), async {
+        let deadline = Instant::now() + Duration::from_secs(server.timeout_secs);
+        let tools = tokio::time::timeout_at(deadline, async {
             let client = connect(server).await?;
             let catalog = client
                 .list_tools()
@@ -219,17 +233,28 @@ pub(crate) async fn initialize(
                 let tool = catalog
                     .find(&policy.name)
                     .ok_or_else(|| configuration("an approved tool is missing or was rejected"))?;
-                let digest = mcp_tool_descriptor_digest(tool.raw())
-                    .map_err(|_| configuration("invalid tool descriptor"))?;
-                if digest.to_string() != policy.descriptor_sha256 {
-                    return Err(configuration("reviewed tool descriptor has changed"));
-                }
-                let input = compile_schema(tool.input_schema())?;
-                let output = tool.output_schema().map(compile_schema).transpose()?;
                 let description = tool.description().unwrap_or("Reviewed read-only MCP tool");
                 if description.len() > 4096 {
                     return Err(configuration("tool description exceeds limit"));
                 }
+                let reviewed = tool.clone();
+                let expected_digest = policy.descriptor_sha256.clone();
+                let (input, output) = workers
+                    .run(SchemaPhase::Initialization, deadline, move || {
+                        let digest = mcp_tool_descriptor_digest(reviewed.raw())
+                            .map_err(|_| configuration("invalid tool descriptor"))?;
+                        if digest.to_string() != expected_digest {
+                            return Err(configuration("reviewed tool descriptor has changed"));
+                        }
+                        let input = Arc::new(compile_schema(reviewed.input_schema())?);
+                        let output = reviewed
+                            .output_schema()
+                            .map(compile_schema)
+                            .transpose()?
+                            .map(Arc::new);
+                        Ok((input, output))
+                    })
+                    .await?;
                 tools.push(Box::new(RemoteTool {
                     name: format!("mcp_{}_{}", server.name, policy.alias),
                     description: description.to_owned(),
@@ -237,6 +262,7 @@ pub(crate) async fn initialize(
                     tool: tool.clone(),
                     input,
                     output,
+                    workers: workers.clone(),
                     concurrency: concurrency.clone(),
                     deadline: Duration::from_secs(server.timeout_secs),
                     maximum_result_bytes: server.max_response_bytes,
@@ -296,8 +322,9 @@ struct RemoteTool {
     description: String,
     client: McpClient,
     tool: McpTool,
-    input: jsonschema::Validator,
-    output: Option<jsonschema::Validator>,
+    input: Arc<jsonschema::Validator>,
+    output: Option<Arc<jsonschema::Validator>>,
+    workers: SchemaWorkers,
     concurrency: Arc<Semaphore>,
     deadline: Duration,
     maximum_result_bytes: usize,
@@ -316,22 +343,27 @@ impl Tool for RemoteTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let _permit = self
+        // One budget spans validation, transport and output acceptance; no phase resets it.
+        let deadline = Instant::now() + self.deadline;
+        let permit = self
             .concurrency
-            .try_acquire()
+            .clone()
+            .try_acquire_owned()
             .map_err(|_| execution("server is busy; request was not submitted"))?;
-        if !args.is_object()
-            || !bounded_tree(&args, MAX_ARGUMENT_BYTES)
-            || !self.input.is_valid(&args)
-        {
-            return Err(execution(
-                "arguments do not match the approved schema or size/depth limits",
-            ));
+        let input = self.input.clone();
+        let (args, permit) = self
+            .workers
+            .run(SchemaPhase::Arguments, deadline, move || {
+                validate_arguments(args, &input, permit)
+            })
+            .await?;
+        if Instant::now() >= deadline {
+            return Err(SchemaPhase::Arguments.failure("deadline exceeded"));
         }
         // Exactly one HTTP submission. No protocol/auth/transport replay or automatic MRTR resume.
         // Cancellation drops the HTTP future; it cannot undo a request already received remotely.
         let response =
-            tokio::time::timeout(self.deadline, self.client.call_tool_once(&self.tool, args))
+            tokio::time::timeout_at(deadline, self.client.call_tool_once(&self.tool, args))
                 .await
                 .map_err(|_| execution("call deadline exceeded; remote outcome is unknown"))?
                 .map_err(|_| {
@@ -348,41 +380,72 @@ impl Tool for RemoteTool {
             }
             _ => return Err(execution("unsupported tool outcome")),
         };
-        if result.is_error() {
-            return Err(execution("remote tool reported an execution error"));
-        }
-        if result
-            .content()
-            .iter()
-            .any(|block| block["type"] != "text" || !block["text"].is_string())
-        {
+        let output = self.output.clone();
+        let maximum_result_bytes = self.maximum_result_bytes;
+        self.workers
+            .run(SchemaPhase::Result, deadline, move || {
+                // Keep the server slot with its output worker even if the waiter is cancelled.
+                let _permit = permit;
+                validate_result(&result, output.as_deref(), maximum_result_bytes)
+            })
+            .await
+    }
+}
+
+fn validate_arguments(
+    args: Value,
+    input: &jsonschema::Validator,
+    permit: OwnedSemaphorePermit,
+) -> Result<(Value, OwnedSemaphorePermit), JiaClawError> {
+    if !args.is_object() || !bounded_tree(&args, MAX_ARGUMENT_BYTES) || !input.is_valid(&args) {
+        return Err(execution(
+            "arguments do not match the approved schema or size/depth limits",
+        ));
+    }
+    // This worker only validates. Only its live async waiter can submit HTTP afterwards.
+    Ok((args, permit))
+}
+
+fn validate_result(
+    result: &McpCompleteToolResult,
+    output: Option<&jsonschema::Validator>,
+    maximum_result_bytes: usize,
+) -> Result<String, JiaClawError> {
+    if result.is_error() {
+        return Err(execution("remote tool reported an execution error"));
+    }
+    if result
+        .content()
+        .iter()
+        .any(|block| block["type"] != "text" || !block["text"].is_string())
+    {
+        return Err(execution(
+            "only text content is supported; no resource was fetched",
+        ));
+    }
+    if let Some(schema) = output {
+        if result.structured_content().is_none_or(|value| {
+            !bounded_tree(value, maximum_result_bytes) || !schema.is_valid(value)
+        }) {
             return Err(execution(
-                "only text content is supported; no resource was fetched",
+                "structured output does not match the approved schema",
             ));
         }
-        if let Some(schema) = &self.output {
-            if result.structured_content().is_none_or(|value| {
-                !bounded_tree(value, self.maximum_result_bytes) || !schema.is_valid(value)
-            }) {
-                return Err(execution(
-                    "structured output does not match the approved schema",
-                ));
-            }
-        }
-        let encoded = serde_json::to_string(&json!({
-            "content": result.content(), "structuredContent": result.structured_content(),
-        }))
-        .map_err(|_| execution("could not encode tool result"))?;
-        if encoded.len() > self.maximum_result_bytes {
-            return Err(execution("encoded result exceeds limit"));
-        }
-        Ok(encoded)
     }
+    let encoded = serde_json::to_string(&json!({
+        "content": result.content(), "structuredContent": result.structured_content(),
+    }))
+    .map_err(|_| execution("could not encode tool result"))?;
+    if encoded.len() > maximum_result_bytes {
+        return Err(execution("encoded result exceeds limit"));
+    }
+    Ok(encoded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema_work::MAX_SCHEMA_WORKERS;
     use crate::{AgentConfig, JiaClawAgent};
     use jiaclaw_core::{McpToolConfig, McpToolEffect};
     use std::sync::Mutex;
@@ -391,6 +454,15 @@ mod tests {
         net::TcpListener,
         task::JoinHandle,
     };
+
+    // Independent test instances exercise the production admission path without competing
+    // with unrelated parallel tests for the process singleton's four slots.
+    async fn initialize(
+        config: &McpConfig,
+        registry: &mut ToolRegistry,
+    ) -> Result<(), JiaClawError> {
+        initialize_with_workers(config, registry, &SchemaWorkers::new()).await
+    }
 
     #[derive(Clone, Copy)]
     enum Mode {
@@ -403,6 +475,7 @@ mod tests {
         BadOutput,
         InputRequired,
         Delay,
+        Held,
         Unauthorized,
         Redirect,
     }
@@ -411,6 +484,7 @@ mod tests {
         url: String,
         descriptor: Value,
         requests: Arc<Mutex<Vec<(Value, String)>>>,
+        response_gate: Arc<Semaphore>,
         task: JoinHandle<()>,
     }
 
@@ -426,6 +500,8 @@ mod tests {
             let url = format!("http://{}/mcp/", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let recorded = requests.clone();
+            let response_gate = Arc::new(Semaphore::new(0));
+            let gate = response_gate.clone();
             let mut descriptor = json!({
                 "name": "lookup", "description": "Look up a reviewed inventory record.",
                 "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "maxLength": 100}},
@@ -478,6 +554,9 @@ mod tests {
                     let is_call = request["method"] == "tools/call";
                     if is_call && matches!(mode, Mode::Delay) {
                         tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    if is_call && matches!(mode, Mode::Held) {
+                        gate.acquire().await.unwrap().forget();
                     }
                     if is_call && matches!(mode, Mode::Unauthorized | Mode::Redirect) {
                         let status = if matches!(mode, Mode::Unauthorized) {
@@ -555,6 +634,7 @@ mod tests {
                 url,
                 descriptor,
                 requests,
+                response_gate,
                 task,
             }
         }
@@ -598,6 +678,385 @@ mod tests {
             .await
             .unwrap();
         }
+
+        async fn binding(&self, deadline: Duration) -> RemoteTool {
+            let config = self.config();
+            let server = &config.servers[0];
+            let client = connect(server).await.unwrap();
+            let catalog = client.list_tools().await.unwrap();
+            let tool = catalog.find(&server.tools[0].name).unwrap().clone();
+            assert_eq!(
+                mcp_tool_descriptor_digest(tool.raw()).unwrap().to_string(),
+                server.tools[0].descriptor_sha256
+            );
+            RemoteTool {
+                name: "mcp_inventory_lookup".into(),
+                description: tool.description().unwrap().to_owned(),
+                input: Arc::new(compile_schema(tool.input_schema()).unwrap()),
+                output: tool
+                    .output_schema()
+                    .map(compile_schema)
+                    .transpose()
+                    .unwrap()
+                    .map(Arc::new),
+                client,
+                tool,
+                workers: SchemaWorkers::new(),
+                concurrency: Arc::new(Semaphore::new(1)),
+                deadline,
+                maximum_result_bytes: server.max_response_bytes,
+            }
+        }
+    }
+
+    // A real worker barrier, with automatic release on assertion failure. On these
+    // current-thread runtimes it occupies the sole blocking thread, without stopping I/O/timers.
+    struct BlockingGate {
+        release: Option<std::sync::mpsc::Sender<()>>,
+        task: JoinHandle<()>,
+    }
+
+    impl BlockingGate {
+        async fn start() -> Self {
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let task = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+            });
+            ready.await.unwrap();
+            Self {
+                release: Some(release),
+                task,
+            }
+        }
+
+        async fn finish(mut self) {
+            self.release.take().unwrap().send(()).unwrap();
+            (&mut self.task).await.unwrap();
+        }
+    }
+
+    impl Drop for BlockingGate {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    fn single_thread_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap()
+    }
+
+    async fn wait_for_slots(slots: &Semaphore, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while slots.available_permits() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual worker admission/completion did not reach the expected capacity");
+    }
+
+    #[test]
+    fn running_validation_keeps_ownership_while_its_current_thread_timer_expires() {
+        single_thread_runtime().block_on(async {
+            let workers = SchemaWorkers::new();
+            let server = Arc::new(Semaphore::new(1));
+            let permit = server.clone().try_acquire_owned().unwrap();
+            let input = compile_schema(&json!({"type": "object"})).unwrap();
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let running = workers.clone();
+            let waiter = tokio::spawn(async move {
+                running
+                    .run(
+                        SchemaPhase::Arguments,
+                        Instant::now() + Duration::from_millis(100),
+                        move || {
+                            let validated = validate_arguments(json!({}), &input, permit)?;
+                            started.send(()).unwrap();
+                            // The test extends the actual admitted validation job after its pure
+                            // validation step. Dropping the sender also releases it on assertion failure.
+                            let _ = wait.recv();
+                            Ok(validated)
+                        },
+                    )
+                    .await
+            });
+            ready.await.unwrap();
+            let error = tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("deadline exceeded; request was not submitted"));
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS - 1);
+            assert_eq!(server.available_permits(), 0);
+            release.send(()).unwrap();
+            wait_for_slots(&workers.slots, MAX_SCHEMA_WORKERS).await;
+            wait_for_slots(&server, 1).await;
+        });
+    }
+
+    #[test]
+    fn four_worker_admissions_remain_owned_after_all_waiters_are_cancelled() {
+        single_thread_runtime().block_on(async {
+            let workers = SchemaWorkers::new();
+            let gate = BlockingGate::start().await;
+            let mut waiters = Vec::new();
+            for _ in 0..MAX_SCHEMA_WORKERS {
+                let workers = workers.clone();
+                waiters.push(tokio::spawn(async move {
+                    workers
+                        .run(
+                            SchemaPhase::Arguments,
+                            Instant::now() + Duration::from_secs(5),
+                            || Ok(()),
+                        )
+                        .await
+                }));
+            }
+            wait_for_slots(&workers.slots, 0).await;
+            for waiter in waiters {
+                waiter.abort();
+                assert!(waiter.await.unwrap_err().is_cancelled());
+            }
+            assert_eq!(workers.slots.available_permits(), 0);
+            let forbidden = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let probe = forbidden.clone();
+            let error = workers
+                .run(
+                    SchemaPhase::Arguments,
+                    Instant::now() + Duration::from_secs(5),
+                    move || {
+                        probe.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("capacity busy; request was not submitted"));
+            assert!(!forbidden.load(std::sync::atomic::Ordering::SeqCst));
+            gate.finish().await;
+            wait_for_slots(&workers.slots, MAX_SCHEMA_WORKERS).await;
+        });
+    }
+
+    #[test]
+    fn input_worker_timeout_and_cancellation_retain_server_slot_and_never_submit() {
+        single_thread_runtime().block_on(async {
+            for cancel in [false, true] {
+                let fixture = Fixture::start(Mode::Json, false).await;
+                let binding = Arc::new(fixture.binding(Duration::from_millis(100)).await);
+                let gate = BlockingGate::start().await;
+                let running = binding.clone();
+                let waiter =
+                    tokio::spawn(async move { running.execute(json!({"query": "abc"})).await });
+                wait_for_slots(&binding.workers.slots, MAX_SCHEMA_WORKERS - 1).await;
+                assert_eq!(binding.concurrency.available_permits(), 0);
+                if cancel {
+                    waiter.abort();
+                    assert!(waiter.await.unwrap_err().is_cancelled());
+                } else {
+                    // This timer must fire on the same current-thread executor as the call.
+                    let error = tokio::time::timeout(Duration::from_secs(1), waiter)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap_err();
+                    assert!(error.to_string().contains(
+                        "argument validation deadline exceeded; request was not submitted"
+                    ));
+                }
+                assert_eq!(
+                    binding.workers.slots.available_permits(),
+                    MAX_SCHEMA_WORKERS - 1
+                );
+                let error = binding.execute(json!({"query": "abc"})).await.unwrap_err();
+                assert!(error.to_string().contains("server is busy"));
+                assert_eq!(fixture.call_count(), 0);
+                gate.finish().await;
+                wait_for_slots(&binding.workers.slots, MAX_SCHEMA_WORKERS).await;
+                wait_for_slots(&binding.concurrency, 1).await;
+                assert_eq!(fixture.call_count(), 0);
+                // Invalid arguments exercise the recovered slot without a remote side effect.
+                assert!(binding
+                    .execute(json!({}))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("arguments"));
+            }
+        });
+    }
+
+    #[test]
+    fn output_worker_timeout_and_cancellation_retain_server_slot_without_replay() {
+        single_thread_runtime().block_on(async {
+            for cancel in [false, true] {
+                let fixture = Fixture::start(Mode::Held, false).await;
+                let binding = Arc::new(fixture.binding(Duration::from_secs(1)).await);
+                let running = binding.clone();
+                let waiter = tokio::spawn(async move {
+                    running.execute(json!({"query": "abc"})).await
+                });
+                fixture.wait_for_call().await;
+                let gate = BlockingGate::start().await;
+                fixture.response_gate.add_permits(1);
+                wait_for_slots(&binding.workers.slots, MAX_SCHEMA_WORKERS - 1).await;
+                if cancel {
+                    waiter.abort();
+                    assert!(waiter.await.unwrap_err().is_cancelled());
+                } else {
+                    let error = tokio::time::timeout(Duration::from_secs(2), waiter)
+                        .await.unwrap().unwrap().unwrap_err();
+                    assert!(error.to_string().contains("output validation deadline exceeded; remote call completed but output was not accepted"));
+                }
+                assert_eq!(binding.concurrency.available_permits(), 0);
+                assert_eq!(binding.workers.slots.available_permits(), MAX_SCHEMA_WORKERS - 1);
+                assert!(binding.execute(json!({"query": "abc"})).await.unwrap_err().to_string().contains("server is busy"));
+                assert_eq!(fixture.call_count(), 1);
+                gate.finish().await;
+                wait_for_slots(&binding.workers.slots, MAX_SCHEMA_WORKERS).await;
+                wait_for_slots(&binding.concurrency, 1).await;
+                assert_eq!(fixture.call_count(), 1);
+            }
+        });
+    }
+
+    #[test]
+    fn schema_startup_deadline_does_not_publish_or_release_queued_work() {
+        single_thread_runtime().block_on(async {
+            let fixture = Fixture::start(Mode::Json, false).await;
+            let mut config = fixture.config();
+            config.servers[0].timeout_secs = 1;
+            let workers = SchemaWorkers::new();
+            let gate = BlockingGate::start().await;
+            let mut registry = ToolRegistry::new();
+            let error = initialize_with_workers(&config, &mut registry, &workers)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, JiaClawError::Configuration(_)));
+            assert!(error.to_string().contains("deadline exceeded"));
+            assert!(registry.list().is_empty());
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS - 1);
+            assert_eq!(fixture.call_count(), 0);
+            gate.finish().await;
+            wait_for_slots(&workers.slots, MAX_SCHEMA_WORKERS).await;
+            assert!(registry.list().is_empty());
+            initialize_with_workers(&config, &mut registry, &workers)
+                .await
+                .unwrap();
+            assert!(registry.get("mcp_inventory_lookup").is_some());
+            assert_eq!(fixture.call_count(), 0);
+        });
+    }
+
+    #[tokio::test]
+    async fn failed_worker_releases_global_and_server_capacity_and_redacts_public_error() {
+        for phase in [
+            SchemaPhase::Initialization,
+            SchemaPhase::Arguments,
+            SchemaPhase::Result,
+            SchemaPhase::NativeDefinitions,
+            SchemaPhase::NativeBatch,
+        ] {
+            let workers = SchemaWorkers::new();
+            let server = Arc::new(Semaphore::new(1));
+            let permit = server.clone().try_acquire_owned().unwrap();
+            let error = workers
+                .run::<(), _>(phase, Instant::now() + Duration::from_secs(5), move || {
+                    let _permit = permit;
+                    panic!("synthetic-worker-panic");
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("worker failed"));
+            assert!(!error.to_string().contains("synthetic-worker-panic"));
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS);
+            assert_eq!(server.available_permits(), 1);
+            assert_eq!(
+                matches!(error, JiaClawError::Configuration(_)),
+                matches!(
+                    phase,
+                    SchemaPhase::Initialization | SchemaPhase::NativeDefinitions
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn schema_capacity_failure_before_and_after_http_has_distinct_outcome() {
+        single_thread_runtime().block_on(async {
+            let fixture = Fixture::start(Mode::Held, false).await;
+            let binding = Arc::new(fixture.binding(Duration::from_secs(5)).await);
+            let all = binding
+                .workers
+                .slots
+                .clone()
+                .try_acquire_many_owned(u32::try_from(MAX_SCHEMA_WORKERS).unwrap())
+                .unwrap();
+            let error = binding.execute(json!({"query": "abc"})).await.unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("capacity busy; request was not submitted"));
+            assert_eq!(fixture.call_count(), 0);
+            assert_eq!(binding.concurrency.available_permits(), 1);
+            drop(all);
+            let running = binding.clone();
+            let waiter =
+                tokio::spawn(async move { running.execute(json!({"query": "abc"})).await });
+            fixture.wait_for_call().await;
+            let all = binding
+                .workers
+                .slots
+                .clone()
+                .try_acquire_many_owned(u32::try_from(MAX_SCHEMA_WORKERS).unwrap())
+                .unwrap();
+            fixture.response_gate.add_permits(1);
+            let error = waiter.await.unwrap().unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("capacity busy; remote call completed but output was not accepted"));
+            assert_eq!(fixture.call_count(), 1);
+            assert_eq!(binding.concurrency.available_permits(), 1);
+            drop(all);
+        });
+    }
+
+    #[test]
+    fn argument_work_and_http_share_the_original_call_deadline() {
+        single_thread_runtime().block_on(async {
+            let fixture = Fixture::start(Mode::Held, false).await;
+            let binding = Arc::new(fixture.binding(Duration::from_millis(1200)).await);
+            let gate = BlockingGate::start().await;
+            let running = binding.clone();
+            let started = std::time::Instant::now();
+            let waiter =
+                tokio::spawn(async move { running.execute(json!({"query": "abc"})).await });
+            wait_for_slots(&binding.workers.slots, MAX_SCHEMA_WORKERS - 1).await;
+            // Deliberately spend half the call budget after confirmed input admission.
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            gate.finish().await;
+            fixture.wait_for_call().await;
+            let error = waiter.await.unwrap().unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("call deadline exceeded; remote outcome is unknown"));
+            assert!(started.elapsed() < Duration::from_millis(1600));
+            assert_eq!(fixture.call_count(), 1);
+            assert_eq!(binding.concurrency.available_permits(), 1);
+        });
     }
 
     #[tokio::test]
@@ -703,40 +1162,7 @@ mod tests {
     #[tokio::test]
     async fn deadline_is_finite_and_not_retried() {
         let fixture = Fixture::start(Mode::Delay, false).await;
-        let config = fixture.config();
-        let server = &config.servers[0];
-        // Exercise the adapter's one-second call deadline after real, bounded
-        // discovery. Schema/bootstrap scheduling is not the behavior under test.
-        let (client, tool, input, output) =
-            tokio::time::timeout(Duration::from_secs(server.timeout_secs), async {
-                let client = connect(server).await.unwrap();
-                let catalog = client.list_tools().await.unwrap();
-                let tool = catalog.find(&server.tools[0].name).unwrap().clone();
-                assert_eq!(
-                    mcp_tool_descriptor_digest(tool.raw()).unwrap().to_string(),
-                    server.tools[0].descriptor_sha256
-                );
-                let input = compile_schema(tool.input_schema()).unwrap();
-                let output = tool
-                    .output_schema()
-                    .map(compile_schema)
-                    .transpose()
-                    .unwrap();
-                (client, tool, input, output)
-            })
-            .await
-            .expect("bounded MCP fixture discovery failed");
-        let binding = RemoteTool {
-            name: format!("mcp_{}_{}", server.name, server.tools[0].alias),
-            description: tool.description().unwrap().to_owned(),
-            client,
-            tool,
-            input,
-            output,
-            concurrency: Arc::new(Semaphore::new(server.max_concurrent_calls)),
-            deadline: Duration::from_secs(1),
-            maximum_result_bytes: server.max_response_bytes,
-        };
+        let binding = fixture.binding(Duration::from_secs(1)).await;
         let start = std::time::Instant::now();
         let error = binding.execute(json!({"query": "abc"})).await.unwrap_err();
         assert!(error

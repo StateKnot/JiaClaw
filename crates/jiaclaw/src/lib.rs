@@ -37,6 +37,7 @@ mod mcp;
 mod memory;
 mod memory_io;
 mod native_agent;
+mod schema_work;
 pub use mcp::inspect_mcp_server;
 mod model_calls;
 mod provider;

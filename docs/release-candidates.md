@@ -10,6 +10,21 @@ PR 的版本来自 Cargo metadata，不把 `refs/pull/.../merge` 当成版本。
 
 父引用直接读取 commit 对象原始 header，不能使用浅克隆边界下会隐藏父提交的 `git show %P`。安装验收另外创建真实两提交仓库和 depth=1 的本地 clone，证明图遍历返回空列表时仍保存真实父 SHA；不要求为记录元数据下载父对象。本批中间 head `e009f809` 的 Linux arm64 安装虽通过，JSON 曾因该问题漏记 parents，审核拒绝将其作为完整证据；修订后所有平台须用最终 head 重新验收。
 
+## PR #91 最终固定提交验收
+
+2026-10-09 已完成 [PR #91](https://github.com/StateKnot/JiaClaw/pull/91) 最终 head `4edc04c868b07096a4ebe367d5b0083988822d72` 的证据核对。[普通 CI 37885182415](https://github.com/StateKnot/JiaClaw/actions/runs/37885182415) 的 Linux/macOS/真实容器三作业与 [Release qualification 37885182482](https://github.com/StateKnot/JiaClaw/actions/runs/37885182482) 的四个原生平台均成功；PR 的发布作业明确 skipped。实际测试 merge `35d4802a49ba189501d9d42597bd5aab4e2df9ef` 的 raw parents 为 base `08bff050ef3d7d1c77b2b95fe91880318de65cb2` 与该 head，tree 与 head 均为 `8760e3555772ff01671d38e9724defdc754b6ca7`。
+
+每个平台完整 Rust、优化构建、实际二进制 E2E/MCP 与最终归档的13项安装验收通过；原生二进制架构匹配，七天资产 JSON 保存准确 raw parents。普通两平台另通过30套进程验收，Linux 的四套 Chromium、真实 Docker exec、镜像隔离/重启/真实 ENOSPC 也成功。没有将中间失败/取消作业作为最终资格。
+
+| 原生资产 | 最终归档 SHA256 |
+|---|---|
+| Linux arm64 | `82eaf4dedc88257b9052bd8aba347ade74863891388794e4c48d5a5d9be4b16b` |
+| Linux x86_64 | `dfcebfeb5442760c72c04757528c366b34c5b461b53d968b171d70bc70d664de` |
+| macOS arm64 | `b2b72b308e8b599cec7f696555e7e2a08470aeb11d06be0eabd16f37d390d212` |
+| macOS x86_64 | `2404ec27dca53b3ecfb822af1de4e81d55cf30fe10b68daf7c47545011a7b4da` |
+
+归档摘要取自各原生 CI 的实际打包/安装 JSON 与完整 job log，Actions 官方 artifact ZIP 摘要与各上传日志匹配。本机下载这些 CI ZIP 的存储连接不可用，未声称独立本机逐字节复核 CI ZIP；前述本机冻结优化二进制与归档是独立实测资产。PR 仍为 OPEN/draft，无自动合并、tag、公开 Release 或推送镜像。该证据只认证上述固定 tree，后续 MCP 修改另跑最终提交的完整门槛。
+
 本机复现（示例为 macOS arm64，使用当前 Cargo 版本生成资产名）：
 
 ```sh

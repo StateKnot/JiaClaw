@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-09 05:17 UTC 本批官方 main/no-release/#31/#41/PR #40 提交与检查未变；已有付款/额度未启动的失败证据没有新变化。MCP Schema worker 修复属于 JiaClaw 应用生命周期，单次 HTTP、只读授权、原生工具循环和网关未知 hold 不扩权；不重复提交 issue，生产流式、durable 原生输出与真实供应商资格仍开放。
+
 2026-10-09 再核对 main/no-release/#31/#41/PR #40 固定合同未变，不重复提交 issue。[组织迁移与最终 CI 回填](organization-migration.md)记录实际安装接线；未知请求、流式资源与真实供应商认证边界仍保留。
 
 核对时间：2026-10-08 15:36 UTC；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。

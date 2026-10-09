@@ -2,6 +2,17 @@
 
 2026-10-09 组织迁移、PR #89/#90 最终三项 CI 回填与安装接线见[组织迁移验收](organization-migration.md)，本批[候选发布](release-candidates.md)独立记录实际归档/原生四平台范围，以及操作 owner 显式释放工作区写锁的生产修复和取消/dup边界。以下各批历史结果仍保留对应固定提交和认证范围。
 
+## MCP Schema worker 所有权与总期限
+
+2026-10-09，本机 macOS arm64、Rust1.88.0、锁定依赖。实际 HTTP MCP 的摘要/编译/参数/输出 Schema 工作与 Brokerrouter 原生定义编译/整批预检接入同一进程四槽阻塞池。MCP 单次调用在输入、HTTP、输出全程使用原始截止；每次原生纯前置校验有30秒等待上限。取消/到期不释放仍在运行或已准入排队的 worker 容量；MCP CPU 阶段的服务器许可也由真实 worker 持有。迟到结果不接受，校验 worker 无工具/网络执行句柄，不会在等待者消失后后台派发。
+
+- 最终生产源码默认并行 Rust **1179 passed**（387/123/669），0 failed；真实 Docker ignored 专项继续由独立 Linux CI 执行。
+- MCP **19项**，含八个新增生命周期测试：实际运行 worker 与单 async 线程定时器、四槽已准入排队在取消后继续持有、输入 timeout/cancel 后零 POST、输出 timeout/cancel 后服务器容量保留且不重放、启动总期限/原子注册、五种阶段的 panic 释放与公开错误脱敏、HTTP 前后容量错误的不同结果，以及输入工作与 HTTP 共用原始1200ms预算。已有外部引用/正则预算、MRTR、JSON/分片 SSE、鉴权/redirect、输出 Schema 和传输取消保持通过。
+- fmt、diff whitespace、必需 Clippy correctness/suspicious 与 locked build 通过；仍有既存 style/pedantic warnings，不声称全仓 warning-free。
+- 同一冻结二进制 SHA256 `02a6b81218499c5d295df01830ba1837791cc02499cb14be435b617d8dc7043b`：`tests/mcp.py`、`tests/native_tools.py`、`tests/e2e.py` 与 `tests/model_calls.py` 七组全部通过，真实 inspect/CLI/HTTP/SQLite、Bearer、原生整批拒绝零副作用、既有副作用后的中断/历史、收据取消与持久未知 hold 均覆盖。
+
+本批自查保留整个批次先验权限/ID/参数检查、单次 HTTP、完整描述 pin、只读 effect、离线引用与限额，不扩权/重放。不能强制终止运行中的 CPU job，也未将任意 Schema 变成 CPU 进程沙箱；资源所有权与有限等待合同见[MCP](mcp.md)和[原生工具](native-tools.md)。上述是本机最终源码与整机 fixture 证据；跨平台全量/容器/四原生候选仍须本批 draft PR 的最终固定 head checks 全部通过，PR #91 的已成功 tree 不能代替本批源码。未使用真实平台/付费凭据，stdio/外部写入、durable/委派、生产流式、钉钉完整安装/WhatsApp、供应商、语义质量及多模态仍开放。
+
 2026-10-02，本机 macOS arm64，Rust 1.85.0，锁定 Cargo.lock。
 
 | 验收 | 结果 | 证据范围 |
