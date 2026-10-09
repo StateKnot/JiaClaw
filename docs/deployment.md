@@ -92,6 +92,6 @@ CLI `session export/import` 与 HTTP 导入导出提供会话级迁移。serve �
 
 ## 发布审核
 
-CI 对 Linux/macOS 运行完整测试、真实二进制 E2E、安装 fixture；Linux 额外做 Docker 沙箱与镜像启动。`v<workspace.version>` tag 才触发四平台 release build，验证版本后上传二进制、校验和并创建 draft。发布维护者审核 CI、平台 ABI、上游模型认证与恢复证据后再公开。安装脚本只使用显式版本，不自动执行下载内容的初始化或覆盖配置。
+CI 对 Linux/macOS 运行完整测试、真实二进制 E2E、安装 fixture；Linux 额外做 Docker 沙箱与镜像启动。[候选发布工作流](release-candidates.md)在源码或发布链路 PR 上执行四平台原生 Release build，验证实际归档、安装、回滚及源码/资产摘要，只保留 Actions artifact。`v<workspace.version>` tag 复用同一构建步骤，四项均成功才创建带校验和的 draft。发布维护者审核固定源码与各平台证据、ABI、上游模型认证与恢复证据后再公开；不同提交的旧成功不能替代。安装脚本只使用显式版本，不自动执行下载内容的初始化或覆盖配置。
 
 钉钉部署仅支持已发布的企业内部应用机器人，HTTP 回调登记为 `/hooks/dingtalk`。安装身份 `robotCode:corpId` 与 `app_id`（Client ID）分别配置；secret 默认关闭，使用 `JIACLAW_DINGTALK_APP_SECRET` 提供 Client Secret。入站成员、会话与主动发送目的地须分别列入精确白名单。`delivered` 表示平台返回有效接收回执，不代表终端显示或已读；平台配额、回调重投和真实消息展示仍需在目标安装验收，见[钉钉指南](dingtalk.md)。
