@@ -508,12 +508,13 @@ function turnControls() {
   const held = !!pendingTurn;
   $('new-session').disabled ||= held;
   $('delete-session').disabled ||= held;
-  $('message').disabled ||= held || (trackedSession() && !turnCapabilities?.streaming);
+  $('message').readOnly = held;
+  $('message').disabled ||= trackedSession() && !turnCapabilities?.streaming;
   $('send').disabled ||= held || (trackedSession() && !turnCapabilities?.streaming);
   for (const element of $('turn-permissions').querySelectorAll('input')) element.disabled = busy || held;
   $('turn-tracking').hidden = !held;
   $('turn-check').disabled = !held || turnControlBusy;
-  $('turn-cancel').disabled = !held || turnControlBusy || !turnCapabilities?.enabled || !['running',undefined].includes(pendingTurn?.receipt?.state);
+  $('turn-cancel').disabled = !held || turnControlBusy || !turnCapabilities?.enabled || pendingTurn?.receipt?.state !== 'running';
   $('turn-retry').disabled = !held || turnControlBusy || busy || !!turnConnection || !pendingTurn?.body || !turnCapabilities?.streaming || !!pendingTurn?.receipt;
   $('turn-finish').disabled = !turnResolved() || !!turnConnection || turnControlBusy;
   $('turn-review').hidden = pendingTurn?.receipt?.state !== 'needs_review' && !(pendingTurn?.receipt?.state === 'running' && !pendingTurn?.active);
@@ -627,8 +628,8 @@ async function streamTurn(attempt) {
     if (response.headers.get('content-type')?.toLowerCase() !== 'text/event-stream; charset=utf-8') throw new Error('流式响应类型异常');
     const parser = new Turn.Parser(attempt, attempt.body.enabled_tools, value => {
       if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
-      if (value.event === 'admitted') { attempt.receipt = value.receipt; attempt.active = true; $('turn-state').textContent = '已准入原请求；临时预览尚未保存。'; }
-      else if (value.event === 'done') { attempt.receipt = value.receipt; done = true; }
+      if (value.event === 'admitted') { attempt.receipt = value.receipt; attempt.active = true; $('turn-state').textContent = '已准入原请求；临时预览尚未保存。'; controls(); }
+      else if (value.event === 'done') { attempt.receipt = value.receipt; done = true; controls(); }
       else if (value.event === 'error') throw new Error('交付停止，原模型或工具可能仍在结算。');
       else render(value);
     });
@@ -660,8 +661,16 @@ $('turn-check').addEventListener('click', () => turnControl(attempt => checkTurn
 $('turn-cancel').addEventListener('click', () => turnControl(async attempt => {
   const value = await turnApi('/api/turns/' + attempt.id + '/cancel', 'POST');
   showTurnSnapshot(value, attempt);
-  // Commit explicit cancel intent before stopping this browser's delivery.
-  turnConnection?.abort(); status('已记录停止请求；当前模型或工具可能继续结算，请核对原编号。');
+  // A terminal commit may win this race. Report only the persisted intent,
+  // and reconcile its stored history before allowing the draft to be cleared.
+  if (value.receipt.state !== 'running') {
+    await checkTurn(attempt);
+    status($('turn-state').textContent + (value.receipt.cancel_requested ? ' · 已记录停止请求' : ' · 本次未新增停止意图'), value.receipt.state === 'needs_review');
+  } else if (value.receipt.cancel_requested) {
+    turnConnection?.abort(); status('已记录停止请求；当前模型或工具可能继续结算，请核对原编号。');
+  } else {
+    throw new Error('服务端未确认停止意图；请核对原请求。');
+  }
 }));
 $('turn-retry').addEventListener('click', () => {
   const attempt = pendingTurn;
@@ -677,6 +686,7 @@ $('turn-abandon').addEventListener('click', () => turnControl(async attempt => {
 }));
 $('turn-finish').addEventListener('click', () => {
   if (!turnResolved() || turnConnection) return;
+  if (pendingTurn.body && $('message').value.trim() === pendingTurn.body.prompt) $('message').value = '';
   pendingTurn = null; history.replaceState(null,'',location.pathname + location.search); controls();
 });
 addEventListener('pagehide', () => turnConnection?.abort());
