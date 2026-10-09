@@ -81,7 +81,7 @@ async function api(path, method = 'GET', body, optional = false, timeout = 0, ma
     if (owner !== identity && !(error instanceof ApiError && error.code === 401)) throw new StaleIdentity();
     if (error.name === 'AbortError') throw new Error('请求超时；服务器可能仍在处理，请刷新并核对结果。');
     throw error;
-  } finally { if (timer) clearTimeout(timer); }
+  } finally { if (timer) clearTimeout(timer); controller.abort(); }
 }
 async function boundedJson(response, maximum, owner) {
   const reader = response.body?.getReader();
@@ -128,12 +128,19 @@ function renderMessages(messages) {
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 async function refresh() { sessionList = (await api('/api/sessions', 'GET', undefined, false, 15000, 4 * 1024 * 1024)).sessions; if (trackedSession() && !sessionList.some(s => s.id === selected)) sessionList.unshift({id:selected, message_count:0}); renderSessions(); }
-async function select(id) {
-  const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, false, 15000, 26 * 1024 * 1024);
+async function select(id, allowMissing = false) {
+  const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, allowMissing ? [404] : false, 15000, 26 * 1024 * 1024);
+  if (session === null && allowMissing) {
+    // A permanent turn receipt does not guarantee its history survived TTL or
+    // deletion. Do not create an empty virtual session or preserve another view.
+    selected = null; $('session-title').textContent = '原请求历史不可读取';
+    showView('chat'); renderMessages([]); renderSessions(); return false;
+  }
   if (session.id !== id || !Array.isArray(session.messages) || session.messages.length > 51 || session.messages.some(m => typeof m.content !== 'string')) throw new Error('会话响应异常');
   selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
   showView('chat');
   renderMessages(session.messages); renderSessions(); status(readOnly ? '已连接 · 只读访问 · 会话就绪' : '已连接 · 会话就绪');
+  return true;
 }
 async function task(fn, replace = false) {
   if (busy && !replace) return;
@@ -562,9 +569,10 @@ async function checkTurn(attempt = pendingTurn) {
   if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
   showTurnSnapshot(value, attempt);
   if (value.receipt.session_committed) {
-    await select(value.receipt.session_id); await refresh();
+    const historyRead = await select(value.receipt.session_id, true); await refresh();
+    if (!historyRead) $('turn-state').textContent += ' · 会话历史不可读取；原收据保留，未恢复历史';
     // Only a verified original receipt plus authoritative stored history clears a draft.
-    if (value.receipt.state === 'completed' && attempt.body && $('message').value.trim() === attempt.body.prompt) $('message').value = '';
+    if (historyRead && value.receipt.state === 'completed' && attempt.body && $('message').value.trim() === attempt.body.prompt) $('message').value = '';
   }
   status($('turn-state').textContent, value.receipt.state === 'needs_review');
 }

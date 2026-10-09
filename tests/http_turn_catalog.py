@@ -71,6 +71,10 @@ try:
         count = len(fixture.posts)
         assert app.http('/api/turns/' + identities[0])[1]['receipt']['result_purged']
         assert len(fixture.posts) == count
+        assert app.http('/api/sessions/' + app.http('/api/turns/' + identities[0])[1]['receipt']['session_id'], 'DELETE')[1]['success'] is True
+        assert any(r['id'] == identities[0] and r['result_purged'] and r['session_committed'] for r in page(app, '?state=all&limit=50')['turns'])
+        assert app.http('/api/turns/' + identities[0])[1]['receipt']['state'] == 'completed'
+        assert len(fixture.posts) == count
         print('PASS catalog 2: real committed and purged identities, stable tie paging, large private result omitted without replay', flush=True)
 
         gate = fixture.gate('catalog-cancel')

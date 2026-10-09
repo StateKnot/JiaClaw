@@ -118,6 +118,20 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   await page.unroute('**/api/turns?**');
   console.log('PASS web stream 11: lost fragment recovers original via authenticated catalog then GET, bounded pages, held identity and malformed catalog cannot replay or expose payload');
 
+  // Completed identities outlive both the TTL/deleted history and retained reply.
+  const completedSession=submissions[0].body.session_id, beforeHistoryLookup=submissions.length;
+  const removed=await fetch(base+'/api/sessions/'+encodeURIComponent(completedSession),{method:'DELETE',headers:{Authorization:'Bearer '+token}});assert.strictEqual(removed.status,200);assert.strictEqual((await removed.json()).success,true);
+  const purged=await fetch(base+'/api/turns/'+id+'/result',{method:'DELETE',headers:{Authorization:'Bearer '+token}});assert.strictEqual(purged.status,200);assert((await purged.json()).receipt.result_purged);
+  const absent=await fetch(base+'/api/sessions/'+encodeURIComponent(completedSession),{headers:{Authorization:'Bearer '+token}});assert.strictEqual(absent.status,404);await absent.text();
+  await page.locator('#turn-catalog-refresh').click();await page.waitForFunction(()=>document.getElementById('turn-catalog-status').textContent.startsWith('第 1'));
+  const oldButton=page.locator(`[data-turn-id="${id}"]`);
+  if(!await oldButton.count()){await page.locator('#turn-catalog-next').click();await page.waitForFunction(()=>document.getElementById('turn-catalog-status').textContent.startsWith('第 6'));}
+  await oldButton.click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled&&(document.getElementById('turn-state').textContent.includes('正文已清理')));
+  assert.strictEqual(await page.locator('#turn-finish').isDisabled(),false);assert((await page.locator('#turn-state').textContent()).includes('历史不可读取'));
+  assert.strictEqual(await page.locator('#messages .message').count(),0);assert.strictEqual(await page.locator('#session-title').textContent(),'原请求历史不可读取');await finish();
+  assert.strictEqual(submissions.length,beforeHistoryLookup);assert.strictEqual((await ctl('status','stream-tools')).count,2);
+  console.log('PASS web stream 12: actual completed history deletion and result purge retain original identity, no fabricated history or permanent UI hold, no replay');
+
   // Malformed transport is a frontend contract fault fixture, not a supplier test.
   await page.route('**/api/turns/*/stream',route=>{const body=route.request().postDataJSON(),rid=new URL(route.request().url()).pathname.split('/')[3];const receipt={id:rid,session_id:body.session_id,request_hash:'a'.repeat(64),context_hash:'b'.repeat(64),created_ms:1,finished_ms:null,state:'running',session_committed:false,error:null,result:null,result_purged:false,cancel_requested:false,reviewed_ms:null,review_note:null};const values=[{event:'admitted',protocol:1,receipt},{event:'model_started',turn_id:rid,operation_id:rid,remote_id:rid,round:0,model:'fixture'},{event:'preview',round:0,text:'<img src=x onerror="window.STREAM_XSS=1">临时🦀'}];return route.fulfill({status:202,headers:{'Content-Type':'text/event-stream; charset=utf-8'},body:values.map(v=>`event: ${v.event}\ndata: ${JSON.stringify(v)}\n\n`).join('')+'event: done\ndata: {"event":"done"'});});
   await begin('browser-corrupt');await page.waitForFunction(()=>document.getElementById('status').textContent.includes('勿重复执行'));
