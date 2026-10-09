@@ -56,6 +56,8 @@ jiaclaw chat --config /private/config.toml --session personal --stream '你好' 
 
 ## 验收与上游门槛
 
+[PR #93](https://github.com/StateKnot/JiaClaw/pull/93) 最终 head `43cff1267ded9afeaf7a8dc1a028f82127e56eb4` 的七项必需 checks 均 SUCCESS：两平台完整普通 CI、实际容器和四平台优化候选/安装；公开 Release draft 步骤按 PR 条件 SKIPPED。[固定源码与资产回填](validation.md#单次-cli-真流式最终-ci-回填)保留首轮 Intel fixture 失败和最终证据。HTTP/Web 尚未增加真正流式入口。
+
 ```sh
 cargo test --workspace --locked
 cargo build --locked -p jiaclaw-host

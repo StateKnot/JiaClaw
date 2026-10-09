@@ -7,7 +7,7 @@
 | 1 | copy | 已迁移共享 I/O 与写锁；PR #89 三项最终 CI 通过 | [复制合同](workspace-files.md)：十二个主文件工具共用八槽；copy/file_copy 共用目录句柄、1024字节/64组件路径与单链接普通文件检查，最多实际读取64 MiB+1拦截源增长；原子不覆盖/覆盖和四种参数组合。历史见[验证记录](validation.md#复制共享-io-与写锁批次)，最终三作业成功见[回填](organization-migration.md#上一批-copy-最终验收) |
 | 1a | stat / tree | 实现并本机验收 | [只读元数据与目录树](workspace-files.md#stat--tree-元数据与目录树合同)：独立配置开关、目录句柄、叶子链接不跟随、严格参数及完整路径/扫描/输出预算；本机 884 项 Rust、新工具六组与七套既有进程回归通过，PR #79 最终 head 的 Linux/macOS 与真实容器 CI 已通过 |
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
-| 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
+| 3 | SQLite 会话 | 实现并进程级验收；本批修复取消时的存储所有权 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复；[取消合同](session-cancellation.md)覆盖排队、写锁争用、导入/删除和失败后释放 |
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；本批补齐进程四槽 Schema worker 与原始总期限，超时后容量归实际工作持有，固定提交 CI 见本批交付；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
 | 5 | Web 工作台 | 聊天/会话、受限任务管理及管理员发件箱已实现并本地验收 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
@@ -17,7 +17,7 @@
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
 | 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)、[Discord](tenant-discord.md)、[飞书](tenant-feishu.md)已分别通过 PR #71/#80/#81/#82/#83/#84/#85 最终 CI。[独立用户企业微信](tenant-wecom.md) 已通过 PR #87 固定 head 的本地十组、旧21套与三项最终 CI；独立用户钉钉、WhatsApp 及真实供应商联合认证待完成；standalone 企业微信启动门槛的 PR #86 CI 不代替新私有队列/后端验收 |
-| 11 | 真正流式 | 单次 CLI 已接线；固定 head 验收见本批，HTTP/Web/租户与上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，现有 HTTP 完成后分块仍非 token streaming |
+| 11 | 真正流式 | 单次 CLI 已通过 PR #93 最终七项 CI；HTTP/Web/租户与上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)与[四平台回填](validation.md#单次-cli-真流式最终-ci-回填)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，现有 HTTP 完成后分块仍非 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
 | 14 | 打包发布 | PR #91 固定 head 四平台候选验收已通过；公开发布待审核 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。head `4edc04c868b07096a4ebe367d5b0083988822d72` 的七项 checks 全部成功，四份实际归档/源码证据见候选合同；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
@@ -87,3 +87,8 @@ PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 第 11 组千条准入意外收
 跨连接屏障提交的两平台全部Cargo/30进程测试（含copy七组、飞书11组）均已通过，但macOS整项作业在所有步骤及清理结束时碰到30分钟总预算，官方明确timeout、整体取消。只修CI完整test作业容量为有上限40分钟，全部生产/fixture截止和30强制步骤不改；生产binary/依赖/源码及飞书fixture保持冻结。新提交的三项CI仍须完整通过，不能把旧head的步骤成功当作整体资格；见[作业容量修订](validation.md#复制批次完整-ci-作业容量修订)。剩余能力/真实认证和用户的自动回访暂停约束不变。
 
 2026-10-09 PR #91 补齐四平台优化候选、实际归档安装及源码/资产摘要；首轮 macOS 打包实测的 AppleDouble 已由生产单文件打包移除。普通 CI 暴露的 Discord 跨连接观察改为真实100 Continue，原期限和精确429/408/401保留，修订后三项旧 head CI通过。随后 Linux 候选并发追加和本机 mkdir 的 busy 揭示 close-only 工作区锁生命周期缺口；不可克隆操作 owner guard 现于真正结束时显式解锁，取消 worker 仍持锁到发布。默认并行1171项Rust、fmt及必需Clippy已通过；同一优化二进制的文件/记忆/MCP/E2E及实际归档11套通过，四平台固定 head 仍需独立最终验收，不借用旧 head 成功。剩余 stdio/外部写入、durable委派、生产流式、独立用户钉钉/WhatsApp、真实供应商和多模态仍依上述合同推进。
+
+
+2026-10-09 本轮回填 PR #93 最终七项 CI、四平台优化候选实际归档安装与真实旧账本迁移。StateKnot main 已推进到 `288cfc634574cc314e748f0ebeaa48ca418435ed`，#156 时间戳解析修复及嵌套 JSON 测试没有改变现有 HTTP MCP 合同；十三项 checks 成功，alpha.1/#140 不变。Brokerrouter main/#31/#41/PR40 未变化，十二项 failure 仍因付款/额度未启动。
+
+HTTP/Web 流式准备发现并实际修复[存储取消竞态](session-cancellation.md)：原聊天提交、导入、删除及拒绝写入的四项回归均复现提前释放 turn 锁，现将所有权移交实际 blocking storage。最终六项边界测试、本地1194 Rust/必需检查、同一冻结 binary 七套相关进程回归通过；本批固定head跨平台/候选CI仍须完整验收。没有增加HTTP/Web真流式或durable恢复能力。下一步在此已序列化存储基础上接通持久HTTP请求身份、有限事件交付/核对、取消/停机与真实浏览器，再分别认证上游资源修复和供应商。现有回访ACTIVE，每批结束后30分钟继续，不合并或公开发布。
