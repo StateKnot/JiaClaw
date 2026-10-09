@@ -354,12 +354,20 @@ pub(super) async fn submit(
         )
         .await;
     });
-    let receipt = receiver.await.map_err(|_| {
+    let (receipt, created) = receiver.await.map_err(|_| {
         AppError::Internal(
             "http_turn_owner_failed; GET the original identity before proceeding".into(),
         )
     })??;
-    Ok(receipt_response(&state, &receipt, StatusCode::ACCEPTED))
+    Ok(receipt_response(
+        &state,
+        &receipt,
+        if created {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -372,7 +380,7 @@ async fn supervise(
     guard: tokio::sync::OwnedMutexGuard<()>,
     progress: ChatProgress,
     mut events: ChatEvents,
-    admitted: oneshot::Sender<Result<Receipt, AppError>>,
+    admitted: oneshot::Sender<Result<(Receipt, bool), AppError>>,
     owner: Arc<Owner>,
 ) {
     let deadline = Instant::now() + owner.runtime.budget;
@@ -392,7 +400,7 @@ async fn supervise(
             return;
         }
     };
-    let _ = admitted.send(Ok(receipt));
+    let _ = admitted.send(Ok((receipt, created)));
     if !created {
         return;
     }
