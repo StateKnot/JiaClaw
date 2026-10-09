@@ -1,6 +1,6 @@
 # JiaClaw 里程碑与验收
 
-2026-10-09 已核对组织迁移、PR #58–#90 当前 head CI 与两框架固定合同，见[迁移与最终验收](organization-migration.md)。StateKnot #155 的未发布 Core 输出 Schema/fuzz 变更不改变当前 alpha.1 HTTP MCP 字节。现有回访按用户“恢复”指令保持启用，仍在每批完成后 30 分钟继续；下文旧暂停记录属于当时状态。此表以交付能力为准，不以文档里的设计或存根作为“完成”。
+2026-10-09 已核对组织迁移、PR #58–#91 当前 head CI 与两框架固定合同，见[迁移与最终验收](organization-migration.md)。StateKnot #155 的未发布 Core 输出 Schema/fuzz 变更不改变当前 alpha.1 HTTP MCP 字节。现有回访按用户“恢复”指令保持启用，仍在每批完成后 30 分钟继续；下文旧暂停记录属于当时状态。此表以交付能力为准，不以文档里的设计或存根作为“完成”。
 
 | 顺序 | 能力 | 状态 | 完成标准 / 当前证据 |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | 1a | stat / tree | 实现并本机验收 | [只读元数据与目录树](workspace-files.md#stat--tree-元数据与目录树合同)：独立配置开关、目录句柄、叶子链接不跟随、严格参数及完整路径/扫描/输出预算；本机 884 项 Rust、新工具六组与七套既有进程回归通过，PR #79 最终 head 的 Linux/macOS 与真实容器 CI 已通过 |
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复 |
-| 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
+| 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；本批补齐进程四槽 Schema worker 与原始总期限，超时后容量归实际工作持有，固定提交 CI 见本批交付；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
 | 5 | Web 工作台 | 聊天/会话、受限任务管理及管理员发件箱已实现并本地验收 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
 | 6 | cron 多任务 | 实现；含 Telegram/Slack/Discord/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
@@ -20,7 +20,7 @@
 | 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
-| 14 | 打包发布 | 候选四平台原生 Release 验收链路已接线；PR #91 固定 head 验收后审核公开发布 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。最终固定源码的四平台通过结果以交付 PR checks 为准；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
+| 14 | 打包发布 | PR #91 固定 head 四平台候选验收已通过；公开发布待审核 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。head `4edc04c868b07096a4ebe367d5b0083988822d72` 的七项 checks 全部成功，四份实际归档/源码证据见候选合同；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
 | 15 | 文档与 E2E | 本批覆盖；持续扩充 | 实际配置/备份部署、模型 fixture、SQLite 崩溃、容器和安装；真实渠道及供应商仍需独立联调 |
 
 MCP 之后的功能依赖 durable 身份、授权或 outbox 的应先补底层契约，避免在当前内存执行循环上承诺恢复能力。MCP stdio 与 Brokerrouter 真实工具默认分别跟踪上游 #140 / #31；不复制框架内部实现绕过未通过的生产门槛。
