@@ -60,6 +60,8 @@ jiaclaw model-calls --config /private/config.toml review-clear OPERATION_ID \
 
 ## 认证边界
 
+单次 CLI 的[真实流式](cli-streaming.md)使用同一原始操作与收据 owner；schema2保存 streaming 模式，并对 schema1进行保留原始身份/收据/hold 的原子升级。流式原始正文最多4 MiB、完整收据仍最多2 MiB；GET 恢复额外核对完整 envelope 与精确 usage。HTTP/Web 流式、上游资源修复与真实供应商认证仍独立，不由该接线推定完成。
+
 本能力兼容固定 Brokerrouter main 的文本非流式 GET 状态/结果合同，不依赖未合并的 SSE PR #40 或原生 JSON Schema 议题 #41。[上游消费者指南](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/jiaclaw-consumer-guide.md)、[文本网关合同](https://github.com/StateKnot/Brokerrouter/blob/e01ecb94919d992eb0b74b3db00d70742820b4cc/docs/m2-text-gateway.md)。
 
 本地 `completed` 不是费用主账或工具运行检查点，GET 恢复也不认证真实供应商账单、治理 turn 或完整 durable graph。真正流式、StateKnot durable 和媒体消费者的受信 turn/审批/下载链仍待各自交付与验收；当前差距见[Brokerrouter 状态](brokerrouter-gaps.md)。

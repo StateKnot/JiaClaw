@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-09 06:25 UTC 官方 main/no-release/#31/#41/PR #40 均未变化；本批实际接线[CLI SSE](cli-streaming.md)，使用原始流式正文/模式账本、有界逐事件预览、完整收据和取消后单次结算，不复制上游内部实现。HTTP/Web/租户尚未流式，上游 PR #40 与真实端点认证仍开放，不重复报已有议题。完整候选与进程验收见[验证记录](validation.md)。
+
 2026-10-09 05:17 UTC 本批官方 main/no-release/#31/#41/PR #40 提交与检查未变；已有付款/额度未启动的失败证据没有新变化。MCP Schema worker 修复属于 JiaClaw 应用生命周期，单次 HTTP、只读授权、原生工具循环和网关未知 hold 不扩权；不重复提交 issue，生产流式、durable 原生输出与真实供应商资格仍开放。
 
 2026-10-09 再核对 main/no-release/#31/#41/PR #40 固定合同未变，不重复提交 issue。[组织迁移与最终 CI 回填](organization-migration.md)记录实际安装接线；未知请求、流式资源与真实供应商认证边界仍保留。
@@ -9,7 +11,7 @@
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
 | 文本 Chat Completions | 已支持 | BrokerrouterProvider 接入有界异步非流式请求，无重定向/自动重试 |
-| SSE | 已有协议支持，受端点能力与护栏限制；资源修复在未合并 PR #40 | 尚未接通逐事件读取；现有 API SSE 是完成后分块 |
+| SSE | 已有协议支持，受端点能力与护栏限制；资源修复在未合并 PR #40 | 单次 CLI 已实际接通逐事件读取与收据/取消边界；现有 HTTP SSE 仍是完成后分块，Web/租户与联合认证另计 |
 | embeddings | 已有网关契约 | 已接入显式刷新、私有 SQLite 索引、内容新鲜度校验与持久化调用账本；供应商检索质量待授权验收，见[语义记忆](semantic-memory.md) |
 | 个人配置 `init-personal` | 已实现事务化初始化 | 可按上游消费者指南接入自己的网关 |
 | 工具调用 | 端点能力控制；fixture 已认证 | 已接原生 tools/tool_calls/role:tool 和调用 ID 关联，见[合同与验收](native-tools.md)；缺真实供应商生产默认 |

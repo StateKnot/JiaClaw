@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-09 06:25 UTC 已读取 main `9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f` 的十四项成功检查、alpha.1发布和 #140（OPEN/无回复），均与前批固定合同相同。本批 CLI 流式只使用 Brokerrouter 现成 SSE，保留原 HTTP MCP精确依赖与整批工具授权，不将预览/模型收据作为 StateKnot durable 或外部写入恢复。后续 durable 原生输出仍跟踪 Brokerrouter #41。
+
 2026-10-09 05:17 UTC 本批 main、alpha.1 与 #140 未变，十四项 main checks 仍成功。HTTP MCP 的编译/校验调度和取消所有权是 JiaClaw 应用接线缺口，已按进程四槽 worker 与原始总期限修订，不升级精确 pin、不新增重复框架 issue；固定提交验收见[验证记录](validation.md#mcp-schema-worker-所有权与总期限)。durable、stdio 与真实外部服务器资格仍分别保留。
 
 2026-10-09 03:16 UTC 再核对 main 为 `9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f`，alpha.1/release/#140 不变。[#155](https://github.com/StateKnot/StateKnot/pull/155) 修正 Failure/ToolError/CapabilityLifecycle 六个可选字段的序列化 Schema，并补齐有界 fuzz 与输出 Schema 清单；十四项 main checks 成功。既有输入 pins 与 wire bytes 不变，旧输出 pin 须启动拒绝，后续 typed registry 升级需新 Schema/Tool 版本并保留已准入旧合同，见[固定 RFC-0020](https://github.com/StateKnot/StateKnot/blob/9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f/docs/rfcs/0020-core-optional-output-schemas.md)。仍为未发布源码能力；HTTP MCP 客户端与现有 alpha.1 字节相同，83407字节/SHA256 `0d5887abaeba040784707193c5b99106c8b9d197d8239462f688216afcd07974`。应用不调用 typed registry，保留精确 MCP pin，不将此变化误报为当前适配缺陷。[组织迁移与最终 CI 回填](organization-migration.md)保留实际认证范围。

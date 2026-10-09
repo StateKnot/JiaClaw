@@ -1,5 +1,21 @@
 # 基础能力验收记录
 
+## CLI 真实流式、收据模式与取消
+
+2026-10-09 本批在 PR #92 的已通过 head `b208ea7b4a9fa626f8fee1526e2cb227713d6196` 上实际接通单次 `chat --stream`。严格有界 SSE、原始 stream:true 正文 SHA/operation和持久 remote ID先于预览；完整模型收据后才进入既有整批工具授权。schema2事务升级保留真实 schema1历史身份/收据/unknown，流式GET恢复额外核对 envelope/usage。HTTP/Web/独立用户仍未接流式；[配置与合同](cli-streaming.md)。
+
+最终本机默认并行 locked Rust **1188** 项通过（库396/Core123/Host669；真实Docker1项另在Linux CI执行），fmt及必需Clippy correctness/suspicious通过。新九项库测试覆盖 byte-split Unicode/BOM/CRLF/多行与非法framing、重复null/混合authority、choice/usage/finish/tool/receipt/event/wire预算、GET envelope、有限队列/实际owner、取消后原始receipt提交，以及 schema1真实未知hold/收据/审计的原子保留。既有风格/文档警告保留，没有删减旧测试或延长生产期限。
+
+最终冻结debug二进制 SHA256 `ed9f72937c318216475a5e9423a38671b282b348c40a31772ace74e11b0a53f8` 的 `cli_stream.py` **七组**一次全通过：gated final前真实preview并核对数据库原operation/remote/SHA；大单事件UTF-8分片；模型receipt成功/会话INSERT失败无done；真实两轮file_write与原ID、后项非法整批零效果、工具失败后停止；畸形/重复/缺usage/尾随/断流hold与非法GET usage拒绝；SIGTERM、stdout关闭/实际无reader背压后单次结算无工具、SIGKILL重启hold与GET-only恢复；不支持配置在state/model效果前拒绝。日志不混入stdout。
+
+同一冻结二进制的旧 `model_calls.py` 七组、`mcp.py`、`native_tools.py`、`model_routing.py`和`e2e.py`均通过。业务端点全为一次性localhost fixture，无付费供应商。首轮新fixture缺Agent必填字段而启动拒绝；负例发现日志混入stdout，已修stream专用stderr。工具失败样例改为真实越界拒绝，reader在实际EOF后join；失败日志保留，不放宽断言。
+
+独立迁移验收使用 PR #92 的真实旧二进制创建 schema1：一条 completed 收据和一条带远端 UUID 的 unknown 请求。新二进制实际打开并迁移为 schema2，完整保留请求 IDs/hash、收据、audit 和 unknown hold；hold 拒绝新的 POST，旧二进制拒绝已升级数据库。不是只用新源码重造旧表来验证自己。
+
+初版 head `260c8b4a984694c54605eb4ac2f996ef4fec0cdc` 的候选 CI 在 Intel macOS 暴露旧 MCP 测试的成功阶段超时：解除阻塞后重新初始化仍复用超时负例的1秒配置。测试现拆分配置：受阻负例继续1秒，保留不注册迟到结果、实际工作结束前仍占槽和零工具调用的全部断言；独立成功初始化恢复 fixture 原有30秒配置。生产 deadline 未修改，也未将原先的 CI 失败写成成功。修正后重建并冻结上述新二进制，重新执行全量 Rust、七组流式、既有五套进程回归与真实旧版本迁移；跨平台必须检查修正后最终 head，初版三个候选平台成功不能代替它。
+
+CI实际增加普通Linux/macOS与四平台优化候选的同一CLI验收；本批最终draft PR当前head七项checks/归档证据在该PR交付后独立回填，不借用PR #92成功。官方main/release/#140/#31/#41/PR #40固定合同未变，35个附着开放draft当前head已有成功checks，CodeRabbit status不是代码审查。上游资源修复/真实供应商、durable外部写入/stdio、租户钉钉/WhatsApp、媒体与公开发布仍开放。下一步接完整HTTP/Web流式和浏览器的背压/断线/SQLite提交生命周期，再按依赖推进其余能力。
+
 2026-10-09 组织迁移、PR #89/#90 最终三项 CI 回填与安装接线见[组织迁移验收](organization-migration.md)，本批[候选发布](release-candidates.md)独立记录实际归档/原生四平台范围，以及操作 owner 显式释放工作区写锁的生产修复和取消/dup边界。以下各批历史结果仍保留对应固定提交和认证范围。
 
 ## MCP Schema worker 所有权与总期限

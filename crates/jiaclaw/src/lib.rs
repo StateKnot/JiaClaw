@@ -42,6 +42,8 @@ pub use mcp::inspect_mcp_server;
 mod model_calls;
 mod provider;
 pub use model_calls::ModelCalls;
+mod progress;
+pub use progress::{ChatEvents, ChatProgress, ChatProgressEvent};
 
 mod semantic;
 mod session;
@@ -424,6 +426,47 @@ impl JiaClawAgent {
         request: &ChatRequest,
         purpose: ModelPurpose,
     ) -> Result<ChatResponse, JiaClawError> {
+        self.chat_for_inner(request, purpose, None).await
+    }
+
+    /// Execute a tracked Brokerrouter turn with bounded provisional text delivery.
+    /// Every complete tool batch still passes the same authorization/schema gate.
+    /// Delivery cancellation stops further dispatch; submitted model receipts settle separately.
+    ///
+    /// # Errors
+    /// Explicit Brokerrouter/model_calls configuration, authorization, transport or delivery failure.
+    pub async fn chat_stream_for(
+        &self,
+        request: &ChatRequest,
+        purpose: ModelPurpose,
+        progress: &ChatProgress,
+    ) -> Result<ChatResponse, JiaClawError> {
+        if self.config.provider.provider_type != "brokerrouter" || self.model_calls.is_none() {
+            return Err(JiaClawError::Configuration(
+                "streaming requires Brokerrouter and an explicitly enabled model_calls ledger"
+                    .into(),
+            ));
+        }
+        if !self.tools.list().is_empty()
+            && !self
+                .config
+                .effective_tool_timeout_secs()
+                .is_some_and(|secs| (1..=30).contains(&secs))
+        {
+            return Err(JiaClawError::Configuration(
+                "streaming with tools requires effective tool_timeout_secs in 1..=30".into(),
+            ));
+        }
+        progress.ensure_open()?;
+        self.chat_for_inner(request, purpose, Some(progress)).await
+    }
+
+    async fn chat_for_inner(
+        &self,
+        request: &ChatRequest,
+        purpose: ModelPurpose,
+        progress: Option<&ChatProgress>,
+    ) -> Result<ChatResponse, JiaClawError> {
         if purpose == ModelPurpose::Summary {
             return Err(JiaClawError::InvalidRequest(
                 "summary purpose requires the no-tools summarization path".into(),
@@ -484,6 +527,7 @@ impl JiaClawAgent {
                     &system_prompt,
                     &key,
                     &selection,
+                    progress,
                 )
                 .await
             }
@@ -516,6 +560,18 @@ impl JiaClawAgent {
             response.routing = Some(selection);
         }
         Ok(response)
+    }
+
+    /// Wait for the current bounded model receipt worker during graceful caller shutdown.
+    /// This sends no requests and does not resume tools or a turn.
+    ///
+    /// # Errors
+    /// The supplied grace expires; pending state must be inspected after restart.
+    pub async fn settle_model_calls(&self, grace: std::time::Duration) -> Result<(), JiaClawError> {
+        if let Some(ledger) = &self.model_calls {
+            ledger.settle(grace).await?;
+        }
+        Ok(())
     }
 
     /// A request may narrow the configured registry, never expand it. The empty
@@ -1664,7 +1720,7 @@ mod tests {
                 .routing
                 .select(&agent.config.provider, ModelPurpose::Chat);
             let error = agent
-                .execute_brokerrouter_loop(&request, "fixture", &key, &selection)
+                .execute_brokerrouter_loop(&request, "fixture", &key, &selection, None)
                 .await
                 .unwrap_err();
             assert!(

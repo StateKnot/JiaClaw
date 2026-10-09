@@ -938,12 +938,13 @@ mod tests {
     fn schema_startup_deadline_does_not_publish_or_release_queued_work() {
         single_thread_runtime().block_on(async {
             let fixture = Fixture::start(Mode::Json, false).await;
-            let mut config = fixture.config();
-            config.servers[0].timeout_secs = 1;
+            let config = fixture.config();
+            let mut expiring = config.clone();
+            expiring.servers[0].timeout_secs = 1;
             let workers = SchemaWorkers::new();
             let gate = BlockingGate::start().await;
             let mut registry = ToolRegistry::new();
-            let error = initialize_with_workers(&config, &mut registry, &workers)
+            let error = initialize_with_workers(&expiring, &mut registry, &workers)
                 .await
                 .unwrap_err();
             assert!(matches!(error, JiaClawError::Configuration(_)));
@@ -954,6 +955,9 @@ mod tests {
             gate.finish().await;
             wait_for_slots(&workers.slots, MAX_SCHEMA_WORKERS).await;
             assert!(registry.list().is_empty());
+            // A fresh positive startup uses the fixture's normal configured budget (30s).
+            // The gated negative remains 1s: deadline/no publication/real ownership are unchanged.
+            // Recovery is not a promise that cold HTTP + schema compilation fits in that 1s.
             initialize_with_workers(&config, &mut registry, &workers)
                 .await
                 .unwrap();

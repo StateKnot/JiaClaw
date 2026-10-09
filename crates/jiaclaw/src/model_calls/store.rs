@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, JiaClawError>;
 const APPLICATION_ID: i32 = 0x4a43_4d43;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_DATABASE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RECEIPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OPERATIONS: i64 = 128;
@@ -36,6 +36,7 @@ pub(super) struct NewCall {
     pub round: u32,
     pub model: String,
     pub has_tools: bool,
+    pub streaming: bool,
     pub endpoint_hash: String,
     pub credential_hash: String,
     pub body_hash: String,
@@ -51,6 +52,7 @@ pub(super) struct Operation {
     pub round: u32,
     pub model: String,
     pub has_tools: bool,
+    pub streaming: bool,
     pub endpoint_hash: String,
     pub credential_hash: String,
     pub body_hash: String,
@@ -281,6 +283,7 @@ CREATE TABLE model_calls(
  round INTEGER NOT NULL CHECK(round BETWEEN 0 AND 31),
  model TEXT NOT NULL CHECK(length(CAST(model AS BLOB)) BETWEEN 1 AND 200),
  has_tools INTEGER NOT NULL CHECK(has_tools IN (0,1)),
+ streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1)),
  endpoint_hash TEXT NOT NULL CHECK(length(endpoint_hash)=64),
  credential_hash TEXT NOT NULL CHECK(length(credential_hash)=64),
  body_hash TEXT NOT NULL CHECK(length(body_hash)=64),
@@ -304,7 +307,7 @@ CREATE TABLE model_call_audit(
 );
 ";
 
-const COLUMNS: &str = "id,turn_id,purpose,session_hash,round,model,has_tools,endpoint_hash,credential_hash,body_hash,remote_id,state,recovered";
+const COLUMNS: &str = "id,turn_id,purpose,session_hash,round,model,has_tools,endpoint_hash,credential_hash,body_hash,remote_id,state,recovered,streaming";
 
 fn decode(row: &Row<'_>) -> rusqlite::Result<Operation> {
     let purpose: String = row.get(2)?;
@@ -324,6 +327,7 @@ fn decode(row: &Row<'_>) -> rusqlite::Result<Operation> {
         round: row.get(4)?,
         model: row.get(5)?,
         has_tools: row.get(6)?,
+        streaming: row.get(13)?,
         endpoint_hash: row.get(7)?,
         credential_hash: row.get(8)?,
         body_hash: row.get(9)?,
@@ -419,8 +423,9 @@ impl Store {
                 .map_err(failure)?;
             if &header[..16] != b"SQLite format 3\0"
                 || i32::from_be_bytes(header[68..72].try_into().map_err(failure)?) != APPLICATION_ID
-                || u32::from_be_bytes(header[60..64].try_into().map_err(failure)?)
-                    != SCHEMA_VERSION as u32
+                || ![1, SCHEMA_VERSION as u32].contains(&u32::from_be_bytes(
+                    header[60..64].try_into().map_err(failure)?,
+                ))
             {
                 return Err(failure(
                     "refusing an unknown or unsupported database header",
@@ -463,7 +468,7 @@ impl Store {
                 return Err(failure("refusing to adopt an unrelated database"));
             }
         } else {
-            if application != APPLICATION_ID || version != SCHEMA_VERSION {
+            if application != APPLICATION_ID || ![1, SCHEMA_VERSION].contains(&version) {
                 return Err(failure(
                     "unsupported model-call database identity or schema",
                 ));
@@ -523,6 +528,34 @@ impl Store {
         let (operations, receipts, audits): (i64,i64,i64) = conn.query_row("SELECT (SELECT count(*) FROM model_calls),(SELECT count(*) FROM model_calls WHERE receipt IS NOT NULL),(SELECT count(*) FROM model_call_audit)", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(failure)?;
         if operations > MAX_OPERATIONS || receipts > RETAIN_RECEIPTS || audits > MAX_AUDIT {
             return Err(failure("model-call ledger capacity exceeded"));
+        }
+        if version == 1 && !new {
+            // Accept only the actual fixed v1 layout, retaining all identities, receipts and holds.
+            let expected = Connection::open_in_memory().map_err(failure)?;
+            expected
+                .execute_batch(&SCHEMA.replace(
+                    " streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1)),\n",
+                    "",
+                ))
+                .map_err(failure)?;
+            let objects =
+                |db: &Connection| -> Result<Vec<(String, String, String, Option<String>)>> {
+                    db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+                    .map_err(failure)?.query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
+                    .map_err(failure)?.collect::<rusqlite::Result<Vec<_>>>().map_err(failure)
+                };
+            if objects(&conn)? != objects(&expected)? {
+                return Err(failure(
+                    "legacy model-call schema differs; no migration performed",
+                ));
+            }
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(failure)?;
+            tx.execute_batch("ALTER TABLE model_calls ADD COLUMN streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1));").map_err(failure)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(failure)?;
+            tx.commit().map_err(failure)?;
         }
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(failure)?;
@@ -584,7 +617,7 @@ impl Store {
         tx.execute("DELETE FROM model_calls WHERE state IN ('completed','cleared') AND seq NOT IN (SELECT seq FROM model_calls ORDER BY seq DESC LIMIT ?1)",[MAX_OPERATIONS-1]).map_err(failure)?;
         // A real, durable allocation is reserved before any network submission.
         // Replacing it with a <=2 MiB receipt cannot grow the logical payload.
-        tx.execute("INSERT INTO model_calls(id,turn_id,purpose,session_hash,round,model,has_tools,endpoint_hash,credential_hash,body_hash,state,reservation) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'submitting',zeroblob(2097152))", params![call.id,call.turn_id,purpose_name(call.purpose),call.session_hash,call.round,call.model,call.has_tools,call.endpoint_hash,call.credential_hash,call.body_hash]).map_err(failure)?;
+        tx.execute("INSERT INTO model_calls(id,turn_id,purpose,session_hash,round,model,has_tools,endpoint_hash,credential_hash,body_hash,streaming,state,reservation) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'submitting',zeroblob(2097152))", params![call.id,call.turn_id,purpose_name(call.purpose),call.session_hash,call.round,call.model,call.has_tools,call.endpoint_hash,call.credential_hash,call.body_hash,call.streaming]).map_err(failure)?;
         audit(&tx, &call.id, "admitted", None)?;
         let operation = pending_on(&tx)?.ok_or_else(|| failure("admission was not recorded"))?;
         tx.commit().map_err(failure)?;
@@ -732,6 +765,7 @@ impl Store {
             json!({
                 "id":op.id,"turn_id":op.turn_id,"purpose":op.purpose,"round":op.round,
                 "model":op.model,"has_tools":op.has_tools,"remote_id":op.remote_id,
+                "streaming":op.streaming,
                 "state":op.state,"recovered":op.recovered,
                 "body_hash":op.body_hash,"session_hash":op.session_hash
             })
@@ -742,7 +776,7 @@ impl Store {
                 "SELECT {COLUMNS},receipt IS NOT NULL FROM model_calls ORDER BY seq DESC LIMIT 128"
             ))
             .map_err(failure)?
-            .query_map([], |row| Ok((decode(row)?, row.get::<_, bool>(13)?)))
+            .query_map([], |row| Ok((decode(row)?, row.get::<_, bool>(14)?)))
             .map_err(failure)?
             .map(|row| {
                 row.map(|(op, has_receipt)| {
@@ -784,6 +818,7 @@ mod tests {
             round: 0,
             model: "logical-model".into(),
             has_tools: true,
+            streaming: false,
             endpoint_hash: "b".repeat(64),
             credential_hash: "c".repeat(64),
             body_hash: "d".repeat(64),
@@ -1200,7 +1235,8 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "application_id", APPLICATION_ID)
             .unwrap();
-        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
         drop(conn);
         let before = fs::read(&path).unwrap();
         assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());
@@ -1209,6 +1245,68 @@ mod tests {
         let before = fs::read(&path).unwrap();
         assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_schema_migrates_atomically_preserving_unknown_identity_and_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let calls = temp.path().join("calls");
+        fs::create_dir(&calls).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&calls, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = calls.join("index.sqlite3");
+        let file = create_private_file(&path).unwrap();
+        drop(file);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&SCHEMA.replace(
+            " streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1)),\n",
+            "",
+        ))
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_call_meta VALUES(1,?1)",
+            [workspace.to_str().unwrap()],
+        )
+        .unwrap();
+        conn.pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        let pending = call();
+        let remote = Uuid::new_v4().to_string();
+        conn.execute("INSERT INTO model_calls(id,turn_id,purpose,round,model,has_tools,endpoint_hash,credential_hash,body_hash,remote_id,state,reservation) VALUES(?1,?2,'chat',0,'fixture',1,?3,?3,?3,?4,'unknown',zeroblob(2097152))", params![pending.id,pending.turn_id,pending.body_hash,remote]).unwrap();
+        let complete = call();
+        let receipt = br#"{"retained":"private receipt"}"#;
+        conn.execute("INSERT INTO model_calls(id,turn_id,purpose,round,model,has_tools,endpoint_hash,credential_hash,body_hash,state,receipt) VALUES(?1,?2,'chat',0,'fixture',1,?3,?3,?3,'completed',?4)", params![complete.id,complete.turn_id,complete.body_hash,receipt.as_slice()]).unwrap();
+        conn.execute(
+            "INSERT INTO model_call_audit(operation_id,action) VALUES(?1,'admitted')",
+            [&pending.id],
+        )
+        .unwrap();
+        drop(conn);
+        let migrated = Store::open(&workspace, Path::new("../calls/index.sqlite3")).unwrap();
+        let operation = migrated.pending().unwrap().unwrap();
+        assert_eq!(operation.id, pending.id);
+        assert_eq!(operation.remote_id.as_deref(), Some(remote.as_str()));
+        assert_eq!(operation.state, "unknown");
+        assert!(!operation.streaming);
+        assert_eq!(
+            migrated.show_result(&complete.id).unwrap().unwrap(),
+            json!({"retained":"private receipt"})
+        );
+        assert_eq!(migrated.status().unwrap()["schema_version"], 2);
+        assert_eq!(migrated.status().unwrap()["retained_audit_events"], 1);
+        assert!(
+            migrated.begin(call()).is_err(),
+            "migration must retain the unresolved hold"
+        );
+        drop(migrated);
+        let reopened = Store::open(&workspace, Path::new("../calls/index.sqlite3")).unwrap();
+        assert_eq!(reopened.pending().unwrap().unwrap().id, pending.id);
     }
 
     #[cfg(unix)]

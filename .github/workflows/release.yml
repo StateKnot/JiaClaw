@@ -12,6 +12,7 @@ on:
       - 'tests/installer.py'
       - 'tests/e2e.py'
       - 'tests/mcp.py'
+      - 'tests/cli_stream.py'
   push:
     tags: ['v*']
 permissions:
@@ -58,6 +59,7 @@ jobs:
           "target/$TARGET/release/jiaclaw" version
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
+          python3 tests/cli_stream.py "target/$TARGET/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist
