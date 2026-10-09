@@ -112,3 +112,6 @@ PR #95最终head `01034bd2a3152869ecdd9f6aa58d62e04656d7c7` 的1205本机Rust/32
 2026-10-10 已回填 PR #97 最终1072719的完整1210 Rust/34进程/五浏览器、七项CI与四平台优化归档资格，见[目录最终回填](validation.md#web-原请求目录最终-ci-回填)。本轮基于该head补齐[停机HTTP收据维护](http-turns.md#服务停机后的本机维护)：直接打开已存在私密v11/WAL库，四命令共用真实独占锁，不初始化模型或迁移，不擅改running；显式人工放弃与终态结果清理保留原身份/历史/模型hold。新增真实进程六组初验通过，固定最终源码及本批draft PR完整CI仍待验收。stdio/外部写入、StateKnot durable/委派、租户流式、钉钉安装证明、WhatsApp、多模态和真实供应商/代理认证仍分别开放；下一步在不绕过这些门槛的范围继续接线和验收，30分钟回访保持ACTIVE。
 
 2026-10-10 已逐项回填 PR #98 最终c639255的七项CI、35套跨平台进程与四平台优化归档，见[停机维护最终回填](validation.md#停机-http-维护最终-ci-回填)。本轮继续[独立用户持久 HTTP JSON 请求](tenant-http-turns.md)：原 UUID 跨网关/后端/模型账本、个人只读 Key、每用户永久目录、共享写入锁、取消和重启不重放；registry v8 保留原状态并修正跨用户同 UUID 的锁约束。双实际后端六组初验通过，固定源码完整回归及本批draft PR/七CI/四候选仍需资格化。租户 SSE/工作台、stdio/外部写入、StateKnot durable/委派、钉钉安装证明、WhatsApp、多模态和真实供应商仍开放。每批结束后30分钟回访继续ACTIVE，不自动合并或发布。
+
+
+2026-10-10 本轮复用draft PR #99，先[回填初版364b274资格](validation.md#租户-http-json-初版最终-ci-回填)，再补齐[个人Key JSON工作台](tenant-http-turns.md#个人-key-工作台)：真实旧binary连接失败已复现，严格scope/固定授权、原收据显示、只读目录/刷新找回、30秒原观察期限和身份清理已接线。新十组真实Chromium在最终冻结binary上通过，包括真实后端停机时手机提示/原目录仍可读；最终b023f3f8字节13套相关回归/1218 Rust/fmt/必需Clippy与parser八组也已通过；新七CI/四候选仍待独立资格；不沿用初版成功。两框架最新固定main/release/#140/#31/#41/PR40不变，没有新原生Schema/stdio合同可消费或重复缺陷议题。下一步继续优先核对该合同，随后接通租户有界SSE与工作台；独立钉钉/WhatsApp、durable委派、多模态及真实供应商仍保持开放，30分钟回访ACTIVE。

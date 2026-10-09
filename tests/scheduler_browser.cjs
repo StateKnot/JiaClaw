@@ -48,7 +48,10 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/'))calls.push({method:request.method(),path:url.pathname,search:url.search,body:['PUT','POST'].includes(request.method())&&request.postData()?request.postDataJSON():undefined});});
   await page.goto(base);await sleep(80);assert(!calls.some(call=>call.path==='/api/jobs/status'));assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);
   // An explicitly disabled gateway capability must not fall back to standalone.
-  await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:false})}));await connect();assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);assert(!calls.some(call=>call.path==='/api/jobs/status'));await page.unroute('**/api/gateway/capabilities');
+  // This synthetic gateway has neither scheduler nor tracked-turn routes; the
+  // actual standalone server's turn scope is not part of that gateway contract.
+  await page.route('**/api/turns/capabilities',route=>route.fulfill({status:404,body:''}));
+  await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:false})}));await connect();assert.strictEqual(await page.locator('#jobs-tab').isVisible(),false);assert(!calls.some(call=>call.path==='/api/jobs/status'));await page.unroute('**/api/gateway/capabilities');await page.unroute('**/api/turns/capabilities');
   for(const status of [200,204]){
    await page.route('**/api/gateway/capabilities',route=>route.fulfill({status,...(status===200?{contentType:'application/json',body:'null'}:{body:''})}));
    // A present but malformed permission contract now clears identity instead of granting writes.

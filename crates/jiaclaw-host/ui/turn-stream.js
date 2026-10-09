@@ -18,6 +18,29 @@
     require(c.listing === undefined || typeof c.listing === 'boolean');
     return c;
   }
+  function gatewayCapabilities(c) {
+    const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
+    require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
+    require(c.protocol === 1 && c.gateway_protocol === 1 && c.scope === 'gateway' && c.enabled === true && c.streaming === false && c.listing === true);
+    require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
+    require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === 2 && new Set(c.enabled_tools).size === 2 && c.enabled_tools.every(t => ['datetime_now','json_query'].includes(t)));
+    return c;
+  }
+  function gatewayCatalog(value, expected) {
+    const fields = ['protocol','scope','requests','limit','offset','has_more'];
+    require(object(value) && Object.keys(value).length === fields.length && fields.every(k => Object.hasOwn(value,k)));
+    require(value.protocol === 1 && value.scope === 'gateway' && value.limit === expected.limit && value.offset === expected.offset);
+    require(Number.isInteger(value.limit) && value.limit >= 1 && value.limit <= 50 && Number.isInteger(value.offset) && value.offset >= 0 && value.offset <= 10000);
+    require(typeof value.has_more === 'boolean' && Array.isArray(value.requests) && value.requests.length <= value.limit && (!value.has_more || value.requests.length === value.limit));
+    const seen = new Set(); let previous = null;
+    for (const r of value.requests) {
+      require(object(r) && Object.keys(r).length === 3 && ['id','session_id','created_ms'].every(k => Object.hasOwn(r,k)));
+      require(typeof r.id === 'string' && uuid.test(r.id) && typeof r.session_id === 'string' && r.session_id.startsWith('http:') && uuid.test(r.session_id.slice(5)) && !seen.has(r.id)); seen.add(r.id);
+      require(Number.isSafeInteger(r.created_ms) && r.created_ms >= 0);
+      require(!previous || previous.created_ms > r.created_ms || (previous.created_ms === r.created_ms && previous.id > r.id)); previous = r;
+    }
+    return value;
+  }
   function catalog(value, expected) {
     require(object(value) && Object.keys(value).length === 6 && value.protocol === 1);
     require(['all','unresolved','running','completed','needs_review'].includes(value.state) && value.state === expected.state);
@@ -63,6 +86,12 @@
   function snapshot(value, expected) {
     require(object(value) && value.protocol === 1 && typeof value.active === 'boolean');
     receipt(value.receipt, expected);
+    return value;
+  }
+  function gatewaySnapshot(value, expected) {
+    require(object(value) && Object.keys(value).length === 3 && ['protocol','receipt','active'].every(k => Object.hasOwn(value,k)));
+    snapshot(value, expected);
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query'].includes(t)));
     return value;
   }
   class Parser {
@@ -130,7 +159,7 @@
     }
     finish() { this.consume(this.decoder.decode()); require(this.frameBytes === 0 && !this.lastLF && this.terminal); }
   }
-  const api = Object.freeze({bytes, uuid, capabilities, catalog, receipt, snapshot, Parser});
+  const api = Object.freeze({bytes, uuid, capabilities, gatewayCapabilities, catalog, gatewayCatalog, receipt, snapshot, gatewaySnapshot, Parser});
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else globalThis.JiaClawTurnStream = api;
 })();
