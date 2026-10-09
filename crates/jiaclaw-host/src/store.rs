@@ -109,6 +109,93 @@ impl SessionStore {
         Self::open_with_ownership(path, ownership)
     }
 
+    /// Existing standalone v11 only. No migration, creation, interruption, TTL
+    /// maintenance or model/runtime initialization. The same lifetime lock as
+    /// serve is held until the SQLite connection has closed.
+    pub(super) fn open_http_maintenance(path: &Path, writable: bool) -> Result<Self> {
+        fn regular_private(metadata: &std::fs::Metadata) -> Result<()> {
+            anyhow::ensure!(metadata.is_file(), "maintenance requires a regular file");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                anyhow::ensure!(metadata.nlink() == 1, "maintenance rejects linked files");
+                anyhow::ensure!(
+                    metadata.mode() & 0o077 == 0,
+                    "maintenance requires private file permissions"
+                );
+            }
+            Ok(())
+        }
+        regular_private(
+            &std::fs::symlink_metadata(path).context("existing session database required")?,
+        )?;
+        let path = path.canonicalize()?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options.open(path.with_extension("sqlite3.lock"))?;
+        regular_private(&file.metadata()?)?;
+        fs2::FileExt::try_lock_exclusive(&file).context("another JiaClaw process owns this session database; stop serve before HTTP receipt maintenance")?;
+        let ownership = DatabaseOwnership::new(file);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = options.open(&path)?;
+        regular_private(&file.metadata()?)?;
+        let mut header = [0u8; 16];
+        file.read_exact(&mut header)?;
+        anyhow::ensure!(
+            &header == b"SQLite format 3\0",
+            "maintenance requires an existing SQLite database"
+        );
+        // Close the header reader before SQLite can acquire process-scoped
+        // locks on this inode; an unrelated close must not release those locks.
+        drop(file);
+        let flags = if writable {
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+        } else {
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        } | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let conn = Connection::open_with_flags(&path, flags)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        anyhow::ensure!(
+            version == 11,
+            "HTTP receipt maintenance requires schema 11, found {version}; no migration performed"
+        );
+        let private_channel: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name GLOB 'gateway_*_owner')",
+            [],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            !private_channel,
+            "HTTP receipt maintenance rejects gateway channel databases"
+        );
+        super::http_turn_store::validate_schema(&conn)?;
+        let journal: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+        anyhow::ensure!(
+            journal == "wal",
+            "HTTP receipt maintenance requires an existing WAL database"
+        );
+        conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
+        Ok(Self::Sqlite {
+            conn,
+            _ownership: Some(ownership),
+        })
+    }
+
     /// Continue opening only after the caller has acquired the database lifetime lock.
     /// Gateway channel stores validate their private file identity under that same lock.
     pub(super) fn open_with_ownership(

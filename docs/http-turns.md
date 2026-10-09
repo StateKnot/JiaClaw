@@ -2,6 +2,24 @@
 
 本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
 
+## 服务停机后的本机维护
+
+可信本机管理员可直接指定**已经存在的 standalone 会话库**，不需要有效的模型配置或 API Token：
+
+```sh
+jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 list
+jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 list --state all --limit 20 --offset 0
+jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 get ORIGINAL_UUID
+jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 review ORIGINAL_UUID --confirm-abandon --note '已独立核对原模型账本、工具效果和遗留容器，确认放弃此请求'
+jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 purge-result ORIGINAL_UUID --confirm-purge
+```
+
+四个命令均要求同库 `serve` 已停止，以其相同的独占生命周期锁排斥服务及其他维护者。只接受 schema 11/WAL、Unix 下单链接且无组/其他用户权限的普通数据库与锁文件；拒绝数据库/锁叶子符号链接、FIFO、旧/未来版本、错误 HTTP 表/索引/附加触发器和网关渠道私库。不创建数据库、不自动迁移、不初始化 Agent/MCP、不开模型账本、不做 TTL 清理，也不把查询到的 `running` 自动改为中断。SQLite 读取可能维护 WAL/SHM 辅助文件，不能把只读 SQL 等同于文件系统零写入。数据库父目录和显式路径由本机管理员信任并管理，不提供针对同权限管理员替换文件的沙箱或 inode CAS 保证。
+
+`list` 沿用 HTTP 目录的九字段投影和有限页（limit 1..50 / offset 0..10000）；`get` 返回原私密收据、保留结果和核对备注。输出有 `offline:true`，没有 `active`，持久状态不能证明实际模型、容器或其他外部资源已停止。特别是 SIGKILL 后的供应商请求或容器子进程，须先独立核对；独占数据库锁不证明退款、效果回滚或这些参与方停止。
+
+`review` 需显式 `--confirm-abandon` 和非空、最多 1024 UTF-8 字节的备注；对已失去本机 owner 的 `running` 可记录放弃，对 `needs_review` 保留已有终态。原备注重复为幂等核对，更换已记录的备注拒绝，`completed` 不需核对且拒绝该命令。它不清除模型账本 hold，也不恢复或重放工具。`purge-result` 需 `--confirm-purge`，仅删除终态大结果，保留永久身份、核对和会话历史，仍拒绝 `running`。若输出管道关闭导致进程报错，已经提交的事务不会回滚，应按原 UUID 再 `get` 核对。
+
 ## 开启与升级
 
 ```toml
