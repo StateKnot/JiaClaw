@@ -66,6 +66,8 @@ mod jobs;
 mod outbound;
 mod schedule;
 mod scheduler;
+#[cfg(test)]
+mod session_turn_tests;
 mod store;
 mod tenant_channel;
 mod tenant_scheduler;
@@ -1721,6 +1723,21 @@ async fn with_sessions<T: Send + 'static>(
     })
 }
 
+/// Once dispatched, blocking storage survives cancellation of its async waiter.
+/// Keep the turn owned by that actual work, including time queued on the pool or
+/// store mutex. A later turn must read the outcome before replacing its history.
+async fn with_session_turn<T: Send + 'static>(
+    state: &AppState,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    operation: impl FnOnce(&mut SessionStore) -> Result<T> + Send + 'static,
+) -> Result<T, AppError> {
+    with_sessions(state, move |store| {
+        let _turn_guard = guard;
+        operation(store)
+    })
+    .await
+}
+
 async fn session_turn_lock(state: &AppState, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let lock = {
         let mut locks = state.turn_locks.lock().unwrap();
@@ -1786,6 +1803,7 @@ async fn prepare_session_chat_messages(
 /// 将压缩后的完整历史写回共享 session store（含可选落盘）。
 async fn commit_session_messages(
     state: &AppState,
+    guard: tokio::sync::OwnedMutexGuard<()>,
     session_id: &str,
     messages: Vec<ChatMessage>,
     request_id: &str,
@@ -1793,7 +1811,7 @@ async fn commit_session_messages(
 ) -> Result<(), AppError> {
     let id = session_id.to_string();
     let state_copy = state.clone();
-    with_sessions(state, move |sessions| {
+    with_session_turn(state, guard, move |sessions| {
         sessions.insert(id, SessionRecord::new(messages))?;
         persist_session_map(&state_copy, sessions)
     })
@@ -2999,8 +3017,8 @@ async fn chat_handler(
 
     let session_id = request.session_id.clone();
 
-    let _turn_guard = if let Some(ref sid) = session_id {
-        Some(session_turn_lock(&state, sid).await)
+    let session_turn = if let Some(ref sid) = session_id {
+        Some((sid.clone(), session_turn_lock(&state, sid).await))
     } else {
         None
     };
@@ -3035,10 +3053,10 @@ async fn chat_handler(
     };
 
     // 如果提供了 session_id，更新 session 历史
-    if let Some(ref sid) = session_id {
+    if let Some((sid, guard)) = session_turn {
         let mut messages = request.messages.clone();
         messages.push(response.message.clone());
-        commit_session_messages(&state, sid, messages, &request_id, "http").await?;
+        commit_session_messages(&state, guard, &sid, messages, &request_id, "http").await?;
     }
 
     tracing::info!(
@@ -3381,11 +3399,11 @@ async fn import_session_handler(
     )
     .await;
 
-    let _turn_guard = session_turn_lock(&state, &session_id).await;
+    let guard = session_turn_lock(&state, &session_id).await;
     let id = session_id.clone();
     let messages = compacted.clone();
     let state_copy = state.clone();
-    let imported = with_sessions(&state, move |sessions| {
+    let imported = with_session_turn(&state, guard, move |sessions| {
         let imported = sessions.import(&id, SessionRecord::new(messages), query.overwrite)?;
         if imported {
             persist_session_map(&state_copy, sessions)?;
@@ -3495,10 +3513,10 @@ async fn delete_session_handler(
     }
     purge_expired_sessions(&state).await;
 
-    let _turn_guard = session_turn_lock(&state, &session_id).await;
+    let guard = session_turn_lock(&state, &session_id).await;
     let id = session_id.clone();
     let state_copy = state.clone();
-    let existed = with_sessions(&state, move |sessions| {
+    let existed = with_session_turn(&state, guard, move |sessions| {
         let existed = sessions.remove(&id)?;
         if existed {
             persist_session_map(&state_copy, sessions)?;
@@ -3611,7 +3629,7 @@ async fn run_session_user_chat(
         "使用 {channel_label} session_id: {session_id}"
     );
 
-    let _turn_guard = session_turn_lock(state, session_id).await;
+    let guard = session_turn_lock(state, session_id).await;
     purge_expired_sessions(state).await;
 
     let incoming = vec![ChatMessage {
@@ -3642,7 +3660,15 @@ async fn run_session_user_chat(
     {
         let mut messages = request.messages.clone();
         messages.push(response.message.clone());
-        commit_session_messages(state, session_id, messages, request_id, channel_label).await?;
+        commit_session_messages(
+            state,
+            guard,
+            session_id,
+            messages,
+            request_id,
+            channel_label,
+        )
+        .await?;
     }
 
     tracing::info!(

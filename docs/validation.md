@@ -667,3 +667,29 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 实际macOS冷构建及完整进程链占满原30分钟预算，末尾installer17:39:29 UTC、checkout清理17:39:30 UTC、Complete job17:39:32 UTC，而job从17:09:31 UTC开始；整任务取消于17:39:33 UTC。本次只把test矩阵的完整作业容量从30分钟改为有上限的40分钟，预留冷构建和runner结束开销。容器作业仍20分钟，四项Cargo、30项Python、Linux真实Chromium/Docker及清理、工具链/action固定版本、全部生产和fixture期限/资源/原断言不改。生产源码、依赖和二进制 `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 未重建，飞书fixture仍 `8701f98030df3f09156facc870a88d5c6f8b7a746941579927ceacfabb5dff10`。
 
 该固定head的Linux日志SHA256 `882684250ff9a83b58201383fea6480c5c7f675a7ff3515a1bf9e115785d0ad5`：Rust1172、30强制Python、copy七组、飞书11组（100屏障0.433ms/第二请求429/原队列count12及matches0/无效果/实际释放）、四Chromium和单独真实Docker全部通过；容器日志SHA256 `91e4b52354eb2dbc4fe1b9257959d150a7e84a1c7da3a8c1d8be23a36e576c35`，新镜像部署/所有权/卷恢复/限额压力通过，仍未认证copy容器专项或真实平台runtime。macOS完整日志SHA256 `9e1933ef9bb338313b5b0db910fa294cebb44470f9e565a22cfb157656d319aa`：Rust1171、全部新copy/ownership及旧Telegram重开、30强制Python与copy七组/飞书11组通过；实际100屏障0.77ms、第二请求429、busy第一次count12/event0/无效果并实际释放。此记录仍不改变整个macOS job cancelled。前两轮应用/fixture失败记录同样保留。预算修订需新提交重新执行三项完整CI，最终head/tree/run与完整日志以本draft PR最后说明为准，不使用旧head的成功替代。没有恢复自动回访、合并或公开发布。
+
+
+## 单次 CLI 真流式最终 CI 回填
+
+[PR #93](https://github.com/StateKnot/JiaClaw/pull/93) 最终 head `43cff1267ded9afeaf7a8dc1a028f82127e56eb4`、tree `b3630c2d6da2026f121eb100e3e6b485138ffa7e` 的七项必需 checks 全部 SUCCESS。实际 tested merge `ffc385f3a41ce2feb92d05ef0654d69f7714a5ab` 的 tree 与 head 一致，parents 为 base `b208ea7b4a9fa626f8fee1526e2cb227713d6196` 与上述 head。普通 [CI 37898761066](https://github.com/StateKnot/JiaClaw/actions/runs/37898761066) 两平台完整 Cargo、fmt、必需 Clippy、locked build 与全部31项强制 Python 通过；macOS Rust1188（396/123/669）、Ubuntu1189（397/123/669），新 CLI 七组在两平台通过，Linux另有四套实际Chromium、单独Docker测试及真实容器部署/限额卷。
+
+首轮 Intel 候选的既有 MCP 正向 fixture 使用1秒错误预算而失败；最终仅恢复该正向用例既有30秒配置，负向1秒/取消/容量断言及所有生产期限保留。修订后的四平台 [候选 CI 37898760764](https://github.com/StateKnot/JiaClaw/actions/runs/37898760764) 全部成功，各自执行优化二进制 CLI 七组和真实归档安装13项，清洁 source_commit/tree/parents、原生架构与完整二进制字节均核对。
+
+| 原生候选 | 实际归档 SHA256 | 官方作业 |
+|---|---|---|
+| build (ubuntu-24.04-arm, aarch64-unknown-linux-gnu) | `29bc1234973325ea8a6eefbe5c2c265679ca6446e378dbf59499a187794acb2c` | [日志 113716139367](https://github.com/StateKnot/JiaClaw/actions/runs/37898760764/job/113716139367) |
+| build (macos-15-intel, x86_64-apple-darwin) | `6c95ddef5dc90056e1e1d765b31898ff62111dba9fa92511231fabe63a1efd11` | [日志 113716139612](https://github.com/StateKnot/JiaClaw/actions/runs/37898760764/job/113716139612) |
+| build (macos-14, aarch64-apple-darwin) | `ffa44082620c5be7040e007b9d46fd4ddb9262ec5c31d3fe5e4acca45195f84e` | [日志 113716139661](https://github.com/StateKnot/JiaClaw/actions/runs/37898760764/job/113716139661) |
+| build (ubuntu-24.04, x86_64-unknown-linux-gnu) | `3e1cca58b350c7e126d5d8042e17aa7787ccac100625acd535a2562b6da1b887` | [日志 113716139689](https://github.com/StateKnot/JiaClaw/actions/runs/37898760764/job/113716139689) |
+
+四份官方 Actions artifact ID/ZIP SHA256 与上述实际打包日志逐份匹配，未独立下载 ZIP。公开 Release draft 步骤按 PR 条件 SKIPPED，没有创建 tag/公开发布或镜像。最终本地冻结二进制 SHA256 `ed9f72937c318216475a5e9423a38671b282b348c40a31772ace74e11b0a53f8` 的 CLI七组、旧模型/MCP/native tools/路由/E2E及真实旧版 schema1→新版schema2迁移通过；实际旧版已完成/unknown身份和账本保留，旧二进制拒绝schema2。完整合同见[CLI流式](cli-streaming.md)，此证据不认证 HTTP/Web、租户、durable、真实供应商及上游未合并PR40。
+
+## HTTP 会话取消的存储所有权
+
+本轮修复实际应用竞态：异步聊天提交、导入或删除等待者被取消时，旧代码释放每会话 turn 锁，但派发到 `spawn_blocking` 的数据库工作仍可能排队或执行。现在公共提交函数要求交出 guard；导入/删除共用 `with_session_turn`，锁由实际存储工作持有到插入/删除及原有持久化操作返回。HTTP chat、旧 webhook/HEARTBEAT 已接入；调度/持久渠道原有独立 completion ownership 保留。
+
+四个路径的旧代码回归全部失败，精确断言提前释放；修复后六项真实 SQLite 文件/取消测试全部通过：公共 chat 提交、实际 HTTP import/delete handlers、query_only 拒绝、单槽 blocking pool 中尚未开始的工作、另一 SQLite 连接的真实 BEGIN IMMEDIATE 争用。屏障确认实际派发或进入 SQL，取消后同会话仍不能进入；放行后核对锁释放、精确历史、后续删除和重新打开的持久结果。没有把模型 sleep 或 TCP 关闭当作 handler 已取消的证据。
+
+本地完整1194项Rust（396/123/675）、fmt、必需Clippy与locked build通过；最终测试文件的六项定向回归及必需Clippy再次通过，已有非必需lint警告不记为全lint无警告。冻结生产二进制SHA256 `61bbf2affa4df7d11ee235580780ffb62e7fb3e0ee1b3580fd467fd8b20a3c5b` 的七套实际进程回归全部通过：e2e、model_calls、cli_stream（七组）、user_gateway、channels、scheduler、scheduled_delivery。固定head最终跨平台/候选CI以本批draft PR最终说明为准，不借用PR93成功。数据库schema、5秒busy timeout、模型/工具预算、鉴权、既有HTTP/SSE/Web协议均未改变。
+
+这批是[HTTP流式前置修复](session-cancellation.md)，尚未增加HTTP/Web真流式入口、持久请求ID/未知响应核对、完整停机/代理认证或StateKnot durable恢复；下一步先完成本批固定head交付，再继续这些依赖。自动回访保持ACTIVE，每批结束后30分钟继续；不合并或公开发布。
