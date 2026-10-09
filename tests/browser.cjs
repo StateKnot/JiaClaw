@@ -69,6 +69,9 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   let created=false, heldRun=null, delayRun=false;
   const calls=[];
   await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:true})}));
+  // This synthetic jobs gateway has no tracked-turn feature. Do not expose the
+  // underlying standalone server's differently scoped turn capabilities.
+  await page.route('**/api/turns/capabilities',route=>route.fulfill({status:404,body:''}));
   await page.route('**/api/jobs**',async route=>{
    const req=route.request(), u=new URL(req.url()), method=req.method();calls.push([method,u.pathname,u.search]);
    if(u.pathname==='/api/jobs/status')return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({state:'running'})});
@@ -115,7 +118,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   for(const id of ['jobs-list','job-runs','job-title','job-summary','job-detail-prompt'])assert.strictEqual(await page.locator('#'+id).textContent(),'');
   assert.strictEqual(await page.locator('#job-name').inputValue(),'');assert.strictEqual(await page.locator('#job-prompt').inputValue(),'');
   assert.strictEqual(await page.locator('#workspace-tabs').isVisible(),false);
-  await page.unroute('**/api/jobs**');await page.unroute('**/api/gateway/capabilities');
+  await page.unroute('**/api/jobs**');await page.unroute('**/api/gateway/capabilities');await page.unroute('**/api/turns/capabilities');
   await page.locator('#api-token').fill(token);await page.getByRole('button',{name:'连接',exact:true}).click();
   await page.locator('#sessions button').first().click();
   await page.setViewportSize({width:390,height:844});

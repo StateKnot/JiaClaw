@@ -257,14 +257,13 @@ if __name__ == "__main__":
             assert app.http('/api/turns/capabilities', auth=False)[0] == 401
             assert app.http('/api/turns/' + str(uuid.uuid4()), 'PUT', {'session_id': 'http:' + str(uuid.uuid4()), 'prompt': 'disabled', 'enabled_tools': ['file_write']})[0] == 503
             app.stop()
-            for kind in ('missing-auth', 'missing-ledger', 'wrong-provider', 'unbounded-tools', 'tenant', 'unbounded-turn'):
+            for kind in ('missing-auth', 'missing-ledger', 'wrong-provider', 'unbounded-tools', 'unbounded-turn'):
                 bad = json.loads(json.dumps(app.settings))
                 bad['http']['tracked_turns'] = True
                 if kind == 'missing-auth': bad['http'].pop('api_token')
                 if kind == 'missing-ledger': bad['model_calls']['enabled'] = False
                 if kind == 'wrong-provider': bad['provider']['provider_type'] = 'stub'
                 if kind == 'unbounded-tools': bad['agent']['tool_timeout_secs'] = 31
-                if kind == 'tenant': bad['http']['gateway_channel_chat'] = True
                 if kind == 'unbounded-turn': bad['http']['tracked_turn_timeout_secs'] = 301
                 path = root / (kind + '.json'); path.write_text(json.dumps(bad))
                 result = subprocess.run([str(binary), 'serve', '--config', str(path)], env=env, capture_output=True, timeout=10)

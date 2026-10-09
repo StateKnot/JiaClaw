@@ -1,0 +1,78 @@
+# 独立用户持久 HTTP 请求
+
+个人 API Key 可显式提交、发现、查询和取消自己的 JSON 请求。每个用户仍须部署专属后端、工作区、会话库与 Brokerrouter 虚拟 Key，遵守[网关生产部署边界](gateway.md)。本功能默认关闭；它提供完整 JSON 异步请求合同，租户 SSE 仍开放；工作台 JSON 接线及最终资格见下文。
+
+## 配置与迁移
+
+网关 `gateway.json` 增加 `"tracked_turns": true`。各专属后端设置：
+
+```toml
+[http]
+gateway_channel_chat = true
+tracked_turns = true
+tracked_turn_timeout_secs = 300
+persist = true
+persist_path = "../state/sessions.sqlite3"
+# API Token 使用专属私密配置或 JIACLAW_API_TOKEN，不交给用户。
+
+[model_calls]
+enabled = true
+store_path = "../state/model-calls/index.sqlite3"
+```
+
+同时配置 `provider_type = "brokerrouter"`、各自模型/虚拟 Key，以及 `agent.tool_timeout_secs` 1..30。关闭独立渠道、HEARTBEAT 和兼容 webhook；若启用 cron，必须是 `scheduler.gateway_driven = true`。保持 Compose 的私网、卷限额、资源和 Secret 边界；现有部署样例不自动打开新功能。
+
+启动时和每次新准入前都检查私密后端的协议、精确 agent 名称、租户模式、单活动 owner、结果预算与 JSON 模式。后端需要网关添加的单一 `x-jiaclaw-gateway-turns: 1` 标记；标记只是模式合同，不能代替 Bearer Token 或网络隔离。独立模式后端拒绝此标记，租户后端拒绝缺失/重复/错误标记。后端关闭 tracked_turns 后仍可读取既有结果；新准入返回 503，不保留新身份或派发模型。
+
+registry 自动事务迁移 schema 1..7 → **8**，保留原用户、Key/撤销、渠道绑定、审计和 write hold。新增每用户永久请求索引，并移除 write_holds 的全局 request_id 唯一约束；一个用户仍最多一个 hold，两个隔离用户可以使用同一 UUID。迁移失败整体回滚；版本和新表/索引/触发器不符时拒绝启动。升级前停机并备份，旧二进制拒绝 v8；不能恢复旧快照来遗忘准入身份、撤销或未知结果。这是不可直接降级的持久迁移。
+
+## 个人 Key 接口
+
+| 接口 | 合同 |
+|---|---|
+| `GET /api/turns/capabilities` | 网关协议、JSON 范围及固定工具集合；streaming=false |
+| `GET /api/turns?limit=20&offset=0` | 当前用户在网关永久保留的准入目录；limit 1..50、offset 0..10000 |
+| `PUT /api/turns/{UUIDv4}` | 首次原请求准入；相同正文的旧身份仅 GET 原后端结果 |
+| `GET /api/turns/{UUIDv4}` | 已属于当前用户的原后端私密收据和结果 |
+| `POST /api/turns/{UUIDv4}/cancel` | 对自己的原请求持久记录取消意图，再通知实际 owner |
+
+必须携带唯一的 `Authorization: Bearer <个人 Key>`。只读 Key 只允许 GET；PUT/cancel 在读取正文或持久准入前返回 403，数据库操作还重查当前权限、撤销和用户状态。所有响应 no-store/nosniff；路径仅接受规范小写 UUIDv4，拒绝编码路径、后台选择、未知/重复分页参数以及 stream/review/purge 路由。
+
+提交唯一 JSON Content-Type，不接受 SSE Accept。正文最多64 KiB、读取5秒；session_id 必须为 `http:<规范 UUIDv4>`，prompt 非空且最多32 KiB，enabled_tools 必须显式选择非重复的 `datetime_now`、`json_query`（至少一个），enabled_skills 必须为空或省略，未知字段拒绝。例如：
+
+```json
+{
+  "session_id": "http:3b80c58b-e495-4fd8-a77e-b1579576471f",
+  "prompt": "告诉我当前日期",
+  "enabled_tools": ["datetime_now"]
+}
+```
+
+客户端先生成并保存请求 UUID 和确切正文，然后 PUT。新准入通常202，旧身份查询200；返回原协议 `{protocol:1, receipt, active}`。`X-Request-Id` 是本次网关传输编号，原执行身份是 `receipt.id`。工具列表顺序和正文参与规范化哈希，省略 enabled_skills 等同空列表；旧 ID 改正文返回409。原 UUID 贯穿网关索引、用户 hold、后端 HTTP 收据和模型账本 turn_id。
+
+目录的 `scope:"gateway"` 表示**网关准入元数据**，每行只含 id/session_id/created_ms；不伪造后端执行状态，也不证明模型已经提交。分页不是跨页快照，新增身份可能移动后续页。即使网关在转发前断电、后端数据库丢失或管理员已清 hold，目录仍能发现原编号。每用户最多10000永久身份，含未完成和已清理结果；满容量拒绝新请求，不删除旧身份或借换 Key 绕过限额。
+
+## 执行、取消与恢复
+
+首次准入在同一 registry 事务中重查授权、保留永久身份并取得用户唯一 hold，与聊天、cron 和已接线渠道共享互斥。随后只向固定后端发送一次 PUT。重复身份**永远不再 PUT**，包括重启、未知结果、后端404和人工清 hold 后；缺失原收据返回409和原编号，保留索引，不据此推断零效果。后端收据的身份、会话、哈希、协议及状态都须匹配原记录。
+
+网关全局执行容量与每后端一个执行许可由独立实际 worker 持有。JSON HTTP 客户端断开不撤销已经准入的异步执行；取消使用独立 POST。原 `request_timeout_seconds`（10..300）从网关入口开始，不因准入或轮询重置；请求体和每次私密后端I/O另有5秒上限，网关SQLite busy上限仍250毫秒。排队的实际 blocking DB 工作不会因 HTTP 等待者离开释放许可。控制容量全局8、每后端2，超过返回429；后端自身的四控制 owner 也保持有限。
+
+worker 只有在原收据 completed、session_committed=true、error=null、active=false 时，才清除匹配的 in_flight hold。取消、超时、失联、异常合同及结算失败均保留/转为 needs_review；观察截止不等于模型或外部资源已经停止。若尚未得到原收据终态且active=false的本机owner停止证据，网关同时保留全局及该后端执行容量；控制GET/cancel继续可用，其他写入可能429。关闭网关tracked_turns后重启也按HTTP审核hold保留容量，不能用功能开关绕过。网关 SIGKILL 后，in_flight 转为 gateway_restarted 的审核 hold，重启不恢复原观察 worker、不重新派发。tracked_turns仍开启时，用户 GET/cancel 可用；GET 即使看到 completed 也不会清除重启审核hold或容量保留。新网关在绑定入口前按所有未核对hold重建容量，含已禁用用户或未配置的旧后端；其数量达到全局上限时暂停新写入。功能关闭时至少保留已有HTTP hold的容量，原收据由可信管理员直接在私有后端核对。
+
+可信管理员须独立检查原后端 active、HTTP 收据、模型账本和外部资源，再按[网关审核流程](gateway.md)执行 `review-clear --confirm-backend-idle --note ...`。若后端原会话也阻断，分别在后端执行既有显式收据维护；两个数据库不构成跨库原子事务。清hold不移除永久请求、不授权重放原UUID；已经保留的进程内容量不随CLI修改自动释放。管理员确认全部相关后端空闲、清hold后，**重启网关**才能重新领取容量。正常观察到终态/本机owner停止的请求可直接释放执行容量，但失败hold仍须显式审核。普通会话管理 API 不开放 `http:` 命名空间；JSON 客户端以原收据获取结果，工作台仅展示该原请求收据中的回复，完整租户 HTTP 会话历史接线仍开放。
+
+本功能未扩大 MCP/文件/exec/技能或外部发送权限，不提供 StateKnot durable 图、工具自动恢复、租户 SSE、供应商/代理认证。真实进程与跨平台证据见[验收记录](validation.md#独立用户-http-原请求批次)。
+
+
+## 个人 Key 工作台
+
+在根页面连接自己的完整或只读 Key。工作台分别校验网关 JSON 和 standalone 流式能力；开启tracked_turns的网关不需要也不探测私密工具/技能或SSE入口。网关请求能力被拒绝403、暂不可用503或合同异常时拒绝连接，不退回旧发送路径；只有该功能明确不存在404才保持已有普通会话方式。完整Key新建原请求会话后，显式选择时间/JSON查询工具并发送。原编号只保存在当前地址fragment，密钥、提示词、授权与草稿留在内存；不使用local/sessionStorage。
+
+本页从首次提交前开始最多观察30秒，后续只GET同一原编号，每次最多15秒，收据读取2MiB+20KiB、目录32KiB、能力16KiB。观察截止、刷新或关闭页面不取消已经准入的异步JSON执行。按“核对结果”查询原收据；取消按钮独立记录原停止意图。响应丢失时保留原编号/草稿，只有明确操作才以确切相同ID/正文再提交，由网关既有永久身份保证GET-only；页面不自动重连或重发。
+
+最后一次读取因剩余观察期限到期而中断时，页面显示“观察已结束”，该收据不再视为最新核对，不据此标记完成或解除跟踪；原编号、草稿与服务端占用仍保留。先命中的独立15秒RPC超时、HTTP拒绝和畸形响应仍报告未确认的请求失败。两种超时依据本页实际定时器及原预算区分，不匹配错误文案、不续期、不增加请求。
+
+刷新后重输Key，再核对fragment中的原编号。遗失编号可读取本用户每页五项的永久准入目录，再选择原GET；目录的准入时间不代表执行状态。只读Key允许目录/原结果查询，不能提交、取消或审核。切换Key清空显示和迟到响应；不将前一身份的原编号带到另一身份。普通会话列表因占用429或后端不可用502/503而暂不可读时，页面明确提示，原编号控制入口仍可使用。
+
+只在已校验原收据完成且有结果时展示回复；该显示不是全会话历史。结果清理或原收据不可用时不恢复历史、不伪造完成、不换编号执行。个人工作台不开放网关或后端的review/purge；未知结果由可信管理员按上文核对。结束跟踪仅结束本页显示，不清用户hold或执行容量，后续准入仍由服务端当前权限和持久状态决定。真实浏览器、故障注入与最终固定head证据见[本批记录](validation.md#租户-json-工作台接线批次)，不据此标记租户SSE、代理/供应商或StateKnot durable完成。

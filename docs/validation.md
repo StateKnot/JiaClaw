@@ -806,3 +806,92 @@ HTTP目录原四组增补实际历史删除后的永久身份/清理标志/原GE
 最终本地默认并行1210 Rust（396/123/691）、fmt/必需Clippy/locked build通过，冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 的八套相关进程回归（http_turn_cli/http_turns/http_turn_catalog/http_stream/cli_stream/e2e/mcp/installer）全部通过，其中维护六组包含实际非WAL拒绝。跨平台完整35套、Linux浏览器/真实Docker和四优化候选已接入强制CI，最终固定head资格按本批PR交付记录逐项核对；未以旧head或本地范围代替。
 
 首版 `53be3f4` 的Linux CI在维护第六组fixture `PRAGMA journal_mode=DELETE` 处报 `database is locked`，前五组已通过，后续旧套件跳过；失败[作业113952164189](https://github.com/StateKnot/JiaClaw/actions/runs/37969489857/job/113952164189)日志SHA256 `ed54575837d9c3fae9890f1673df272035129bd86f8c567c0732b95e18d36e0c`。已直接验证SQLite连接上下文只结束事务、不关闭连接，维护fixture使用明确close释放自身SQL/账本读连接，不再依赖不同Python版本的循环GC。全部断言/六组/SQL6秒与CLI10秒预算保持原样；同一冻结production binary六组复验通过，生产源码/依赖/二进制未改。修订fixture的新head完整CI与四平台资格另计，不将首版部分成功代替最终验收。
+
+
+## 停机 HTTP 维护最终 CI 回填
+
+PR #98 最终 head `c639255b2f126a67ae8eeb84b7c78a4a17455272`、tree `382c4242481ed684ed0f9a65eeaff9808116849e`，实际 merge `477c0856fba5ffef8b8c93c78e68be592bccea88` 的父提交为 base `1072719fbfc3662b60f78f0ea2fa7b97215698d4` 和最终 head。前述本机1210 Rust/八进程与冻结binary字节保持一致。
+
+[CI 37970714259](https://github.com/StateKnot/JiaClaw/actions/runs/37970714259) 与[候选 37970714302](https://github.com/StateKnot/JiaClaw/actions/runs/37970714302) 七必需作业全部SUCCESS；Linux1211/macOS1210 Rust、两主平台各35必需Python，Linux五浏览器及真实Docker、独立container非root/只读根/限额卷/ENOSPC均通过。四优化候选均实际通过维护六组、CLI/HTTP/stream各七组、目录四组、parser和归档安装十三项；公开Release作业SKIPPED，PR保持draft/未合并。
+
+| 候选 | 实际 tar.gz SHA256 | 官方作业 |
+|---|---|---|
+| aarch64-apple-darwin | `7c159d1f46e688b883b7a3ec154fcd244e0f9a5ddc9c4061961a8b1592715a6a` | 113956845446 |
+| x86_64-apple-darwin | `b6623751b60a65cebb6254e723858f124a917b4b2d9645ec36421e4b09ced3d7` | 113956845880 |
+| aarch64-unknown-linux-gnu | `d5f52b522e57df8c46d8dc714c83014b65d907f2dc37848ad4a688f5a19163bd` | 113956845970 |
+| x86_64-unknown-linux-gnu | `d554bba034f00b7411172b4e369116047340fb29b324d3b8616ea02381258361` | 113956846013 |
+
+首版53be3f4的非WAL fixture失败与最终明确关闭连接的修订分开保留；后续成功不证明首次快照调度根因。最终源与PR正文已读回核对，没有把旧失败/部分作业或未审draft当作最终资格。
+
+## 独立用户 HTTP 原请求批次
+
+新增[租户 JSON 原请求](tenant-http-turns.md)：私有模式握手、个人Key授权、同事务永久身份/用户hold、固定一次PUT、旧身份只GET、有限控制/执行owner、持久取消与人工审核。registry v8保留原历史并把write_holds的请求唯一性改为按用户，防止两个独立用户的同UUID互相影响。单实例/租户SSE、StateKnot durable、stdio/外部工具及真实供应商资格分别保留。
+
+真实新fixture在上一批冻结binary SHA256 `0bd1fc6e42267f6e33e77ad884377c602d19d80f4c94d0d22f4ff15b6062d49f` 上，以有效同一配置明确拒绝启动：`tracked HTTP turns are not qualified for gateway-driven tenant backends`。此前一次fixture遗漏必需description字段和一次沙箱不允许loopback监听的失败不计为能力复现。开发中同UUID双用户单元测试实际发现旧全局hold唯一约束，v8事务迁移后两用户独立准入通过；旧1..7迁移fixture重建真实历史约束，不只改版本号。
+
+完整本机默认并行1218 Rust（396/123/699）、fmt、必需Clippy通过；第一次未提升本机监听权限的完整Rust有41项回环相关失败，不计作代码资格，权限下完整重跑成功。新增进程六组初验已通过，涵盖只读部分正文提前拒绝、原UUID/哈希/模型ledger、用户隔离/永久目录、取消hold、真实网关与后端SIGKILL、后台库丢失后零重放、审计失败原子回滚和启动/运行时模式漂移拒绝。最终冻结binary、相关既有进程、固定head完整七CI与四平台优化候选另行资格化；不借用首轮或PR98成功。
+
+资源复核补新增第七组：实际后端总预算30秒、网关原观察期限10秒，观察超时须保留全局/后端执行容量，控制查询仍可证明原owner活动；重启按持久hold恢复容量，关闭功能开关也不能旁路，完成原请求后仅人工空闲核对/clear与再次重启才可重领。此前首版38444de二进制的六组和旧回归不代替此修订最终资格。没有放宽后端/观察/fixture期限，新增有限容量语义正在重新固定源码验收。
+
+第七组在首版38444de冻结binary上实际复现：原后端active=true且网关已到10秒观察期限，新的用户PUT得到503（进入了后端模式握手），而应因仍保留全局容量返回429。资源修订的同场景七组实际通过，包括关闭功能、重启重建及核对后再次重启；该before日志不含第七组后续断言成功，不将它记为完整初版通过。源码最终完整资格重新计算。
+
+最终资源修订的生产源码完整1218 Rust（396/123/699）和必需Clippy再次通过。冻结交付binary SHA256 `a1a2c2923a7d222866884729c384073bb970c211f48ec853cec5814f1b1727a3`，新七组已在同源码构建上通过，并在该冻结字节上重新执行17套相关进程；初版38444de的17套成功仅保留为历史，不计作新binary最终通过。本批七官方CI/两平台36套/四优化候选接线已包含新七组，固定head资格待官方完整核对。
+
+
+## 租户 HTTP JSON 初版最终 CI 回填
+
+PR #99 初版固定 head `364b2741a136ac9540b4bd12f8040e85b8f643dc`、tree `a36451213ed17a335c5a3c013b0beda3a54f0076`、实际 merge `e576b8f65bed7ca1b53c12c2472d0b55e34144e3`（base c639255 + 该head），冻结 a1a2c292 binary 的1218 Rust/17相关进程全部通过。[CI 37981705589](https://github.com/StateKnot/JiaClaw/actions/runs/37981705589) 与[候选 37981705547](https://github.com/StateKnot/JiaClaw/actions/runs/37981705547) 七必需作业全部SUCCESS；两主平台36强制Python、macOS1218/Ubuntu1219 Rust，Linux五浏览器/十二Web流式组/真实Docker，以及独立容器非root/只读根/恢复/ENOSPC均通过。四优化候选都实际运行租户七组、原CLI/HTTP/stream各七组、目录四组、维护六组、parser及归档安装十三项。上传ZIP摘要与官方构件信息一致，未独立下载ZIP；公开发布SKIPPED。
+
+| 平台 | 实际 tar.gz SHA256 | 官方作业 |
+|---|---|---|
+| aarch64-apple-darwin | `3fbc64f416cc0c6f98822d0201acbed18b3a6aecc6bb5fbc8da6c8cee9337ac1` | 113993581799 |
+| x86_64-unknown-linux-gnu | `f0585f250990c7b44fc63eca5f9ad0f3e1e50029c0467f3c4771f2feb617e5c0` | 113993582047 |
+| aarch64-unknown-linux-gnu | `7ec18c72a114d1d1fced4ddcaa5f28704608031fe13ba26d990b66786cdd7c44` | 113993582065 |
+| x86_64-apple-darwin | `1068686901863835c0ddb87d9e7655ee7a4bc30697c348e2f63b5e826a5c4cf9` | 113993582070 |
+
+这份资格针对364b274初版的JSON后端/网关与原有工作台，不证明租户工作台已接线。后续本批更新PR #99，必须重新固定head与实际UI/跨平台证据，不能借用初版成功。
+
+## 租户 JSON 工作台接线批次
+
+真实 Chromium 156.0.8078.4、两专属后端和本机模型，在冻结 a1a2c292 binary 上复现工作台连接报“流式协议或原编号不匹配”；服务器已合法提供gateway JSON合同，原UI仍只接受standalone SSE。最先两次浏览器启动因Playwright预期1234而本机只有1243/1248，未触及UI，不能计作能力复现；显式已安装1248可执行文件后才取得上述真实重现。首轮新binary曾在原15秒后端启动期限超时，cleanup -15，具体根因未证明；不延长期限，加日志后重跑成功。新路径首次真实测试又发现刷新时普通会话列表受实际主容量限制而429；现在先按独立控制能力建立连接，列表429/502/503明确显示不可读取，不伪造空历史，也不阻止原编号目录与原GET。
+
+[工作台合同](tenant-http-turns.md#个人-key-工作台)使用严格gateway JSON scope与固定两个工具，个人Key只读取本网关注册元数据/原收据，绝不读取或代理私密http会话历史，不开放review/purge/stream。首次PUT和后续GET合用原30秒浏览器观察窗口，每次读取最多15秒、有界正文；期限或页面离开不停止JSON执行、不清服务端hold。明确相同原ID/正文的用户重试仍由网关执行GET-only，未知结果不自动重发；新身份不可替换当前跟踪，重新连接身份不接收迟到结果。原回复仅作为收据结果展示，不构造全会话历史。
+
+首版修订的九组实际浏览器初验通过，覆盖默认无授权、个人/只读与跨用户、刷新和遗失fragment、实际目录分页/畸形DTO、取消/管理员独立核对、实际响应丢失与原ID重试、网关SIGKILL与持久hold、身份替换、故障DTO不刷新30秒期限。最后增加真实专属后端停机时目录仍可读取的第十组，以及能力读取的15秒/16KiB边界；最终固定源码/完整回归与PR #99新的七官方CI、四优化归档须另行核对。HTTP fixture共用同一临时模型/有界连接函数，保留原期限与断言，不增加供应商、SSE、durable或恢复认证。
+
+
+最终校验中，冻结 f70eddf9 binary 首次再现原15秒启动超时/空日志，失败日志SHA256 `52621ff66b248eed3d4af714c442ce64f510b17a48ac7a19972d4e21df0f7713`；同字节后续能启动，但根因仍未证明。取消fixture首次在后端已结算、网关独立观察owner仍为in_flight时即时断言needs_review失败；现在在原15秒内核对实际hold落盘转换、同原编号与唯一派发，不削弱断言。已有浏览器的合成jobs网关错误透出了独立服务scope，已为该无tracked功能fixture明确404；严格生产scope校验保持不变。
+
+新增真实停机第十组又先复现两处应用问题：f70版普通列表实际返回502，页面只处理429/503；84b1fd80版在手机宽度把新状态提示套进了隐藏的aside-note。分别补实际502的列表不可用分支、使提示在手机保持可见；原GET的未知/审核错误仍原样保留。两个失败日志SHA256为 `3a1d71c0e2292dfc4931beb5c42e62ed2eaba1a66717ad5fed509ecd6b8aaf23`、`485729cebee99e62e18e7ec0ff575e051beb8a96a53c663fd2a70517fa35eb2f`。移动提示修订冻结binary SHA256 `09839c1642039732c70cd5c44acbd3e9bce3a8e92e9143e026eca73f6e933cfa`，十组实际Chromium全部通过；完整既有回归与新固定head官方资格另行核对，不借用f70/84b的前九组成功，也不声称启动超时根因已修复。
+
+
+最后能力边界复核将网关tracked能力403/503从可选缺失中移除：原签名明确404才可使用已有普通会话路径，拒绝/暂不可用不可授权旧发送。浏览器第七组分别注入403/503并检查连接失败、无会话列表读取或PUT。最终生产binary重新冻结为 `b023f3f890a4055bf13ff2a0bbb06d133394bb3ba1e0d00e3fc7e583804c3311`，十组再次实际通过；098版的完整十二相关套件仅保留为上一阶段证据，不借用为新字节资格。
+
+最终 b023f3f8 字节上的13套相关本机验收（六浏览器，其中租户十组、原Web stream十二组；七API/进程）全部通过。最终源码完整1218 Rust（396/123/699）、fmt、必需correctness/suspicious Clippy、locked build与parser八组再次通过。完整跨平台36强制进程、Linux六浏览器/实际Docker及四优化候选的固定新head官方资格待核对；公开发布不执行，原各项生产/fixture期限保持不变。
+
+
+首版 a0f8c2e 官方[CI 37990756754](https://github.com/StateKnot/JiaClaw/actions/runs/37990756754)不计完整通过。[container 114023990792](https://github.com/StateKnot/JiaClaw/actions/runs/37990756754/job/114023990792)在源码构建前拉取固定Rust基础镜像因Docker Hub匿名额度429失败，日志SHA256 `6287a7c5196d38c844beb5b4eaad564b9cfdeffdfd82626a8f68890834d5394d`。Ubuntu完整36进程、原五浏览器/十二Web流式组及新租户1..6/8组已通过，随后第九组原40秒等待失败；日志SHA256 `64c41cc5c475c08a74ff59c1e0ea784feda05dd35a09f4830bf722eac2b817d1`。失败未打印实际页面状态，具体调度根因未证明；该夹具仅对GET注入running DTO，不能要求合法快完成的首次PUT仍running，也未等前一Bob请求的独立网关hold结算。
+
+修订先在原15秒范围核对该真实hold结算，并同时故障注入原首次PUT及后续GET的响应视图，分别断言真实HTTP202/200、单一PUT/模型派发、固定30秒窗口；补失败时实际status/收据/hold/计数诊断。没有改变真实后端状态、原执行或任何15/30/40/240秒预算。b023f3f8生产字节与全部编译输入保持不变，修订十组再次本机完整通过；其余十二套同字节相关回归及完整Rust/fmt/Clippy/parser证据保持有效，新固定head官方资格须重新核对。目录浏览器只证明实际独立有限页，时钟并列排序由原注册表/纯validator测试分别覆盖，不以浏览器日志措辞扩张资格。
+
+CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html)，无需账户或新增secret。匿名实际读取Rust、Debian、Alpine三个manifest的内容SHA256分别与现有固定值 `5771a3cc2081935c59ac52b92d49c9e164d4fed92c9f6420aa8cc50364aead6e`、`3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251`、`ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507`完全一致。只改变CI镜像来源，保留Dockerfile原默认值/所有内容摘要/20分钟container和40分钟主作业及候选预算，不做浮动标签回退、不跳过验收。manifest核对不代替实际镜像/ENOSPC/沙箱资格，仍由新完整CI强制验证；CI工作流变化也触发四平台候选重新资格化。
+
+修订d61c354的[container 114036880656](https://github.com/StateKnot/JiaClaw/actions/runs/37994480543/job/114036880656)仍在源码构建前失败：固定Dockerfile前端向Docker Hub获取匿名令牌返回504，尚未请求新的ECR基础镜像。日志SHA256 `0d7ca5434f143bdca53c4d0edeec0396d5efee4d8531b3d3fed5ac2c1a7b6555`。匿名读取Google公开缓存的该前端manifest返回200，内容SHA256与Dockerfile固定摘要 `4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e`完全一致；ECR不存在该前端，未将其作为可用来源。
+
+按[Google公开缓存的官方配置方法](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images)及[Docker守护进程镜像配置](https://docs.docker.com/docker-hub/image-library/mirror/)，仅在一次性container CI runner中保留原daemon配置、增加`registry-mirrors`，校验有效配置并重启和读回实际镜像列表。使用原Docker driver/Dockerfile固定前端，不直接引用缓存镜像、不修改宿主开发机或源码镜像默认值。缓存不是长期可用保证，固定摘要/失败可见和原20分钟预算仍成立；metadata成功不计真实构建成功。该修订的完整七作业/四归档资格须重新核对，生产b023f3f8字节及全部90编译输入不变。
+
+24b331a的真实[container 114040806575](https://github.com/StateKnot/JiaClaw/actions/runs/37995600393/job/114040806575)已完成原固定前端、ECR基础镜像构建，镜像SHA256 `208aae0bc42ecc2f7bbc1365f52c97152cf2c304d1cf70a05323fdeb03367a43`；非root/只读根、命名卷恢复、每租户真实ENOSPC均通过。这是实际日志资格，不仅是manifest核对。
+
+同head的[Ubuntu 114040806228](https://github.com/StateKnot/JiaClaw/actions/runs/37995600393/job/114040806228)仍未完整通过。36套进程/原五浏览器及新租户1..6/8通过，第九组新诊断记录：59次GET/一次PUT/一次模型执行，后端completed、session_committed、无hold/fault，但最后一次GET被剩余预算截断，页面显示一般RPC超时而不是“观察结束”。日志SHA256 `91dd1d015914ef95aba1d277c8e2256c906a4be1cf8fb5084170ea884431ab07`。在b023f3f8字节上增加真实PUT回执延迟16秒与最后GET延迟1.5秒的确定性边界后，同样实际复现；两条路均不重发模型，原15/30/40/240秒截止不变。
+
+修订把本页定时器中止保留为独立超时类型，正文读取中止也保留原因；仅当该次RPC因剩余观察预算而缩短时显示观察结束并撤销收据fresh标记。较早15秒RPC超时、HTTP失败、协议错误与身份变更不被当作完成。早期与最后读取均须保持原编号/草稿、禁止完成/新发送、一次真实模型调用，后续原GET才可核对。新生产字节、完整相关回归与新固定head七项CI/四归档重新资格化，不沿用b023的成功记录。
+
+24b331a首轮[macOS Intel 114040824392](https://github.com/StateKnot/JiaClaw/actions/runs/37995602391/job/114040824392)旧文件锁测试失败，core395通过/1失败：12线程并发append中五线程耗尽200次×2ms的夹具锁忙重试；日志SHA256 `ac2e92b481fd30b1045f365b1d5c5ca68da97f2ebc8a0fffc2c3a8270c3f3ee4`。生产锁忙立即返回，日志不能证明调度/IO争用或实现缺陷的具体根因。仅原设置完整失败平台复验一次，保留首次失败，不串行化、不跳过、不改变任何断言/期限；新head仍独立认证，后续成功不证明该根因已修复。
+
+最终观察期限修订冻结binary SHA256 `4115582e58b36f05bbab30018f5250d1f74474f93ff412d6819549dc4174fafe`，确定性边界下完整十组真实Chromium、十二套相关旧浏览器/进程和完整1218 Rust（396/123/699）、fmt、必需Clippy、locked build、parser八组重新通过。旧b023失败与新4115582e成功分别保存，不复用旧编译字节。新head完整官方资格仍待独立核对。
+
+1efef199的Ubuntu Rust阶段旧`slack_and_foreground_concurrent_admission_have_one_winner`失败，成功准入为0而非1，未进入浏览器阶段；原日志没有两项具体错误，因此不推断为授权、存储或框架故障。仅补完整结果诊断，原两个barrier竞争者/250ms SQLite busy预算/一个成功一个Held断言均不变；本机隔离200次通过，不证明CI根因修复。
+
+新CI配置每个native runner的Rust测试harness为一个worker，隔离不相关临时数据库/大文件fsync/有限全局工具worker夹具；全部用例仍必需执行，各用例内部原12写线程、两个准入竞争者、异步owner/取消等并发保持不变。没有skip、自动重试、扩充资源期限或运行时修改；20分钟container、40分钟主作业/候选预算不变。此配置限定验收证据，不作为并行负载性能认证；原并行完整本机1218结果与CI失败分别保留，未确认的旧锁/准入根因仍开放。新源码及CI配置重新完整资格化。
+
+最终诊断/CI配置源码的冻结binary SHA256 `7ece472200c5fd782eefffcdbe7860c0ff59d07addf804543c0e6745eefe4a2e`，新harness完整1218 Rust（396/123/699，core35.85s/host85.54s）、十组真实浏览器含两条超时边界、十二套相关旧回归、fmt/必需Clippy/locked build/parser八组全部通过；原并行1efef199本机记录独立保留。新head完整七作业/四归档资格待核对，未标旧锁或准入根因修复。

@@ -26,7 +26,9 @@ jobs:
       - name: Install locked toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --locked
+      # Isolate unrelated fixture databases/large fsyncs within this runner.
+      # Tests still spawn their original concurrent actors and retain deadlines.
+      - run: cargo test --workspace --locked -- --test-threads=1
       - run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
       - run: cargo build --locked -p jiaclaw-host
       - run: python3 tests/e2e.py target/debug/jiaclaw
@@ -46,6 +48,7 @@ jobs:
       - run: python3 tests/http_stream.py target/debug/jiaclaw
       - run: python3 tests/http_turn_catalog.py target/debug/jiaclaw
       - run: python3 tests/http_turn_cli.py target/debug/jiaclaw
+      - run: python3 tests/tenant_http_turns.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
       - run: python3 tests/read_only_keys.py target/debug/jiaclaw
       - run: python3 tests/gateway_audit.py target/debug/jiaclaw
@@ -78,11 +81,12 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/scheduler_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/read_only_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/web_stream.py target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_http_browser.py target/debug/jiaclaw
       - name: Real container sandbox acceptance
         if: runner.os == 'Linux'
         env:
           JIACLAW_TEST_DOCKER: /usr/bin/docker
-          JIACLAW_TEST_EXEC_IMAGE: alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
+          JIACLAW_TEST_EXEC_IMAGE: public.ecr.aws/docker/library/alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
         run: |
           docker pull "$JIACLAW_TEST_EXEC_IMAGE"
           cargo test -p jiaclaw real_container --locked -- --ignored
@@ -94,7 +98,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: docker build --tag jiaclaw:ci .
+      # Docker's public ECR copies have the same pinned manifest bytes. Avoid
+      # Docker Hub anonymous quotas without credentials or a mutable fallback.
+      - name: Configure public Docker Hub cache for the pinned frontend
+        run: |
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = Path('/etc/docker/daemon.json')
+          settings = json.loads(config.read_text()) if config.exists() else {}
+          assert isinstance(settings, dict)
+          mirror = 'https://mirror.gcr.io'
+          mirrors = settings.get('registry-mirrors', [])
+          assert isinstance(mirrors, list) and all(isinstance(item, str) for item in mirrors)
+          settings['registry-mirrors'] = [mirror] + [item for item in mirrors if item != mirror]
+          config.write_text(json.dumps(settings) + '\n')
+          PY
+          sudo dockerd --validate --config-file=/etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{json .RegistryConfig.Mirrors}}' | python3 -c 'import json, sys; assert json.load(sys.stdin)[0].rstrip("/") == "https://mirror.gcr.io"'
+      - name: Build image from pinned public Docker Official Images
+        run: |
+          docker build --tag jiaclaw:ci \
+            --build-arg RUST_IMAGE=public.ecr.aws/docker/library/rust@sha256:5771a3cc2081935c59ac52b92d49c9e164d4fed92c9f6420aa8cc50364aead6e \
+            --build-arg RUNTIME_IMAGE=public.ecr.aws/docker/library/debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 .
       - name: Image startup as non-root with read-only root filesystem
         run: python3 tests/container.py jiaclaw:ci
       - name: Isolated user gateway with bounded persistent volumes

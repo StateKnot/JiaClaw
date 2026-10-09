@@ -141,6 +141,9 @@ pub(super) async fn handle(
     ExtractState(state): ExtractState<Arc<State>>,
     request: Request,
 ) -> Response {
+    if request.uri().path() == "/api/turns" || request.uri().path().starts_with("/api/turns/") {
+        return super::turns::handle(state, request).await;
+    }
     let request_id = Uuid::new_v4();
     if !allowed(request.method(), request.uri())
         || (jobs_path(request.uri().path()) && !state.scheduled_jobs)
@@ -724,6 +727,8 @@ mod tests {
                 timeout: Duration::from_secs(10),
                 control: Arc::new(tokio::sync::Semaphore::new(8)),
                 scheduled_jobs: false,
+                tracked_turns: false,
+                reserved_turns: std::sync::atomic::AtomicUsize::new(0),
                 telegram: None,
                 slack: None,
                 discord: None,
@@ -811,6 +816,8 @@ mod tests {
             timeout: Duration::from_secs(10),
             control: Arc::new(tokio::sync::Semaphore::new(8)),
             scheduled_jobs: true,
+            tracked_turns: false,
+            reserved_turns: std::sync::atomic::AtomicUsize::new(0),
             telegram: None,
             slack: None,
             discord: None,

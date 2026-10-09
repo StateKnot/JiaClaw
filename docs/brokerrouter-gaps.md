@@ -1,5 +1,9 @@
 # Brokerrouter 消费方状态
 
+2026-10-10 本轮再次只读核对：StateKnot aa11b4f/唯一alpha.1/#140，Brokerrouter e01ecb9/无release/#31/#41/未合并PR40 head7a7afea均未变化；附着PR58–99当前head检查SUCCESS、无代码review/thread。PR99初版364b274最终七CI/四归档已回填；本批修复真实工作台拒绝合法gateway JSON和主容量忙时无法重连的应用接线，不把它上报为框架缺陷。现有HTTP MCP pin和原生Schema/stdio/durable/真实供应商门槛保持独立。
+
+2026-10-10 租户原请求批次官方核对：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/alpha.1/#140 OPEN，Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31、#41 OPEN，PR40未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388` 均未变化。附着PR58–98当前head检查SUCCESS、无代码review/thread；draft未审通知不算外部审查。本批[独立用户HTTP JSON](tenant-http-turns.md)属于应用授权/身份接线，不上报重复框架缺陷，不借用原生Schema、stdio、durable恢复或租户SSE资格；PR98最终CI已[回填](validation.md#停机-http-维护最终-ci-回填)。
+
 2026-10-10 停机维护批次官方再次复核：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、唯一alpha.1/#140 OPEN，Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41 OPEN、PR40未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388` 均未变化。附着PR58–97当前head CI全部SUCCESS、无代码review/thread；CodeRabbit的draft未审通知不算外部审查。新增本机HTTP收据维护只使用应用已有SQLite合同，不开Agent/MCP/模型账本，不自动中断/重放，也不冒充框架durable或stdio交付；PR97最终目录资格已[回填](validation.md#web-原请求目录最终-ci-回填)。
 
 2026-10-09 16:10 UTC 官方API再次固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`（比较identical、ahead0）、唯一alpha.1与#140 OPEN/无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release、#31 OPEN/一回复、#41 OPEN/无回复、PR40仍未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388`。未出现新消费合同，不重复建issue或浮动升级HTTP MCP。PR97先前6469最终七项CI/四优化候选已[回填](validation.md#web-原请求流式最终-ci-回填)；本批持久原请求目录/遗失编号恢复属于应用接线，不加载正文、不派发，不替代StateKnot durable、stdio/外部写入、原生Schema或供应商认证。

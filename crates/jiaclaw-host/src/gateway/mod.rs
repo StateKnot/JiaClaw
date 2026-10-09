@@ -15,6 +15,7 @@ mod slack;
 mod slack_store;
 mod telegram;
 mod telegram_store;
+mod turns;
 mod wecom;
 mod wecom_store;
 
@@ -27,7 +28,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::Read,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::sync::Semaphore;
@@ -46,6 +50,8 @@ struct State {
     timeout: Duration,
     control: Arc<Semaphore>,
     scheduled_jobs: bool,
+    tracked_turns: bool,
+    reserved_turns: AtomicUsize,
     telegram: Option<Arc<telegram::Runtime>>,
     slack: Option<Arc<slack::Runtime>>,
     discord: Option<Arc<discord::Runtime>>,
@@ -156,6 +162,18 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         .try_lock_exclusive()
         .context("another gateway is using this registry")?;
     registry.recover_writes()?;
+    // Reconstruct uncertain execution reservations before accepting new work.
+    // An operator must check backend idleness, clear holds, then restart to reclaim.
+    let reserved: HashSet<String> = if config.tracked_turns {
+        registry
+            .list()?
+            .into_iter()
+            .filter(|u| u.hold.is_some())
+            .map(|u| u.backend_id)
+            .collect()
+    } else {
+        registry.reserved_http_backends()?.into_iter().collect()
+    };
     let timeout = Duration::from_secs(config.request_timeout_seconds);
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -243,12 +261,15 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             scheduler::parse_status(&bytes, &backend.id)
                 .map_err(|()| anyhow::anyhow!("backend scheduler contract mismatch"))?;
         }
+        if config.tracked_turns {
+            turns::check_backend(&client, &url, &token, &backend.id).await?;
+        }
         backends.insert(
             backend.id.clone(),
             Backend {
                 url,
                 token,
-                permit: Arc::new(Semaphore::new(1)),
+                permit: Arc::new(Semaphore::new(usize::from(!reserved.contains(&backend.id)))),
                 control: Arc::new(Semaphore::new(2)),
             },
         );
@@ -261,15 +282,18 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let feishu = feishu::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     let wecom = wecom::configure(&config, &registry, &client, &backends, &unique_tokens).await?;
     drop(unique_tokens);
-    let capacity = u32::try_from(config.max_in_flight).context("gateway capacity overflow")?;
+    let capacity = config.max_in_flight;
+    let reserved_count = reserved.len().min(capacity);
     let state = Arc::new(State {
         registry,
         backends,
         client,
-        permits: Arc::new(Semaphore::new(config.max_in_flight)),
+        permits: Arc::new(Semaphore::new(capacity - reserved_count)),
         timeout,
         control: Arc::new(Semaphore::new(8)),
         scheduled_jobs: config.scheduled_jobs,
+        tracked_turns: config.tracked_turns,
+        reserved_turns: AtomicUsize::new(reserved_count),
         telegram,
         slack,
         discord,
@@ -342,10 +366,13 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let _ = wecom.shutdown(timeout + Duration::from_secs(5)).await;
     // Detached admitted work retains its permit even after its caller disconnects.
     // On forced shutdown the durable hold remains for startup recovery.
-    let _drain = tokio::time::timeout(
-        timeout + Duration::from_secs(5),
-        state.permits.clone().acquire_many_owned(capacity),
-    )
+    let _drain = tokio::time::timeout(timeout + Duration::from_secs(5), async {
+        while state.permits.available_permits() + state.reserved_turns.load(Ordering::Acquire)
+            < capacity
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
     .await;
     drop(process_lock);
     Ok(())

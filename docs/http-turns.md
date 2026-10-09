@@ -1,6 +1,6 @@
 # 持久 HTTP 请求与结果核对
 
-本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
+本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。[独立用户网关](tenant-http-turns.md)另有显式 JSON 准入合同，租户 streaming=false，不能直接套用 standalone SSE。此协议不代表 StateKnot durable driver、工具自动恢复或真实供应商认证。
 
 ## 服务停机后的本机维护
 

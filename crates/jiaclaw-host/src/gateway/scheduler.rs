@@ -443,6 +443,8 @@ mod tests {
             timeout: Duration::from_secs(5),
             control: Arc::new(Semaphore::new(8)),
             scheduled_jobs: true,
+            tracked_turns: false,
+            reserved_turns: std::sync::atomic::AtomicUsize::new(0),
             telegram: None,
             slack: None,
             discord: None,

@@ -6,6 +6,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
       - 'scripts/install.sh'
       - 'scripts/package_release.py'
@@ -17,6 +18,10 @@ on:
       - 'tests/http_stream.py'
       - 'tests/http_turn_catalog.py'
       - 'tests/http_turn_cli.py'
+      - 'tests/tenant_http_turns.py'
+      - 'tests/tenant_http_fixture.py'
+      - 'tests/tenant_http_browser.py'
+      - 'tests/tenant_http_browser.cjs'
       - 'tests/turn_stream.cjs'
       - 'tests/turn_stream_browser.cjs'
       - 'tests/web_stream.py'
@@ -59,7 +64,8 @@ jobs:
         run: |
           cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,os,sys; packages=json.load(sys.stdin)["packages"]; tag="v"+next(p["version"] for p in packages if p["name"] == "jiaclaw-host"); assert os.environ["EVENT_NAME"] == "pull_request" or os.environ["REF_NAME"] == tag; f=open(os.environ["GITHUB_ENV"],"a"); f.write("RELEASE_TAG="+tag+"\n"); f.close()'
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --locked
+      # Keep unrelated fixture I/O isolated; each test retains its own concurrency.
+      - run: cargo test --workspace --locked -- --test-threads=1
       - run: cargo build --release --locked --target "$TARGET" -p jiaclaw-host
       - run: node tests/turn_stream.cjs
       - name: Verify optimized binary
@@ -72,6 +78,7 @@ jobs:
           python3 tests/http_stream.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_catalog.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_cli.py "target/$TARGET/release/jiaclaw"
+          python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist

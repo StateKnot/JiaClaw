@@ -4,6 +4,8 @@
 
 支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[Telegram 私聊](tenant-telegram.md)、[Slack 私聊](tenant-slack.md)和[Discord Bot DM 命令](tenant-discord.md)分别通过 PR #80/#83/#84 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key、可信管理员审计分别通过 PR #81/#82 最终跨平台及真实容器 CI。本批[独立用户飞书私聊](tenant-feishu.md)限定专用企业自建 App、固定人的 p2p 文本和停机核对，验收进行中。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
+默认关闭的[独立用户持久 HTTP 请求](tenant-http-turns.md)支持个人 Key 的 JSON 准入、原编号查询/取消和永久目录，共用已有用户写入锁。租户 SSE 和工作台原请求接线仍另计。
+
 ## 请求与身份合同
 
 客户端连接共享网关，在工作台输入管理员签发的个人 Key，或携带 `Authorization: Bearer <个人 Key>`。一个用户与一个 backend ID 永久绑定，客户端不能通过 URL、请求头、session ID 或模型参数指定后端。后端 API Token 只供网关使用，不发给用户；Brokerrouter 虚拟 Key 留在各自后端。
@@ -15,6 +17,7 @@
 | `POST /api/chat` | 仅 JSON，必须明确 session_id；stream=true 和 SSE Accept 拒绝 |
 | `GET/POST /api/sessions`、`GET/DELETE /api/sessions/{id}` | 仅操作当前 Key 所属的独立后端 |
 | `/api/sessions/{id}/export`、`POST /api/sessions/import` | 支持受限 JSON/JSONL；只允许约定的 format/id/overwrite 查询参数 |
+| `/api/turns`、`/api/turns/{UUIDv4}` | 显式 tracked_turns=true 时支持受限 JSON 原请求/目录/取消，见专门合同；默认404 |
 | 显式后台扩展 | scheduled_jobs 开放受限用户任务接口；telegram/slack/discord 仅开放配置绑定的 POST /hooks/{渠道}/{binding UUID}；各有独立授权，见专门指南 |
 | 其他路径 | 不代理，返回 404；包括单实例渠道管理、metrics、工具/技能管理和任意 URL |
 
@@ -119,13 +122,13 @@ jiaclaw gateway user-enable --config /etc/jiaclaw/gateway.json --user YOUR_USER_
 
 `key-list --user` 返回 `{keys: [...]}`，每项仅含 `key_id`、`user_id`、`read_only`、`created_ms`、`revoked_ms`，不返回 Token 或 verifier；`--limit` 默认为 20、范围 1–100，`--offset` 为 0–1024。该列表沿用有界 Key 历史，不能作为永久撤销审计档案。禁用用户、撤销 Key 对之后的准入生效；只读 Key 的存在或所有 Key 被撤销都不取消另行授权的 cron/Telegram/Slack/Discord/飞书后台工作。停止这些工作须使用相应任务/绑定管理或禁用用户，已经提交的外部请求仍须核对。
 
-registry 自动从 schema 1/2/3/4/5 事务迁移到 schema 6：schema 1/2 旧 Key 保留完整权限，已有只读/完整权限原样保留，原身份、撤销状态、hold、审计和 Telegram/Slack/Discord 绑定不变，并新增永久飞书身份。升级前停机备份；旧二进制拒绝 schema 6，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
+registry 当前事务迁移到 schema 8，完整迁移和降级边界见[持久请求指南](tenant-http-turns.md#配置与迁移)。历史 schema 6 的迁移：schema 1/2 旧 Key 保留完整权限，已有只读/完整权限原样保留，原身份、撤销状态、hold、审计和 Telegram/Slack/Discord 绑定不变，并新增永久飞书身份。升级前停机备份；旧二进制拒绝 schema 6，不能直接回退或恢复旧快照来改变权限/撤销历史。基础后端的单实例 API Token 不具备此只读 Key 语义，也不能交给只读用户绕过网关。
 
 网关 registry 放在独立 `/data/gateway/registry.sqlite3`，目录须为当前 UID 私有 0700、数据库 0600；首次创建会设置这些权限。`/data` 卷本身必须可由 10001 创建该子目录。网关进程有独立锁，禁止第二个 serve 同时打开同一 registry；普通用户/Key/绑定管理使用短 SQLite 事务；Telegram/Slack/Discord/飞书的离线 inspect/resolve/cancel/purge 和对应用户的 review-clear 要求停止网关并取得该服务锁。Discord 与飞书撤销后可移除运行配置/Secret 挂载，由持久非秘密 owner 检查原库；未知残留不能当作无状态。
 
 ## 按用户查询管理审计
 
-可信管理员可在 registry 所在的受保护主机或网关容器运行 `gateway audit-list`；没有公共 HTTP 路由或工作台入口，个人 API Key 不能调用此管理命令。禁用用户仍可查询，查询不会启用用户、解除 hold 或重放任何工作。审计本身不新增 schema；当前飞书身份扩展使用 schema 6。
+可信管理员可在 registry 所在的受保护主机或网关容器运行 `gateway audit-list`；没有公共 HTTP 路由或工作台入口，个人 API Key 不能调用此管理命令。禁用用户仍可查询，查询不会启用用户、解除 hold 或重放任何工作。审计本身不新增 schema；当前 registry 为 schema 8；本接口沿用已有审计合同。
 
 ```sh
 jiaclaw gateway audit-list --config /etc/jiaclaw/gateway.json \

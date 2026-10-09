@@ -54,11 +54,18 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
             .is_some_and(|s| (1..=30).contains(&s)),
         "tracked HTTP turns require effective tool_timeout_secs in 1..=30"
     );
-    ensure!(
-        !config.http.gateway_channel_chat && !config.scheduler.gateway_driven,
-        "tracked HTTP turns are not qualified for gateway-driven tenant backends"
-    );
     Ok(())
+}
+
+fn tenant_mode(config: &AgentConfig) -> bool {
+    config.http.gateway_channel_chat || config.scheduler.gateway_driven
+}
+fn gateway_marker(config: &AgentConfig, headers: &HeaderMap) -> bool {
+    let mut marker = headers.get_all("x-jiaclaw-gateway-turns").iter();
+    let given = marker.next();
+    tenant_mode(config) == given.is_some()
+        && given.is_none_or(|value| value == "1")
+        && marker.next().is_none()
 }
 
 struct Active {
@@ -137,12 +144,12 @@ impl Runtime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Submission {
-    session_id: String,
-    prompt: String,
-    enabled_tools: Vec<String>,
+pub(super) struct Submission {
+    pub(super) session_id: String,
+    pub(super) prompt: String,
+    pub(super) enabled_tools: Vec<String>,
     #[serde(default)]
-    enabled_skills: Vec<String>,
+    pub(super) enabled_skills: Vec<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
@@ -180,7 +187,7 @@ impl Submission {
         }
         Ok(())
     }
-    fn fingerprint(&self) -> Result<String, AppError> {
+    pub(super) fn fingerprint(&self) -> Result<String, AppError> {
         serde_json::to_vec(self)
             .map(|v| format!("{:x}", Sha256::digest(v)))
             .map_err(|_| AppError::Internal("http_turn_identity_error".into()))
@@ -205,6 +212,9 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
         return Err(AppError::Unauthorized);
     }
     if !state.persist_enabled {
+        return Err(AppError::HttpTurnUnavailable);
+    }
+    if !gateway_marker(state.agent.config(), headers) {
         return Err(AppError::HttpTurnUnavailable);
     }
     Ok(())
@@ -270,7 +280,7 @@ pub(super) async fn capabilities(
 ) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
     Ok(Json(
-        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES}),
+        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some() && !tenant_mode(state.agent.config()),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES,"gateway_protocol":if tenant_mode(state.agent.config()) {1} else {0},"agent_name":state.agent.config().name,"max_receipt_bytes":MAX_RESULT_BYTES+16384}),
     ))
 }
 
@@ -372,6 +382,9 @@ async fn submit_inner(
 ) -> Result<Response, AppError> {
     authorize(&state, &headers)?;
     validate_id(&id)?;
+    if streaming && tenant_mode(state.agent.config()) {
+        return Err(AppError::HttpTurnUnavailable);
+    }
     let body = match read_body(&state, request).await {
         Ok(body) => body,
         Err(response) => return Ok(response),
@@ -874,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_protocol_requires_explicit_authenticated_persistent_standalone_configuration() {
+    fn tracked_protocol_requires_explicit_authenticated_persistent_configuration() {
         let mut config = AgentConfig::default();
         assert!(!config.http.tracked_turns);
         config.http.tracked_turns = true;
@@ -883,20 +896,41 @@ mod tests {
         config.model_calls.enabled = true;
         config.tool_timeout_secs = Some(30);
         assert!(validate_config(&config, Some("operator-token")).is_ok());
-        for bad in 0..6 {
+        config.http.gateway_channel_chat = true;
+        assert!(validate_config(&config, Some("operator-token")).is_ok());
+        for bad in 0..4 {
             let mut config = config.clone();
             match bad {
                 0 => config.http.persist = false,
                 1 => config.model_calls.enabled = false,
                 2 => config.tool_timeout_secs = Some(31),
-                3 => config.http.gateway_channel_chat = true,
-                4 => config.scheduler.gateway_driven = true,
                 _ => config.http.tracked_turn_timeout_secs = 301,
             }
             assert!(validate_config(&config, Some("operator-token")).is_err());
         }
         assert!(validate_id(&uuid::Uuid::now_v7().to_string()).is_err());
         assert!(validate_id(&uuid::Uuid::new_v4().to_string().to_uppercase()).is_err());
+    }
+
+    #[test]
+    fn internal_marker_requires_actual_tenant_mode_and_one_exact_value() {
+        let mut config = AgentConfig::default();
+        let mut headers = HeaderMap::new();
+        assert!(gateway_marker(&config, &headers));
+        headers.insert("x-jiaclaw-gateway-turns", "1".parse().unwrap());
+        assert!(!gateway_marker(&config, &headers));
+        config.http.gateway_channel_chat = true;
+        assert!(gateway_marker(&config, &headers));
+        headers.append("x-jiaclaw-gateway-turns", "1".parse().unwrap());
+        assert!(!gateway_marker(&config, &headers));
+        headers.insert("x-jiaclaw-gateway-turns", "2".parse().unwrap());
+        assert!(!gateway_marker(&config, &headers));
+        headers.clear();
+        config.http.gateway_channel_chat = false;
+        config.scheduler.gateway_driven = true;
+        assert!(!gateway_marker(&config, &headers));
+        headers.insert("x-jiaclaw-gateway-turns", "1".parse().unwrap());
+        assert!(gateway_marker(&config, &headers));
     }
 
     #[tokio::test]
