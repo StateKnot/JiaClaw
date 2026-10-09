@@ -104,6 +104,7 @@ impl Metrics {
 pub(crate) fn classify_http_path(path: &str) -> &'static str {
     match path {
         "/api/chat" => "api_chat",
+        path if path.starts_with("/api/turns/") => "api_turns",
         "/hooks/telegram" => "hooks_telegram",
         "/hooks/slack" => "hooks_slack",
         "/hooks/discord" => "hooks_discord",

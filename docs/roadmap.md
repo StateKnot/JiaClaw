@@ -92,3 +92,7 @@ PR #85 首轮 CI 的 Ubuntu/容器成功，macOS 第 11 组千条准入意外收
 2026-10-09 本轮回填 PR #93 最终七项 CI、四平台优化候选实际归档安装与真实旧账本迁移。StateKnot main 已推进到 `288cfc634574cc314e748f0ebeaa48ca418435ed`，#156 时间戳解析修复及嵌套 JSON 测试没有改变现有 HTTP MCP 合同；十三项 checks 成功，alpha.1/#140 不变。Brokerrouter main/#31/#41/PR40 未变化，十二项 failure 仍因付款/额度未启动。
 
 HTTP/Web 流式准备发现并实际修复[存储取消竞态](session-cancellation.md)：原聊天提交、导入、删除及拒绝写入的四项回归均复现提前释放 turn 锁，现将所有权移交实际 blocking storage。最终六项边界测试、本地1194 Rust/必需检查、同一冻结 binary 七套相关进程回归通过；本批固定head跨平台/候选CI仍须完整验收。没有增加HTTP/Web真流式或durable恢复能力。下一步在此已序列化存储基础上接通持久HTTP请求身份、有限事件交付/核对、取消/停机与真实浏览器，再分别认证上游资源修复和供应商。现有回访ACTIVE，每批结束后30分钟继续，不合并或公开发布。
+
+2026-10-09 PR #94 最终 head `e3986d6d3bb10532504de4d5d334a7447343cd19` 的七项 CI 全成功；四平台候选在合并 tree `a01a92187fbf1dc670505d2da76c1422e33002d6` 上运行六项真实存储取消边界、CLI 七组及归档安装十三组，详见[最终回填](validation.md#http-session-取消所有权最终-ci-回填)。此前本批“待最终验收”已解决。
+
+本轮继续接线[持久 HTTP 请求与结果](http-turns.md)：显式启用的 UUIDv4 create-only 准入、单活动 owner/四个真实控制 owner、有限总期限、相同会话库内原子结果/历史、取消意图、重启人工核对与永久身份/结果清理均已实际实现。协议使用已资格化 Brokerrouter SSE 原生循环，但对 HTTP 输出 JSON；不将其标为 Web/token delivery 或 StateKnot durable 完成。新增真实进程七组初验通过，固定最终源码的完整 Rust/回归与本批 draft PR CI 仍须验收。下一步在该身份和状态基础上接有界 HTTP SSE/body consumer 与 Web，随后分别认证租户、上游资源修复和供应商；其他剩余 stdio/外部写入、durable 委派、独立用户钉钉/WhatsApp、多模态保持开放。回访继续 ACTIVE，不自动合并或发布。

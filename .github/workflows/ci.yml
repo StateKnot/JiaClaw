@@ -42,6 +42,7 @@ jobs:
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw
       - run: python3 tests/cli_stream.py target/debug/jiaclaw
+      - run: python3 tests/http_turns.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
       - run: python3 tests/read_only_keys.py target/debug/jiaclaw
       - run: python3 tests/gateway_audit.py target/debug/jiaclaw

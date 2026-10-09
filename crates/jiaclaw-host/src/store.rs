@@ -42,7 +42,7 @@ impl Drop for DatabaseOwnership {
         let _ = fs2::FileExt::unlock(&self.file);
     }
 }
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -122,7 +122,7 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 10 {
+        if version > 11 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
         if version < 1 {
@@ -155,6 +155,10 @@ impl SessionStore {
         if version < 10 {
             tx.execute_batch(super::jobs::SCHEMA_V10)?;
         }
+        if version < 11 {
+            tx.execute_batch(super::http_turn_store::SCHEMA_V11)?;
+        }
+        super::http_turn_store::validate_schema(&tx)?;
         let violation = tx
             .prepare("PRAGMA foreign_key_check")?
             .query([])?
@@ -230,6 +234,7 @@ impl SessionStore {
                 map.insert(id, rec);
             }
             Self::Sqlite { conn, .. } => {
+                super::http_turn_store::ensure_clear(conn, &id)?;
                 conn.execute("INSERT INTO sessions(id,messages,accessed_ms) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET messages=excluded.messages,accessed_ms=excluded.accessed_ms", params![id, serde_json::to_string(&rec.messages)?, touched_ms(&rec)])?;
             }
         }
@@ -245,6 +250,7 @@ impl SessionStore {
                 Ok(true)
             }
             Self::Sqlite { conn, .. } => {
+                super::http_turn_store::ensure_clear(conn, id)?;
                 let sql = if overwrite {
                     "INSERT INTO sessions(id,messages,accessed_ms) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET messages=excluded.messages,accessed_ms=excluded.accessed_ms"
                 } else {
@@ -301,6 +307,7 @@ impl SessionStore {
         match self {
             Self::Memory(map) => Ok(map.remove(id).is_some()),
             Self::Sqlite { conn, .. } => {
+                super::http_turn_store::ensure_clear(conn, id)?;
                 Ok(conn.execute("DELETE FROM sessions WHERE id=?1", [id])? == 1)
             }
         }
@@ -339,7 +346,7 @@ impl SessionStore {
                 for id in expired {
                     if !active.contains(&id) {
                         deleted += tx.execute(
-                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled')))) AND NOT EXISTS (SELECT 1 FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE r.session_id=sessions.id AND d.state NOT IN ('delivered','cancelled'))",
+                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled')))) AND NOT EXISTS (SELECT 1 FROM http_turns h WHERE h.session_id=sessions.id AND (h.state='running' OR (h.state='needs_review' AND h.reviewed_ms IS NULL))) AND NOT EXISTS (SELECT 1 FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE r.session_id=sessions.id AND d.state NOT IN ('delivered','cancelled'))",
                             params![id, cutoff],
                         )?;
                     }
@@ -462,14 +469,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=11;").unwrap();
+        conn.execute_batch("PRAGMA user_version=12;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
@@ -517,7 +524,7 @@ mod tests {
         let path = dir.join("sessions.sqlite3");
         drop(SessionStore::open(&path).unwrap());
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version=11;").unwrap();
+        conn.execute_batch("PRAGMA user_version=12;").unwrap();
         drop(conn);
         let lock_path = path.with_extension("sqlite3.lock");
         let file = std::fs::OpenOptions::new()
@@ -539,7 +546,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         drop(conn);
         drop(retained);

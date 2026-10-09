@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-09 本批再次固定 main `e58db449939b79b215660704400bf5aa91a39296`：[#157](https://github.com/StateKnot/StateKnot/pull/157) 在 Core 中强制声明对象使用 map reader，拒绝 JSON array 的位置解码；runtime/tool_registration 仅增测试，没有 integrations 生产接线变化。此前最终读取的十三项 main checks 全成功；release 仍 alpha.1、#140 OPEN/无回复。该源码增量不等于稳定生产发布。JiaClaw 保留原 HTTP MCP 精确 pin，不消费新的 typed object reader，不另建重复议题。本批[持久 HTTP 请求](http-turns.md)由应用准入/会话事务与已接线 Brokerrouter 原生循环实现，仍不是 StateKnot durable runtime。
+
 2026-10-09 本轮固定 main 已推进到 `288cfc634574cc314e748f0ebeaa48ca418435ed`，十三项 checks 全部成功；release 仍为 alpha.1，#140 仍 OPEN/无回复。[#156](https://github.com/StateKnot/StateKnot/pull/156) 将时间戳十进制解析的 eager `then_some` 改为 digit 校验后的 lazy `then`，并增加嵌套 JSON/规范时间资源与 fuzz 证据；相对上一 main 的完整文件差异没有 runtime/integrations 生产合同变更。现有精确 HTTP MCP 依赖不消费该时间戳 reader，不据此升级或另建重复 issue。本批[会话取消修复](session-cancellation.md)属于 JiaClaw 的实际 SQLite worker 所有权，不是 durable driver 接线。
 
 2026-10-09 06:25 UTC 已读取 main `9c52b9cd4a69ec4a9537a6f70b5f41cf7e966d3f` 的十四项成功检查、alpha.1发布和 #140（OPEN/无回复），均与前批固定合同相同。本批 CLI 流式只使用 Brokerrouter 现成 SSE，保留原 HTTP MCP精确依赖与整批工具授权，不将预览/模型收据作为 StateKnot durable 或外部写入恢复。后续 durable 原生输出仍跟踪 Brokerrouter #41。

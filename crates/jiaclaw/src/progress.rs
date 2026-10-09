@@ -75,6 +75,7 @@ impl Delivery {
 #[derive(Clone)]
 pub struct ChatProgress {
     sender: mpsc::Sender<ChatProgressEvent>,
+    turn_id: Option<String>,
     delivery: Arc<Delivery>,
 }
 
@@ -96,6 +97,29 @@ impl ChatProgress {
         Self::with_owners(owners)
     }
 
+    /// Admit a stream with a canonical caller-owned `UUIDv4` turn identity.
+    /// This is local correlation only; it does not grant a governed upstream turn.
+    /// # Errors
+    /// Noncanonical identity or all delivery/settlement owners occupied.
+    pub fn channel_for_turn(id: &str) -> Result<(Self, ChatEvents), JiaClawError> {
+        if !uuid::Uuid::parse_str(id).is_ok_and(|value| {
+            value.get_version_num() == 4
+                && value.get_variant() == uuid::Variant::RFC4122
+                && value.to_string() == id
+        }) {
+            return Err(JiaClawError::InvalidRequest(
+                "canonical UUIDv4 turn identity required".into(),
+            ));
+        }
+        let (mut progress, events) = Self::channel()?;
+        progress.turn_id = Some(id.into());
+        Ok((progress, events))
+    }
+
+    pub(crate) fn turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
+    }
+
     fn with_owners(owners: &Arc<Semaphore>) -> Result<(Self, ChatEvents), JiaClawError> {
         let permit = Arc::clone(owners).try_acquire_owned().map_err(|_| {
             JiaClawError::InvalidRequest("stream_busy: four streams already active".into())
@@ -109,6 +133,7 @@ impl ChatProgress {
         Ok((
             Self {
                 sender,
+                turn_id: None,
                 delivery: Arc::clone(&delivery),
             },
             ChatEvents { receiver, delivery },
@@ -120,8 +145,14 @@ impl ChatProgress {
         self.delivery.cancel();
     }
 
+    /// Whether delivery/caller has stopped future dispatch. Current effects may still settle.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.delivery.canceled.load(Ordering::Acquire) || self.sender.is_closed()
+    }
+
     pub(crate) fn ensure_open(&self) -> Result<(), JiaClawError> {
-        if self.delivery.canceled.load(Ordering::Acquire) || self.sender.is_closed() {
+        if self.is_cancelled() {
             return Err(JiaClawError::InvalidRequest(
                 "stream_delivery_closed: current submitted model may still settle; no replay"
                     .into(),
