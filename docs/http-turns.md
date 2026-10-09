@@ -1,6 +1,6 @@
 # 持久 HTTP 请求与结果核对
 
-本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 仍使用原聊天入口。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
+本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
 
 ## 开启与升级
 
@@ -27,7 +27,8 @@ store_path = "../state/model-calls/index.sqlite3"
 
 | 方法和路径 | 行为 |
 | --- | --- |
-| `GET /api/turns/capabilities` | protocol 1、是否允许新增、是否可流式、期限/字节容量与 stream_suffix |
+| `GET /api/turns/capabilities` | protocol 1、是否允许新增、是否可流式、listing、期限/字节容量与 stream_suffix |
+| `GET /api/turns` | 认证后的有界持久身份目录，默认只列待核对请求 |
 | `PUT /api/turns/{uuid-v4}` | create-only 准入；首次 202，同规范化请求重复 200；不重放模型/工具 |
 | `PUT /api/turns/{uuid-v4}/stream` | 同一 create-only 身份；首次202 SSE，旧身份200 JSON，无重连/重放 |
 | `GET /api/turns/{uuid-v4}` | 原准入/终态、active owner 与保留结果的权威快照 |
@@ -80,3 +81,11 @@ note 为 1..1024 UTF-8 字节，首次记录保留，不允许覆盖成另一条
 总期限和服务停机先停止新模型/工具派发，当前已提交模型仍按原 60 秒合同结算；不为结算、后续轮次或 shutdown 重置预算。HTTP owner 保持到当前原生尝试返回及会话事务结束。停机共享原 configured grace，超限后原 UUID 保留；下一次启动在数据库生命周期锁下把 running 标记 process_interrupted，**不恢复模型/工具循环**。额外 checkpoint 不延长宽限期；真正已经派发的 blocking 存储仍持有底层资源到结束。SQLite 模型账本与会话库分离，不宣称跨库 exactly-once。
 
 `tests/http_turns.py` 以实际二进制/HTTP/SSE/SQLite/进程信号验收七组：启动认证与期限，原身份两轮原生工具与重复/冲突/重启清理，外部 SQLite writer 阻断准入及丢失回复，显式取消/总期限后的结算与无预览副作用，失败工具停止后续批次，终态 SQL 回滚/人工核对，SIGKILL/同宽限期停机与 GET-only 模型恢复。另有存储/控制 owner 单元回归。fixture 凭据仅访问脱敏本机协议；真实 Brokerrouter slow-consumer 修复、供应商、HTTP 流式的新增应用验收见[合同](http-streaming.md)，Web/租户/代理与供应商仍分别待接线或认证。
+
+## 遗失编号时查找持久请求
+
+使用同一实例管理员Bearer认证 `GET /api/turns?state=unresolved&limit=20&offset=0`。所有参数可省略，state仅为unresolved/all/running/completed/needs_review，limit为1–50（默认20），offset为0–10000（默认0）；raw query最多128字节，拒绝未知/重复参数、编码、正负号和非规范前导零，鉴权先于检查。响应Cache-Control:no-store，结构为protocol/state/limit/offset/has_more/turns。每项只有id/session_id/created_ms/finished_ms/state/session_committed/cancel_requested/result_purged/reviewed_ms九字段，不包含正文、请求hash、工具参数或review_note。
+
+默认unresolved为running及reviewed_ms为空的needs_review；其他筛选可找到已核对或已清理正文的永久身份。按created_ms降序再id降序，单页来自一次SQLite读取快照；新增准入或筛选状态变化可能改变后续页，刷新第一页再核对，不能把offset分页当永久游标或完整导出。没有总数扫描，最多读取limit+1条状态投影，共享原四槽storage owner，满时409而不等待无限队列；数据库永久容量仍10000，不扩容或清理身份。
+
+目录不包含active，也不证明模型/工具已经停止；选中后必须 `GET /api/turns/{id}` 获取原收据与实际owner。关闭tracked_turns仍可认证读目录和原收据，不开放新提交；网关全权限及只读Key都没有此路由。进程重启后running转needs_review仍能查找，不能由列表自动执行、取消、review或恢复unknown模型账本。

@@ -68,6 +68,21 @@ pub(super) struct Receipt {
     pub review_note: Option<String>,
 }
 
+/// Discovery metadata only. Never load retained result bodies or authorization
+/// hashes while paging identities, and never infer live ownership from this row.
+#[derive(Debug, Serialize)]
+pub(super) struct Summary {
+    pub id: String,
+    pub session_id: String,
+    pub created_ms: i64,
+    pub finished_ms: Option<i64>,
+    pub state: String,
+    pub session_committed: bool,
+    pub cancel_requested: bool,
+    pub result_purged: bool,
+    pub reviewed_ms: Option<i64>,
+}
+
 fn lookup(conn: &Connection, id: &str) -> Result<Option<Receipt>> {
     let row = conn.query_row("SELECT id,session_id,request_hash,context_hash,created_ms,finished_ms,state,session_committed,error,result,result_purged,reviewed_ms,review_note,cancel_requested FROM http_turns WHERE id=?1", [id], |row| {
         Ok((Receipt { id:row.get(0)?, session_id:row.get(1)?, request_hash:row.get(2)?, context_hash:row.get(3)?, created_ms:row.get(4)?, finished_ms:row.get(5)?, state:row.get(6)?, session_committed:row.get(7)?, error:row.get(8)?, result:None, result_purged:row.get(10)?, reviewed_ms:row.get(11)?, review_note:row.get(12)?, cancel_requested:row.get(13)? }, row.get::<_,Option<String>>(9)?))
@@ -105,6 +120,46 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
 }
 
 impl SessionStore {
+    pub(super) fn list_http_turns(
+        &self,
+        filter: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<Summary>, bool)> {
+        ensure!(
+            matches!(
+                filter,
+                "all" | "unresolved" | "running" | "completed" | "needs_review"
+            ) && (1..=50).contains(&limit)
+                && offset <= MAX_IDENTITIES,
+            "invalid HTTP turn catalog bounds"
+        );
+        // Each page is one SQLite read snapshot; later pages may shift as new
+        // identities arrive or rows settle. No deletion or dispatch occurs here.
+        let mut query = self.http_connection()?.prepare(
+            "SELECT id,session_id,created_ms,finished_ms,state,session_committed,cancel_requested,result_purged,reviewed_ms FROM http_turns
+             WHERE ?1='all' OR (?1='unresolved' AND (state='running' OR (state='needs_review' AND reviewed_ms IS NULL))) OR state=?1
+             ORDER BY created_ms DESC,id DESC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = query.query_map(params![filter, limit + 1, offset], |r| {
+            Ok(Summary {
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                created_ms: r.get(2)?,
+                finished_ms: r.get(3)?,
+                state: r.get(4)?,
+                session_committed: r.get(5)?,
+                cancel_requested: r.get(6)?,
+                result_purged: r.get(7)?,
+                reviewed_ms: r.get(8)?,
+            })
+        })?;
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        Ok((rows, has_more))
+    }
+
     fn http_connection(&self) -> Result<&Connection> {
         match self {
             Self::Sqlite { conn, .. } => Ok(conn),
@@ -283,6 +338,114 @@ mod tests {
                 .unwrap()
                 .1
         );
+    }
+
+    #[test]
+    fn catalog_discovers_unreviewed_identities_without_result_or_hash_data() {
+        let mut store = store();
+        let ids: Vec<_> = (0..4).map(|_| new_id()).collect();
+        for id in &ids {
+            admit(&mut store, id, &session());
+        }
+        store
+            .finish_http_turn(
+                &ids[1],
+                Some(history("private")),
+                Some(serde_json::json!({"reply":"private","status":"completed"})),
+                None,
+                false,
+            )
+            .unwrap();
+        store
+            .finish_http_turn(&ids[2], None, None, Some("fixture_unknown"), true)
+            .unwrap();
+        store
+            .finish_http_turn(&ids[3], None, None, Some("fixture_unknown"), true)
+            .unwrap();
+        store
+            .review_http_turn(&ids[3], "private operator note")
+            .unwrap();
+        store.purge_http_result(&ids[1]).unwrap();
+        let (rows, more) = store.list_http_turns("unresolved", 50, 0).unwrap();
+        assert!(!more);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r.id == ids[0] && r.state == "running"));
+        assert!(rows
+            .iter()
+            .any(|r| r.id == ids[2] && r.reviewed_ms.is_none()));
+        let (all, _) = store.list_http_turns("all", 50, 0).unwrap();
+        assert_eq!(all.len(), 4);
+        let json = serde_json::to_value(&all).unwrap();
+        for row in json.as_array().unwrap() {
+            assert_eq!(row.as_object().unwrap().len(), 9);
+            for field in [
+                "result",
+                "error",
+                "review_note",
+                "context_hash",
+                "request_hash",
+                "active",
+            ] {
+                assert!(row.get(field).is_none());
+            }
+        }
+        assert!(all.iter().any(|r| r.id == ids[1] && r.result_purged));
+        assert_eq!(
+            store
+                .list_http_turns("needs_review", 50, 0)
+                .unwrap()
+                .0
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn catalog_pages_tied_clock_values_and_skips_large_result_deserialization() {
+        let mut store = store();
+        let mut ids: Vec<_> = (0..4).map(|_| new_id()).collect();
+        for id in &ids {
+            admit(&mut store, id, &session());
+        }
+        store
+            .http_connection()
+            .unwrap()
+            .execute("UPDATE http_turns SET created_ms=100", [])
+            .unwrap();
+        // Discovery reads metadata even when the retained JSON is a large scalar.
+        store
+            .http_connection()
+            .unwrap()
+            .execute(
+                "UPDATE http_turns SET state='needs_review',finished_ms=1,result=?2 WHERE id=?1",
+                params![
+                    ids[0],
+                    serde_json::to_string(&"x".repeat(2 * 1024 * 1024)).unwrap()
+                ],
+            )
+            .unwrap();
+        ids.sort_by(|a, b| b.cmp(a));
+        let (first, more) = store.list_http_turns("all", 2, 0).unwrap();
+        assert!(more);
+        assert_eq!(
+            first.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            ids[..2].iter().collect::<Vec<_>>()
+        );
+        let (second, more) = store.list_http_turns("all", 2, 2).unwrap();
+        assert!(!more);
+        assert_eq!(
+            second.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            ids[2..].iter().collect::<Vec<_>>()
+        );
+        assert!(store.list_http_turns("all", 2, 10000).unwrap().0.is_empty());
+        for (filter, limit, offset) in [
+            ("all", 0, 0),
+            ("all", 51, 0),
+            ("all", 1, 10001),
+            ("unknown", 1, 0),
+        ] {
+            assert!(store.list_http_turns(filter, limit, offset).is_err());
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 持久 HTTP 的有界事件流
 
-单用户管理员 `serve` 显式开启 `http.tracked_turns` 后，可以用 `PUT /api/turns/{原始UUIDv4}/stream` 接收同一次执行的 SSE。鉴权、正文、原会话命名空间、准入/结果预算、模型账本、取消和人工核对均沿用[持久 HTTP 合同](http-turns.md)。不增加上游治理 turn、StateKnot durable、自动恢复或外部写入授权。现有 `/api/chat` 的分块 SSE 及 Web 仍使用原流程；租户网关不开放新入口。
+单用户管理员 `serve` 显式开启 `http.tracked_turns` 后，可以用 `PUT /api/turns/{原始UUIDv4}/stream` 接收同一次执行的 SSE。鉴权、正文、原会话命名空间、准入/结果预算、模型账本、取消和人工核对均沿用[持久 HTTP 合同](http-turns.md)。不增加上游治理 turn、StateKnot durable、自动恢复或外部写入授权。现有 `/api/chat` 保留兼容分块 SSE；[工作台](web-streaming.md)仅在认证能力允许的新 `http:` 会话使用此入口。租户网关不开放新入口。
 
 ## 提交和响应
 

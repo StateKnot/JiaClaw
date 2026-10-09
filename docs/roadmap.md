@@ -9,7 +9,7 @@
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收；本批修复取消时的存储所有权 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复；[取消合同](session-cancellation.md)覆盖排队、写锁争用、导入/删除和失败后释放 |
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；本批补齐进程四槽 Schema worker 与原始总期限，超时后容量归实际工作持有，固定提交 CI 见本批交付；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
-| 5 | Web 工作台 | 聊天/会话、受限任务管理及管理员发件箱已实现并本地验收 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥 |
+| 5 | Web 工作台 | 聊天/会话、受限任务管理及管理员发件箱已验收；原身份流式本批接线 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥；[Web 流式](web-streaming.md)显式工具授权、原编号/取消/刷新核对与有界预览，固定 head 资格按本批交付记录 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
 | 6 | cron 多任务 | 实现；含 Telegram/Slack/Discord/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
 | 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现；企业微信启动门槛已通过 PR #86 CI | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/Discord/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本，本批实际 serve 在 Agent/MCP/数据库/监听/worker 前校验 token、AgentID、启用状态和三类白名单的显式人员可见范围，新增六组/32 负例及无凭据停发维护通过，PR #86 最终三项 CI 已通过；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；[Discord](discord.md) Bot 定时文字已接线；WhatsApp 及真实安装认证仍待完成 |
@@ -17,7 +17,7 @@
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
 | 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)、[Discord](tenant-discord.md)、[飞书](tenant-feishu.md)已分别通过 PR #71/#80/#81/#82/#83/#84/#85 最终 CI。[独立用户企业微信](tenant-wecom.md) 已通过 PR #87 固定 head 的本地十组、旧21套与三项最终 CI；独立用户钉钉、WhatsApp 及真实供应商联合认证待完成；standalone 企业微信启动门槛的 PR #86 CI 不代替新私有队列/后端验收 |
-| 11 | 真正流式 | 单次 CLI 已通过 PR #93 最终七项 CI；持久 HTTP SSE 本批接线/初验，Web/租户与上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)与[四平台回填](validation.md#单次-cli-真流式最终-ci-回填)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，现有 HTTP 完成后分块仍非 token streaming |
+| 11 | 真正流式 | 单次 CLI 已通过 PR #93 最终七项 CI；持久 HTTP SSE 已通过 PR #96 最终七项 CI；本批接线 Web，租户与上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)与[四平台回填](validation.md#单次-cli-真流式最终-ci-回填)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，原 `/api/chat` 兼容分块仍非 token streaming；新持久 HTTP 已逐事件接线，见[合同](http-streaming.md)与[最终回填](validation.md#http-流式最终-ci-回填) |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
 | 14 | 打包发布 | PR #91 固定 head 四平台候选验收已通过；公开发布待审核 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。head `4edc04c868b07096a4ebe367d5b0083988822d72` 的七项 checks 全部成功，四份实际归档/源码证据见候选合同；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
@@ -102,3 +102,9 @@ HTTP/Web 流式准备发现并实际修复[存储取消竞态](session-cancellat
 再增加两项实际责任回归，旧行为均失败：取消等待者消失后仍须在成功落盘后通知 owner，停机之前占用许可但稍后登记的 owner 也须观察关闭状态。生产修订将通知与真实 control worker、同一 active 登记锁接线，保持原结算/总期限及底层工具资源边界；最终十一项 HTTP 边界与完整固定 head 资格以本批 PR 记录为准。
 
 PR #95最终head `01034bd2a3152869ecdd9f6aa58d62e04656d7c7` 的1205本机Rust/32套、七项CI/四平台候选全部成功，[最终证据](validation.md#持久-http-身份最终-ci-回填)已回填。本轮继续[有界HTTP正文流式](http-streaming.md)：实际共享原身份/原生队列/结算与会话事务，新增七组真实HTTP含TCP慢读及两个Body责任边界初验通过，完整固定head资格以本批PR为准。Web仍使用旧聊天API，下一批接明确工具授权/原session命名空间、内存身份与有界预览/未知原ID核对，不自动重连重发。stdio/外部写入、durable/委派、独立用户钉钉/WhatsApp、真实供应商和多模态继续开放。回访ACTIVE，不自动合并或发布。
+
+2026-10-09 PR #97 Web原请求接线先前head `6469e26a83f247aa186520155dd4e0ca81048968` 最终七CI/四平台优化候选、完整1207 Rust/33进程/五浏览器通过，已[逐项回填](validation.md#web-原请求流式最终-ci-回填)。当前复用该draft分支补齐[认证持久请求目录](http-turns.md#遗失编号时查找持久请求)和浏览器遗失编号恢复，SQLite直接投影状态而不读正文、不重放，关闭准入后仍可读；新增三Rust/四HTTP组/十一浏览器组初验通过，固定最终head完整34套与七CI/四候选需重新核对，不能沿用6469资格。下一项继续按上游原生Schema与资源合同推进durable/stdio；没有新上游合同可用时独立完善渠道/租户验收，不把目录当作恢复模型或外部效果。DingTalk安装权限证据、WhatsApp、多模态、供应商/代理认证仍开放。回访保持ACTIVE/每批结束后30分钟，不自动合并或公开发布。
+
+目录复核发现历史TTL/删除后的永久完成身份会在Web错误hold，新增真实删除/清理的第十二浏览器组先复现再修订历史404与fetch/body退出。最终提交重新固定并重跑全部检查，不把初版2709的候选或本机成功当作最终资格。原收据仍是完成/active权威，缺失历史不恢复会话、不重放。
+
+历史缺失的最后协议复核补上明确404标记，修正204/null混淆；冻结3a2 binary的前端故障fixture先复现错误结束hold，第十二组验证204/500均保持原身份、正常原GET404才解除。最终提交重新资格化，不扩大框架或供应商完成范围。

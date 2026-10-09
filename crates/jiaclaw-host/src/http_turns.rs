@@ -8,7 +8,7 @@ use super::{session_turn_mutex, with_session_turn, with_sessions, AppError, AppS
 use anyhow::{ensure, Result};
 use axum::{
     body::Bytes,
-    extract::{FromRequest, Path, Request, State},
+    extract::{FromRequest, Path, RawQuery, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -270,8 +270,67 @@ pub(super) async fn capabilities(
 ) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
     Ok(Json(
-        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES}),
+        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES}),
     ))
+}
+
+fn catalog_query(raw: Option<&str>) -> Result<(String, usize, usize), AppError> {
+    let invalid = || AppError::BadRequest("invalid_http_turn_query".into());
+    let raw = raw.unwrap_or("");
+    if raw.len() > 128 {
+        return Err(invalid());
+    }
+    let (mut filter, mut limit, mut offset) = ("unresolved".to_owned(), 20, 0);
+    let mut seen = std::collections::HashSet::new();
+    if !raw.is_empty() {
+        for part in raw.split('&') {
+            let (key, value) = part.split_once('=').ok_or_else(invalid)?;
+            if !seen.insert(key) {
+                return Err(invalid());
+            }
+            let number = || -> Result<usize, AppError> {
+                if value.is_empty()
+                    || (value.len() > 1 && value.starts_with('0'))
+                    || !value.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return Err(invalid());
+                }
+                value.parse().map_err(|_| invalid())
+            };
+            match key {
+                "state"
+                    if matches!(
+                        value,
+                        "all" | "unresolved" | "running" | "completed" | "needs_review"
+                    ) =>
+                {
+                    filter = value.into()
+                }
+                "limit" => limit = number()?,
+                "offset" => offset = number()?,
+                _ => return Err(invalid()),
+            }
+        }
+    }
+    if !(1..=50).contains(&limit) || offset > 10000 {
+        return Err(invalid());
+    }
+    Ok((filter, limit, offset))
+}
+
+pub(super) async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, AppError> {
+    authorize(&state, &headers)?;
+    let (filter, limit, offset) = catalog_query(raw.as_deref())?;
+    let query_filter = filter.clone();
+    let (turns, has_more) = control(&state, move |store| {
+        store.list_http_turns(&query_filter, limit, offset)
+    })
+    .await?;
+    Ok(([("cache-control", "no-store")], Json(json!({"protocol":1,"state":filter,"limit":limit,"offset":offset,"has_more":has_more,"turns":turns}))).into_response())
 }
 pub(super) async fn get(
     State(state): State<AppState>,
@@ -644,6 +703,39 @@ pub(super) async fn purge_result(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_query_is_finite_unambiguous_and_unencoded() {
+        assert_eq!(
+            super::catalog_query(None).unwrap(),
+            ("unresolved".into(), 20, 0)
+        );
+        assert_eq!(
+            super::catalog_query(Some("offset=10000&limit=50&state=all")).unwrap(),
+            ("all".into(), 50, 10000)
+        );
+        for raw in [
+            "limit=0",
+            "limit=51",
+            "offset=10001",
+            "limit=01",
+            "limit=+1",
+            "limit=%31",
+            "state=%61ll",
+            "state=all&state=running",
+            "limit=1&limit=1",
+            "offset=-1",
+            "offset=18446744073709551616",
+            "state=ALL",
+            "active=true",
+            "limit=",
+            "state=all&",
+            "=all",
+            "state=all=running",
+        ] {
+            assert!(super::catalog_query(Some(raw)).is_err(), "{raw}");
+        }
+        assert!(super::catalog_query(Some(&"x".repeat(129))).is_err());
+    }
     use super::*;
 
     #[test]

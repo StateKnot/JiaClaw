@@ -1,5 +1,19 @@
 # 基础能力验收记录
 
+## Web 原请求流式批次
+
+本批复用 PR96 已资格化原身份/正文流式，实现认证 capability、显式工具/技能、新 http 会话、一次提交前记录原 UUID、片段编号刷新 GET、原正文/权限的明确同编号重试、持久取消、人工核对和未知结果保留。浏览器不派生新的模型循环、自动重连/重发或扩大 gateway/只读 Key 权限；真实执行 owner 和账本合同不变。
+
+开发二进制的真实 Chromium156.0.8078.4 / Playwright1.62.1 八组已通过：门控前预览/两轮实际 file_write 与 Unicode落盘、持久取消后零后续工具、刷新仅原 UUID GET且实际正文 owner 结束后才解除模型gate、真实终态SQL回滚/无成功、实际已提交响应丢失后的同 UUID/正文/权限200且零额外派发、1900KiB预览/结果的独立DOM上限、原浏览器总期限abort但原模型仍结算/不伪造cancel_requested，以及部分终态/XSS/移动布局/身份切换后的迟到清理。解析器另覆盖逐字节Unicode、大终态微片合并、身份/顺序/授权/终态与wire/帧/预览上限。
+
+首轮未找到固定版本浏览器，使用已安装Chromium进行开发验收；固定Playwright所需Chromium151仍在临时目录准备。首轮fixture把既有账本submitting误写为submitted，以及测试切换details展开状态不一致，均保留失败日志并修正；新会话现在清空工具选择并关闭权限表单，新跟踪关闭核对表单。原生产/fixture预算没有延长。后续固定最终源码、完整Rust/33套/五套浏览器与跨平台CI以本批draft PR最终证据为准，不借用开发成功；真实供应商、租户、代理及durable仍未认证。
+
+## HTTP 流式最终 CI 回填
+
+[PR #96](https://github.com/StateKnot/JiaClaw/pull/96) 最终 head `988d0cd04559e66c3d08bf7f21a0fc28825c17da`、tree `fb50e89bb17408ba66ff468d010f912f7d6ed365`、base `01034bd2a3152869ecdd9f6aa58d62e04656d7c7`、实际 merge `1820cb34be4028c99c639e6d07c1103e8ae31bbd` 的原始父提交、tree 与实际 checkout 一致。[普通 CI 37934504996](https://github.com/StateKnot/JiaClaw/actions/runs/37934504996) 三项与[候选 37934504971](https://github.com/StateKnot/JiaClaw/actions/runs/37934504971)四项全部 SUCCESS，公开发布作业 SKIPPED。macOS1207/Linux1208 Rust；两普通平台全部33套进程通过，HTTP 身份七组、正文流式七组、CLI七组、十三项HTTP资源/通知边界及六项旧session取消均在全部六个平台作业通过。Linux另有四Chromium、单独真实Docker；容器验证非root、只读根、命名卷恢复和真实租户ENOSPC。
+
+四候选完成真实优化归档安装十三组，source/parents/tree/clean/native platform、实际archive/binary摘要及官方artifact ID/ZIP digest均已核对，没有另行下载ZIP。证据 `/tmp/jiaclaw-oct9j-delivery/pin.json`、`/tmp/jiaclaw-oct9j-ci-audit/evidence.json`；本机冻结二进制 SHA256 `24d2b93581b942f928a8728fed8de377f4dd0d5752bb188b82120c3e209cc059` 的1207 Rust/fmt/必需Clippy/locked build/全部33套通过。此最终资格包含下文记录的原截止测试修正，不借用初版平台成功。它认证 standalone HTTP 应用接线，不认证 Web、租户、供应商、代理或 StateKnot durable。
+
 ## 持久 HTTP 身份最终 CI 回填
 
 [PR #95](https://github.com/StateKnot/JiaClaw/pull/95) 最终 head `01034bd2a3152869ecdd9f6aa58d62e04656d7c7`、tree `048c06595cc83c4bcefab65318ca3b8fec485593`、base `e3986d6d3bb10532504de4d5d334a7447343cd19`、实际 merge `f3ce2267f2f26e18b29887d45831edfe8c8ca872` 的原始父提交/tree与各job真实checkout已核对。[普通CI37924558232](https://github.com/StateKnot/JiaClaw/actions/runs/37924558232)三项与[四平台候选37924558245](https://github.com/StateKnot/JiaClaw/actions/runs/37924558245)四项全部SUCCESS，公开发布作业SKIPPED。macOS1205/Linux1206 Rust、两普通平台32套、十一项HTTP边界/六项旧session取消、HTTP七组/CLI七组、Linux四Chromium及单独真实Docker均通过；容器验证非root/只读根/命名卷恢复和真实租户ENOSPC隔离。
@@ -727,3 +741,42 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 本地完整1194项Rust（396/123/675）、fmt、必需Clippy与locked build通过；最终测试文件的六项定向回归及必需Clippy再次通过，已有非必需lint警告不记为全lint无警告。冻结生产二进制SHA256 `61bbf2affa4df7d11ee235580780ffb62e7fb3e0ee1b3580fd467fd8b20a3c5b` 的七套实际进程回归全部通过：e2e、model_calls、cli_stream（七组）、user_gateway、channels、scheduler、scheduled_delivery。固定head最终跨平台/候选CI以本批draft PR最终说明为准，不借用PR93成功。数据库schema、5秒busy timeout、模型/工具预算、鉴权、既有HTTP/SSE/Web协议均未改变。
 
 这批是[HTTP流式前置修复](session-cancellation.md)，尚未增加HTTP/Web真流式入口、持久请求ID/未知响应核对、完整停机/代理认证或StateKnot durable恢复；下一步先完成本批固定head交付，再继续这些依赖。自动回访保持ACTIVE，每批结束后30分钟继续；不合并或公开发布。
+
+## Web 原请求流式最终 CI 回填
+
+[PR #97](https://github.com/StateKnot/JiaClaw/pull/97) 先前最终 head `6469e26a83f247aa186520155dd4e0ca81048968`、tree `19ea8b30c72cad3ed343e9230cb9d7eb727e9b6e` 已资格化：[CI 37950738062](https://github.com/StateKnot/JiaClaw/actions/runs/37950738062) 三项和[候选 37950738066](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066) 四项全部 SUCCESS，真实 merge `d0305622b8657119aec82ad8f340b44a0a690d45` 的父提交为 base `988d0cd04559e66c3d08bf7f21a0fc28825c17da` 与该 head，最终 tree 相同。公开 Release 作业在 PR 事件上 SKIPPED。
+
+该源码完整本机1207 Rust（396/123/688）、fmt/必需Clippy/locked build、同一冻结二进制 SHA256 `022cb3452b0bb9d2606767d0a6b9b8d4dcd4270b8bd02b208b3204e8cb5065ff` 的33套进程和五套实际浏览器/解析器通过；Web十组包含真实20技能目录及单次权限上限。CI两平台各33强制进程，Linux另有五浏览器及真实Docker/容器ENOSPC；native Rust为macOS1207/Linux1208。四平台优化候选各通过七组CLI、七组HTTP、七组HTTP-stream、解析器和十三组真实归档安装，源码清洁、native头及归档/安装binary字节核对成功。
+
+| 平台 | 实际验收 tar.gz SHA256 | 正式日志 |
+| --- | --- | --- |
+| `aarch64-apple-darwin` | `57e67155fa67d63f171cd529765d0225d44599005c1123f5a4a2d77029dd73ef` | [job 113888540127](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540127) |
+| `x86_64-apple-darwin` | `714948fbd4742708839e55db1cc905087e38f801fa0255fab86b51ba6827c931` | [job 113888540404](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540404) |
+| `aarch64-unknown-linux-gnu` | `5d8cf9c28a75d31f3d1667bc3bc9bb92cb39670e2c1dabe3a56c20cd3a1530f8` | [job 113888540406](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540406) |
+| `x86_64-unknown-linux-gnu` | `ba256636c94f8c936c70ff2ec234b539c3cf6c522c528d0ee76a181010eca353` | [job 113888540453](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540453) |
+
+四个官方artifact ID/ZIP摘要与上传日志相符，未独立下载ZIP；候选保留七天，未公开发布。沙箱内localhost PermissionDenied日志保留，授权完整测试在相同最终源码成功；更早 intermediate `8fe038a1641009944b5a872311a6d50f9f64ec7f` 曾在原20秒启动期限空日志失败，根因未证实、失败和后续成功证据分开保留。本机最终 installer 耗时115.04秒、退出0，未放宽任何期限，空日志没有证明具体等待阶段。官方当前review/inline/conversation均为空，不把作者核对写成外部审查。
+
+## 原请求目录与丢失编号恢复批次
+
+2026-10-09 16:10 UTC 再核对上游，固定 main、发布和议题未变化。新增仅管理员认证的持久原请求目录，直接投影九个状态字段，不读取result正文/提示词/权限hash/人工记录，不做准入、工具或模型派发。读取共用四个实际存储control owner；raw query鉴权后严格检查，页容量1–50、offset≤10000、查询≤128字节，单页LIMIT+1判定has_more，created_ms/id降序，维持schema11。默认仅running或未review的needs_review，all/状态筛选仍可找到已review或清理正文的永久身份。页间为读取时快照，不承诺分页期间的新准入/状态变化不会移动记录。
+
+Web capability listing=true才显示目录；每页五条、响应32KiB、15秒读取，选中后必须GET同一原UUID完整收据再判断active/完成，摘要不解除会话、不重放。存在原请求hold时禁止切换编号；切换密钥/401清空目录和迟到结果。严格DTO校验拒绝正文/未知字段、重复身份、不符合筛选或排序；失败先清除旧按钮，无HTML执行。停用tracked_turns仍允许认证目录/原收据，不增加准入权限或租户网关路径。
+
+三项新增Rust、真实HTTP进程四组与嵌入Chromium十一组初验通过：有界/auth先行/no-store、真实完成/清理/大正文/同时间分页、cancel/review筛选、SIGKILL后关闭准入仍找回原unknown编号（模型账本unknown不伪造恢复），及浏览器连UUID片段也遗失后的目录→原GET、原hold禁止替换、分页/坏目录拒绝。网关全权限/只读Key的新目录404断言加入既有隔离回归。固定最终源码的完整检查/34强制进程/七CI/四native候选仍须单独验收，以本次PR最终说明为准，不借用上述6469已通过记录。
+
+## 原目录复核的历史保留修订
+
+冻结初版 `270947e6cce06d61ce1a04b2c2819d7b2fdbede6` 后复核发现：永久completed身份在会话TTL/显式删除和正文清理后仍可读取，但Web将history GET404当成未知错误，使已完成原身份不能结束跟踪。新增第十二组Chromium通过真实认证DELETE删除历史及purge原结果，在初版冻结binary上复现“结束跟踪”错误禁用；生产修订只对已通过原收据校验的历史404显示缺失，不伪造空会话/重放，active和终态条件继续由原GET决定。其他失败仍hold，不自动清除草稿；显式结束仅清除仍匹配原正文的草稿。JSON和可选错误响应在退出时abort自身fetch/body。
+
+HTTP目录原四组增补实际历史删除后的永久身份/清理标志/原GET仍可读取，原阶段和fixture期限不变。本批最终source必须重新冻结并完整资格化，初版2709的局部/完整成功不能沿用，正式PR当前head结果为准。此前两次新增Rust测试fixture错误日志仍独立保留，生产completed guard没有放宽。
+
+补充浏览器fixture最初误设删除204及deleted字段，又使用404文案观察条件；源码实际合同为200/success=true，现严格按该合同和原收据/控制结束屏障检查。这些fixture失败/等待日志分开保留，不计作生产复现；最终旧binary反向检查实际完成history删除/purge/原GET后，结束跟踪仍错误禁用。修订binary十二组浏览器及目录四组初验通过，最终完整资格仍须重新固定源码。
+
+## 历史缺失的确切状态边界
+
+进一步复核发现通用api helper对204返回null，初版历史allowMissing也用null作为404标记，因此异常204被错误视作历史缺失。使用冻结 `3a2df5454eb658c249644894bba27e164a7a3faf` binary 和独立前端204响应fixture，实际复现结束跟踪错误启用（false != true）；不是服务供应商返回204的生产认证。修订复用仅明确404产生的内部标记，并对null正文报协议异常，204/500继续hold、随后原编号GET正常404才可结束。第十二组保留实际DELETE/purge，再验证两种协议故障零重放；既有生产/fixture期限不变，最终源码重新冻结验收，3a2的局部/完整成功及被替代CI不沿用。
+
+确切状态修订的本机第一次浏览器初验在原15秒actual server start期限超时，随后cleanup为SIGTERM -15，根因未证实。冻结binary SHA256 `595d1140e8c31af5a69a76c7c6219093746bad624c5e0e4f037f4e8c8024af63` 和原失败日志单独保留；同一字节/相同期限重跑，不能将后续成功记为已证明启动根因或放宽期限。最终完整源码、生产binary和七CI/四候选仍需独立资格化。
+
+同一595d binary在未改变期限/fixture的重跑中十二组Chromium全部成功，包括204/500仍hold、正常原GET404才结束；仅证明本次重跑通过，不证明首次启动超时根因。

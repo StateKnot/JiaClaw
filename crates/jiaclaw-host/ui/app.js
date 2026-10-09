@@ -39,9 +39,10 @@ function controls() {
   $('delivery-resolve').disabled ||= !deliveryFresh || delivery?.state !== 'unknown';
   $('delivery-cancel').disabled ||= !deliveryFresh || !['pending','retry_wait','unknown','permanent_failed','expired'].includes(delivery?.state);
   for (const id of ['chat-tab','jobs-tab','outbox-tab']) $(id).disabled = !connected || busy;
+  turnControls();
 }
 function clearIdentity() {
-  identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
+  forgetTurns(); identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
   $('access-mode').hidden = true; $('job-create').hidden = false;
   scheduledJobs = false; jobList = []; selectedJob = null; jobsMode = null; jobsHealth = null; pendingCreate = null;
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
@@ -80,7 +81,7 @@ async function api(path, method = 'GET', body, optional = false, timeout = 0, ma
     if (owner !== identity && !(error instanceof ApiError && error.code === 401)) throw new StaleIdentity();
     if (error.name === 'AbortError') throw new Error('请求超时；服务器可能仍在处理，请刷新并核对结果。');
     throw error;
-  } finally { if (timer) clearTimeout(timer); }
+  } finally { if (timer) clearTimeout(timer); controller.abort(); }
 }
 async function boundedJson(response, maximum, owner) {
   const reader = response.body?.getReader();
@@ -92,7 +93,7 @@ async function boundedJson(response, maximum, owner) {
       if (owner !== identity) throw new StaleIdentity();
       if (done) break;
       length += value.byteLength;
-      if (length > maximum) throw new ApiError('任务响应超过 2 MiB 上限；未跳过记录，请联系管理员核对。', response.status);
+      if (length > maximum) throw new ApiError('响应超过本页读取上限；未跳过记录，请联系管理员核对。', response.status);
       chunks.push(value);
     }
   } catch (error) { await reader.cancel().catch(() => {}); throw error; }
@@ -118,20 +119,28 @@ function renderSessions() {
 }
 function renderMessages(messages) {
   $('messages').replaceChildren();
-  for (const message of messages) {
+  for (const message of messages.slice(-51)) {
     const article = document.createElement('article'); article.className = `message ${message.role === 'user' ? 'user' : 'assistant'}`;
     const role = document.createElement('div'); role.className = 'role'; role.textContent = { user: '你', assistant: 'JiaClaw', system: '会话上下文' }[message.role] || '消息';
-    const text = document.createElement('p'); text.textContent = message.content;
+    const text = document.createElement('p'); text.textContent = clipped(message.content, 65536);
     article.append(role, text); $('messages').append(article);
   }
   $('messages').scrollTop = $('messages').scrollHeight;
 }
-async function refresh() { sessionList = (await api('/api/sessions')).sessions; renderSessions(); }
-async function select(id) {
-  const session = await api(`/api/sessions/${encodeURIComponent(id)}`);
+async function refresh() { sessionList = (await api('/api/sessions', 'GET', undefined, false, 15000, 4 * 1024 * 1024)).sessions; if (trackedSession() && !sessionList.some(s => s.id === selected)) sessionList.unshift({id:selected, message_count:0}); renderSessions(); }
+async function select(id, allowMissing = false) {
+  const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, allowMissing ? true : false, 15000, 26 * 1024 * 1024);
+  if (session === MISSING_ROUTE && allowMissing) {
+    // A permanent turn receipt does not guarantee its history survived TTL or
+    // deletion. Do not create an empty virtual session or preserve another view.
+    selected = null; $('session-title').textContent = '原请求历史不可读取';
+    showView('chat'); renderMessages([]); renderSessions(); return false;
+  }
+  if (!session || session.id !== id || !Array.isArray(session.messages) || session.messages.length > 51 || session.messages.some(m => typeof m.content !== 'string')) throw new Error('会话响应异常');
   selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
   showView('chat');
   renderMessages(session.messages); renderSessions(); status(readOnly ? '已连接 · 只读访问 · 会话就绪' : '已连接 · 会话就绪');
+  return true;
 }
 async function task(fn, replace = false) {
   if (busy && !replace) return;
@@ -141,7 +150,7 @@ async function task(fn, replace = false) {
   finally { if (current === operation) { busy = false; controls(); } }
 }
 $('connect-form').addEventListener('submit', event => {
-  event.preventDefault(); const nextToken = $('api-token').value.trim(); clearIdentity(); token = nextToken;
+  event.preventDefault(); const nextToken = $('api-token').value.trim(), resume = resumeTurnId; resumeTurnId = null; clearIdentity(); token = nextToken;
   task(async () => {
     status('连接中…'); await refresh();
     const capabilities = await api('/api/gateway/capabilities', 'GET', undefined, true);
@@ -159,21 +168,37 @@ $('connect-form').addEventListener('submit', event => {
     const channelStatus = token && !readOnly ? await api('/api/channels/status', 'GET', undefined, [403,404], 30000) : null;
     outboxEnabled = channelStatus && ['running','failed','stopping','disabled'].includes(channelStatus.state);
     $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled;
-    connected = true; status(readOnly ? '已连接 · 只读访问 · 选择会话查看' : '已连接 · 选择或新建会话');
+    await connectTurns();
+    connected = true; controls();
+    if (resume && turnCapabilities && !readOnly) { trackTurn(resume); await checkTurn(); return; }
+    status(readOnly ? '已连接 · 只读访问 · 选择会话查看' : '已连接 · 选择或新建会话');
   }, true);
 });
 $('refresh').addEventListener('click', () => task(async () => { await refresh(); status('会话列表已更新'); }));
 $('new-session').addEventListener('click', () => task(async () => {
   if (!connected || readOnly) return;
+  if (pendingTurn) return;
+  if (turnCapabilities?.streaming) { $('turn-permissions').open = false; for (const input of $('turn-permissions').querySelectorAll('input')) input.checked = false; selected = 'http:' + createId(); $('session-title').textContent = `会话 ${selected.slice(0,17)}`; renderMessages([]); await refresh(); showView('chat'); status('新会话就绪；请显式选择本次允许的工具。'); return; }
   const data = await api('/api/sessions', 'POST'); await refresh(); await select(data.session_id);
 }));
 $('delete-session').addEventListener('click', () => {
-  if (!connected || readOnly || !selected || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
+  if (!connected || readOnly || !selected || pendingTurn || !confirm('删除这段会话及全部历史？此操作无法撤销。')) return;
   task(async () => { await api(`/api/sessions/${encodeURIComponent(selected)}`, 'DELETE'); selected = null; renderMessages([]); $('session-title').textContent = '开始一段对话'; await refresh(); status('会话已删除'); });
 });
 $('chat-form').addEventListener('submit', event => {
-  event.preventDefault(); const text = $('message').value.trim(); if (!connected || readOnly || !text || !selected) return;
+  event.preventDefault(); const text = $('message').value.trim(); if (!connected || readOnly || !text || !selected || pendingTurn) return;
   task(async () => {
+    if (trackedSession()) {
+      if (!turnCapabilities?.streaming || pendingTurn) return;
+      if (Turn.bytes(text) > 32768) throw new Error('实时消息超过 32 KiB UTF-8 上限。');
+      const names = id => [...$(id).querySelectorAll('input:checked')].map(e => e.value);
+      const tools = names('turn-tools'), skills = names('turn-skills');
+      if ($('turn-tools').childElementCount && !tools.length) { $('turn-permissions').open = true; throw new Error('请选择本次允许的工具；空白不会授权全部工具。'); }
+      if (tools.length > 128 || skills.length > 16) { $('turn-permissions').open = true; throw new Error('单次最多授权 128 个工具和 16 个技能；请减少勾选。'); }
+      const body = {session_id:selected, prompt:text, enabled_tools:tools, enabled_skills:skills};
+      if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
+      const attempt = trackTurn(createId(), body); await streamTurn(attempt); return;
+    }
     status('JiaClaw 正在处理…');
     await api('/api/chat', 'POST', { messages: [{ role: 'user', content: text }], session_id: selected, stream: false });
     $('message').value = ''; await select(selected); await refresh(); status('回复已保存');
@@ -475,4 +500,248 @@ async function resolveDelivery(action) {
 }
 $('delivery-form').addEventListener('submit', event => { event.preventDefault(); task(() => resolveDelivery('delivered')); });
 $('delivery-cancel').addEventListener('click', () => task(() => resolveDelivery('cancel')));
+
+// A single original-turn attempt per connected identity. The fragment retains only
+// its non-secret UUID across reload; credentials, prompts and permissions stay in memory.
+const Turn = JiaClawTurnStream;
+let turnCapabilities = null, pendingTurn = null, turnConnection = null, turnControlBusy = false;
+let turnCatalogPage = null;
+let resumeTurnId = /^#turn=([0-9a-f-]{36})$/.exec(location.hash)?.[1];
+if (!Turn.uuid.test(resumeTurnId || '')) resumeTurnId = null;
+const trackedSession = () => typeof selected === 'string' && selected.startsWith('http:');
+const turnResolved = () => pendingTurn?.fresh && !pendingTurn.active && (pendingTurn.receipt?.state === 'completed' || pendingTurn.receipt?.reviewed_ms != null);
+function turnControls() {
+  $('turn-workspace').hidden = !connected || !turnCapabilities || readOnly;
+  $('turn-permissions').hidden = !trackedSession() || !turnCapabilities?.streaming;
+  $('chat-note').textContent = trackedSession() ? '实时文字为临时预览；按原编号核对已保存结果。' : '回复完成后显示；支持工具调用。';
+  const held = !!pendingTurn;
+  $('new-session').disabled ||= held;
+  $('delete-session').disabled ||= held;
+  $('message').readOnly = held;
+  $('message').disabled ||= trackedSession() && !turnCapabilities?.streaming;
+  $('send').disabled ||= held || (trackedSession() && !turnCapabilities?.streaming);
+  for (const element of $('turn-permissions').querySelectorAll('input')) element.disabled = busy || held;
+  $('turn-tracking').hidden = !held;
+  $('turn-check').disabled = !held || turnControlBusy;
+  $('turn-cancel').disabled = !held || turnControlBusy || !turnCapabilities?.enabled || pendingTurn?.receipt?.state !== 'running';
+  $('turn-retry').disabled = !held || turnControlBusy || busy || !!turnConnection || !pendingTurn?.body || !turnCapabilities?.streaming || !!pendingTurn?.receipt;
+  $('turn-finish').disabled = !turnResolved() || !!turnConnection || turnControlBusy;
+  $('turn-review').hidden = pendingTurn?.receipt?.state !== 'needs_review' && !(pendingTurn?.receipt?.state === 'running' && !pendingTurn?.active);
+  $('turn-abandon').disabled = !held || !pendingTurn?.fresh || pendingTurn?.active || turnControlBusy || !!turnConnection;
+  $('turn-lookup-id').disabled = !connected || !!pendingTurn || busy;
+  $('turn-lookup').querySelector('button').disabled = !connected || !!pendingTurn || busy;
+  const catalogDisabled = !connected || busy || turnControlBusy || turnCapabilities?.listing !== true;
+  $('turn-catalog').hidden = turnCapabilities?.listing !== true || readOnly;
+  $('turn-catalog-filter').disabled = catalogDisabled;
+  $('turn-catalog-refresh').disabled = catalogDisabled;
+  $('turn-catalog-prev').disabled = catalogDisabled || !turnCatalogPage || turnCatalogPage.offset === 0;
+  $('turn-catalog-next').disabled = catalogDisabled || !turnCatalogPage?.has_more || turnCatalogPage.offset + 5 > 10000;
+  for (const button of $('turn-catalog-rows').querySelectorAll('button')) button.disabled = catalogDisabled || held;
+}
+function forgetTurns() {
+  turnConnection?.abort(); turnConnection = null; turnControlBusy = false; pendingTurn = null; turnCapabilities = null;
+  turnCatalogPage = null; $('turn-catalog').open = false; $('turn-catalog').hidden = true;
+  $('turn-catalog-filter').value = 'unresolved'; $('turn-catalog-rows').replaceChildren(); $('turn-catalog-status').textContent = '';
+  history.replaceState(null, '', location.pathname + location.search);
+  for (const id of ['turn-tools','turn-skills','turn-state']) $(id).replaceChildren();
+  for (const id of ['turn-id','turn-review-note','turn-lookup-id']) $(id).value = '';
+  $('turn-workspace').hidden = true; $('turn-tracking').hidden = true; $('turn-permissions').open = false;
+}
+function trackTurn(id, body = null) {
+  pendingTurn = {id, body, session_id:body?.session_id, receipt:null, active:false, fresh:false};
+  history.replaceState(null, '', location.pathname + location.search + '#turn=' + id);
+  $('turn-id').value = id; $('turn-review-note').value = ''; $('turn-review').open = false;
+  $('turn-state').textContent = '尚未核对结果；请保留原编号，勿以新编号重复执行。'; controls();
+  return pendingTurn;
+}
+const turnApi = (path, method = 'GET', body) => api(path, method, body, false, 15000, 2 * 1024 * 1024 + 20 * 1024);
+function showTurnSnapshot(value, attempt) {
+  Turn.snapshot(value, attempt.receipt || attempt);
+  attempt.receipt = value.receipt; attempt.session_id = value.receipt.session_id; attempt.active = value.active; attempt.fresh = true;
+  const r = value.receipt;
+  $('turn-state').textContent = `${{running:'处理中',completed:'回复已保存',needs_review:'需要人工核对'}[r.state]} · ${value.active ? '实际执行仍占用资源' : '当前无活跃执行'}${r.cancel_requested ? ' · 已记录停止请求' : ''}${r.session_committed && r.state !== 'completed' ? ' · 会话已提交，结果仍需核对' : ''}${r.reviewed_ms != null ? ' · 已记录人工核对' : ''}${r.result_purged ? ' · 结果正文已清理' : ''}`;
+  controls(); return value;
+}
+async function checkTurn(attempt = pendingTurn) {
+  if (!attempt) return;
+  const owner = identity;
+  const value = await turnApi('/api/turns/' + attempt.id);
+  if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+  showTurnSnapshot(value, attempt);
+  if (value.receipt.session_committed) {
+    const historyRead = await select(value.receipt.session_id, true); await refresh();
+    if (!historyRead) $('turn-state').textContent += ' · 会话历史不可读取；原收据保留，未恢复历史';
+    // Only a verified original receipt plus authoritative stored history clears a draft.
+    if (historyRead && value.receipt.state === 'completed' && attempt.body && $('message').value.trim() === attempt.body.prompt) $('message').value = '';
+  }
+  status($('turn-state').textContent, value.receipt.state === 'needs_review');
+}
+async function turnControl(fn) {
+  if (turnControlBusy || !pendingTurn) return;
+  const owner = identity, attempt = pendingTurn; turnControlBusy = true; controls();
+  try { await fn(attempt); }
+  catch (error) { if (owner === identity && !(error instanceof StaleIdentity)) { attempt.fresh = false; status(error.message + ' 请继续按原编号核对。', true); } }
+  finally { if (owner === identity && pendingTurn === attempt) { turnControlBusy = false; controls(); } }
+}
+function renderPermissionList(id, records) {
+  // Catalog size and per-turn authorization are separate bounds. Installed
+  // skills beyond the submission limit must remain individually selectable.
+  if (!Array.isArray(records) || records.length > 4096 || records.some(r => !r || typeof r.name !== 'string' || !r.name || Turn.bytes(r.name) > 128 || typeof r.description !== 'string') || new Set(records.map(r => r.name)).size !== records.length) throw new Error('工具或技能注册表异常或超过 4096 项；未授权任何工具。');
+  $(id).replaceChildren();
+  for (const record of records) {
+    const label = document.createElement('label'), input = document.createElement('input'), span = document.createElement('span');
+    input.type = 'checkbox'; input.value = record.name; span.textContent = record.name; label.title = clipped(record.description, 512);
+    label.append(input, span); $(id).append(label);
+  }
+}
+async function connectTurns() {
+  // A missing gateway route grants no standalone authority. Its authenticated
+  // capabilities endpoint is required independently; read-only keys never probe it.
+  if (!token || readOnly) return;
+  const c = await api('/api/turns/capabilities', 'GET', undefined, [403,404,503], 15000, 16384);
+  if (!c) return;
+  turnCapabilities = Turn.capabilities(c);
+  if (c.streaming) {
+    const tools = await api('/api/tools', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
+    const skills = await api('/api/skills', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
+    renderPermissionList('turn-tools', tools.tools); renderPermissionList('turn-skills', skills.skills);
+  }
+}
+async function loadTurnCatalog(offset = 0) {
+  const owner = identity, expected = {state:$('turn-catalog-filter').value,limit:5,offset};
+  // Clear old clickable rows before any new fetch/validation, including failures.
+  turnCatalogPage = null; $('turn-catalog-rows').replaceChildren(); $('turn-catalog-status').textContent = '正在读取状态摘要…'; controls();
+  let value;
+  try {
+    value = await api(`/api/turns?state=${expected.state}&limit=5&offset=${offset}`, 'GET', undefined, false, 15000, 32768);
+    if (owner !== identity) throw new StaleIdentity();
+    Turn.catalog(value, expected);
+  } catch (error) {
+    if (owner === identity) $('turn-catalog-status').textContent = '列表未通过核对；可按已知原编号单独查找。';
+    throw error;
+  }
+  turnCatalogPage = value;
+  $('turn-catalog-status').textContent = value.turns.length ? `第 ${offset + 1}–${offset + value.turns.length} 项状态摘要；选中后读取原收据。` : '本页暂无请求；可更换范围或重新读取。';
+  for (const row of value.turns) {
+    const article = document.createElement('article'), description = document.createElement('p'), button = document.createElement('button');
+    article.className = 'turn-catalog-row'; description.textContent = `${{running:'处理中',completed:'回复已保存',needs_review:'需要人工核对'}[row.state]}${row.reviewed_ms !== null ? ' · 已记录核对' : ''}${row.result_purged ? ' · 正文已清理' : ''}\n${row.id}\n${new Date(row.created_ms).toLocaleString()}`;
+    button.type = 'button'; button.className = 'subtle'; button.textContent = '核对原请求'; button.dataset.turnId = row.id;
+    button.addEventListener('click', () => {
+      if (owner !== identity || pendingTurn || busy || turnControlBusy) return;
+      // The page summary never marks a turn resolved or releases its session.
+      trackTurn(row.id); turnControl(attempt => checkTurn(attempt));
+    });
+    article.append(description,button); $('turn-catalog-rows').append(article);
+  }
+  controls();
+}
+$('turn-catalog-refresh').addEventListener('click', () => task(() => loadTurnCatalog()));
+$('turn-catalog-filter').addEventListener('change', () => task(() => loadTurnCatalog()));
+$('turn-catalog-prev').addEventListener('click', () => task(() => loadTurnCatalog(Math.max(0, (turnCatalogPage?.offset || 0) - 5))));
+$('turn-catalog-next').addEventListener('click', () => task(() => loadTurnCatalog((turnCatalogPage?.offset || 0) + 5)));
+// Bound the displayed draft independently of the larger validated wire budget.
+// One article per round, 64Ki characters each / 256Ki total, batched every frame.
+function previewRenderer(owner, attempt) {
+  let current = null, total = 0, frame = null;
+  const flush = () => { frame = null; if (owner === identity && pendingTurn === attempt && current) { current.node.textContent = current.text + (current.truncated ? '\n[预览显示已截断；请核对服务端最终记录]' : ''); $('messages').scrollTop = $('messages').scrollHeight; } };
+  const renderer = value => {
+    if (value.event === 'model_started') {
+      if (frame !== null) { cancelAnimationFrame(frame); flush(); }
+      const article = document.createElement('article'), role = document.createElement('div'), node = document.createElement('p');
+      article.className = 'message provisional'; role.className = 'role'; role.textContent = `临时预览 · 第 ${value.round + 1} 轮 · 尚未保存`;
+      article.append(role, node); $('messages').append(article); current = {node, text:'', truncated:false};
+    } else if (value.event === 'preview') {
+      const available = Math.max(0, Math.min(65536 - current.text.length, 262144 - total));
+      current.text += value.text.slice(0, available); total += Math.min(available, value.text.length); current.truncated ||= value.text.length > available;
+      if (frame === null) frame = requestAnimationFrame(flush);
+    } else if (value.event === 'tool_completed') $('turn-state').textContent = `工具 ${value.tool_name} 已返回；回复仍未确认保存。`;
+  };
+  renderer.close = () => { if (frame !== null) { cancelAnimationFrame(frame); flush(); } };
+  return renderer;
+}
+async function streamTurn(attempt) {
+  const owner = identity, credential = token, controller = new AbortController(); turnConnection = controller; attempt.fresh = false;
+  // One browser transport deadline anchored before fetch, never reset by headers,
+  // keepalives or events. It does not replace the server/current-model deadline.
+  const timer = setTimeout(() => controller.abort(), (turnCapabilities.turn_budget_secs + 70) * 1000);
+  let reader = null, done = false; const render = previewRenderer(owner, attempt);
+  try {
+    status('正在读取临时预览…');
+    const response = await fetch('/api/turns/' + attempt.id + '/stream', {method:'PUT', signal:controller.signal, credentials:'omit', cache:'no-store', headers:{Authorization:'Bearer ' + credential, 'Content-Type':'application/json'}, body:JSON.stringify(attempt.body)});
+    if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+    if (response.status === 401) { clearIdentity(); throw new ApiError('鉴权失败，请重新连接并检查 API Token。',401); }
+    if (response.status === 200) {
+      const value = await boundedJson(response, 2 * 1024 * 1024 + 20 * 1024, owner);
+      showTurnSnapshot(value, attempt); render.close(); await checkTurn(attempt); return;
+    }
+    if (response.status !== 202) {
+      const value = await boundedJson(response, 16384, owner);
+      throw new ApiError(clipped(value?.error || `请求失败（HTTP ${response.status}）`,1024), response.status);
+    }
+    if (response.headers.get('content-type')?.toLowerCase() !== 'text/event-stream; charset=utf-8') throw new Error('流式响应类型异常');
+    const parser = new Turn.Parser(attempt, attempt.body.enabled_tools, value => {
+      if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+      if (value.event === 'admitted') { attempt.receipt = value.receipt; attempt.active = true; $('turn-state').textContent = '已准入原请求；临时预览尚未保存。'; controls(); }
+      else if (value.event === 'done') { attempt.receipt = value.receipt; done = true; controls(); }
+      else if (value.event === 'error') throw new Error('交付停止，原模型或工具可能仍在结算。');
+      else render(value);
+    });
+    reader = response.body?.getReader(); if (!reader) throw new Error('流式正文缺失');
+    while (true) {
+      const next = await reader.read(); if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+      if (next.done) break; parser.push(next.value);
+    }
+    parser.finish(); render.close();
+    if (!done) throw new Error('未收到完整已提交结果');
+    await checkTurn(attempt);
+  } catch (error) {
+    if (owner !== identity) { if (error instanceof ApiError && error.code === 401) throw error; throw new StaleIdentity(); }
+    attempt.fresh = false;
+    $('turn-state').textContent = '交付未确认；保留原编号和草稿，核对服务端结果。停止交付不证明模型或工具已停止。';
+    throw new Error((error.name === 'AbortError' ? '交付已停止或超时。' : error.message) + ' 请核对原请求，勿重复执行。');
+  } finally {
+    clearTimeout(timer); render.close(); controller.abort();
+    if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    if (owner === identity && turnConnection === controller) { turnConnection = null; controls(); }
+  }
+}
+$('turn-lookup').addEventListener('submit', event => {
+  event.preventDefault(); const id = $('turn-lookup-id').value.trim();
+  if (pendingTurn || !Turn.uuid.test(id)) { status('请输入规范 UUIDv4 原编号。',true); return; }
+  trackTurn(id); turnControl(attempt => checkTurn(attempt));
+});
+$('turn-check').addEventListener('click', () => turnControl(attempt => checkTurn(attempt)));
+$('turn-cancel').addEventListener('click', () => turnControl(async attempt => {
+  const value = await turnApi('/api/turns/' + attempt.id + '/cancel', 'POST');
+  showTurnSnapshot(value, attempt);
+  // A terminal commit may win this race. Report only the persisted intent,
+  // and reconcile its stored history before allowing the draft to be cleared.
+  if (value.receipt.state !== 'running') {
+    await checkTurn(attempt);
+    status($('turn-state').textContent + (value.receipt.cancel_requested ? ' · 已记录停止请求' : ' · 本次未新增停止意图'), value.receipt.state === 'needs_review');
+  } else if (value.receipt.cancel_requested) {
+    turnConnection?.abort(); status('已记录停止请求；当前模型或工具可能继续结算，请核对原编号。');
+  } else {
+    throw new Error('服务端未确认停止意图；请核对原请求。');
+  }
+}));
+$('turn-retry').addEventListener('click', () => {
+  const attempt = pendingTurn;
+  if (!attempt?.body || attempt.receipt || busy || !confirm('仅使用同一个原编号、原内容和原权限提交。不会换编号。继续？')) return;
+  task(() => streamTurn(attempt));
+});
+$('turn-abandon').addEventListener('click', () => turnControl(async attempt => {
+  const note = $('turn-review-note').value.trim();
+  if (!note || Turn.bytes(note) > 1024) throw new Error('核对记录需要 1–1024 UTF-8 字节');
+  if (!confirm('已核对模型账本和实际效果？这只解除会话占用，不撤销或恢复未知操作。')) return;
+  const value = await turnApi('/api/turns/' + attempt.id + '/review', 'POST', {decision:'abandon', note});
+  showTurnSnapshot(value, attempt); status('已记录人工核对；模型账本的未知占用仍须单独处理。');
+}));
+$('turn-finish').addEventListener('click', () => {
+  if (!turnResolved() || turnConnection) return;
+  if (pendingTurn.body && $('message').value.trim() === pendingTurn.body.prompt) $('message').value = '';
+  pendingTurn = null; history.replaceState(null,'',location.pathname + location.search); controls();
+});
+addEventListener('pagehide', () => turnConnection?.abort());
+
 controls();

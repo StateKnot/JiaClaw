@@ -282,6 +282,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/ui/app.js", get(crate::ui::javascript))
+        .route("/ui/turn-stream.js", get(crate::ui::turn_stream))
         .route("/ui/app.css", get(crate::ui::stylesheet))
         .route(
             "/health",
