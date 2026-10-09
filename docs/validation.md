@@ -889,3 +889,9 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 24b331a首轮[macOS Intel 114040824392](https://github.com/StateKnot/JiaClaw/actions/runs/37995602391/job/114040824392)旧文件锁测试失败，core395通过/1失败：12线程并发append中五线程耗尽200次×2ms的夹具锁忙重试；日志SHA256 `ac2e92b481fd30b1045f365b1d5c5ca68da97f2ebc8a0fffc2c3a8270c3f3ee4`。生产锁忙立即返回，日志不能证明调度/IO争用或实现缺陷的具体根因。仅原设置完整失败平台复验一次，保留首次失败，不串行化、不跳过、不改变任何断言/期限；新head仍独立认证，后续成功不证明该根因已修复。
 
 最终观察期限修订冻结binary SHA256 `4115582e58b36f05bbab30018f5250d1f74474f93ff412d6819549dc4174fafe`，确定性边界下完整十组真实Chromium、十二套相关旧浏览器/进程和完整1218 Rust（396/123/699）、fmt、必需Clippy、locked build、parser八组重新通过。旧b023失败与新4115582e成功分别保存，不复用旧编译字节。新head完整官方资格仍待独立核对。
+
+1efef199的Ubuntu Rust阶段旧`slack_and_foreground_concurrent_admission_have_one_winner`失败，成功准入为0而非1，未进入浏览器阶段；原日志没有两项具体错误，因此不推断为授权、存储或框架故障。仅补完整结果诊断，原两个barrier竞争者/250ms SQLite busy预算/一个成功一个Held断言均不变；本机隔离200次通过，不证明CI根因修复。
+
+新CI配置每个native runner的Rust测试harness为一个worker，隔离不相关临时数据库/大文件fsync/有限全局工具worker夹具；全部用例仍必需执行，各用例内部原12写线程、两个准入竞争者、异步owner/取消等并发保持不变。没有skip、自动重试、扩充资源期限或运行时修改；20分钟container、40分钟主作业/候选预算不变。此配置限定验收证据，不作为并行负载性能认证；原并行完整本机1218结果与CI失败分别保留，未确认的旧锁/准入根因仍开放。新源码及CI配置重新完整资格化。
+
+最终诊断/CI配置源码的冻结binary SHA256 `7ece472200c5fd782eefffcdbe7860c0ff59d07addf804543c0e6745eefe4a2e`，新harness完整1218 Rust（396/123/699，core35.85s/host85.54s）、十组真实浏览器含两条超时边界、十二套相关旧回归、fmt/必需Clippy/locked build/parser八组全部通过；原并行1efef199本机记录独立保留。新head完整七作业/四归档资格待核对，未标旧锁或准入根因修复。

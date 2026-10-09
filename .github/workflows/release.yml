@@ -64,7 +64,8 @@ jobs:
         run: |
           cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,os,sys; packages=json.load(sys.stdin)["packages"]; tag="v"+next(p["version"] for p in packages if p["name"] == "jiaclaw-host"); assert os.environ["EVENT_NAME"] == "pull_request" or os.environ["REF_NAME"] == tag; f=open(os.environ["GITHUB_ENV"],"a"); f.write("RELEASE_TAG="+tag+"\n"); f.close()'
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --locked
+      # Keep unrelated fixture I/O isolated; each test retains its own concurrency.
+      - run: cargo test --workspace --locked -- --test-threads=1
       - run: cargo build --release --locked --target "$TARGET" -p jiaclaw-host
       - run: node tests/turn_stream.cjs
       - name: Verify optimized binary

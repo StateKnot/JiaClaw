@@ -26,7 +26,9 @@ jobs:
       - name: Install locked toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --locked
+      # Isolate unrelated fixture databases/large fsyncs within this runner.
+      # Tests still spawn their original concurrent actors and retain deadlines.
+      - run: cargo test --workspace --locked -- --test-threads=1
       - run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
       - run: cargo build --locked -p jiaclaw-host
       - run: python3 tests/e2e.py target/debug/jiaclaw
