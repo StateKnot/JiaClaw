@@ -37,6 +37,8 @@ jiaclaw chat --config "$HOME/.jiaclaw/config.toml" --session personal "你好"
 
 同一数据库只允许一个进程使用；`serve` 运行时通过 Web/API 操作会话，先停止服务再使用 CLI 会话命令。
 
+单次 CLI 可用 `chat --stream` 输出真实逐事件 JSON-lines，要求显式模型账本、有效工具期限和独占 Unix stdout 管道/文件。模型收据、预览取消与 Web/上游认证边界见[CLI 流式合同](docs/cli-streaming.md)。
+
 ## Release 与容器安装
 
 仓库已转入 [StateKnot 组织](https://github.com/StateKnot/JiaClaw)，现有检出与安装/发布状态见[迁移说明](docs/organization-migration.md)。

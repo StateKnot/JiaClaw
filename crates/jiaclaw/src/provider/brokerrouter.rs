@@ -12,6 +12,7 @@ use stateknot_integrations::ProviderEndpoint;
 use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
+mod stream;
 
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -106,6 +107,7 @@ pub(crate) struct PreparedCompletion {
     request_hash: String,
     model: String,
     has_tools: bool,
+    streaming: bool,
 }
 impl PreparedCompletion {
     #[cfg(test)]
@@ -120,6 +122,9 @@ impl PreparedCompletion {
     }
     pub(crate) fn has_tools(&self) -> bool {
         self.has_tools
+    }
+    pub(crate) fn streaming(&self) -> bool {
+        self.streaming
     }
 }
 
@@ -282,6 +287,12 @@ pub struct BrokerrouterProvider {
 }
 
 impl BrokerrouterProvider {
+    pub(crate) fn validate_stream_recovery(
+        &self,
+        receipt: &CompletionReceipt,
+    ) -> Result<(), JiaClawError> {
+        stream::validate_recovery(&receipt.body)
+    }
     /// Construct a client. Endpoint/key validation occurs before any network access.
     pub fn new(base_url: &str, virtual_key: &str) -> Self {
         Self {
@@ -328,6 +339,29 @@ impl BrokerrouterProvider {
         max_tokens: u32,
         tools: &[Value],
     ) -> Result<PreparedCompletion, JiaClawError> {
+        self.prepare_mode(model, messages, temperature, max_tokens, tools, false)
+    }
+
+    pub(crate) fn prepare_stream(
+        &self,
+        model: &str,
+        messages: &[WireMessage],
+        temperature: f32,
+        max_tokens: u32,
+        tools: &[Value],
+    ) -> Result<PreparedCompletion, JiaClawError> {
+        self.prepare_mode(model, messages, temperature, max_tokens, tools, true)
+    }
+
+    fn prepare_mode(
+        &self,
+        model: &str,
+        messages: &[WireMessage],
+        temperature: f32,
+        max_tokens: u32,
+        tools: &[Value],
+        streaming: bool,
+    ) -> Result<PreparedCompletion, JiaClawError> {
         self.endpoint()?;
         if !valid_model(model)
             || messages.is_empty()
@@ -344,7 +378,7 @@ impl BrokerrouterProvider {
             messages,
             temperature,
             max_tokens,
-            stream: false,
+            stream: streaming,
             tools: (!tools.is_empty()).then_some(tools),
             parallel_tool_calls: (!tools.is_empty()).then_some(false),
         };
@@ -359,6 +393,7 @@ impl BrokerrouterProvider {
             request_hash,
             model: model.into(),
             has_tools: !tools.is_empty(),
+            streaming,
         })
     }
 
@@ -389,7 +424,14 @@ impl BrokerrouterProvider {
                 .post(url)
                 .bearer_auth(&self.virtual_key)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .header(reqwest::header::ACCEPT, "application/json")
+                .header(
+                    reqwest::header::ACCEPT,
+                    if prepared.streaming {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
                 .header("Idempotency-Key", operation_id)
                 .body(prepared.body.clone())
                 .send(),
@@ -414,6 +456,9 @@ impl BrokerrouterProvider {
         pending: PendingCompletion,
         prepared: &PreparedCompletion,
     ) -> Result<CompletionReceipt, JiaClawError> {
+        if prepared.streaming {
+            return Err(failure("stream requires the bounded SSE receipt codec"));
+        }
         let request_id = pending
             .remote_id
             .ok_or_else(|| failure("gateway request identity missing or invalid"))?;

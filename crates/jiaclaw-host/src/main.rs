@@ -55,6 +55,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 mod channel_store;
 mod channel_types;
 mod channels;
+mod cli_stream;
 mod dingtalk;
 mod dingtalk_outbound;
 mod discord_outbound;
@@ -162,6 +163,10 @@ enum Commands {
         /// 禁用技能自动激活
         #[arg(long)]
         no_auto_skill: bool,
+
+        /// Single-turn Brokerrouter SSE to bounded JSON-lines stdout (pipe/file only).
+        #[arg(long, requires = "message")]
+        stream: bool,
     },
 
     /// 显示版本和构建信息
@@ -364,7 +369,11 @@ async fn main() -> Result<()> {
     // serve 在加载配置后再初始化 subscriber，以便 `[logging] format=json` 生效。
     // 其它命令只读环境变量 / 默认 text，行为与原先 `fmt()` + EnvFilter 一致。
     if !matches!(cli.command, Commands::Serve { .. }) {
-        init_tracing_from(&LoggingConfig::default());
+        if matches!(cli.command, Commands::Chat { stream: true, .. }) {
+            init_stream_tracing();
+        } else {
+            init_tracing_from(&LoggingConfig::default());
+        }
     }
 
     match cli.command {
@@ -381,8 +390,17 @@ async fn main() -> Result<()> {
             skills,
             session,
             no_auto_skill,
+            stream,
         } => {
-            chat_command(config, message.as_deref(), skills, session, no_auto_skill).await?;
+            chat_command(
+                config,
+                message.as_deref(),
+                skills,
+                session,
+                no_auto_skill,
+                stream,
+            )
+            .await?;
         }
         Commands::Version => {
             version_command();
@@ -1330,6 +1348,24 @@ fn init_tracing_from(logging: &LoggingConfig) {
                 .with_env_filter(filter)
                 .init();
         }
+    }
+}
+
+fn init_stream_tracing() {
+    let logging = LoggingConfig::default();
+    let filter = env_filter_from_logging(&logging);
+    // stdout is exclusively JSON-lines, including warning/error paths and default info logging.
+    match tracing_fmt_kind(logging.effective_format()) {
+        TracingFmtKind::Text => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init(),
+        TracingFmtKind::Json => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .json()
+            .init(),
     }
 }
 
@@ -3886,6 +3922,7 @@ async fn chat_command(
     skills: Vec<String>,
     session_id: Option<String>,
     no_auto_skill: bool,
+    stream: bool,
 ) -> Result<()> {
     let config = if let Some(path) = config_path {
         let path_str = path.to_string_lossy();
@@ -3902,6 +3939,25 @@ async fn chat_command(
 
     tracing::info!("使用 Agent 配置: {}", config.name);
 
+    if stream {
+        anyhow::ensure!(message.is_some(), "stream requires a single message");
+        anyhow::ensure!(
+            config.provider.provider_type == "brokerrouter" && config.model_calls.enabled,
+            "stream requires Brokerrouter and explicitly enabled [model_calls]"
+        );
+        anyhow::ensure!(
+            config
+                .effective_tool_timeout_secs()
+                .is_some_and(|secs| (1..=30).contains(&secs)),
+            "CLI streaming requires effective tool_timeout_secs in 1..=30"
+        );
+        anyhow::ensure!(
+            config.workspace_path.is_dir(),
+            "stream requires an existing workspace"
+        );
+        cli_stream::validate_stdout()?;
+    }
+
     // 检查工作空间是否存在
     if !config.workspace_path.exists() {
         tracing::warn!("工作空间不存在，使用默认配置");
@@ -3917,7 +3973,11 @@ async fn chat_command(
     // 如果提供了消息，执行单次聊天
     if let Some(msg) = message {
         tracing::info!("运行单次聊天");
-        single_chat(&agent, msg, &skills, session_id, no_auto_skill).await?;
+        if stream {
+            cli_stream::run(&agent, msg, &skills, session_id, no_auto_skill).await?;
+        } else {
+            single_chat(&agent, msg, &skills, session_id, no_auto_skill).await?;
+        }
     } else {
         // 否则进入 REPL 模式
         tracing::info!("进入 REPL 模式");

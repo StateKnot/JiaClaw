@@ -6,6 +6,7 @@
 use crate::provider::brokerrouter::{failure, BrokerrouterProvider, NativeToolCall, WireMessage};
 use crate::schema_work::{process_workers, SchemaPhase};
 use crate::JiaClawAgent;
+use crate::{ChatProgress, ChatProgressEvent};
 use jiaclaw_core::{
     ChatMessage, ChatRequest, ChatResponse, JiaClawError, MessageRole, ModelSelection, RunStatus,
     ToolCall,
@@ -138,6 +139,7 @@ impl JiaClawAgent {
         system_prompt: &str,
         key: &str,
         selection: &ModelSelection,
+        progress: Option<&ChatProgress>,
     ) -> Result<ChatResponse, JiaClawError> {
         let allowed = self.allowed_tool_names(request)?;
         if allowed.len() > 128 {
@@ -178,15 +180,23 @@ impl JiaClawAgent {
         let session_hash = request.session_id.as_ref().map(crate::model_calls::digest);
         let outcome: Result<(String, RunStatus), JiaClawError> = async {
         for iteration in 0..maximum {
+            if let Some(progress) = progress { progress.ensure_open()?; }
             let message = if let Some(ledger) = &self.model_calls {
-                let prepared = ledger.prepare(&selection.model, &messages, selection.temperature,
-                    selection.max_tokens, &tools.definitions)?;
-                ledger.complete(prepared, turn_id.clone(), selection.purpose, session_hash.clone(),
-                    u32::try_from(iteration).map_err(|_| failure("invalid model round"))?).await?
+                let round = u32::try_from(iteration).map_err(|_| failure("invalid model round"))?;
+                if let Some(progress) = progress {
+                    let prepared = ledger.prepare_stream(&selection.model, &messages, selection.temperature,
+                        selection.max_tokens, &tools.definitions)?;
+                    ledger.complete_stream(prepared, turn_id.clone(), selection.purpose, session_hash.clone(), round, progress.clone()).await?
+                } else {
+                    let prepared = ledger.prepare(&selection.model, &messages, selection.temperature,
+                        selection.max_tokens, &tools.definitions)?;
+                    ledger.complete(prepared, turn_id.clone(), selection.purpose, session_hash.clone(), round).await?
+                }
             } else {
                 provider.complete(&selection.model, &messages, selection.temperature,
                     selection.max_tokens, &tools.definitions).await?
             };
+            if let Some(progress) = progress { progress.ensure_open()?; }
             if message.tool_calls.is_empty() {
                 return Ok((message.content.unwrap_or_default(), RunStatus::Completed));
             }
@@ -203,9 +213,12 @@ impl JiaClawAgent {
             let ids: Vec<_> = message.tool_calls.iter().map(|c| c.id.clone()).collect();
             messages.push(message);
             for (call, id) in calls.into_iter().zip(ids) {
+                if let Some(progress) = progress { progress.ensure_open()?; }
                 let (mut record, _) = self.execute_and_record(call).await;
+                let mut needs_review = progress.is_some() && record.result.as_ref().is_some_and(|value| value.get("error").is_some());
                 let mut result = record.result.as_ref().unwrap_or(&Value::Null).to_string();
                 if result.len() > MAX_RESULT_BYTES {
+                    needs_review |= progress.is_some();
                     // The effect already occurred. Record that explicitly instead of replaying it.
                     record.result = Some(
                         json!({"error":"tool completed but result exceeds 256 KiB; do not replay this operation"}),
@@ -214,9 +227,16 @@ impl JiaClawAgent {
                         .expect("fixed result is serializable");
                 }
                 let mut reply = WireMessage::text("tool", result);
-                reply.tool_call_id = Some(id);
+                reply.tool_call_id = Some(id.clone());
                 messages.push(reply);
                 records.push(record);
+                if let Some(progress) = progress {
+                    progress.emit(ChatProgressEvent::ToolCompleted {
+                        round: u32::try_from(iteration).map_err(|_| failure("invalid model round"))?,
+                        tool_call_id: id, tool_name: records.last().expect("just inserted").tool_name.clone(),
+                    }).await;
+                }
+                if needs_review { return Err(failure("streamed tool attempt failed or timed out; inspect its effect before continuing")); }
             }
         }
         Err(failure("invalid zero iteration budget"))

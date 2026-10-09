@@ -17,7 +17,7 @@
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
 | 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)、[Discord](tenant-discord.md)、[飞书](tenant-feishu.md)已分别通过 PR #71/#80/#81/#82/#83/#84/#85 最终 CI。[独立用户企业微信](tenant-wecom.md) 已通过 PR #87 固定 head 的本地十组、旧21套与三项最终 CI；独立用户钉钉、WhatsApp 及真实供应商联合认证待完成；standalone 企业微信启动门槛的 PR #86 CI 不代替新私有队列/后端验收 |
-| 11 | 真正流式 | 上游已有协议支持；应用待实现，资源修复未验收 | 逐事件输出、tool delta 聚合、断流恢复/结算、取消与背压；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 慢客户端/连接容量修复尚未合并，不能把完成后分块作为 token streaming |
+| 11 | 真正流式 | 单次 CLI 已接线；固定 head 验收见本批，HTTP/Web/租户与上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，现有 HTTP 完成后分块仍非 token streaming |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
 | 14 | 打包发布 | PR #91 固定 head 四平台候选验收已通过；公开发布待审核 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。head `4edc04c868b07096a4ebe367d5b0083988822d72` 的七项 checks 全部成功，四份实际归档/源码证据见候选合同；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
