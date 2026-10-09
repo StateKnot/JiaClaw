@@ -16,6 +16,10 @@
 
 最后合同复核发现：前置 lookup 未命中后，准入事务仍可能匹配同一原身份，此路径保留了副作用去重，却丢失 created 标志而返回202。修订把事务实际 created 标志贯穿准入通知，只有新记录202、已存在记录200；没有增加模型/工具派发、重试、等待或改变存储/预算合同。初版成功证据保留，修订后的最终固定 head 须独立完整验收，以本批 draft PR 最终说明为准。
 
+后续实际生命周期回归再次证明两个通知缺口：取消 handler 的真正等待者在存储工作排队时被 abort，四槽容量仍由真实 worker 占用且原 UUID 的 cancel_requested 已提交，但旧代码的运行停止信号未发出；另一个时序中许可已经占用、stop 已关闭准入且尚无 active，随后登记也未停止。两项在旧行为均精确失败，未使用模型 sleep 或关闭 TCP 代替 waiter abort。修订把持久化后的通知放进实际 control closure，并用同一 active 锁下的关闭状态检查覆盖迟到登记；不改当前模型的结算期限、预算或工具资源责任。最终包含十一项 HTTP 存储/认证/通知边界，须重新核对完整 Rust/32套及七项跨平台 CI，不把中间提交的成功作为最终资格。
+
+created 标志修订 head `82c7e374b890b542a47d25b151b34ab02312acf2`、tree `ad760cb247195cf1ca0bb02bd1c710f681044f8e`、tested merge `7a9ec6fd05ad4fa0648cd39ce6456dc5b3be9126` 的[普通 CI 37919348221](https://github.com/StateKnot/JiaClaw/actions/runs/37919348221)三项和[候选 37919348173](https://github.com/StateKnot/JiaClaw/actions/runs/37919348173)四项全部 SUCCESS，发布步骤 SKIPPED。该源码的完整1203 Rust/32本机套和两普通平台32套、Linux四Chromium/单独Docker、四候选原生Rust/HTTP七组/CLI七组/归档十三组均通过；源码父提交与四份实际资产/官方ZIP摘要一致，完整证据 `/tmp/jiaclaw-oct9g-delivery/pin.json`、`/tmp/jiaclaw-oct9g-ci-audit`。这仍未包含上述两个通知修复。它们的旧行为两项失败、修复后五项 runtime 定向全通过；新增最终源码的本机默认并行1205 Rust（396/123/686）、fmt/必需Clippy/locked build通过，最后固定 head 完整进程/跨平台资格以 PR 最终记录为准。
+
 ## CLI 真实流式、收据模式与取消
 
 2026-10-09 本批在 PR #92 的已通过 head `b208ea7b4a9fa626f8fee1526e2cb227713d6196` 上实际接通单次 `chat --stream`。严格有界 SSE、原始 stream:true 正文 SHA/operation和持久 remote ID先于预览；完整模型收据后才进入既有整批工具授权。schema2事务升级保留真实 schema1历史身份/收据/unknown，流式GET恢复额外核对 envelope/usage。HTTP/Web/独立用户仍未接流式；[配置与合同](cli-streaming.md)。

@@ -74,6 +74,8 @@ note 为 1..1024 UTF-8 字节，首次记录保留，不允许覆盖成另一条
 
 实例只允许 **1 个**活动 HTTP turn（匹配当前单模型账本准入），共享进程流式 owner 也必须有余量；控制操作最多四个真实存储 owner，满即拒绝。实际 blocking SQLite 工作同时持有 turn/容量所有权，取消 HTTP waiter 不提前释放。客户端失联不会取消已授权的异步请求；取消须使用显式入口，当前没有 SSE body consumer。
 
+取消通知由实际控制 worker 在成功写入原身份的意图后发出，不依赖 HTTP 等待者继续存活。停机先关闭准入，再检查同一个 active-owner 锁；已取得许可、稍后才完成登记的 owner 也会观察关闭状态并停止未来派发。这两个边界有真实 handler/SQLite 阻塞取消和已占用许可/登记时序回归，不以 TCP 写出或简单 sleep 代替实际责任验证。
+
 总期限和服务停机先停止新模型/工具派发，当前已提交模型仍按原 60 秒合同结算；不为结算、后续轮次或 shutdown 重置预算。HTTP owner 保持到当前原生尝试返回及会话事务结束。停机共享原 configured grace，超限后原 UUID 保留；下一次启动在数据库生命周期锁下把 running 标记 process_interrupted，**不恢复模型/工具循环**。额外 checkpoint 不延长宽限期；真正已经派发的 blocking 存储仍持有底层资源到结束。SQLite 模型账本与会话库分离，不宣称跨库 exactly-once。
 
 `tests/http_turns.py` 以实际二进制/HTTP/SSE/SQLite/进程信号验收七组：启动认证与期限，原身份两轮原生工具与重复/冲突/重启清理，外部 SQLite writer 阻断准入及丢失回复，显式取消/总期限后的结算与无预览副作用，失败工具停止后续批次，终态 SQL 回滚/人工核对，SIGKILL/同宽限期停机与 GET-only 模型恢复。另有存储/控制 owner 单元回归。fixture 凭据仅访问脱敏本机协议；真实 Brokerrouter slow-consumer 修复、供应商、HTTP/Web token delivery 和租户扩权仍分别待认证。

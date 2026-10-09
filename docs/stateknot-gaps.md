@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-09 11:31 UTC 再固定 main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`，官方十三项 checks 全成功。[#160](https://github.com/StateKnot/StateKnot/pull/160) 增加 graph state/checkpoint 属性与参考模型证据；完整增量没有 crates 生产源码、runtime/integrations 或 lockfile 变化，alpha.1/release/#140 未变。这些属性模型不替代 JiaClaw durable driver 接线或真实恢复资格，继续保留精确 MCP pin 和 Brokerrouter #41 原生输出门槛。
+
 2026-10-09 10:35 UTC 固定 main `1699837c2885c38a686e90c27202610911dc153e`，官方十三项 checks 全成功；[#158](https://github.com/StateKnot/StateKnot/pull/158) 增加 71 个枚举/298 个分支的封闭向量，[#159](https://github.com/StateKnot/StateKnot/pull/159) 增加七个复合预算属性模型与边界控制。相对以下 e58db449 的完整文件差异没有 crates 生产源码、runtime/integrations 或 Cargo.lock 变化；release 仍 alpha.1、#140 OPEN/无回复。保留精确 HTTP MCP pin，不把测试证据增量记为可消费的新稳定合同，不新增重复 issue。
 
 2026-10-09 本批再次固定 main `e58db449939b79b215660704400bf5aa91a39296`：[#157](https://github.com/StateKnot/StateKnot/pull/157) 在 Core 中强制声明对象使用 map reader，拒绝 JSON array 的位置解码；runtime/tool_registration 仅增测试，没有 integrations 生产接线变化。此前最终读取的十三项 main checks 全成功；release 仍 alpha.1、#140 OPEN/无回复。该源码增量不等于稳定生产发布。JiaClaw 保留原 HTTP MCP 精确 pin，不消费新的 typed object reader，不另建重复议题。本批[持久 HTTP 请求](http-turns.md)由应用准入/会话事务与已接线 Brokerrouter 原生循环实现，仍不是 StateKnot durable runtime。

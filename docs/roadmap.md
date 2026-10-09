@@ -98,3 +98,5 @@ HTTP/Web 流式准备发现并实际修复[存储取消竞态](session-cancellat
 本轮继续接线[持久 HTTP 请求与结果](http-turns.md)：显式启用的 UUIDv4 create-only 准入、单活动 owner/四个真实控制 owner、有限总期限、相同会话库内原子结果/历史、取消意图、重启人工核对与永久身份/结果清理均已实际实现。协议使用已资格化 Brokerrouter SSE 原生循环，但对 HTTP 输出 JSON；不将其标为 Web/token delivery 或 StateKnot durable 完成。新增真实进程七组初验通过，固定最终源码的完整 Rust/回归与本批 draft PR CI 仍须验收。下一步在该身份和状态基础上接有界 HTTP SSE/body consumer 与 Web，随后分别认证租户、上游资源修复和供应商；其他剩余 stdio/外部写入、durable 委派、独立用户钉钉/WhatsApp、多模态保持开放。回访继续 ACTIVE，不自动合并或发布。
 
 该 HTTP 初版 head `aa2c02fed9d42f40181722a2579746ccf2d79e1e` 已通过完整本机1203 Rust/32套及七项CI/四候选，详见[验收记录](validation.md#持久-http-请求身份批次)。最后复核修正准入事务中已经存在身份的响应码，保留 created 标志，仅新记录202/旧记录200；需要重新固定最终源码及完整跨平台证据，不能借用上述初版成功。StateKnot main 的 #158/#159 测试证据增量已核对，不改变现有 integrations 消费合同。
+
+再增加两项实际责任回归，旧行为均失败：取消等待者消失后仍须在成功落盘后通知 owner，停机之前占用许可但稍后登记的 owner 也须观察关闭状态。生产修订将通知与真实 control worker、同一 active 登记锁接线，保持原结算/总期限及底层工具资源边界；最终十一项 HTTP 边界与完整固定 head 资格以本批 PR 记录为准。

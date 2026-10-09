@@ -104,6 +104,15 @@ impl Runtime {
             a.progress.cancel();
         }
     }
+    fn register(&self, id: String, progress: ChatProgress) {
+        let mut active = self.active.lock().unwrap();
+        // stop() closes admission before inspecting this same active-owner lock.
+        // Cover a permit claimed before stop whose registration finishes later.
+        if self.owners.is_closed() {
+            progress.cancel();
+        }
+        *active = Some(Active { id, progress });
+    }
     pub(super) fn stop(&self) {
         self.owners.close();
         if let Some(a) = self.active.lock().unwrap().as_ref() {
@@ -330,10 +339,7 @@ pub(super) async fn submit(
     let worker_state = state.clone();
     // No await between claiming capacity and launching its sole owner. Client
     // disconnect/lost admission reply cannot abandon a committed identity.
-    *runtime.active.lock().unwrap() = Some(Active {
-        id: id.clone(),
-        progress: progress.clone(),
-    });
+    runtime.register(id.clone(), progress.clone());
     let owner = Arc::new(Owner {
         runtime,
         id: id.clone(),
@@ -519,11 +525,17 @@ pub(super) async fn cancel(
 ) -> Result<Response, AppError> {
     authorize(&state, &headers)?;
     validate_id(&id)?;
-    let query_id = id.clone();
-    let receipt = control(&state, move |store| store.request_http_cancel(&query_id)).await?;
-    if let Some(runtime) = &state.http_turns {
-        runtime.cancel(&id);
-    }
+    let runtime = state.http_turns.clone();
+    let receipt = control(&state, move |store| {
+        let receipt = store.request_http_cancel(&id)?;
+        // The real control owner must signal after persistence even when its
+        // HTTP waiter has already been cancelled or disconnected.
+        if let Some(runtime) = runtime {
+            runtime.cancel(&id);
+        }
+        Ok(receipt)
+    })
+    .await?;
     Ok(receipt_response(&state, &receipt, StatusCode::OK))
 }
 #[derive(Deserialize)]
@@ -587,6 +599,109 @@ pub(super) async fn purge_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owner_claimed_before_stop_cannot_dispatch_after_registration() {
+        let runtime = Runtime::new(Duration::from_secs(300));
+        let permit = runtime.owners.clone().try_acquire_owned().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let (progress, _events) = ChatProgress::channel_for_turn(&id).unwrap();
+        assert!(!progress.is_cancelled());
+        runtime.stop();
+        assert!(runtime.owners.is_closed());
+        assert_eq!(runtime.owners.available_permits(), 0);
+        runtime.register(id.clone(), progress.clone());
+        assert!(runtime.is_active(&id));
+        assert!(
+            progress.is_cancelled(),
+            "stop must cover a claimed owner whose registration finishes later"
+        );
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn cancelled_cancel_waiter_still_signals_after_durable_intent() {
+        let directory = std::env::temp_dir().join(format!(
+            "jiaclaw-http-cancel-owner-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let database = directory.join("sessions.sqlite3");
+        let mut state = super::super::tests::test_state_for_workspace(directory.clone());
+        state.api_token = Some("fixture-operator-secret".into());
+        state.persist_enabled = true;
+        state.persist_path = Arc::new(database.clone());
+        let id = uuid::Uuid::new_v4().to_string();
+        let session = format!("http:{}", uuid::Uuid::new_v4());
+        let mut store = super::super::SessionStore::open(&database).unwrap();
+        store
+            .admit_http_turn(&id, &session, &"a".repeat(64), &"b".repeat(64))
+            .unwrap();
+        state.sessions = Arc::new(Mutex::new(store));
+        let runtime = Runtime::new(Duration::from_secs(300));
+        let permit = runtime.owners.clone().try_acquire_owned().unwrap();
+        let (progress, _events) = ChatProgress::channel_for_turn(&id).unwrap();
+        runtime.register(id.clone(), progress.clone());
+        let owner = Arc::new(Owner {
+            runtime: runtime.clone(),
+            id: id.clone(),
+            _permit: permit,
+        });
+        state.http_turns = Some(runtime);
+        let sessions = state.sessions.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _lock = sessions.lock().unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "Bearer fixture-operator-secret".parse().unwrap(),
+        );
+        let waiter = tokio::spawn(cancel(State(state.clone()), headers, Path(id.clone())));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.http_turn_controls.available_permits() == 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert_eq!(state.http_turn_controls.available_permits(), 3);
+        assert!(!progress.is_cancelled(), "no durable intent has run yet");
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.http_turn_controls.available_permits() != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let reader = rusqlite::Connection::open(&database).unwrap();
+        let stored: bool = reader
+            .query_row(
+                "SELECT cancel_requested FROM http_turns WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored, "the actual worker must persist the original intent");
+        let signalled = progress.is_cancelled();
+        drop(reader);
+        drop(state);
+        drop(owner);
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(
+            signalled,
+            "persisted cancellation must stop dispatch even after its waiter is gone"
+        );
+    }
 
     #[test]
     fn turn_authentication_rejects_duplicate_and_alternate_credentials() {
