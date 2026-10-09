@@ -61,7 +61,7 @@ jobs:
       - run: python3 tests/wecom.py target/debug/jiaclaw
       - run: python3 tests/wecom_startup.py target/debug/jiaclaw
       - run: python3 tests/dingtalk.py target/debug/jiaclaw
-      - run: python3 tests/installer.py
+      - run: python3 tests/installer.py target/debug/jiaclaw
       - name: Browser acceptance
         if: runner.os == 'Linux'
         run: |

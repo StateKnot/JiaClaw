@@ -39,6 +39,7 @@ jobs:
           "target/$TARGET/release/jiaclaw" version
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
+          python3 tests/installer.py "target/$TARGET/release/jiaclaw"
           mkdir dist
           cp "target/$TARGET/release/jiaclaw" dist/jiaclaw
           tar -czf "dist/jiaclaw-$RELEASE_TAG-$TARGET.tar.gz" -C dist jiaclaw

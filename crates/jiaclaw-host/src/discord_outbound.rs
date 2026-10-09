@@ -31,7 +31,9 @@ use crate::{
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(30);
 const MAX_COOLDOWN_MS: i64 = 86_400_000;
 const USER_AGENT: &str = concat!(
-    "DiscordBot (https://github.com/jiawenyao401/JiaClaw, ",
+    "DiscordBot (",
+    env!("CARGO_PKG_REPOSITORY"),
+    ", ",
     env!("CARGO_PKG_VERSION"),
     ")"
 );
@@ -732,7 +734,7 @@ mod tests {
         assert!(requests[2]
             .headers
             .to_ascii_lowercase()
-            .contains("user-agent: discordbot (https://github.com/jiawenyao401/jiaclaw,"));
+            .contains("user-agent: discordbot (https://github.com/stateknot/jiaclaw,"));
         let body: Value = serde_json::from_slice(&requests[2].body).unwrap();
         assert_eq!(body["content"], text);
         assert_eq!(body["enforce_nonce"], true);

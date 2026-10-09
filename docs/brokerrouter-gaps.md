@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-09 再核对 main/no-release/#31/#41/PR #40 固定合同未变，不重复提交 issue。[组织迁移与最终 CI 回填](organization-migration.md)记录实际安装接线；未知请求、流式资源与真实供应商认证边界仍保留。
+
 核对时间：2026-10-08 15:36 UTC；private 仓库 main：`e01ecb94919d992eb0b74b3db00d70742820b4cc`。以下内容基于有权限读取的 README、`docs/jiaclaw-consumer-guide.md`、`docs/tool-roundtrip-certification.md`。私有源码没有复制到 JiaClaw；上游链接仅有权限用户可访问。
 
 | 能力 | 上游当前状态 | JiaClaw 状态 |
@@ -34,7 +36,7 @@
 
 11:35 UTC 企业微信启动校验批次复核上述 main、无 release、#31/#41 与 PR #40 head，均未变化。此次逐项读取 main 六项和 PR #40 六项 FAILURE 的全部 annotations：十二项均明确因账户付款/额度未启动，没有未分类失败或已执行测试失败的证据。不能因此宣称 SSE 修复已验收，也不能误报为代码测试失败。StateKnot #148 的 typed Tool Schema 方向修复已合并但未发布，不改变网关拒绝原生最终输出 Schema 的合同；#41 仍 OPEN、无回复。JiaClaw 本批复用既有 standalone channel 模型，只新增企业微信官方 token/应用身份/显式成员可见范围的启动校验，不新增模型、媒体或真实供应商资格。
 
-本批默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套本地回归全部通过，保留未知发送和持久额度语义；没有真实供应商请求或上游模型合同变更，详见[验证记录](validation.md#企业微信启动校验批次)。后续已核对 [PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 全部成功；不据此关闭 #31/#41 或认证运行期 token 刷新、真实平台和容器渠道 runtime。
+本批默认并行 Rust 1105 项、企业微信启动六组/32 负例，以及同一冻结二进制的 WeCom/MCP/e2e/channels/scheduled_delivery 五套本地回归全部通过，保留未知发送和持久额度语义；没有真实供应商请求或上游模型合同变更，详见[验证记录](validation.md#企业微信启动校验批次)。后续已核对 [PR #86](https://github.com/StateKnot/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/StateKnot/JiaClaw/actions/runs/37776140027)，Ubuntu/macOS/container 全部成功；不据此关闭 #31/#41 或认证运行期 token 刷新、真实平台和容器渠道 runtime。
 
 ## 消费合同与下一步
 

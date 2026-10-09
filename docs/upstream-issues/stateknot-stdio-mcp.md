@@ -1,6 +1,6 @@
 ## Consumer and verified gap
 
-JiaClaw (https://github.com/jiawenyao401/JiaClaw) is implementing personal-agent installation and MCP tool discovery using StateKnot for the agent/protocol layer and Brokerrouter for model access.
+JiaClaw (https://github.com/StateKnot/JiaClaw) is implementing personal-agent installation and MCP tool discovery using StateKnot for the agent/protocol layer and Brokerrouter for model access.
 
 Verified against main revision `fbd629d73e50610dc8f4889b47e05f698cc110e7`, `docs/mcp-client.md`: `McpClient` implements stateless Streamable HTTP with an immutable HTTPS or literal-loopback endpoint. No child-process/stdio transport is exposed. Existing issues were searched for stdio before filing.
 

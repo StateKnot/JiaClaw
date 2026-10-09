@@ -15,8 +15,8 @@ edition = "2021"
 rust-version = "1.88"
 authors = ["JiaClaw contributors"]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/jiawenyao401/JiaClaw"
-homepage = "https://github.com/jiawenyao401/JiaClaw"
+repository = "https://github.com/StateKnot/JiaClaw"
+homepage = "https://github.com/StateKnot/JiaClaw"
 
 [workspace.dependencies]
 # Exact protocol adapter pin; the durable runtime has separate integration gates.

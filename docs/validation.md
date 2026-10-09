@@ -1,5 +1,7 @@
 # 基础能力验收记录
 
+2026-10-09 组织迁移、PR #89 最终三项 CI 回填与后续安装接线见[组织迁移验收](organization-migration.md)。以下各批历史结果仍保留对应固定提交和认证范围。
+
 2026-10-02，本机 macOS arm64，Rust 1.85.0，锁定 Cargo.lock。
 
 | 验收 | 结果 | 证据范围 |
@@ -15,7 +17,7 @@
 
 沙箱镜像：`alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507`。验收使用一次性容器/卷，没有真实渠道消息、真实供应商请求或费用。
 
-基础批次的 Linux/macOS 与容器 CI 已通过，见 [PR #58](https://github.com/jiawenyao401/JiaClaw/pull/58)。StateKnot durable 尚未接入；上游工具认证仍跟踪 Brokerrouter #31。StateKnot stdio MCP 需求已提交 #140。当前尚未发布 tag、公开 Release 或推送镜像。
+基础批次的 Linux/macOS 与容器 CI 已通过，见 [PR #58](https://github.com/StateKnot/JiaClaw/pull/58)。StateKnot durable 尚未接入；上游工具认证仍跟踪 Brokerrouter #31。StateKnot stdio MCP 需求已提交 #140。当前尚未发布 tag、公开 Release 或推送镜像。
 
 ## StateKnot HTTP MCP 批次
 
@@ -176,7 +178,7 @@ Rust 镜像摘要取自 [Docker 官方 repo-info 历史](https://github.com/dock
 - 全量 Rust 回归：773 passed、0 failed（library 317、core 120、host 336）；1 项真实 Docker 专项保持独立 ignored。fmt、Clippy correctness/suspicious 和锁定构建通过，保留已有 style/pedantic warnings。
 - 最终 `tests/semantic_memory.py` 的 9 组真实二进制验收全部通过：默认关键词及关闭零缓存/embedding 请求、刷新/查询/重启、原生 semantic 工具、paths 只能收窄、同大小/mtime 编辑与删除的零请求拒绝、响应期间源变化、错误回执/断连/已提交后 SIGKILL 的持久 hold、同库换 Key/版本与重建不可绕过、GET 恢复与显式管理员解除、继承源路径控制字符/边界空白启动拒绝、私有路径/独占所有权/工作区与数据库身份隔离。禁用 semantic 时，工具 schema 在分派前拒绝该模式。
 - 存储 12 项测试全部通过：binary f32 的最大 generation 为 7,383,192 字节，单个回执为 98,320 字节，65 个回执加新旧 generation 为 21,157,184 字节，在 32 MiB 上限内；六次原子替换通过，后四次页数稳定。schema 2 拒绝旧 schema，不清除账本。传输测试另覆盖向量、响应身份与资源边界。
-- 最终二进制既有 e2e、native_tools、memory_io、model_routing 回归全部通过。PR #70 的 head `dae57af27c77f553e6344f5391611b35df454bfe` 已通过 [CI 37082943062](https://github.com/jiawenyao401/JiaClaw/actions/runs/37082943062)，覆盖 Linux/macOS、Chromium 及真实容器。
+- 最终二进制既有 e2e、native_tools、memory_io、model_routing 回归全部通过。PR #70 的 head `dae57af27c77f553e6344f5391611b35df454bfe` 已通过 [CI 37082943062](https://github.com/StateKnot/JiaClaw/actions/runs/37082943062)，覆盖 Linux/macOS、Chromium 及真实容器。
 
 CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护同库前须停止 `serve`，没有公开 HTTP 管理路由。测试只使用本机 embeddings/chat fixture、一次性凭据和合成向量，不发送付费模型请求。不能将本批协议验收解释为真实模型检索质量、真实供应商计费或 StateKnot durable Agent 认证。配置、资源与人工核对边界见[语义记忆指南](semantic-memory.md)。
 
@@ -187,14 +189,14 @@ CLI `memory semantic status/refresh/search/recover/review-clear/rebuild` 维护�
 
 - `tests/tenant_cron.py` 4 组通过：真实双后端/网关/本机模型验证受保护能力发现、任务 CRUD/204、输入和分页边界、租户结果隔离、普通 Key 轮换保留用户任务、禁用零派发、共享执行容量及运行期间状态读取、网关停机零自主执行。领取且模型提交后强杀后端与网关，重启保留同一 interrupted run、未知 hold 及 request/run ID 关联；更换 Key 不能解除 hold，另一租户继续运行；明确核对并恢复后只建立新的运行。
 - 最终二进制内嵌工作台的 Chromium 验收通过：原有会话流程、任务创建/暂停/恢复/软删、204、聊天 200/任务 201 的待核对标志保留草稿并阻止成功提示、恶意 HTML 纯文本展示、结果截断、身份切换清空任务/结果/草稿和迟到响应隔离。浏览器任务接口使用 route fixture；真实接口由双后端脚本独立验收。
-- 全量 Rust：797 passed、0 failed（library 317、core 121、host 359），1 项真实 Docker 专项保持独立 ignored。fmt、diff-check、Clippy correctness/suspicious 和锁定构建通过；既有 e2e、user_gateway、scheduler、scheduled_delivery、model_routing 回归通过。PR #71 最终 head `949aebb` 已通过 [CI 37089235842](https://github.com/jiawenyao401/JiaClaw/actions/runs/37089235842)，包含 Linux/macOS、Chromium、真实 Docker 沙箱及镜像。首轮 Linux 故障注入触发了非目标租户的合法未知 hold；fixture 已隔离非目标任务并保留全部目标 SIGKILL 断言，修复后完整 CI 通过。
+- 全量 Rust：797 passed、0 failed（library 317、core 121、host 359），1 项真实 Docker 专项保持独立 ignored。fmt、diff-check、Clippy correctness/suspicious 和锁定构建通过；既有 e2e、user_gateway、scheduler、scheduled_delivery、model_routing 回归通过。PR #71 最终 head `949aebb` 已通过 [CI 37089235842](https://github.com/StateKnot/JiaClaw/actions/runs/37089235842)，包含 Linux/macOS、Chromium、真实 Docker 沙箱及镜像。首轮 Linux 故障注入触发了非目标租户的合法未知 hold；fixture 已隔离非目标任务并保留全部目标 SIGKILL 断言，修复后完整 CI 通过。
 
 本批使用一次性本机凭据、临时数据库与合成模型响应，没有付费模型调用。保留跨服务未知结果与人工核对边界，不能据此声称真实供应商计费或完整多用户后台能力已认证；见[独立用户定时任务](tenant-cron.md)。
 
 
 ## 模型调用收据批次
 
-2026-10-03，macOS arm64，本批最终二进制本地验收完成；PR #72 最终 head `a841b026` 已通过 [CI 37093371689](https://github.com/jiawenyao401/JiaClaw/actions/runs/37093371689)，覆盖 Linux/macOS、Chromium 和真实容器。
+2026-10-03，macOS arm64，本批最终二进制本地验收完成；PR #72 最终 head `a841b026` 已通过 [CI 37093371689](https://github.com/StateKnot/JiaClaw/actions/runs/37093371689)，覆盖 Linux/macOS、Chromium 和真实容器。
 
 - 最终 `tests/model_calls.py` 7 组全部通过：默认关闭零账本；POST UUID/精确字节摘要、原生工具分轮及摘要收据、进程重启读取；摘要响应错误后持久 hold 且不继续聊天 POST；已知远端 UUID 的 GET 状态/无 UUID 头结果恢复，不执行恢复工具或修改原会话；更换 Key/模型不能绕过；缺 UUID/断连的拒重试与显式核对；实际提交后 SIGKILL 重启保留原操作和摘要；scheduler 父运行超时后收据 worker 完成，真实已批准的本机 MCP probe 零 tools/call，运行保持 interrupted。
 - 私有目录验收覆盖已有 0755 的外层 state：默认新 `model-calls` 子目录为 0700、数据库为 0600，外层目录保持原权限。发送正文标记不出现在账本文件；CLI status 不展示收据正文；存活服务持有独占所有权，维护 CLI 被拒绝。
@@ -212,7 +214,7 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 
 2026-10-03，macOS arm64，最终二进制的 `tests/discord_scheduled.py` 六组真实进程验收全部通过。测试只使用本机模型/Discord HTTP fixture、临时 SQLite 和一次性凭据，覆盖配置与精确授权、应用/guild/type 前置核验零 POST、超过六片的 Unicode 结果与完整 UUID nonce、可信 429/成功耗尽预算的持久安装冷却、401 跨重启与环境新 Token、错回执安装阻断、实际 POST 后 SIGKILL 及人工核查后不重放。既有 `tests/channels.py` 独立回归交互凭据路径。
 
-数据库迁移至 schema v9；全量 Rust 832 项通过（library 334、core 122、host 376），Clippy correctness/suspicious、fmt/diff-check 与锁定构建通过。最终二进制既有 channels、scheduled_delivery 与 model_calls（7 组）回归全部通过；Docker 专项保留独立 CI 验收。fixture 同时检查 API、日志及停服后数据库/保留 sidecar 不含一次性凭据与上游私有错误标记。Token 轮换验收保留原 permanent_failed，并通过人工取消同目标旧失败计划后才发送未来结果，未放宽目标 FIFO。PR #73 最终 head `b99e96690b6ec2ec0265fe68d2895a135cb9e8d5` 已通过 [CI 37095933677](https://github.com/jiawenyao401/JiaClaw/actions/runs/37095933677)：Ubuntu、macOS、container 均成功，覆盖 Chromium、真实 Docker 与镜像。没有真实 Discord 或付费供应商调用，正式 Bot 安装、guild/频道权限和限流认证仍需独立完成。
+数据库迁移至 schema v9；全量 Rust 832 项通过（library 334、core 122、host 376），Clippy correctness/suspicious、fmt/diff-check 与锁定构建通过。最终二进制既有 channels、scheduled_delivery 与 model_calls（7 组）回归全部通过；Docker 专项保留独立 CI 验收。fixture 同时检查 API、日志及停服后数据库/保留 sidecar 不含一次性凭据与上游私有错误标记。Token 轮换验收保留原 permanent_failed，并通过人工取消同目标旧失败计划后才发送未来结果，未放宽目标 FIFO。PR #73 最终 head `b99e96690b6ec2ec0265fe68d2895a135cb9e8d5` 已通过 [CI 37095933677](https://github.com/StateKnot/JiaClaw/actions/runs/37095933677)：Ubuntu、macOS、container 均成功，覆盖 Chromium、真实 Docker 与镜像。没有真实 Discord 或付费供应商调用，正式 Bot 安装、guild/频道权限和限流认证仍需独立完成。
 
 ## Web 发件箱审计批次
 
@@ -223,7 +225,7 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 - 409、提交前断网均触发 GET 核对且不自动重发 POST；GET 失败时禁止修改，直至成功刷新。真实 resolve 在服务端完成并返回 204 后丢失浏览器响应，页面通过 GET 发现 delivered，保留证据而不再次 POST。实际 204 的确认及整来源取消后，原有模型 12 次、平台 6 次请求均未增加。
 - 恶意 HTML 纯文本显示，移动端列表行高至少 30 px 且无横向溢出；403/404 隐藏能力，身份切换、401 和迟到响应清空隔离，Token 仅保留在页面内存。既有 `tests/browser.cjs` 的聊天、会话与受限任务回归通过。单条详情 API 鉴权/持久化/UUID/不存在边界和独立用户网关拒绝访问由 Rust 回归验证。
 
-本批没有真实渠道或付费模型请求，不更改平台发送合同，不增加未知消息自动重放，不将人工核对解释为工具或任务恢复。PR #74 最终 head `e22965dd9dc2488c9433d0a93f7b9e1bf59304a5` 已通过 [CI 37098122253](https://github.com/jiawenyao401/JiaClaw/actions/runs/37098122253)：Ubuntu、macOS 与 container 均成功，包含 Chromium 和真实容器。操作与权限说明见 [Web 发件箱指南](web-outbox.md)。
+本批没有真实渠道或付费模型请求，不更改平台发送合同，不增加未知消息自动重放，不将人工核对解释为工具或任务恢复。PR #74 最终 head `e22965dd9dc2488c9433d0a93f7b9e1bf59304a5` 已通过 [CI 37098122253](https://github.com/StateKnot/JiaClaw/actions/runs/37098122253)：Ubuntu、macOS 与 container 均成功，包含 Chromium 和真实容器。操作与权限说明见 [Web 发件箱指南](web-outbox.md)。
 
 ## 单实例定时任务工作台批次
 
@@ -237,9 +239,9 @@ PR #72 首轮 CI（head `93c653d`、run `37092094733`）在 Linux 的取消收�
 
 本批只使用一次性本地凭据与协议 fixture，没有付费模型或真实平台请求。跨平台与真实容器由本批 draft PR 最终 head CI 验证；配置、备份和恢复边界见[单实例工作台](standalone-scheduler.md)。
 
-PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 37100634034](https://github.com/jiawenyao401/JiaClaw/actions/runs/37100634034) 在 Linux 的 `tests/tenant_cron.py:307` 遇到 `GET /api/sessions` 返回 429（`user request already in progress`）。运行状态属于控制请求，可先读到后端 completed；此时网关尚未完成 `finish_write` 收据提交，仍持有执行许可，会话查询使用执行容量，因此该 429 是正常的在途保护，不能以 completed 状态推定执行许可已经释放。
+PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 37100634034](https://github.com/StateKnot/JiaClaw/actions/runs/37100634034) 在 Linux 的 `tests/tenant_cron.py:307` 遇到 `GET /api/sessions` 返回 429（`user request already in progress`）。运行状态属于控制请求，可先读到后端 completed；此时网关尚未完成 `finish_write` 收据提交，仍持有执行许可，会话查询使用执行容量，因此该 429 是正常的在途保护，不能以 completed 状态推定执行许可已经释放。
 
-修正仅限 fixture 的两处会话列表断言：遇到精确匹配的 busy 429 时，对只读 GET 作有界轮询，其他错误仍直接失败；另通过暂停模型响应确定性验证在途期间仍返回该 429。不自动重放写入，不提前释放生产执行许可，也不放宽后端准入。生产代码无需修改；修正后的真实双租户进程验收四组通过、退出码 0，原 SIGKILL/持久 hold/Key 轮换/其他用户继续及零模型重发断言保留。修正后 PR #75 最终 head `0c9900a75a8f5a3a1c980c8ba98b18c3430b12d2` 的 [CI 37101387934](https://github.com/jiawenyao401/JiaClaw/actions/runs/37101387934) 已通过 Ubuntu、macOS 和 container 三项检查，覆盖 Chromium 与真实容器；首轮失败记录保留用于追踪。
+修正仅限 fixture 的两处会话列表断言：遇到精确匹配的 busy 429 时，对只读 GET 作有界轮询，其他错误仍直接失败；另通过暂停模型响应确定性验证在途期间仍返回该 429。不自动重放写入，不提前释放生产执行许可，也不放宽后端准入。生产代码无需修改；修正后的真实双租户进程验收四组通过、退出码 0，原 SIGKILL/持久 hold/Key 轮换/其他用户继续及零模型重发断言保留。修正后 PR #75 最终 head `0c9900a75a8f5a3a1c980c8ba98b18c3430b12d2` 的 [CI 37101387934](https://github.com/StateKnot/JiaClaw/actions/runs/37101387934) 已通过 Ubuntu、macOS 和 container 三项检查，覆盖 Chromium 与真实容器；首轮失败记录保留用于追踪。
 
 ## 工作区文件权限与 I/O 批次
 
@@ -251,7 +253,7 @@ PR #75 首轮 head `1a14cad55b9602ee6b7a71055671b3ef03c9ab3f` 的 [CI 3710063403
 
 测试只使用本机模型协议、一次性凭据和临时文件，没有真实平台或付费模型调用。跨平台与真实容器以本批 draft PR 最终 head CI 为准，不以单机协议验收代替断电硬件持久性或完整个人 Agent 生产认证。
 
-PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 37103576477](https://github.com/jiawenyao401/JiaClaw/actions/runs/37103576477)：Ubuntu、macOS、container 均成功，覆盖 Chromium 与真实容器。
+PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 37103576477](https://github.com/StateKnot/JiaClaw/actions/runs/37103576477)：Ubuntu、macOS、container 均成功，覆盖 Chromium 与真实容器。
 
 该批目录句柄迁移限于 `read_file`、`write_file`、`delete_file`、`str_replace`、`list_dir` 及四个兼容名称。`grep`、`glob`、`mkdir`、`move` 未迁移，`copy` 保留独立合同；没有新增 `stat` / `tree` 或后台文件工具授权。操作与兼容边界见[工作区文件指南](workspace-files.md)。
 
@@ -264,7 +266,7 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - Rust 确定性测试另验证条目计数覆盖目录和被跳过项、深度/路径/过期 deadline、实际字节预算和不搜索半文件、metadata 检查后真实文件增长最多读取 limit+1 字节并计入总预算、父目录改名后仍使用所持目录能力、叶子替换拒绝。glob 最终全路径排序后才应用请求上限，grep 保留 DFS；动态规划有受限最大模式与独立小输入参考比对。
 - 非 UTF-8 名称拒绝专项在 Linux 执行；本机 APFS 不允许构造该名称，因此未把 macOS 通过列为此专项证据。最终二进制的 `workspace_files.py` 四组、`native_tools.py`、`memory_io.py` 四组及 `e2e.py` 全部通过、退出码 0。
 
-该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/jiawenyao401/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器。
+该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/StateKnot/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器。
 
 本轮仅迁移 grep/glob 的工作区访问和资源边界，不新增后台授权、跨编辑器快照或取消后回滚。`mkdir` / `move` 和可选 `stat` / `tree` 不记为完成，copy 保留原独立合同；详见[工作区文件指南](workspace-files.md)。
 
@@ -277,7 +279,7 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - 进程 fixture 不挂载第二个文件系统，本机 macOS 没有真实跨卷验收。Linux Rust 新增真实 EXDEV 专项，要求 `/dev/shm` 可写且与临时目录为不同设备，CI 缺少前提直接失败，非 CI 仅允许明确报告跳过；其通过状态以本批最终 CI 为准。
 - 同一最终生产二进制的 `workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 与 `memory_io.py` 四组回归全部通过、退出码 0。本批未单独重跑通用 `e2e.py`，由最终 CI 执行，不沿用上批本机结果。
 
-只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/jiawenyao401/JiaClaw/actions/runs/37107782116)，Ubuntu、macOS 与 container 均成功，含 Chromium、真实容器和 Linux 真实 EXDEV 专项。
+只使用本机模型协议、一次性凭据和临时文件，没有真实供应商或平台请求。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/StateKnot/JiaClaw/actions/runs/37107782116)，Ubuntu、macOS 与 container 均成功，含 Chromium、真实容器和 Linux 真实 EXDEV 专项。
 
 此批不增加后台文件工具授权、非协作编辑器快照、操作收据或取消后回滚；copy 保留独立实现，该批没有新增 stat/tree 或 durable 工作流。配置与恢复步骤见[工作区文件指南](workspace-files.md)。
 
@@ -290,7 +292,7 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - Rust 测试验证规范路径、epoch 前时间向下取整、父目录能力保留和叶子替换不跟随、完整工作区路径 1024 字节/64 组件在 lstat 前限制及 list_dir 同步收紧、tree DFS/深度和完整输出预算；既有共享 I/O 取消/许可与精确扫描/deadline 回归同样通过。非 UTF-8 文件名专项仅在 Linux 执行，本机 APFS 不允许构造该名称，不将其算作本机覆盖。
 - 本批七套既有真实进程回归 `workspace_files.py`（四组）、`file_search.py`（六组）、`native_tools.py`、`mcp.py`、`memory_io.py`（四组）、`e2e.py`、`workspace_mutations.py`（六组）全部通过、退出码 0。
 
-测试只使用本机模型协议、一次性凭据和临时文件，没有真实模型或平台请求。PR #79 最终 head `768cfba3041c7c863e14cbdcc17d6b13ef6470d5` 已通过 [CI 37110081396](https://github.com/jiawenyao401/JiaClaw/actions/runs/37110081396)，Ubuntu、macOS 与 container 三项均成功，包含 Chromium 与真实容器。
+测试只使用本机模型协议、一次性凭据和临时文件，没有真实模型或平台请求。PR #79 最终 head `768cfba3041c7c863e14cbdcc17d6b13ef6470d5` 已通过 [CI 37110081396](https://github.com/StateKnot/JiaClaw/actions/runs/37110081396)，Ubuntu、macOS 与 container 三项均成功，包含 Chromium 与真实容器。
 
 验收范围为本机文件元数据、目录扫描、参数/配置授权及资源边界；持久渠道和 cron/interval 继续拒绝这些工具，管理员启用的独立 HEARTBEAT 与兼容 `/hooks/inbound` 则受现有注册工具与配置开关控制。不据此承诺一致快照、持久文件操作收据、工具循环恢复或完整 OS 沙箱。
 
@@ -307,7 +309,7 @@ PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 3710
 - 本批既有 e2e、mcp、native_tools、user_gateway、tenant_cron、channels、scheduled_delivery 七套真实进程回归均通过、退出码 0。
 - JSON/YAML 示例解析与 docker compose 合并配置检查通过：六个 Secret 仅挂到网关，两个后端不含 Telegram Secret，原有限额卷与私网不变；没有据此声称新增 overlay 的容器启动或平台实测。
 
-PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/jiawenyao401/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。部署与人工核对见[指南](tenant-telegram.md)；真实 Telegram、TLS/egress、共享网关卷压力与供应商联调不由本机协议 fixture 认证。
+PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/StateKnot/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。部署与人工核对见[指南](tenant-telegram.md)；真实 Telegram、TLS/egress、共享网关卷压力与供应商联调不由本机协议 fixture 认证。
 
 ## 管理员签发只读 API Key 批次
 
@@ -324,7 +326,7 @@ PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 3711
 - 既有 `browser.cjs`、`outbox_browser.cjs`、`scheduler_browser.cjs` 通过。空或 204 权限响应现应清除身份并停用操作，旧 scheduler fixture 已按这一明确合同补充断言，仍仅真实 capability 404 允许 standalone 探测。
 - 既有 user_gateway、tenant_cron 四组及 tenant_telegram 七组真实进程回归通过。新增 `gateway_container.py` 验收在真实限额卷/私网容器中签发只读 Key、读取本用户数据、拒绝全部公开修改路由且无 hold、在线轮换继承及撤销；本机 macOS 未执行该 Linux 容器组；PR #81 最终 CI 的 container 作业已完成该组实测。
 
-本批新进程和浏览器 fixture 已加入 CI。PR #81 最终 head `00d013c205e9c92b6649b8738d9d7d39bca966e5` 已通过 [CI 37715609778](https://github.com/jiawenyao401/JiaClaw/actions/runs/37715609778)：Ubuntu、macOS 和 container 三项均为 completed/success，覆盖 Chromium、真实 Docker 沙箱及限额卷/私网网关容器的只读权限验收。协议 fixture 不替代真实供应商/渠道联调，也不将只读权限计为 StateKnot durable 或完整多用户后台认证。
+本批新进程和浏览器 fixture 已加入 CI。PR #81 最终 head `00d013c205e9c92b6649b8738d9d7d39bca966e5` 已通过 [CI 37715609778](https://github.com/StateKnot/JiaClaw/actions/runs/37715609778)：Ubuntu、macOS 和 container 三项均为 completed/success，覆盖 Chromium、真实 Docker 沙箱及限额卷/私网网关容器的只读权限验收。协议 fixture 不替代真实供应商/渠道联调，也不将只读权限计为 StateKnot durable 或完整多用户后台认证。
 
 ## 可信管理员审计查询批次
 
@@ -343,7 +345,7 @@ PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 3711
 
 ### CI 暴露问题与诊断
 
-首轮 [CI 37723633396](https://github.com/jiawenyao401/JiaClaw/actions/runs/37723633396) 对应 head `da1434374b5f1a660fe1f6513cd1891948753500`；该轮 container 作业 `113136703895` 已成功，实际覆盖限额卷审计分页、只读 Key 生命周期、SIGKILL 后原 request ID/hold 的核对、显式私密 notes、空尾页及 disabled 用户重启查询。真实 ENOSPC 在 58,675,200 字节文件系统写入 57,028,608 字节后出现，`df` 剩余 0；另一用户与 registry 仍可处理，撤销/禁用持久保留。这是首轮固定提交的容器证据，不代表修订后的最终 head 已通过。
+首轮 [CI 37723633396](https://github.com/StateKnot/JiaClaw/actions/runs/37723633396) 对应 head `da1434374b5f1a660fe1f6513cd1891948753500`；该轮 container 作业 `113136703895` 已成功，实际覆盖限额卷审计分页、只读 Key 生命周期、SIGKILL 后原 request ID/hold 的核对、显式私密 notes、空尾页及 disabled 用户重启查询。真实 ENOSPC 在 58,675,200 字节文件系统写入 57,028,608 字节后出现，`df` 剩余 0；另一用户与 registry 仍可处理，撤销/禁用持久保留。这是首轮固定提交的容器证据，不代表修订后的最终 head 已通过。
 
 macOS 的既有 semantic 取消生命周期测试暴露了测试同步竞争：`Weak::upgrade()==None` 只观察强引用归零，不能作为结构字段或 `spawn_blocking` 捕获的 Store 已完成析构、所有权锁已释放的同步点。测试已改为在原 5 秒预算内等待实际 Store 打开成功，仅重试明确的所有权忙错误，其他错误立即失败；在途 busy、取消后保留所有权和最终收据断言保持。修复后该严格用例连续 30/30、全量 936 项 Rust 均通过，没有修改生产锁或释放语义。
 
@@ -359,7 +361,7 @@ Ubuntu 的既有 tenant Telegram 基本流程在消息已 delivered 后，等待
 
 ## 独立用户 Slack 批次
 
-2026-10-08 04:38 UTC 回访核对：附着 PR #58–#82 均仍为 OPEN draft，当前 head 检查成功，无 review/thread。PR #82 最终 head `32c5830cc1f6caf008b39149f884bc6b464aac24` 已通过 [CI 37726979505](https://github.com/jiawenyao401/JiaClaw/actions/runs/37726979505)：container job `113147283883`、macOS `113147284066`、Ubuntu `113147284088` 均 completed/success。默认并行 Rust、Telegram、审计、浏览器和真实 Docker/限额卷验收通过；这没有确定首轮 Ubuntu Telegram 超时原因，也不认证全部共享磁盘或供应商能力。
+2026-10-08 04:38 UTC 回访核对：附着 PR #58–#82 均仍为 OPEN draft，当前 head 检查成功，无 review/thread。PR #82 最终 head `32c5830cc1f6caf008b39149f884bc6b464aac24` 已通过 [CI 37726979505](https://github.com/StateKnot/JiaClaw/actions/runs/37726979505)：container job `113147283883`、macOS `113147284066`、Ubuntu `113147284088` 均 completed/success。默认并行 Rust、Telegram、审计、浏览器和真实 Docker/限额卷验收通过；这没有确定首轮 Ubuntu Telegram 超时原因，也不认证全部共享磁盘或供应商能力。
 
 StateKnot main 更新至 `c9318368bbb70fbf6f9318deb961bd2c450227ee`，仅 #141 依赖/CI 管理修改，无 runtime/integration 合同变化；最新仍 0.1.0-alpha.1，#140 OPEN。Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc` 未变，无 release，#31/#41 OPEN，PR #40 仍 draft 未合并。没有新可消费的 durable 原生 Schema 合同，继续精确 HTTP MCP 依赖，不提交重复 issue。
 
@@ -378,7 +380,7 @@ StateKnot main 更新至 `c9318368bbb70fbf6f9318deb961bd2c450227ee`，仅 #141 �
 
 本批交付前 05:26 UTC 复核发现 StateKnot main 再推进到 `4e3c9e9194db524886ca795e5e2394be071ea202`；#145 只更新依赖 patch 与 Dependabot 分组，无运行合同源码变化，17 项 main 检查均成功，release/#140 未变。独立 review 修正 Slack review-clear 示例缺少必需的 `--confirm-backend-idle`；实际 fixture 已正确传此标志。
 
-首版 head `349a5f41a3a6cb3aeddd6372d9925fd78e822814` 的 [CI 37732172100](https://github.com/jiawenyao401/JiaClaw/actions/runs/37732172100) 中，Ubuntu job `113163547361` 全部成功；macOS job `113163547668` 与 container job `113163547629` 失败，不能把首版本机通过记为最终 CI 通过。容器的新 Slack 预留/撤销/重启组已通过，旧审计组却在已有保留 Slack 绑定后在线清 hold，正确触发停机锁拒绝。fixture 现在先断言在线拒绝不改变 hold/审计，再停止网关，以相同非 root/只读根文件系统/限额卷的维护容器清 hold，并重启继续原断言；不取消生产锁。
+首版 head `349a5f41a3a6cb3aeddd6372d9925fd78e822814` 的 [CI 37732172100](https://github.com/StateKnot/JiaClaw/actions/runs/37732172100) 中，Ubuntu job `113163547361` 全部成功；macOS job `113163547668` 与 container job `113163547629` 失败，不能把首版本机通过记为最终 CI 通过。容器的新 Slack 预留/撤销/重启组已通过，旧审计组却在已有保留 Slack 绑定后在线清 hold，正确触发停机锁拒绝。fixture 现在先断言在线拒绝不改变 hold/审计，再停止网关，以相同非 root/只读根文件系统/限额卷的维护容器清 hold，并重启继续原断言；不取消生产锁。
 
 macOS 的旧记忆并发追加测试在所有写线程 join 后立即取目录 flock，得到 EWOULDBLOCK。真实 fork/pipe 实验确认：带 CLOEXEC 的目录描述符仍能在子进程 exec/关闭前保留 flock 引用，父线程完成不是内核锁释放的充分条件。初始 CI 没有采集持锁进程，因此不认定具体 child 是该次失败原因。测试在原 200×2 ms 争抢预算内只重试固定 flock 上下文的 EWOULDBLOCK；其他错误立即失败，生产仍非阻塞。另以真实 dup 引用及释放同步验证等待内核锁，不增加 CI 截止时间或改为串行 CI。
 
@@ -391,7 +393,7 @@ macOS 的旧记忆并发追加测试在所有写线程 join 后立即取目录 f
 - 实际 Rust 1.88.0 全目标锁定 check、984 项完整串行 Rust（library 373、core 123、host 488；真实 Docker 一项本机 ignored）、fmt、所需 Clippy correctness/suspicious、锁定 build、Python 语法及 diff-check 均通过；仍有 style/pedantic warnings。SlackStore 原八项及新增七项全部通过；实际链接 SQLite 修复版本、负整数读取到 usize 拒绝、超 i64 的 u64 绑定拒绝和普通整数往返均验证。
 - macOS 真实 fork/pipe 验证锁引用机制；原并发追加与真实 dup 锁释放测试分别连续 30/30，最终 memory_io 模块默认并行 30 项通过。只改测试同步，不改变生产锁、CI 并行方式或原争抢预算。
 - 最终重建二进制 SHA256 `cb15ba29d69daf0c656193c5c94625a11ae0f703c7bef1104b08758b874f6c1e`：新 `tenant_slack.py` 八组完整通过，十五套既有进程回归全部通过（user_gateway、read_only_keys、gateway_audit、tenant_cron、tenant_telegram、mcp、native_tools、e2e、channels、scheduled_delivery、memory_io、scheduler、model_routing、semantic_memory、model_calls）。每套及整体运行前后哈希保持一致，未修改 fixture 或在验收中重建。所有调用仍为 localhost 合成凭据。
-- 最终只读复核确认 owner 发布、未知文件保留、严格锁竞争错误、真实维护容器及 SQLite 整数转换边界无剩余实质问题；维护容器采用追踪后显式删除，失败由原清理路径处理。PR #83 最终 head `af9265ccc5e321ab98e0916f0deac2164b2780b3` 已通过 [CI 37735649553](https://github.com/jiawenyao401/JiaClaw/actions/runs/37735649553)：macOS job `113174436581`、container job `113174436806`、Ubuntu job `113174436901` 均 completed/success。覆盖默认并行 Rust、所有进程 fixture、Chromium 和真实 Docker/限额卷验收；该容器作业没有开启 Slack runtime，不据此认证真实平台收发。
+- 最终只读复核确认 owner 发布、未知文件保留、严格锁竞争错误、真实维护容器及 SQLite 整数转换边界无剩余实质问题；维护容器采用追踪后显式删除，失败由原清理路径处理。PR #83 最终 head `af9265ccc5e321ab98e0916f0deac2164b2780b3` 已通过 [CI 37735649553](https://github.com/StateKnot/JiaClaw/actions/runs/37735649553)：macOS job `113174436581`、container job `113174436806`、Ubuntu job `113174436901` 均 completed/success。覆盖默认并行 Rust、所有进程 fixture、Chromium 和真实 Docker/限额卷验收；该容器作业没有开启 Slack runtime，不据此认证真实平台收发。
 
 ## 独立用户 Discord 批次
 
@@ -415,9 +417,9 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 
 新 process fixture 首轮的 Unicode 数据为 25.9 KiB，超过既定 16 KiB 整条上限；程序正确保持 needs_review、无 outbox，未发送分片。测试数据改为小于 16 KiB 的 6/7 片边界，准确覆盖最多 original+五条 followup；这不是生产 split 修复，最终九组全部通过。
 
-首轮 [CI 37743578880](https://github.com/jiawenyao401/JiaClaw/actions/runs/37743578880) 对应 head `765965c69352dfe1d948bf7450e4e044cb91770d`。Ubuntu job `113199709450` 全部成功（1043 项默认并行 Rust，含 Linux 专属 EXDEV；九组 Discord、全部旧进程、Chromium 与独立真实 Docker 沙箱），container job `113199709161` 成功（限额卷 App 预留/撤销/重启、停机维护及真实 ENOSPC）。macOS job `113199709457` 的默认并行 Rust 及九组 Discord 等前序测试均成功，在钉钉阶段因整作业的 20 分钟上限被取消，installer 未执行；GitHub 注释明确为 `The job has exceeded the maximum execution time of 20m0s`，不是已识别的测试断言失败。编译与新增强制验收使原整作业预算不足，测试作业改为有界 30 分钟；保留默认并行、每个 fixture/生产期限、完整测试清单及 container 的 20 分钟预算。该修订只改变 CI 资源预算和记录，生产二进制及本地哈希不变；最终新 head 仍须重新完成三项 CI，不借首轮局部成功宣称全部通过。
+首轮 [CI 37743578880](https://github.com/StateKnot/JiaClaw/actions/runs/37743578880) 对应 head `765965c69352dfe1d948bf7450e4e044cb91770d`。Ubuntu job `113199709450` 全部成功（1043 项默认并行 Rust，含 Linux 专属 EXDEV；九组 Discord、全部旧进程、Chromium 与独立真实 Docker 沙箱），container job `113199709161` 成功（限额卷 App 预留/撤销/重启、停机维护及真实 ENOSPC）。macOS job `113199709457` 的默认并行 Rust 及九组 Discord 等前序测试均成功，在钉钉阶段因整作业的 20 分钟上限被取消，installer 未执行；GitHub 注释明确为 `The job has exceeded the maximum execution time of 20m0s`，不是已识别的测试断言失败。编译与新增强制验收使原整作业预算不足，测试作业改为有界 30 分钟；保留默认并行、每个 fixture/生产期限、完整测试清单及 container 的 20 分钟预算。该修订只改变 CI 资源预算和记录，生产二进制及本地哈希不变；最终新 head 仍须重新完成三项 CI，不借首轮局部成功宣称全部通过。
 
-2026-10-08 08:23 UTC 已回填终验：[PR #84](https://github.com/jiawenyao401/JiaClaw/pull/84) 最终 head `768da0eeff2219ec69d3ca36cd12fbcd8943e927` 的 [CI 37746206382](https://github.com/jiawenyao401/JiaClaw/actions/runs/37746206382) 完整成功；macOS job `113208183475`、Ubuntu job `113208183608`、container job `113208183208` 均 completed/success。包括默认并行 Rust、全部强制进程 fixture、Linux Chromium、真实 Docker 沙箱与限额卷验收；Mac 钉钉及 installer 也完成。容器仍未开启 Discord runtime，此成功不认证真实平台或全部共享磁盘压力。
+2026-10-08 08:23 UTC 已回填终验：[PR #84](https://github.com/StateKnot/JiaClaw/pull/84) 最终 head `768da0eeff2219ec69d3ca36cd12fbcd8943e927` 的 [CI 37746206382](https://github.com/StateKnot/JiaClaw/actions/runs/37746206382) 完整成功；macOS job `113208183475`、Ubuntu job `113208183608`、container job `113208183208` 均 completed/success。包括默认并行 Rust、全部强制进程 fixture、Linux Chromium、真实 Docker 沙箱与限额卷验收；Mac 钉钉及 installer 也完成。容器仍未开启 Discord runtime，此成功不认证真实平台或全部共享磁盘压力。
 
 剩余：真实 Discord 安装/反代延迟/终端收发与供应商联合认证；其他独立用户渠道；StateKnot 固定版本 durable admission/driver/store、stdio、子 Agent，及逐 token 输出/媒体身份接线。应用 hold、加密 inbox/outbox 和元数据收据都没有赋予工具重放或自动恢复能力。
 
@@ -443,7 +445,7 @@ StateKnot main 为 `9110ad71934e446d9fbb8ff21387cf14a7b7bdc6`，12 项检查全�
 
 token 验收分层保留：通过的进程 fixture 使用正常 `expire=7200` mint，覆盖已知 `99991663` 失效后的 terminal/no resend、离线核对，以及启动 token HTTP 的真实取消/截止。Sender 单元测试另行覆盖 cache 失效、退避、取消及未来独立投递，不用成功 mint 的 61 秒寿命、修改 clock 或人工改 hold 来构造运行期刷新。官方自建 token 接口在剩余有效期不足 30 分钟时签发新 token，运行期正常到期刷新仍未取得真实平台整机认证。[官方 token 生命周期](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
 
-首轮 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85) 的 [CI 37759803423](https://github.com/jiawenyao401/JiaClaw/actions/runs/37759803423) 对应 exact head `ff4737a531f0a8ca70b3e903513e39b75164ddd8`，已 completed/failure。Ubuntu job `113253178887` 全部成功，包含新增飞书 11 组、全部强制进程回归、Chromium 与真实 Docker；container job `113253178575` 成功，覆盖 schema 6 永久 App 预留、撤销/重启、默认关闭及真实 ENOSPC，未据此认证渠道 runtime。
+首轮 [PR #85](https://github.com/StateKnot/JiaClaw/pull/85) 的 [CI 37759803423](https://github.com/StateKnot/JiaClaw/actions/runs/37759803423) 对应 exact head `ff4737a531f0a8ca70b3e903513e39b75164ddd8`，已 completed/failure。Ubuntu job `113253178887` 全部成功，包含新增飞书 11 组、全部强制进程回归、Chromium 与真实 Docker；container job `113253178575` 成功，覆盖 schema 6 永久 App 预留、撤销/重启、默认关闭及真实 ENOSPC，未据此认证渠道 runtime。
 
 macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准入循环在 `tenant_feishu.py:1078` 预期 HTTP 200、实际收到 429 后失败，后续 channels 等步骤 skipped。首版 helper 的断言没有输出 response `body.status`，当前不能区分 transient busy 与 queue_full，更不能据此确定调度、队列或生产根因。首轮 Linux/容器成功不能代替修订后最终 head 的三项完整验证。
 
@@ -451,17 +453,17 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 千条准入每条复用同一原始正文/签名 header，仅明确的 `429 busy` 可在 2.5 秒内至多尝试八次，全组至多 32 次 busy；逐次检查精确队列计数和唯一消息身份、hold/model/send 不变，queue_full、503、未知状态立即失败。用真实未读完的 challenge 占用 body-reader 槽、收到 busy 后有界释放，明确执行新重试分支；最终 1000 条事件必须等于原 ID 集合与新增 ID 集合的精确并集，第 1001 条必须 `429 queue_full`。生产实现、每次 1 秒断言、900 ms 回调预算、SQL 250 ms 和各项限额均未改。这增加确定的忙碌合同验收，不解释首次未记录状态的 429；修订后的完整 11 组一次运行退出码 0、全部通过，前后仍为同一生产二进制 SHA256 `43f7ec3bdacb6d2258eef37e77c75377822493de5e134283712b8149ada93db6`。实际 reader-slot 分支记录一次 `busy`，队列为 12、该新消息匹配数为 0、hold/model/send 未变；释放 challenge 后同 raw/header 接纳一次，988 个新增身份加原 12 个精确达到 1000，第 1001 条明确 queue_full。Python 语法和 diff-check 通过，没有重建生产二进制。
 
-第二轮 [CI 37763844564](https://github.com/jiawenyao401/JiaClaw/actions/runs/37763844564) 对应 exact head `890f47d53756faf5c3443ea4dd35812b57e136c6`。Ubuntu job `113266536157` 全部成功，含修订后的飞书 11 组、全部强制后续、Chromium 和真实 Docker；container job `113266535783` 成功。macOS job `113266536142` 的前 10 飞书组通过，第 11 组写锁用例预期 admission_failed，静态诊断实际为 HTTP 503、`ingress_deadline`、elapsed 908 ms，随后失败并跳过后续步骤。这确认到达整体 900 ms 回调截止；单次 SQLite 250 ms busy timeout 不能当作整体返回时限。具体排队、mutex 或 CPU 阶段未确定，更不证明首轮未知 429 的原因。
+第二轮 [CI 37763844564](https://github.com/StateKnot/JiaClaw/actions/runs/37763844564) 对应 exact head `890f47d53756faf5c3443ea4dd35812b57e136c6`。Ubuntu job `113266536157` 全部成功，含修订后的飞书 11 组、全部强制后续、Chromium 和真实 Docker；container job `113266535783` 成功。macOS job `113266536142` 的前 10 飞书组通过，第 11 组写锁用例预期 admission_failed，静态诊断实际为 HTTP 503、`ingress_deadline`、elapsed 908 ms，随后失败并跳过后续步骤。这确认到达整体 900 ms 回调截止；单次 SQLite 250 ms busy timeout 不能当作整体返回时限。具体排队、mutex 或 CPU 阶段未确定，更不证明首轮未知 429 的原因。
 
 当前最小修订仍仅在 fixture：写锁用例只允许精确 HTTP 503 的 admission_failed 或 ingress_deadline，其他 503 立即失败；保留写锁直到网关进程确认退出并排空，再核对完整 hold、事件计数、消息 4001 不存在、model/send 全不变，才 rollback 释放锁，重启后重复核对。静态 `SQL_BUSY` 诊断只输出白名单 code、drained 和 unchanged。验收最终持久状态，不把 HTTP 回调截止当作在途 SQL 已取消的证明；所有 callback 1 秒断言、900 ms、SQL 250 ms、1000/1001、busy 重试八次/2.5 秒/全组 32 次及真实 reader-slot 分支保留，生产没有变更。本次完整 11 组一次运行退出码 0、全部通过，前后二进制仍为上述 SHA256。本机 SQL_BUSY 明确 admission_failed/process_exited，完整原队列、hold/model/send 在持锁退出和重启后不变；实际 reader-slot busy 一次，仍精确 12+988=1000、第 1001 条 queue_full。未强制本机产生 deadline，不把本机成功外推为已确定 macOS 耗时阶段。
 
-2026-10-08 11:35 UTC 回填最终证据：[PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85) 当前固定 head `80a8bb03d391cd27bde8f03034aa2c5081d441f4` 的 [CI 37767529821](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821) 已 completed/success，三个作业全部成功，没有把前两轮局部成功作为最终验收。
+2026-10-08 11:35 UTC 回填最终证据：[PR #85](https://github.com/StateKnot/JiaClaw/pull/85) 当前固定 head `80a8bb03d391cd27bde8f03034aa2c5081d441f4` 的 [CI 37767529821](https://github.com/StateKnot/JiaClaw/actions/runs/37767529821) 已 completed/success，三个作业全部成功，没有把前两轮局部成功作为最终验收。
 
 | 最终作业 | 实际执行证据 |
 |---|---|
-| [macOS 113278716859](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278716859) | 默认并行 Rust 1097 项（373/123/601）、新增飞书 11 组与所有该平台强制后续步骤通过；SQL_BUSY 实际 ingress_deadline，持锁停机确认 process_exited、队列仍 12、完整效果不变，再释放/重启核对 |
-| [Ubuntu 113278717605](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278717605) | 默认并行 Rust 1098 项（374/123/601，含 Linux 专项）、飞书 11 组及全部强制进程回归、Chromium、真实 Docker 通过；SQL_BUSY 实际 admission_failed，同样确认进程终止及持久效果不变 |
-| [container 113278717131](https://github.com/jiawenyao401/JiaClaw/actions/runs/37767529821/job/113278717131) | 非 root/只读根镜像与限额卷/私网网关通过，含 schema 6 永久 App 预留、撤销/重启、默认关闭和真实 ENOSPC；未配置飞书渠道 runtime，不能据此认证容器内收发或共享卷压力 |
+| [macOS 113278716859](https://github.com/StateKnot/JiaClaw/actions/runs/37767529821/job/113278716859) | 默认并行 Rust 1097 项（373/123/601）、新增飞书 11 组与所有该平台强制后续步骤通过；SQL_BUSY 实际 ingress_deadline，持锁停机确认 process_exited、队列仍 12、完整效果不变，再释放/重启核对 |
+| [Ubuntu 113278717605](https://github.com/StateKnot/JiaClaw/actions/runs/37767529821/job/113278717605) | 默认并行 Rust 1098 项（374/123/601，含 Linux 专项）、飞书 11 组及全部强制进程回归、Chromium、真实 Docker 通过；SQL_BUSY 实际 admission_failed，同样确认进程终止及持久效果不变 |
+| [container 113278717131](https://github.com/StateKnot/JiaClaw/actions/runs/37767529821/job/113278717131) | 非 root/只读根镜像与限额卷/私网网关通过，含 schema 6 永久 App 预留、撤销/重启、默认关闭和真实 ENOSPC；未配置飞书渠道 runtime，不能据此认证容器内收发或共享卷压力 |
 
 上述两种精确 503 的实际跨平台结果支持 fixture 的最终持久态合同，没有确定首轮未记录状态的 429 原因，也没有定位 macOS 整体截止的具体调度阶段。真实飞书自建安装/可用范围、事件字段、公开 TLS 总延迟、终端收发、正常运行期 token 到期刷新、平台限额、共享卷及容器渠道 runtime 压力、供应商联合认证仍需独立完成。
 
@@ -488,13 +490,13 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 本批不改变未知发送人工核对、200 个预留/24 小时/4 秒额度或独立重复消息语义；不增加独立用户企业微信 registry/后端 owner、私有队列与后台准入，不计为完整 tenant WeCom。真实生产 API、企业认证、动态可见范围/成员许可、可信出口 IP、公开 TLS/客户端收发、运行期 token 到期刷新、容器渠道 runtime 压力及供应商认证仍未完成。
 
-2026-10-08 12:56 UTC 回填：[PR #86](https://github.com/jiawenyao401/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027) completed/success，无 review/thread。
+2026-10-08 12:56 UTC 回填：[PR #86](https://github.com/StateKnot/JiaClaw/pull/86) 固定 head `db802c46b8726e2dfbaf9defb1eebddb043619c7` 的 [CI 37776140027](https://github.com/StateKnot/JiaClaw/actions/runs/37776140027) completed/success，无 review/thread。
 
 | 作业 | 最终固定提交结果 |
 |---|---|
-| [macOS 113307363149](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363149) | SUCCESS；新增 wecom_startup 与既有 wecom 及该平台全部强制步骤通过 |
-| [Ubuntu 113307363413](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363413) | SUCCESS；新启动/旧渠道、全部强制回归、Chromium 与真实 Docker 步骤通过 |
-| [container 113307363064](https://github.com/jiawenyao401/JiaClaw/actions/runs/37776140027/job/113307363064) | SUCCESS；原镜像/私网限额卷范围通过，不含本批之后的独立用户 WeCom runtime |
+| [macOS 113307363149](https://github.com/StateKnot/JiaClaw/actions/runs/37776140027/job/113307363149) | SUCCESS；新增 wecom_startup 与既有 wecom 及该平台全部强制步骤通过 |
+| [Ubuntu 113307363413](https://github.com/StateKnot/JiaClaw/actions/runs/37776140027/job/113307363413) | SUCCESS；新启动/旧渠道、全部强制回归、Chromium 与真实 Docker 步骤通过 |
+| [container 113307363064](https://github.com/StateKnot/JiaClaw/actions/runs/37776140027/job/113307363064) | SUCCESS；原镜像/私网限额卷范围通过，不含本批之后的独立用户 WeCom runtime |
 
 ## 独立用户企业微信批次
 
@@ -524,15 +526,15 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 ## 独立用户企业微信最终 CI 回填
 
-2026-10-08 14:39 UTC 当前官方 PR/CI 核对：PR #87 OPEN/draft，head `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`、base `db802c46b8726e2dfbaf9defb1eebddb043619c7`。[CI 37787484242](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242) 第一次运行三项完成成功。CI实际checkout merge `b35104ed9bbde064b7bc85daed964ef75e3e6eb1` 的 tree `6a349f6f629fc15cd9c9ffd45d26a78466646e81` 与冻结本地源码完全一致，parents 精确为上述 head/base。本地工作区 clean、15个生产/fixture source SHA 和生产二进制前后未变。
+2026-10-08 14:39 UTC 当前官方 PR/CI 核对：PR #87 OPEN/draft，head `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`、base `db802c46b8726e2dfbaf9defb1eebddb043619c7`。[CI 37787484242](https://github.com/StateKnot/JiaClaw/actions/runs/37787484242) 第一次运行三项完成成功。CI实际checkout merge `b35104ed9bbde064b7bc85daed964ef75e3e6eb1` 的 tree `6a349f6f629fc15cd9c9ffd45d26a78466646e81` 与冻结本地源码完全一致，parents 精确为上述 head/base。本地工作区 clean、15个生产/fixture source SHA 和生产二进制前后未变。
 
 同一二进制旧13套 standalone、八套 gateway/tenant实际进程全部一次通过，分别374.488/428.480秒；每套完整日志SHA与binary前后SHA复核，不改deadline、不重试、不在验收中构建。
 
 | 最终作业 | 完整日志核对的实际结果 |
 |---|---|
-| [macOS 113345874473](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874473) | library373/core123/host662，共1158；29项强制Python步骤（旧28+新1）成功；WeCom十组完整、实际940身份后精确queue_full、满额重复ACK保留。浏览器与真实Docker为Linux专项，明确skipped。 |
-| [Ubuntu 113345874820](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874820) | library374/core123/host662，共1159；同样29项/WeCom十组/940全部通过；四项真实Chromium PASS，另单独执行既有ignored Docker隔离/超时/输出/清理测试 PASS（10.44秒）。 |
-| [container 113345874791](https://github.com/jiawenyao401/JiaClaw/actions/runs/37787484242/job/113345874791) | 非root/只读rootfs、私网/限额卷；schema7 Corp/Agent永久身份与撤销重启、默认关闭、在线维护锁拒绝、停机无Secret四种空inspect实际通过。真实ENOSPC写57,028,608字节、文件系统58,675,200字节、df可用0，其它租户仍可用。未启用WeCom平台runtime，不能外推容器收发压力。 |
+| [macOS 113345874473](https://github.com/StateKnot/JiaClaw/actions/runs/37787484242/job/113345874473) | library373/core123/host662，共1158；29项强制Python步骤（旧28+新1）成功；WeCom十组完整、实际940身份后精确queue_full、满额重复ACK保留。浏览器与真实Docker为Linux专项，明确skipped。 |
+| [Ubuntu 113345874820](https://github.com/StateKnot/JiaClaw/actions/runs/37787484242/job/113345874820) | library374/core123/host662，共1159；同样29项/WeCom十组/940全部通过；四项真实Chromium PASS，另单独执行既有ignored Docker隔离/超时/输出/清理测试 PASS（10.44秒）。 |
+| [container 113345874791](https://github.com/StateKnot/JiaClaw/actions/runs/37787484242/job/113345874791) | 非root/只读rootfs、私网/限额卷；schema7 Corp/Agent永久身份与撤销重启、默认关闭、在线维护锁拒绝、停机无Secret四种空inspect实际通过。真实ENOSPC写57,028,608字节、文件系统58,675,200字节、df可用0，其它租户仍可用。未启用WeCom平台runtime，不能外推容器收发压力。 |
 
 最终三份完整日志SHA256（macOS/Ubuntu/container）：`df3d74314097c91e69a48a64b270b79d962623b59ba8b5014b0e7c0d2964d44c` / `412287fd6187e0df674c4fc4bff265984ba0533e3e4d51f8ba79184f9af28657` / `d764538f5733331528aad4fad356d16d9cac85de7d00b5f42588997ca1016d5d`。旧Slack staging lock测试两平台实际ok，先前本地EAGAIN原因仍未知，不把后续通过称为已定位或修复。
 
@@ -560,13 +562,13 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 ## 钉钉原始报文最终 CI 回填
 
-2026-10-08 15:36 UTC 官方复核：[PR #88](https://github.com/jiawenyao401/JiaClaw/pull/88) OPEN/draft，head `4f62ecf2ae471899aa5233e24796a71e57bd4a40`、base `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`；[CI 37797041026](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026) 首次运行三项 SUCCESS。实际 checkout merge `e3fa352454d2ecf839dfc89671c8d685b7f79924` 的 parents 精确为上述 head/base，tree `436af9a4488e76af595f33c026588d638cce9ac6` 与本地冻结源码一致；真实平台身份未因此认证。
+2026-10-08 15:36 UTC 官方复核：[PR #88](https://github.com/StateKnot/JiaClaw/pull/88) OPEN/draft，head `4f62ecf2ae471899aa5233e24796a71e57bd4a40`、base `ba989c30a75e4e6fe7eaf9e13c0704a90cc7695e`；[CI 37797041026](https://github.com/StateKnot/JiaClaw/actions/runs/37797041026) 首次运行三项 SUCCESS。实际 checkout merge `e3fa352454d2ecf839dfc89671c8d685b7f79924` 的 parents 精确为上述 head/base，tree `436af9a4488e76af595f33c026588d638cce9ac6` 与本地冻结源码一致；真实平台身份未因此认证。
 
 | 最终作业 | 完整日志及官方步骤核对 |
 |---|---|
-| [macOS 113379096190](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379096190) | Rust 1163（373/123/667）、29项强制Python全部通过，新钉钉原始回调/冷缓存token/发送负例9/6/7及三类filtered正例完整；浏览器/真实Docker专项明确skipped。 |
-| [Ubuntu 113379096092](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379096092) | Rust 1164（374/123/667）、同29项及完整钉钉组通过；四项真实Chromium PASS，单独既有ignored Docker隔离/超时/输出/清理测试1项PASS（7.79秒）。 |
-| [container 113379095664](https://github.com/jiawenyao401/JiaClaw/actions/runs/37797041026/job/113379095664) | 非root、只读rootfs、私网/限额卷、schema7/default-off及维护实际通过；真实ENOSPC与其它租户继续可用。没有启用DingTalk平台runtime，不记成容器渠道压力认证。 |
+| [macOS 113379096190](https://github.com/StateKnot/JiaClaw/actions/runs/37797041026/job/113379096190) | Rust 1163（373/123/667）、29项强制Python全部通过，新钉钉原始回调/冷缓存token/发送负例9/6/7及三类filtered正例完整；浏览器/真实Docker专项明确skipped。 |
+| [Ubuntu 113379096092](https://github.com/StateKnot/JiaClaw/actions/runs/37797041026/job/113379096092) | Rust 1164（374/123/667）、同29项及完整钉钉组通过；四项真实Chromium PASS，单独既有ignored Docker隔离/超时/输出/清理测试1项PASS（7.79秒）。 |
+| [container 113379095664](https://github.com/StateKnot/JiaClaw/actions/runs/37797041026/job/113379095664) | 非root、只读rootfs、私网/限额卷、schema7/default-off及维护实际通过；真实ENOSPC与其它租户继续可用。没有启用DingTalk平台runtime，不记成容器渠道压力认证。 |
 
 三份完整日志SHA256（macOS/Ubuntu/container）为 `128e072051318bdc710fce5cdac4410e9ca288a3ab3bcf66443bb286de118b26` / `0d7e97a2e1ce415b2c7184234c55bb934eaf17ea7f88b7a49041ae04d2f59df8` / `6c0de1c5c78d7237c5347f31062851cad3fb74e1b95d3bb6412a228a8e33f501`。CLI watch观察器曾API i/o timeout退出，重新读取官方状态和完整日志确认全成功；没有重跑或把观察器网络错误记作CI代码失败。无人工/代码review、inline findings或review thread，唯一CodeRabbit评论仅表示draftskip；外部CodeRabbit审查未执行。保留draft，未合并或公开Release。
 
@@ -596,7 +598,7 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 ## 复制批次首次 CI 与数据库所有权修订
 
-[PR #89](https://github.com/jiawenyao401/JiaClaw/pull/89) 初版 head `292142118b85bf6166199a6c733ce58bd2c61a30` 的 [CI 37805809681](https://github.com/jiawenyao401/JiaClaw/actions/runs/37805809681) 在 macOS 既有 `gateway::telegram_store::tests::restart_preserves_claim_associations_unknown_fifo_and_atomic_purge_cascades` 失败：同步 drop/reopen 后，`telegram_store.rs:466` 收到 lifetime flock EWOULDBLOCK（errno35）。library379/core123和六项新copy测试均通过，host666通过/1失败；macOS后续Clippy/build/Python全部skipped，不能计为copy跨平台整机PASS。当前没有证明该次CI恰好与哪个子进程fork重叠，不能把后续通过写成已经证明了CI根因。
+[PR #89](https://github.com/StateKnot/JiaClaw/pull/89) 初版 head `292142118b85bf6166199a6c733ce58bd2c61a30` 的 [CI 37805809681](https://github.com/StateKnot/JiaClaw/actions/runs/37805809681) 在 macOS 既有 `gateway::telegram_store::tests::restart_preserves_claim_associations_unknown_fifo_and_atomic_purge_cascades` 失败：同步 drop/reopen 后，`telegram_store.rs:466` 收到 lifetime flock EWOULDBLOCK（errno35）。library379/core123和六项新copy测试均通过，host666通过/1失败；macOS后续Clippy/build/Python全部skipped，不能计为copy跨平台整机PASS。当前没有证明该次CI恰好与哪个子进程fork重叠，不能把后续通过写成已经证明了CI根因。
 
 独立Mac实际fork/pipe gate证明：CLOEXEC文件描述仍由fork继承；只关闭父描述符、子进程尚活时，独立flock立即busy；显式解锁旧描述后，不等子进程退出即可取得新独立锁。另新增真实SessionStore retained-dup定向测试，在旧生产实现稳定失败，正是drop后即时重开busy。此证据确认close-only生命周期缺口，区别于对原CI具体重叠的推断。
 
@@ -614,13 +616,13 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 ## 复制批次跨连接验收屏障修订
 
-数据库所有权修订 head `92a2d6d07b849bb9a7b5b61c669f399b9d59baa9` 的 [CI 37809741134](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134) 仍因 macOS 整机失败而整体 FAIL，未重跑相同提交。实际 checkout merge `dc1ed1a1863d1f30301aa0027dc3d08746d902c2`、tree `f54e207f0d4c198058434e1998965e5ba559ce40`，Git API 核对 parents 为该 head 和 base4f62；以下结果属于此固定版本，不代替后续 fixture 修订。
+数据库所有权修订 head `92a2d6d07b849bb9a7b5b61c669f399b9d59baa9` 的 [CI 37809741134](https://github.com/StateKnot/JiaClaw/actions/runs/37809741134) 仍因 macOS 整机失败而整体 FAIL，未重跑相同提交。实际 checkout merge `dc1ed1a1863d1f30301aa0027dc3d08746d902c2`、tree `f54e207f0d4c198058434e1998965e5ba559ce40`，Git API 核对 parents 为该 head 和 base4f62；以下结果属于此固定版本，不代替后续 fixture 修订。
 
 | 修订作业 | 完整官方日志核对 |
 |---|---|
-| [macOS 113423181717](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181717) | 19分26秒；Rust1171（379/123/669）、六copy新测、两ownership新测及原Telegram同步重开全部PASS，fmt/必需Clippy/build通过。30项Python为20成功、飞书1失败、其后9跳过；新copy七组通过，飞书前10组通过，第11组 `tenant_feishu.py:1190` 的占槽就绪断言失败。日志SHA256 `1811392aa2376c846ee09f3c9dd9e619f55cbd4d1fa11d84095d44c936f6446a`。 |
-| [Ubuntu 113423181481](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181481) | 25分11秒SUCCESS；Rust1172（380/123/669）、全部新单测/原Telegram重开、30强制Python/copy七组、四实际Chromium与单独实际Docker1项PASS（7.80秒）及清理通过。仅macOS专用OpenSSL步骤按条件skipped。日志SHA256 `e4370af77c51b82e79282f33ab4473d78c7d4f357935d6853e10987555648247`。 |
-| [container 113423181801](https://github.com/jiawenyao401/JiaClaw/actions/runs/37809741134/job/113423181801) | 5分35秒SUCCESS；精确新镜像 `bbf0484e9dbe1a748afe05a741048a8d44b6b4a18bf0d97f527d6316abaaabec`，非root/只读rootfs、命名卷恢复、私网、schema7/default-off与维护、真实ENOSPC及其它租户可用全部实测。日志SHA256 `4881abbef08f459de11ec64fa8c4efb27131ae4c6f674ee7f4e07f73739174a0`；未执行copy专项容器压力或真实平台runtime。 |
+| [macOS 113423181717](https://github.com/StateKnot/JiaClaw/actions/runs/37809741134/job/113423181717) | 19分26秒；Rust1171（379/123/669）、六copy新测、两ownership新测及原Telegram同步重开全部PASS，fmt/必需Clippy/build通过。30项Python为20成功、飞书1失败、其后9跳过；新copy七组通过，飞书前10组通过，第11组 `tenant_feishu.py:1190` 的占槽就绪断言失败。日志SHA256 `1811392aa2376c846ee09f3c9dd9e619f55cbd4d1fa11d84095d44c936f6446a`。 |
+| [Ubuntu 113423181481](https://github.com/StateKnot/JiaClaw/actions/runs/37809741134/job/113423181481) | 25分11秒SUCCESS；Rust1172（380/123/669）、全部新单测/原Telegram重开、30强制Python/copy七组、四实际Chromium与单独实际Docker1项PASS（7.80秒）及清理通过。仅macOS专用OpenSSL步骤按条件skipped。日志SHA256 `e4370af77c51b82e79282f33ab4473d78c7d4f357935d6853e10987555648247`。 |
+| [container 113423181801](https://github.com/StateKnot/JiaClaw/actions/runs/37809741134/job/113423181801) | 5分35秒SUCCESS；精确新镜像 `bbf0484e9dbe1a748afe05a741048a8d44b6b4a18bf0d97f527d6316abaaabec`，非root/只读rootfs、命名卷恢复、私网、schema7/default-off与维护、真实ENOSPC及其它租户可用全部实测。日志SHA256 `4881abbef08f459de11ec64fa8c4efb27131ae4c6f674ee7f4e07f73739174a0`；未执行copy专项容器压力或真实平台runtime。 |
 
 飞书失败日志仅证明原partial请求与另一连接probe未在250ms就绪窗口内形成429占槽证据，不证明生产semaphore失效，也未记录足以判定具体网络/Nagle/调度原因的数据。之前的SQL_BUSY `ingress_deadline`、`process_exited=true` 指的是fixture主动停机并完成退出屏障的旧gateway；此前队列/hold/model/send保持不变，随后确实启动了新gateway，不能误读成在死进程上probe。
 
@@ -633,7 +635,7 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 
 ## 复制批次完整 CI 作业容量修订
 
-跨连接屏障修订 head `469ba6ae005eb9c303cc7059bc6234d92a2e6f14` 的 [CI 37814363011](https://github.com/jiawenyao401/JiaClaw/actions/runs/37814363011) 没有取得三作业整体 SUCCESS：Linux 和容器成功，macOS 整项作业在30分02秒被取消。官方步骤元数据显示全部四项Cargo、30项强制Python、新copy七组和更新后的飞书11组都通过，checkout后处理和Complete job亦成功；两个Linux专用浏览器/Docker步骤按条件跳过。官方failure annotation明确为 `The job has exceeded the maximum execution time of 30m0s`，原始annotation JSON SHA256 `5a1dac18985d23cf3b4fb37805f4231eadbbc6c46cdf88372be3111d856ce49d`。不能把所有测试步骤成功改写为这次完整作业成功，也不能把整体取消误报为框架或应用测试失败。
+跨连接屏障修订 head `469ba6ae005eb9c303cc7059bc6234d92a2e6f14` 的 [CI 37814363011](https://github.com/StateKnot/JiaClaw/actions/runs/37814363011) 没有取得三作业整体 SUCCESS：Linux 和容器成功，macOS 整项作业在30分02秒被取消。官方步骤元数据显示全部四项Cargo、30项强制Python、新copy七组和更新后的飞书11组都通过，checkout后处理和Complete job亦成功；两个Linux专用浏览器/Docker步骤按条件跳过。官方failure annotation明确为 `The job has exceeded the maximum execution time of 30m0s`，原始annotation JSON SHA256 `5a1dac18985d23cf3b4fb37805f4231eadbbc6c46cdf88372be3111d856ce49d`。不能把所有测试步骤成功改写为这次完整作业成功，也不能把整体取消误报为框架或应用测试失败。
 
 实际macOS冷构建及完整进程链占满原30分钟预算，末尾installer17:39:29 UTC、checkout清理17:39:30 UTC、Complete job17:39:32 UTC，而job从17:09:31 UTC开始；整任务取消于17:39:33 UTC。本次只把test矩阵的完整作业容量从30分钟改为有上限的40分钟，预留冷构建和runner结束开销。容器作业仍20分钟，四项Cargo、30项Python、Linux真实Chromium/Docker及清理、工具链/action固定版本、全部生产和fixture期限/资源/原断言不改。生产源码、依赖和二进制 `9b5af94818d9454ab8ac2d599246dc2521b32d3b0f11320a0ce5d06d919d0646` 未重建，飞书fixture仍 `8701f98030df3f09156facc870a88d5c6f8b7a746941579927ceacfabb5dff10`。
 

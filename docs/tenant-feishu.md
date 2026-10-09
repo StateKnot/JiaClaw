@@ -114,6 +114,6 @@ review-clear 必须检查该用户全部保留渠道，包括撤销或已移除 
 
 ## 验收状态
 
-首版本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套通过，使用同一生产二进制。PR #85 两轮 CI 的 Ubuntu/容器成功；macOS 首轮容量准入收到未知具体状态的 429，第二轮写锁用例收到 `503 ingress_deadline`（908 ms）后分别未满足测试断言。第一次测试修订的本地 11 组已通过；当前最小修订只允许 admission_failed/ingress_deadline 两种 503，强调保持真实写锁至停止排空、核对最终持久状态，而非强求整体回调在单次 SQL 250 ms 内返回。生产期限、容量和有界 busy 重试未改，当前完整 11 组一次通过且生产二进制哈希不变。本提交准备时第三轮 exact-head 三项 CI 待核对，最终固定提交结果见 [PR #85](https://github.com/jiawenyao401/JiaClaw/pull/85)。本地与历轮证据见[验证记录](validation.md)，旧 head 局部成功不代替最终验收。
+首版本机完整默认并行 1097 项 Rust、fmt/必需 Clippy/locked check/build、新整机 11 组与既有进程回归 21 套通过，使用同一生产二进制。PR #85 两轮 CI 的 Ubuntu/容器成功；macOS 首轮容量准入收到未知具体状态的 429，第二轮写锁用例收到 `503 ingress_deadline`（908 ms）后分别未满足测试断言。第一次测试修订的本地 11 组已通过；当前最小修订只允许 admission_failed/ingress_deadline 两种 503，强调保持真实写锁至停止排空、核对最终持久状态，而非强求整体回调在单次 SQL 250 ms 内返回。生产期限、容量和有界 busy 重试未改，当前完整 11 组一次通过且生产二进制哈希不变。本提交准备时第三轮 exact-head 三项 CI 待核对，最终固定提交结果见 [PR #85](https://github.com/StateKnot/JiaClaw/pull/85)。本地与历轮证据见[验证记录](validation.md)，旧 head 局部成功不代替最终验收。
 
 协议 fixture 使用一次性凭据，不触发真实平台消息或付费供应商。正常 7200 秒 token mint 的启动 HTTP 取消/截止、明确失效后的 terminal/no resend 与离线核对已作进程验证；Sender 单元覆盖 cache 失效/退避/取消，不能外推运行期正常到期刷新认证。真实飞书安装、权限可用范围、事件字段、终端消息、TLS 总预算、平台 token/限额、共享网关卷及容器渠道 runtime 压力、供应商联合认证仍另行完成。
