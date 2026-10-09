@@ -879,3 +879,13 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 修订d61c354的[container 114036880656](https://github.com/StateKnot/JiaClaw/actions/runs/37994480543/job/114036880656)仍在源码构建前失败：固定Dockerfile前端向Docker Hub获取匿名令牌返回504，尚未请求新的ECR基础镜像。日志SHA256 `0d7ca5434f143bdca53c4d0edeec0396d5efee4d8531b3d3fed5ac2c1a7b6555`。匿名读取Google公开缓存的该前端manifest返回200，内容SHA256与Dockerfile固定摘要 `4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e`完全一致；ECR不存在该前端，未将其作为可用来源。
 
 按[Google公开缓存的官方配置方法](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images)及[Docker守护进程镜像配置](https://docs.docker.com/docker-hub/image-library/mirror/)，仅在一次性container CI runner中保留原daemon配置、增加`registry-mirrors`，校验有效配置并重启和读回实际镜像列表。使用原Docker driver/Dockerfile固定前端，不直接引用缓存镜像、不修改宿主开发机或源码镜像默认值。缓存不是长期可用保证，固定摘要/失败可见和原20分钟预算仍成立；metadata成功不计真实构建成功。该修订的完整七作业/四归档资格须重新核对，生产b023f3f8字节及全部90编译输入不变。
+
+24b331a的真实[container 114040806575](https://github.com/StateKnot/JiaClaw/actions/runs/37995600393/job/114040806575)已完成原固定前端、ECR基础镜像构建，镜像SHA256 `208aae0bc42ecc2f7bbc1365f52c97152cf2c304d1cf70a05323fdeb03367a43`；非root/只读根、命名卷恢复、每租户真实ENOSPC均通过。这是实际日志资格，不仅是manifest核对。
+
+同head的[Ubuntu 114040806228](https://github.com/StateKnot/JiaClaw/actions/runs/37995600393/job/114040806228)仍未完整通过。36套进程/原五浏览器及新租户1..6/8通过，第九组新诊断记录：59次GET/一次PUT/一次模型执行，后端completed、session_committed、无hold/fault，但最后一次GET被剩余预算截断，页面显示一般RPC超时而不是“观察结束”。日志SHA256 `91dd1d015914ef95aba1d277c8e2256c906a4be1cf8fb5084170ea884431ab07`。在b023f3f8字节上增加真实PUT回执延迟16秒与最后GET延迟1.5秒的确定性边界后，同样实际复现；两条路均不重发模型，原15/30/40/240秒截止不变。
+
+修订把本页定时器中止保留为独立超时类型，正文读取中止也保留原因；仅当该次RPC因剩余观察预算而缩短时显示观察结束并撤销收据fresh标记。较早15秒RPC超时、HTTP失败、协议错误与身份变更不被当作完成。早期与最后读取均须保持原编号/草稿、禁止完成/新发送、一次真实模型调用，后续原GET才可核对。新生产字节、完整相关回归与新固定head七项CI/四归档重新资格化，不沿用b023的成功记录。
+
+24b331a首轮[macOS Intel 114040824392](https://github.com/StateKnot/JiaClaw/actions/runs/37995602391/job/114040824392)旧文件锁测试失败，core395通过/1失败：12线程并发append中五线程耗尽200次×2ms的夹具锁忙重试；日志SHA256 `ac2e92b481fd30b1045f365b1d5c5ca68da97f2ebc8a0fffc2c3a8270c3f3ee4`。生产锁忙立即返回，日志不能证明调度/IO争用或实现缺陷的具体根因。仅原设置完整失败平台复验一次，保留首次失败，不串行化、不跳过、不改变任何断言/期限；新head仍独立认证，后续成功不证明该根因已修复。
+
+最终观察期限修订冻结binary SHA256 `4115582e58b36f05bbab30018f5250d1f74474f93ff412d6819549dc4174fafe`，确定性边界下完整十组真实Chromium、十二套相关旧浏览器/进程和完整1218 Rust（396/123/699）、fmt、必需Clippy、locked build、parser八组重新通过。旧b023失败与新4115582e成功分别保存，不复用旧编译字节。新head完整官方资格仍待独立核对。

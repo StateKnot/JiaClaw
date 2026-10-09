@@ -8,6 +8,7 @@ let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
+class ApiTimeout extends Error {}
 const clipped = (text, length) => { text = String(text || ''); return text.length > length ? text.slice(0, length) + '\n[显示已截断；完整记录保留在服务端]' : text; };
 const date = value => value == null ? '—' : new Date(value).toLocaleString();
 function status(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
@@ -73,14 +74,14 @@ async function api(path, method = 'GET', body, optional = false, timeout = 0, ma
     const reviewMessage = '结果需要管理员核对。请保留当前内容，勿重复提交；确认后端空闲并处理未知结果后再继续。';
     if (response.status === 204) { if (reviewRequired) throw new Error(reviewMessage); return null; }
     let data;
-    try { data = maxBytes ? await boundedJson(response, maxBytes, owner) : await response.json(); } catch (error) { if (owner !== identity) throw new StaleIdentity(); if (error instanceof ApiError) throw error; throw new ApiError(`服务响应异常（HTTP ${response.status}）`, response.status); }
+    try { data = maxBytes ? await boundedJson(response, maxBytes, owner) : await response.json(); } catch (error) { if (owner !== identity) throw new StaleIdentity(); if (error instanceof ApiError || error.name === 'AbortError') throw error; throw new ApiError(`服务响应异常（HTTP ${response.status}）`, response.status); }
     if (owner !== identity) throw new StaleIdentity();
     if (!response.ok) throw new ApiError(clipped(data?.error || `请求失败（HTTP ${response.status}）`, 1024), response.status);
     if (reviewRequired) throw new Error(reviewMessage);
     return data;
   } catch (error) {
     if (owner !== identity && !(error instanceof ApiError && error.code === 401)) throw new StaleIdentity();
-    if (error.name === 'AbortError') throw new Error('请求超时；服务器可能仍在处理，请刷新并核对结果。');
+    if (error.name === 'AbortError' && controller.signal.aborted) throw new ApiTimeout('请求超时；服务器可能仍在处理，请刷新并核对结果。');
     throw error;
   } finally { if (timer) clearTimeout(timer); controller.abort(); }
 }
@@ -695,7 +696,11 @@ async function jsonTurn(attempt) {
   // This finite observation window covers the initial PUT and all subsequent GETs.
   // It neither cancels detached execution nor releases its server-side capacity.
   const deadline = performance.now() + 30000;
-  const remaining = () => Math.max(1, Math.min(15000, Math.floor(deadline - performance.now())));
+  let observationLimited = false;
+  const remaining = () => {
+    const left = deadline - performance.now(); observationLimited = left <= 15000;
+    return Math.max(1, Math.min(15000, Math.floor(left)));
+  };
   try {
     status('正在提交原请求…');
     const value = await turnApi('/api/turns/' + attempt.id, 'PUT', attempt.body, remaining());
@@ -715,7 +720,12 @@ async function jsonTurn(attempt) {
     if (owner === identity && pendingTurn === attempt) status('本页观察已结束；原执行可能继续。请按原编号核对结果，勿重复执行。');
   } catch (error) {
     if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
-    attempt.fresh = false; $('turn-state').textContent = '交付未确认；保留原编号和草稿，核对服务端结果。';
+    attempt.fresh = false;
+    if (error instanceof ApiTimeout && observationLimited) {
+      $('turn-state').textContent = '本页观察已结束；最后一次读取未确认，保留原编号和草稿，核对服务端结果。';
+      status('本页观察已结束；原执行可能继续。请按原编号核对结果，勿重复执行。'); return;
+    }
+    $('turn-state').textContent = '交付未确认；保留原编号和草稿，核对服务端结果。';
     throw new Error(error.message + ' 请核对原请求，勿重复执行。');
   } finally {
     controller.abort();
