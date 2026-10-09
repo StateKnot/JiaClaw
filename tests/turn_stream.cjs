@@ -19,6 +19,9 @@ const p=new Parser({id,session_id},[],()=>{});assert.throws(()=>p.push(Buffer.al
 const big=new Parser({id,session_id},[],()=>{});assert.throws(()=>big.push(Buffer.from('event: done\ndata: '+ 'x'.repeat(2*1024*1024+20000))));
 for(const change of [{id:session_id.slice(5)},{session_id:'other'},{request_hash:'z'.repeat(64)},{state:'completed'},{session_committed:1},{finished_ms:0},{reviewed_ms:3},{cancel_requested:null},{result_purged:true,result:terminal.result}])assert.throws(()=>receipt({...initial,...change},initial));
 assert.throws(()=>snapshot({protocol:1,receipt:terminal},initial));
+// Persistence timestamps use wall clock, while execution budgets use monotonic time.
+// A clock correction must not turn an actually committed result into a false hold.
+assert.doesNotThrow(()=>receipt({...terminal,created_ms:100,finished_ms:90}));
 assert.doesNotThrow(()=>receipt({...terminal,state:'needs_review',error:'tool_failure'},initial));
 const c={protocol:1,enabled:true,streaming:true,stream_suffix:'/stream',max_active:1,turn_budget_secs:10,max_identities:10000,max_retained_results:32,session_prefix:'http:',max_stream_wire_bytes:12*1024*1024,max_preview_round_bytes:2*1024*1024,max_preview_total_bytes:8*1024*1024};
 assert.deepStrictEqual(capabilities(c),c);

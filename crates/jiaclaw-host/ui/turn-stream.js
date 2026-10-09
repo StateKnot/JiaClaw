@@ -27,7 +27,7 @@
     require(r.result === null || (object(r.result) && text(r.result.reply, 2 * MiB) && text(r.result.status, 64) && Array.isArray(r.result.tool_names) && r.result.tool_names.length <= 2048 && r.result.tool_names.every(name => text(name, 128))));
     require(!r.result_purged || r.result === null);
     require(r.state !== 'running' || (r.finished_ms === null && !r.session_committed && r.result === null && !r.result_purged && r.reviewed_ms === null));
-    require(r.state === 'running' || (r.finished_ms !== null && r.finished_ms >= r.created_ms));
+    require(r.state === 'running' || (r.finished_ms !== null && r.finished_ms >= 0));
     require(r.state !== 'completed' || (r.session_committed && r.error === null && (r.result_purged || r.result?.status === 'completed')));
     require(r.reviewed_ms === null || (r.state === 'needs_review' && r.review_note !== null));
     if (expected) {
