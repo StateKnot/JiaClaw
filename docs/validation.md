@@ -1,6 +1,6 @@
 # 基础能力验收记录
 
-2026-10-09 组织迁移、PR #89/#90 最终三项 CI 回填与安装接线见[组织迁移验收](organization-migration.md)，本批[候选发布](release-candidates.md)独立记录实际归档/原生四平台范围。以下各批历史结果仍保留对应固定提交和认证范围。
+2026-10-09 组织迁移、PR #89/#90 最终三项 CI 回填与安装接线见[组织迁移验收](organization-migration.md)，本批[候选发布](release-candidates.md)独立记录实际归档/原生四平台范围，以及操作 owner 显式释放工作区写锁的生产修复和取消/dup边界。以下各批历史结果仍保留对应固定提交和认证范围。
 
 2026-10-02，本机 macOS arm64，Rust 1.85.0，锁定 Cargo.lock。
 

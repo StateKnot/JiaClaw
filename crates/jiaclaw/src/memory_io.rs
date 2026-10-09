@@ -236,11 +236,32 @@ pub(crate) fn inspect(workspace: &Path, configured: &str) -> Result<Option<u64>,
 // No mutable lock path: all cooperating writers lock the workspace directory
 // inode for the whole read/modify/publish operation. A busy workspace fails
 // immediately. File editors that do not acquire this lock are not serialized.
-fn writer_lock(root: &Dir) -> Result<std::fs::File, JiaClawError> {
+struct WorkspaceWriteLock {
+    file: std::fs::File,
+    owner_pid: u32,
+}
+
+impl Drop for WorkspaceWriteLock {
+    fn drop(&mut self) {
+        // A forked child has no ownership of its parent's active mutation.
+        // The completing owner explicitly unlocks even if an unrelated process
+        // still holds a duplicated descriptor until exec/exit.
+        if self.owner_pid == std::process::id() {
+            if let Err(error) = fs2::FileExt::unlock(&self.file) {
+                tracing::error!(%error, "workspace writer unlock failed; closing descriptor");
+            }
+        }
+    }
+}
+
+fn writer_lock(root: &Dir) -> Result<WorkspaceWriteLock, JiaClawError> {
     let lock = root.open(".").map_err(failure)?.into_std();
     fs2::FileExt::try_lock_exclusive(&lock)
         .map_err(|e| failure(format!("workspace write lock busy or unsupported: {e}")))?;
-    Ok(lock)
+    Ok(WorkspaceWriteLock {
+        file: lock,
+        owner_pid: std::process::id(),
+    })
 }
 
 fn sync_dir(dir: &Dir) -> Result<(), JiaClawError> {
@@ -1401,9 +1422,8 @@ mod tests {
     fn after_workspace_contention<T>(
         mut operation: impl FnMut() -> Result<T, JiaClawError>,
     ) -> Result<T, JiaClawError> {
-        // Use the concurrent writer test's existing 200 x 2ms budget. Thread
-        // completion alone does not join kernel references inherited by a
-        // concurrently forked process: flock survives until its last fd closes.
+        // Use the concurrent writer test's existing 200 x 2ms budget for
+        // contention between live owners. Completing owners explicitly unlock.
         // The tool error already rendered its io::Error as text. Retry only the
         // fixed workspace-flock context and EWOULDBLOCK errno suffix; unsupported
         // locks and other I/O failures return immediately. Production remains nonblocking.
@@ -1562,44 +1582,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cloned_directory_lock_reference_must_close_before_reacquisition() {
+    fn writer_ownership_releases_lock_while_duplicated_descriptor_remains_open() {
         let ws = tempfile::tempdir().unwrap();
         let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
         let lock = after_workspace_contention(|| writer_lock(&root)).unwrap();
-        // dup and fork both retain references to this same kernel flock. A real
-        // duplicated descriptor deterministically models a child before CLOEXEC.
-        let retained = lock.try_clone().unwrap();
-        drop(lock);
+        // Real duplicated kernel descriptors model references retained by a
+        // forked child before exec. A non-owner guard cannot unlock the owner.
+        let retained = lock.file.try_clone().unwrap();
+        let foreign_guard = WorkspaceWriteLock {
+            file: retained.try_clone().unwrap(),
+            owner_pid: lock.owner_pid.wrapping_add(1),
+        };
+        drop(foreign_guard);
         assert!(workspace_lock_busy(&writer_lock(&root)));
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            scope.spawn(move || {
-                release_rx
-                    .recv_timeout(std::time::Duration::from_millis(400))
-                    .unwrap();
-                drop(retained);
-            });
-            let mut first = true;
-            let lock = after_workspace_contention(|| {
-                let result = writer_lock(&root);
-                if first {
-                    assert!(workspace_lock_busy(&result));
-                    first = false;
-                    release_tx.send(()).unwrap();
-                }
-                result
-            })
-            .unwrap();
-            assert!(!first);
-            assert!(workspace_lock_busy(&write_text(
-                ws.path(),
-                "a",
-                "denied",
-                false,
-                32768,
-            )));
-            drop(lock);
-        });
+        drop(lock);
+        assert!(retained.metadata().unwrap().is_dir());
+        let lock = writer_lock(&root).unwrap();
+        // Closing the old descriptor must not release the new owner's lock.
+        drop(retained);
+        assert!(workspace_lock_busy(&write_text(
+            ws.path(),
+            "a",
+            "denied",
+            false,
+            32768,
+        )));
+        drop(lock);
         after_workspace_contention(|| write_text(ws.path(), "a", "committed", false, 32768))
             .unwrap();
         assert_eq!(
