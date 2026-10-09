@@ -129,14 +129,14 @@ function renderMessages(messages) {
 }
 async function refresh() { sessionList = (await api('/api/sessions', 'GET', undefined, false, 15000, 4 * 1024 * 1024)).sessions; if (trackedSession() && !sessionList.some(s => s.id === selected)) sessionList.unshift({id:selected, message_count:0}); renderSessions(); }
 async function select(id, allowMissing = false) {
-  const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, allowMissing ? [404] : false, 15000, 26 * 1024 * 1024);
-  if (session === null && allowMissing) {
+  const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, allowMissing ? true : false, 15000, 26 * 1024 * 1024);
+  if (session === MISSING_ROUTE && allowMissing) {
     // A permanent turn receipt does not guarantee its history survived TTL or
     // deletion. Do not create an empty virtual session or preserve another view.
     selected = null; $('session-title').textContent = '原请求历史不可读取';
     showView('chat'); renderMessages([]); renderSessions(); return false;
   }
-  if (session.id !== id || !Array.isArray(session.messages) || session.messages.length > 51 || session.messages.some(m => typeof m.content !== 'string')) throw new Error('会话响应异常');
+  if (!session || session.id !== id || !Array.isArray(session.messages) || session.messages.length > 51 || session.messages.some(m => typeof m.content !== 'string')) throw new Error('会话响应异常');
   selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
   showView('chat');
   renderMessages(session.messages); renderSessions(); status(readOnly ? '已连接 · 只读访问 · 会话就绪' : '已连接 · 会话就绪');

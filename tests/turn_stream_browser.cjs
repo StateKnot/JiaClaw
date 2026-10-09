@@ -130,6 +130,13 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   assert.strictEqual(await page.locator('#turn-finish').isDisabled(),false);assert((await page.locator('#turn-state').textContent()).includes('历史不可读取'));
   assert.strictEqual(await page.locator('#messages .message').count(),0);assert.strictEqual(await page.locator('#session-title').textContent(),'原请求历史不可读取');await finish();
   assert.strictEqual(submissions.length,beforeHistoryLookup);assert.strictEqual((await ctl('status','stream-tools')).count,2);
+  // A protocol fault is different from the actual authenticated 404 above.
+  for(const unexpected of [204,500]) {
+    await page.route('**/api/sessions/**',route=>decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop())===completedSession&&route.request().method()==='GET'?route.fulfill({status:unexpected,...(unexpected===500?{contentType:'application/json',body:JSON.stringify({error:'fixture history failure'})}:{})}):route.continue());
+    await oldButton.click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled&&document.getElementById('turn-state').textContent.includes('正文已清理'));
+    assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);assert.strictEqual(submissions.length,beforeHistoryLookup);
+    await page.unroute('**/api/sessions/**');await page.locator('#turn-check').click();await finish();
+  }
   console.log('PASS web stream 12: actual completed history deletion and result purge retain original identity, no fabricated history or permanent UI hold, no replay');
 
   // Malformed transport is a frontend contract fault fixture, not a supplier test.
