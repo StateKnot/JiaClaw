@@ -55,6 +55,15 @@ def verify_archive(path, expected_name, candidate_bytes):
         assert archive.next() is None, 'unexpected or duplicate archive member'
 
 
+def source_identity(checkout):
+    def git(*arguments):
+        return subprocess.check_output(['git', *arguments], cwd=checkout, text=True).strip()
+    # Graph-walking commands hide parents at shallow boundaries. The commit
+    # object retains every real parent even when those objects are not fetched.
+    headers = git('cat-file', '-p', 'HEAD').split('\n\n', 1)[0].splitlines()
+    return dict(source_commit=git('rev-parse', 'HEAD'), source_tree=git('rev-parse', 'HEAD^{tree}'), source_parents=[line.split(' ', 1)[1] for line in headers if line.startswith('parent ')], tracked_source_dirty=bool(git('status', '--porcelain', '--untracked-files=no')))
+
+
 version = 'v0.1.0'
 if candidate:
     output = subprocess.check_output([str(candidate), 'version'], text=True)
@@ -93,10 +102,24 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-install-') as directory:
             resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024))
         assert package(candidate, failed, preexec_fn=file_size_limit).returncode != 0
         assert not failed.exists(), 'packager retained a partial artifact after write failure'
+        # Exercise a real shallow boundary without changing the source checkout
+        # or fetching from the network. Ignore user hooks/signing in this fixture.
+        source = root / 'source'; shallow = root / 'shallow'; template = root / 'git-template'; template.mkdir()
+        def fixture_git(*arguments, checkout=None):
+            return subprocess.check_output(['git', '-c', 'user.name=Installer fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', *arguments], cwd=checkout, text=True, stderr=subprocess.PIPE).strip()
+        fixture_git('init', '--quiet', '--initial-branch=fixture', '--template=' + str(template), str(source))
+        fixture_git('commit', '--quiet', '--allow-empty', '-m', 'Parent fixture', checkout=source)
+        parent = fixture_git('rev-parse', 'HEAD', checkout=source)
+        fixture_git('commit', '--quiet', '--allow-empty', '-m', 'Shallow child fixture', checkout=source)
+        child = fixture_git('rev-parse', 'HEAD', checkout=source)
+        fixture_git('clone', '--quiet', '--template=' + str(template), '--depth', '1', source.as_uri(), str(shallow))
+        assert fixture_git('rev-parse', '--is-shallow-repository', checkout=shallow) == 'true'
+        assert fixture_git('show', '-s', '--format=%P', 'HEAD', checkout=shallow) == ''
+        identity = source_identity(shallow)
+        assert identity['source_commit'] == child and identity['source_parents'] == [parent]
+        assert identity['source_tree'] == fixture_git('rev-parse', 'HEAD^{tree}', checkout=source) and identity['tracked_source_dirty'] is False
         # Record the actual checkout, including the merge tree tested on PRs.
-        def git(*arguments):
-            return subprocess.check_output(['git', *arguments], cwd=repository, text=True).strip()
-        evidence = dict(version=version, target=target, source_commit=git('rev-parse', 'HEAD'), source_tree=git('rev-parse', 'HEAD^{tree}'), source_parents=git('show', '-s', '--format=%P', 'HEAD').split(), tracked_source_dirty=bool(git('status', '--porcelain', '--untracked-files=no')), binary_sha256=hashlib.sha256(candidate_bytes).hexdigest(), archive=asset.name, archive_sha256=hashlib.sha256(asset.read_bytes()).hexdigest())
+        evidence = dict(version=version, target=target, **source_identity(repository), binary_sha256=hashlib.sha256(candidate_bytes).hexdigest(), archive=asset.name, archive_sha256=hashlib.sha256(asset.read_bytes()).hexdigest())
         # Physical negative packages must fail before installation. Never extract
         # them into the filesystem, including a link or a path outside the root.
         bad = root / 'negative' / asset.name; bad.parent.mkdir()
@@ -168,7 +191,7 @@ shutil.copyfile(source, args[args.index('--output')+1])
     assert run('../../bad').returncode != 0
     assert not list(install.glob('.jiaclaw-install.*'))
     if evidence:
-        evidence['acceptance'] = ['native_header', 'exact_archive', 'atomic_install', 'installed_version', 'checksum_retains_old', 'version_retains_old', 'missing_checksum_retains_old', 'invalid_tag_retains_old', 'package_negatives', 'packager_exclusive_create', 'packager_link_rejection', 'packager_write_failure_cleanup']
+        evidence['acceptance'] = ['native_header', 'exact_archive', 'atomic_install', 'installed_version', 'checksum_retains_old', 'version_retains_old', 'missing_checksum_retains_old', 'invalid_tag_retains_old', 'package_negatives', 'packager_exclusive_create', 'packager_link_rejection', 'packager_write_failure_cleanup', 'shallow_source_parents']
         if args.evidence:
             assert not evidence['tracked_source_dirty'], 'cannot certify modified tracked source'
             args.evidence.write_text(json.dumps(evidence, indent=2) + '\n')

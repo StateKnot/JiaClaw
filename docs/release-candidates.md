@@ -8,6 +8,8 @@ PR 的版本来自 Cargo metadata，不把 `refs/pull/.../merge` 当成版本。
 
 每个平台上传一个七天保留的 Actions artifact，包含原归档与 JSON：版本/平台、实际 checkout commit/tree/parents、干净的 tracked source、二进制和归档 SHA256、已通过的安装项目。证据仅在完整安装/回滚成功后写出。维护者在保留期内保存对应资产、JSON 和完整 job log；不同提交、旧归档或仅成功的 build 步骤不能代替最终安装验收。没有声明跨构建机器的字节可复现、签名/attestation 或所有发行版兼容。
 
+父引用直接读取 commit 对象原始 header，不能使用浅克隆边界下会隐藏父提交的 `git show %P`。安装验收另外创建真实两提交仓库和 depth=1 的本地 clone，证明图遍历返回空列表时仍保存真实父 SHA；不要求为记录元数据下载父对象。本批中间 head `e009f809` 的 Linux arm64 安装虽通过，JSON 曾因该问题漏记 parents，审核拒绝将其作为完整证据；修订后所有平台须用最终 head 重新验收。
+
 本机复现（示例为 macOS arm64，使用当前 Cargo 版本生成资产名）：
 
 ```sh
