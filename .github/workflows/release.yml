@@ -13,6 +13,7 @@ on:
       - 'tests/e2e.py'
       - 'tests/mcp.py'
       - 'tests/cli_stream.py'
+      - 'tests/http_turns.py'
   push:
     tags: ['v*']
 permissions:
@@ -60,6 +61,7 @@ jobs:
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
           python3 tests/cli_stream.py "target/$TARGET/release/jiaclaw"
+          python3 tests/http_turns.py "target/$TARGET/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist

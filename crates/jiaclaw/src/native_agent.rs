@@ -176,7 +176,9 @@ impl JiaClawAgent {
         let mut records = Vec::new();
         let mut seen_ids = HashSet::new();
         let maximum = self.config.effective_max_tool_iterations();
-        let turn_id = uuid::Uuid::new_v4().to_string();
+        let turn_id = progress
+            .and_then(ChatProgress::turn_id)
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
         let session_hash = request.session_id.as_ref().map(crate::model_calls::digest);
         let outcome: Result<(String, RunStatus), JiaClawError> = async {
         for iteration in 0..maximum {

@@ -3,7 +3,7 @@
   "info": {
     "title": "JiaClaw HTTP API",
     "version": "0.1.0",
-    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom/DingTalk hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord interaction replies use encrypted short-lived interaction tokens without Bot Authorization; separately authorized scheduled Bot sends use server-held Bot credentials and verify application/guild/channel identity.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Discord/Feishu/WeCom/DingTalk destinations, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id."
+    "description": "JiaClaw HTTP API. Session/chat authentication follows the API Token configuration; jobs and channels administration always requires an API Token and SQLite. Deployment and migration: docs/configuration.md and docs/deployment.md.\n\nTelegram/Slack/Discord/Feishu/WeCom/DingTalk hooks are disabled until platform authentication and explicit installation, sender, conversation and tool policies are configured. Valid events receive ACK after durable admission. Supervised workers atomically persist the complete outbound plan with session results, without truncating replies. Unknown sends require operator review and never replay automatically. Discord interaction replies use encrypted short-lived interaction tokens without Bot Authorization; separately authorized scheduled Bot sends use server-held Bot credentials and verify application/guild/channel identity.\n\nScheduled notifications support explicitly authorized Telegram/Slack/Discord/Feishu/WeCom/DingTalk destinations, using a separate scheduled_destinations allowlist and installation tool policy. Computation completion does not imply platform delivery. See docs/channels.md and docs/scheduled-delivery.md.\n\nBody limits, rate limits, CORS, metrics and session TTL follow instance configuration. Chat SSE currently sends chunks after the full tool loop; token streaming is not implemented.\n\nConfigured rate limits include X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset (Unix seconds); HTTP 429 includes Retry-After (seconds). http.max_body_bytes defaults to 1048576 bytes and oversized requests return HTTP 413. Responses carry X-Request-Id.\n\nOpt-in http.tracked_turns adds UUIDv4 create-only requests, bounded async owners, atomic session/result receipts and explicit cancellation/review. Strict single Bearer required; tenant gateway excludes these routes. See docs/http-turns.md."
   },
   "servers": [
     {
@@ -43,6 +43,10 @@
     {
       "name": "channels",
       "description": "Durable channel operations and delivery reconciliation"
+    },
+    {
+      "name": "turns",
+      "description": "Opt-in standalone persistent request identities and JSON result reconciliation; no HTTP token streaming"
     }
   ],
   "paths": {
@@ -103,7 +107,10 @@
             "in": "query",
             "name": "include_deleted",
             "description": "Include soft-deleted jobs for audit review and explicit purge",
-            "schema": { "type": "boolean", "default": false }
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           },
           {
             "in": "query",
@@ -201,11 +208,16 @@
                     },
                     "max_concurrent_runs": {
                       "type": "integer",
-                      "enum": [1, 4]
+                      "enum": [
+                        1,
+                        4
+                      ]
                     },
                     "create_identity_protocol": {
                       "type": "string",
-                      "enum": ["job-id-v1"],
+                      "enum": [
+                        "job-id-v1"
+                      ],
                       "description": "Present only for the standalone administrator create-only PUT contract; omitted in gateway-driven mode. Scheduler disabled still returns 404."
                     }
                   }
@@ -280,26 +292,84 @@
         ]
       },
       "put": {
-        "tags": ["scheduler"],
+        "tags": [
+          "scheduler"
+        ],
         "operationId": "createJobWithIdentity",
         "summary": "Create a standalone job once under a durable client-chosen UUIDv4",
         "description": "Create-only, never replacement. Available only in standalone scheduler mode with create_identity_protocol=job-id-v1; rejected by both the tenant gateway and gateway-driven backends. New identities require a running scheduler and current tool/destination authorization. The same identity and typed JobSpec fingerprint return the existing current job, including paused or deleted state, without enabling it or changing its next due time, even if scheduler health or tool policy changed. Object key order and omitted default fields are normalized; tool array order and all string values remain exact. A different specification, a legacy job without a matching receipt, or a purged identity returns 409. Receipt tombstones survive purge, store only ID and SHA-256, and are never automatically removed; 10000 lifetime identities per database, then new identities fail closed. No automatic HTTP retry; GET the known job ID or explicitly repeat the exact PUT after reviewing an unknown result. Backup/restore must preserve the complete SQLite database including receipts.",
-        "security": [{"bearerAuth": []}, {"apiToken": []}],
-        "parameters": [{
-          "in": "path", "name": "id", "required": true,
-          "schema": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"}
-        }],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJobSpec"}}}},
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduledJobSpec"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": {"description": "Known identity; existing current job returned without mutation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJob"}}}},
-          "201": {"description": "New job and creation receipt committed atomically", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScheduledJob"}}}},
-          "400": {"description": "Invalid canonical UUIDv4 or job specification/authorization"},
-          "401": {"description": "Administrator API Token required"},
-          "404": {"description": "Scheduler disabled or gateway-driven mode"},
-          "409": {"description": "Identity/specification conflict, permanently retired identity, or job/creation-receipt capacity reached"},
-          "413": {"$ref": "#/components/responses/PayloadTooLarge"},
-          "429": {"$ref": "#/components/responses/RateLimited"},
-          "503": {"description": "New creation unavailable; known receipts remain readable"}
+          "200": {
+            "description": "Known identity; existing current job returned without mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "New job and creation receipt committed atomically",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid canonical UUIDv4 or job specification/authorization"
+          },
+          "401": {
+            "description": "Administrator API Token required"
+          },
+          "404": {
+            "description": "Scheduler disabled or gateway-driven mode"
+          },
+          "409": {
+            "description": "Identity/specification conflict, permanently retired identity, or job/creation-receipt capacity reached"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "description": "New creation unavailable; known receipts remain readable"
+          }
         }
       },
       "delete": {
@@ -536,7 +606,9 @@
     },
     "/health": {
       "get": {
-        "tags": ["health"],
+        "tags": [
+          "health"
+        ],
         "summary": "健康检查",
         "operationId": "getHealth",
         "security": [],
@@ -544,12 +616,18 @@
           "200": {
             "description": "服务可用",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "Access-Control-Allow-Origin": { "$ref": "#/components/headers/AccessControlAllowOrigin" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -558,7 +636,9 @@
     },
     "/metrics": {
       "get": {
-        "tags": ["metrics"],
+        "tags": [
+          "metrics"
+        ],
         "summary": "Prometheus 文本指标",
         "operationId": "getMetrics",
         "description": "进程内指标，Prometheus 0.0.4 exposition。默认无需鉴权（与 `/health` 类似，便于 scrape）。`[http] metrics_public = false` 或 `JIACLAW_METRICS_REQUIRE_AUTH=1` 时与 `/api/*` 相同鉴权。不计入 HTTP 限流。\n\n系列：`jiaclaw_http_requests_total{path,method,status}`（path 为路由族：api_chat / hooks_telegram / hooks_slack / hooks_discord / hooks_inbound / health / metrics / other）、`jiaclaw_sessions_active`、`jiaclaw_tool_calls_total{tool,result}`、`jiaclaw_build_info{version}`。",
@@ -567,30 +647,48 @@
           "200": {
             "description": "Prometheus 文本",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
             },
             "content": {
               "text/plain": {
-                "schema": { "type": "string", "example": "# TYPE jiaclaw_sessions_active gauge\njiaclaw_sessions_active 0\njiaclaw_build_info{version=\"0.1.0\"} 1\n" }
+                "schema": {
+                  "type": "string",
+                  "example": "# TYPE jiaclaw_sessions_active gauge\njiaclaw_sessions_active 0\njiaclaw_build_info{version=\"0.1.0\"} 1\n"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
         }
       }
     },
     "/api/chat": {
       "post": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "发送聊天消息",
         "operationId": "postChat",
         "description": "默认同步 JSON。当请求头 `Accept: text/event-stream` 或 body `stream: true`（二者其一即可）时返回 Server-Sent Events。鉴权失败仍为 JSON 401。当前 token 事件为整轮完成后的分块推送；Brokerrouter 真流式后续。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ChatRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
             }
           }
         },
@@ -598,162 +696,297 @@
           "200": {
             "description": "聊天响应（JSON 或 SSE）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ChatResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
               },
               "text/event-stream": {
-                "schema": { "$ref": "#/components/schemas/ChatSseStream" }
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSseStream"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/sessions": {
       "get": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "列出会话",
         "operationId": "listSessions",
         "description": "返回内存中当前未过期会话摘要（id 与 message_count）。启用 Session TTL 时会先清理过期项。落盘开启时也以内存 store 为准，与 chat/delete 一致。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "会话列表",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ListSessionsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ListSessionsResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       },
       "post": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "创建会话",
         "operationId": "createSession",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "新会话 ID",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/CreateSessionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/sessions/{id}": {
       "get": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "读取会话历史",
         "operationId": "getSession",
         "description": "返回内存中该会话的消息列表。不存在或已过期返回 404。落盘开启时也以内存 store 为准。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "会话消息",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GetSessionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/GetSessionResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       },
       "delete": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "删除会话",
         "operationId": "deleteSession",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "删除结果（不存在时 success=false）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteSessionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteSessionResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/sessions/{id}/export": {
       "get": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "导出会话历史",
         "operationId": "exportSession",
         "description": "只读导出内存中该会话的消息。默认每行一条消息 JSON（`application/x-ndjson`），字段沿用现有 `ChatMessage`（`role`/`content`）。不触发摘要压缩、不改写 store、不刷新 last_accessed。不存在或已过期返回 404（`session_not_found`，与 GET session 一致）。`?format=json` 返回与 GET `/api/sessions/{id}` 相同的 `{id, messages}` 整包。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "format",
@@ -762,7 +995,10 @@
             "description": "导出格式。默认 `jsonl`。`json` 返回整包 JSON。",
             "schema": {
               "type": "string",
-              "enum": ["jsonl", "json"],
+              "enum": [
+                "jsonl",
+                "json"
+              ],
               "default": "jsonl"
             }
           }
@@ -771,42 +1007,73 @@
           "200": {
             "description": "会话导出（默认 NDJSON；`format=json` 为整包 JSON）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/x-ndjson": {
-                "schema": { "type": "string" },
+                "schema": {
+                  "type": "string"
+                },
                 "example": "{\"role\":\"user\",\"content\":\"你好\"}\\n{\"role\":\"assistant\",\"content\":\"你好！我是 JiaClaw。\"}\\n"
               },
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GetSessionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/GetSessionResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/sessions/import": {
       "post": {
-        "tags": ["chat"],
+        "tags": [
+          "chat"
+        ],
         "summary": "导入会话历史",
         "operationId": "importSession",
         "description": "将消息导入内存 store（落盘开启时走现有 save）。默认每行一条消息 JSON（`application/x-ndjson`）。`Content-Type: application/json` 或 `?format=json` 接受 `{id?, messages:[...]}`。可选 `?id=` 或 JSON `id`；缺省新建 UUID。id 已存在默认 409（`session_already_exists`）；`?overwrite=true` 替换消息并刷新 last_accessed。非法 role/content 或坏行返回 400。不调用 LLM；超长按 MAX_SESSION_MESSAGES 硬截断/本地摘要。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "parameters": [
           {
             "name": "id",
             "in": "query",
             "required": false,
             "description": "目标会话 ID。省略则使用 JSON body 的 `id` 或新建 UUID。",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "format",
@@ -815,7 +1082,10 @@
             "description": "导入格式。默认 `jsonl`。`json` 接受整包 JSON。",
             "schema": {
               "type": "string",
-              "enum": ["jsonl", "json"],
+              "enum": [
+                "jsonl",
+                "json"
+              ],
               "default": "jsonl"
             }
           },
@@ -824,18 +1094,25 @@
             "in": "query",
             "required": false,
             "description": "为 true 时替换已存在会话的消息。默认 false（冲突 409）。",
-            "schema": { "type": "boolean", "default": false }
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/x-ndjson": {
-              "schema": { "type": "string" },
+              "schema": {
+                "type": "string"
+              },
               "example": "{\"role\":\"user\",\"content\":\"你好\"}\\n{\"role\":\"assistant\",\"content\":\"你好！我是 JiaClaw。\"}\\n"
             },
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ImportSessionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ImportSessionRequest"
+              }
             }
           }
         },
@@ -843,149 +1120,279 @@
           "200": {
             "description": "导入后的会话（可能已按上限截断/摘要）",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GetSessionResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/GetSessionResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/tools": {
       "get": {
-        "tags": ["catalog"],
+        "tags": [
+          "catalog"
+        ],
         "summary": "列出已注册工具",
         "operationId": "listTools",
         "description": "返回当前进程已注册的本地工具（含可选 web_search / web_fetch / memory_search / memory_write / read_file / list_dir / write_file / delete_file / str_replace / grep / glob / mkdir；对应 `[tools.*] enabled = false` 时不出现）。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "工具列表",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ToolsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ToolsResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/skills": {
       "get": {
-        "tags": ["catalog"],
+        "tags": [
+          "catalog"
+        ],
         "summary": "列出已加载技能",
         "operationId": "listSkills",
         "description": "返回进程内技能注册表（启动扫描或最近一次热加载的结果）。改 `skills/**/SKILL.md` 后需 `POST /api/skills/reload` 或 Unix SIGHUP 才会反映到本列表与 chat。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "技能列表",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SkillsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SkillsResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/skills/reload": {
       "post": {
-        "tags": ["catalog"],
+        "tags": [
+          "catalog"
+        ],
         "summary": "热加载技能",
         "operationId": "reloadSkills",
         "description": "重新扫描工作区 `skills/` 并替换进程内注册表。磁盘扫描在锁外完成；失败（无法读目录或任一现存 SKILL.md 无效）时保留旧表并返回 400。鉴权/限流/`X-Request-Id` 与其它 `/api/*` 一致。Unix 上向 serve 发送 SIGHUP 走同一路径。不实现技能市场或依赖解析。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "重载成功",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SkillsReloadResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SkillsReloadResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/api/openapi.json": {
       "get": {
-        "tags": ["discovery"],
+        "tags": [
+          "discovery"
+        ],
         "summary": "OpenAPI 3 文档草图",
         "operationId": "getOpenApi",
         "description": "鉴权与 GET /api/tools 一致：未配置 API token 时可匿名访问；已启用 token 时需 Bearer 或 X-Api-Token。",
-        "security": [{ "bearerAuth": [] }, { "apiToken": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiToken": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "OpenAPI 3 JSON",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "type": "object" }
+                "schema": {
+                  "type": "object"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
     "/hooks/inbound": {
       "post": {
-        "tags": ["hooks"],
+        "tags": [
+          "hooks"
+        ],
         "summary": "Webhook 入站",
         "operationId": "inboundWebhook",
-        "security": [{ "webhookSecret": [] }],
+        "security": [
+          {
+            "webhookSecret": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/InboundWebhookRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/InboundWebhookRequest"
+              }
             }
           }
         },
@@ -993,33 +1400,57 @@
           "200": {
             "description": "入站处理结果",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/InboundWebhookResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/InboundWebhookResponse"
+                }
               }
             }
           },
           "401": {
             "description": "Webhook secret 不匹配",
             "headers": {
-              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WebhookUnauthorized" }
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookUnauthorized"
+                }
               }
             }
           },
-          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
@@ -2372,6 +2803,340 @@
           }
         }
       }
+    },
+    "/api/turns/capabilities": {
+      "get": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read tracked turn capability or original authoritative receipt",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          }
+        }
+      }
+    },
+    "/api/turns/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "get": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read tracked turn capability or original authoritative receipt",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Admit an original tracked turn; duplicates only return the original receipt",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          },
+          "202": {
+            "description": "Durable original admission; GET same UUID to reconcile terminal outcome"
+          },
+          "408": {
+            "description": "Authenticated body read exceeded five-second shared control budget; no admission or effects"
+          },
+          "413": {
+            "description": "Body exceeds the route or configured byte budget; no admission or effects"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "session_id",
+                  "prompt",
+                  "enabled_tools"
+                ],
+                "properties": {
+                  "session_id": {
+                    "type": "string",
+                    "pattern": "^http:[0-9a-f-]{36}$"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "At most 32 KiB UTF-8"
+                  },
+                  "enabled_tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 128,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128
+                    }
+                  },
+                  "enabled_skills": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "uniqueItems": true,
+                    "default": [],
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/turns/{id}/cancel": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "post": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Persist cancellation intent or acknowledge reviewed abandonment",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          }
+        }
+      }
+    },
+    "/api/turns/{id}/review": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "post": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Persist cancellation intent or acknowledge reviewed abandonment",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          },
+          "408": {
+            "description": "Authenticated body read exceeded five-second shared control budget; no admission or effects"
+          },
+          "413": {
+            "description": "Body exceeds the route or configured byte budget; no admission or effects"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision",
+                  "note"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "abandon"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "At most 1024 UTF-8 bytes; first note immutable"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/turns/{id}/result": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "delete": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Purge retained result without freeing the request identity",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2427,109 +3192,181 @@
     "headers": {
       "XRequestId": {
         "description": "请求追踪 ID。请求未携带时由服务端生成 UUID。",
-        "schema": { "type": "string" }
+        "schema": {
+          "type": "string"
+        }
       },
       "AccessControlAllowOrigin": {
         "description": "仅当 `[http.cors]` 启用且请求 Origin 匹配（或显式配置 `*`）时出现。默认关闭则不发送。",
-        "schema": { "type": "string" }
+        "schema": {
+          "type": "string"
+        }
       },
       "RetryAfter": {
         "description": "仅 429。建议等待秒数（距下一次可请求，至少 1）。",
-        "schema": { "type": "integer", "minimum": 1 }
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "XRateLimitLimit": {
         "description": "仅当限流启用且路径受保护时出现。进程内每分钟配额（burst）。",
-        "schema": { "type": "integer", "minimum": 1 }
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "XRateLimitRemaining": {
         "description": "仅当限流启用且路径受保护时出现。本次判定后剩余可立即通过的请求数；429 时为 0。",
-        "schema": { "type": "integer", "minimum": 0 }
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "XRateLimitReset": {
         "description": "仅当限流启用且路径受保护时出现。Unix 纪元秒（UTC），表示剩余配额补满到 X-RateLimit-Limit 的时刻（当前窗口结束）。",
-        "schema": { "type": "integer", "minimum": 0 }
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "responses": {
       "Unauthorized": {
         "description": "API token 缺失或不匹配",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorBody" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
           }
         }
       },
       "NotFound": {
         "description": "会话不存在或已过期。JSON `error` 为 `session_not_found`。",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-          "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-          "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-          "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/XRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/XRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/XRateLimitReset"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorBody" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
           }
         }
       },
       "BadRequest": {
         "description": "导入体非法（坏行、非法 role/content、非 UTF-8）。JSON `error` 以 `invalid_session_import` 开头。",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-          "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-          "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-          "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/XRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/XRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/XRateLimitReset"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorBody" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
           }
         }
       },
       "Conflict": {
         "description": "会话 ID 已存在且未指定 overwrite。JSON `error` 为 `session_already_exists`。",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-          "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-          "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-          "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/XRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/XRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/XRateLimitReset"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorBody" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
           }
         }
       },
       "PayloadTooLarge": {
         "description": "请求体超过 `[http] max_body_bytes` / `JIACLAW_MAX_BODY_BYTES`（默认 1048576 字节 / 1MiB）。JSON `error` 为 `payload_too_large`。仍回写 `X-Request-Id`。限流启用时受保护路径也可带 `X-RateLimit-*`。`GET /health` 与 `GET /metrics` 不检查该上限。",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-          "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-          "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-          "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/XRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/XRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/XRateLimitReset"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorBody" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
           }
         }
       },
       "RateLimited": {
         "description": "超过进程内全局限流（429）。JSON `error` 为 `rate_limit_exceeded`。限流启用时带 `X-RateLimit-Limit` / `X-RateLimit-Remaining`（0）/ `X-RateLimit-Reset`（Unix 纪元秒，配额补满时刻）以及 `Retry-After`（秒）。",
         "headers": {
-          "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
-          "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
-          "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
-          "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" },
-          "Retry-After": { "$ref": "#/components/headers/RetryAfter" }
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/XRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/XRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/XRateLimitReset"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/RateLimitError" }
+            "schema": {
+              "$ref": "#/components/schemas/RateLimitError"
+            }
           }
         }
       }
@@ -2743,41 +3580,78 @@
       },
       "HealthResponse": {
         "type": "object",
-        "required": ["status", "agent_name", "version"],
+        "required": [
+          "status",
+          "agent_name",
+          "version"
+        ],
         "properties": {
-          "status": { "type": "string", "example": "ok" },
-          "agent_name": { "type": "string" },
-          "version": { "type": "string" }
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "agent_name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
         }
       },
       "ChatMessage": {
         "type": "object",
-        "required": ["role", "content"],
+        "required": [
+          "role",
+          "content"
+        ],
         "properties": {
-          "role": { "type": "string", "enum": ["user", "assistant", "system"] },
-          "content": { "type": "string" }
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "system"
+            ]
+          },
+          "content": {
+            "type": "string"
+          }
         }
       },
       "ChatRequest": {
         "type": "object",
-        "required": ["messages"],
+        "required": [
+          "messages"
+        ],
         "properties": {
           "messages": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ChatMessage" }
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
           },
           "enabled_tools": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "default": []
           },
           "enabled_skills": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "default": []
           },
-          "auto_skills": { "type": "boolean", "default": true },
-          "session_id": { "type": "string", "nullable": true },
+          "auto_skills": {
+            "type": "boolean",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
           "stream": {
             "type": "boolean",
             "default": false,
@@ -2788,7 +3662,9 @@
       "ToolCall": {
         "type": "object",
         "properties": {
-          "tool_name": { "type": "string" },
+          "tool_name": {
+            "type": "string"
+          },
           "arguments": {},
           "result": {}
         }
@@ -2796,28 +3672,67 @@
       "ModelSelection": {
         "type": "object",
         "description": "Administrator-selected logical model and limits for a trusted server task purpose. This records the requested logical model, not the gateway's physical provider or certification status. Present only when model routing is configured.",
-        "required": ["purpose", "model", "temperature", "max_tokens"],
+        "required": [
+          "purpose",
+          "model",
+          "temperature",
+          "max_tokens"
+        ],
         "properties": {
-          "purpose": { "type": "string", "enum": ["chat", "channel", "scheduled", "heartbeat", "summary"] },
-          "model": { "type": "string", "description": "Exact logical model ID sent to Brokerrouter." },
-          "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
-          "max_tokens": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "channel",
+              "scheduled",
+              "heartbeat",
+              "summary"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "description": "Exact logical model ID sent to Brokerrouter."
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          }
         }
       },
       "ChatResponse": {
         "type": "object",
         "properties": {
-          "message": { "$ref": "#/components/schemas/ChatMessage" },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessage"
+          },
           "tool_calls": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ToolCall" }
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            }
           },
           "status": {
             "type": "string",
-            "enum": ["running", "completed", "failed", "requireshumaninput"]
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "requireshumaninput"
+            ]
           },
-          "session_id": { "type": "string", "nullable": true },
-          "routing": { "$ref": "#/components/schemas/ModelSelection" }
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "routing": {
+            "$ref": "#/components/schemas/ModelSelection"
+          }
         }
       },
       "ChatSseStream": {
@@ -2827,61 +3742,96 @@
       "CreateSessionResponse": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string" }
+          "session_id": {
+            "type": "string"
+          }
         }
       },
       "SessionSummary": {
         "type": "object",
-        "required": ["id", "message_count"],
+        "required": [
+          "id",
+          "message_count"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "message_count": { "type": "integer", "minimum": 0 }
+          "id": {
+            "type": "string"
+          },
+          "message_count": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "ListSessionsResponse": {
         "type": "object",
-        "required": ["sessions"],
+        "required": [
+          "sessions"
+        ],
         "properties": {
           "sessions": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/SessionSummary" }
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            }
           }
         }
       },
       "GetSessionResponse": {
         "type": "object",
-        "required": ["id", "messages"],
+        "required": [
+          "id",
+          "messages"
+        ],
         "properties": {
-          "id": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
           "messages": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ChatMessage" }
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
           }
         }
       },
       "ImportSessionRequest": {
         "type": "object",
-        "required": ["messages"],
+        "required": [
+          "messages"
+        ],
         "properties": {
-          "id": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
           "messages": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ChatMessage" }
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
           }
         }
       },
       "DeleteSessionResponse": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "message": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
         }
       },
       "ToolInfo": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "description": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
         }
       },
       "ToolsResponse": {
@@ -2889,16 +3839,24 @@
         "properties": {
           "tools": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ToolInfo" }
+            "items": {
+              "$ref": "#/components/schemas/ToolInfo"
+            }
           }
         }
       },
       "SkillInfo": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "path": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
         }
       },
       "SkillsResponse": {
@@ -2906,7 +3864,9 @@
         "properties": {
           "skills": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/SkillInfo" }
+            "items": {
+              "$ref": "#/components/schemas/SkillInfo"
+            }
           }
         }
       },
@@ -2919,38 +3879,69 @@
           },
           "skills": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/SkillInfo" }
+            "items": {
+              "$ref": "#/components/schemas/SkillInfo"
+            }
           }
         }
       },
       "InboundWebhookRequest": {
         "type": "object",
-        "required": ["chat_id", "text"],
+        "required": [
+          "chat_id",
+          "text"
+        ],
         "properties": {
-          "channel": { "type": "string", "default": "webhook" },
-          "chat_id": { "type": "string" },
-          "text": { "type": "string" },
-          "username": { "type": "string" }
+          "channel": {
+            "type": "string",
+            "default": "webhook"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
         }
       },
       "InboundWebhookResponse": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean" },
-          "session_id": { "type": "string" },
-          "reply": { "type": "string" },
-          "message": { "type": "string" },
-          "error": { "type": "string" }
+          "ok": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "reply": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
         }
       },
       "TelegramChat": {
         "type": "object",
-        "required": ["id"],
+        "required": [
+          "id"
+        ],
         "properties": {
           "id": {
             "oneOf": [
-              { "type": "integer", "format": "int64" },
-              { "type": "string" }
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
             ],
             "description": "Telegram chat.id"
           }
@@ -3086,23 +4077,38 @@
       "DiscordCommandOption": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "type": { "type": "integer", "description": "3 = STRING" },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "integer",
+            "description": "3 = STRING"
+          },
           "value": {},
           "options": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/DiscordCommandOption" }
+            "items": {
+              "$ref": "#/components/schemas/DiscordCommandOption"
+            }
           }
         }
       },
       "DiscordInteractionData": {
         "type": "object",
         "properties": {
-          "name": { "type": "string", "example": "ask" },
-          "type": { "type": "integer", "description": "1 = CHAT_INPUT" },
+          "name": {
+            "type": "string",
+            "example": "ask"
+          },
+          "type": {
+            "type": "integer",
+            "description": "1 = CHAT_INPUT"
+          },
           "options": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/DiscordCommandOption" }
+            "items": {
+              "$ref": "#/components/schemas/DiscordCommandOption"
+            }
           }
         }
       },
@@ -3169,7 +4175,9 @@
       },
       "DiscordInteractionResponse": {
         "type": "object",
-        "required": ["type"],
+        "required": [
+          "type"
+        ],
         "properties": {
           "type": {
             "type": "integer",
@@ -3178,8 +4186,13 @@
           "data": {
             "type": "object",
             "properties": {
-              "content": { "type": "string" },
-              "flags": { "type": "integer", "description": "64 = EPHEMERAL" }
+              "content": {
+                "type": "string"
+              },
+              "flags": {
+                "type": "integer",
+                "description": "64 = EPHEMERAL"
+              }
             }
           }
         }
@@ -3187,20 +4200,31 @@
       "WebhookUnauthorized": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean", "example": false },
-          "error": { "type": "string", "example": "unauthorized" }
+          "ok": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "string",
+            "example": "unauthorized"
+          }
         }
       },
       "ErrorBody": {
         "type": "object",
         "properties": {
-          "error": { "type": "string" }
+          "error": {
+            "type": "string"
+          }
         }
       },
       "RateLimitError": {
         "type": "object",
         "properties": {
-          "error": { "type": "string", "example": "rate_limit_exceeded" }
+          "error": {
+            "type": "string",
+            "example": "rate_limit_exceeded"
+          }
         }
       },
       "ChannelAck": {

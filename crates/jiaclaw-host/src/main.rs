@@ -62,6 +62,8 @@ mod discord_outbound;
 mod feishu;
 mod feishu_outbound;
 mod gateway;
+mod http_turn_store;
+mod http_turns;
 mod jobs;
 mod outbound;
 mod schedule;
@@ -547,6 +549,8 @@ struct AppState {
     agent: Arc<JiaClawAgent>,
     sessions: Arc<Mutex<SessionStore>>,
     turn_locks: Arc<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+    http_turns: Option<Arc<http_turns::Runtime>>,
+    http_turn_controls: Arc<tokio::sync::Semaphore>,
     api_token: Option<String>,
     webhook_secret: Option<String>,
     persist_enabled: bool,
@@ -1023,6 +1027,22 @@ fn build_router_with_body_limit(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/turns/capabilities", get(http_turns::capabilities))
+        .route(
+            "/api/turns/:id",
+            get(http_turns::get)
+                .put(http_turns::submit)
+                .layer(DefaultBodyLimit::max(body_limit.min(64 * 1024))),
+        )
+        .route("/api/turns/:id/cancel", post(http_turns::cancel))
+        .route(
+            "/api/turns/:id/review",
+            post(http_turns::review).layer(DefaultBodyLimit::max(body_limit.min(2048))),
+        )
+        .route(
+            "/api/turns/:id/result",
+            axum::routing::delete(http_turns::purge_result),
+        )
         .route("/api/channels/status", get(channels::status))
         .route("/api/channels/events", get(channels::events))
         .route(
@@ -1680,6 +1700,8 @@ async fn run_heartbeat_tick(
                 AppError::NotFound => "NotFound".to_string(),
                 AppError::Conflict => "Conflict".to_string(),
                 AppError::ServiceUnavailable => "ServiceUnavailable".to_string(),
+                AppError::HttpTurnUnavailable => "http_turns_unavailable".to_string(),
+                AppError::HttpTurnNotFound => "http_turn_not_found".to_string(),
                 AppError::JobConflict(message) => message,
             };
             tracing::warn!(session_id, "Heartbeat 本轮 chat 失败: {message}");
@@ -1719,7 +1741,15 @@ async fn with_sessions<T: Send + 'static>(
     .map_err(|e| AppError::Internal(e.to_string()))?
     .map_err(|e| {
         tracing::error!(error = %e, "会话存储失败");
-        AppError::Internal("session_storage_error".into())
+        if let Some(conflict) = e.downcast_ref::<http_turn_store::Conflict>() {
+            if conflict.0 == "http_turn_not_found" {
+                AppError::HttpTurnNotFound
+            } else {
+                AppError::JobConflict(conflict.0.into())
+            }
+        } else {
+            AppError::Internal("session_storage_error".into())
+        }
     })
 }
 
@@ -1738,8 +1768,8 @@ async fn with_session_turn<T: Send + 'static>(
     .await
 }
 
-async fn session_turn_lock(state: &AppState, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-    let lock = {
+fn session_turn_mutex(state: &AppState, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    {
         let mut locks = state.turn_locks.lock().unwrap();
         locks.retain(|_, value| value.strong_count() > 0);
         if let Some(lock) = locks.get(id).and_then(std::sync::Weak::upgrade) {
@@ -1749,8 +1779,11 @@ async fn session_turn_lock(state: &AppState, id: &str) -> tokio::sync::OwnedMute
             locks.insert(id.into(), Arc::downgrade(&lock));
             lock
         }
-    };
-    lock.lock_owned().await
+    }
+}
+
+async fn session_turn_lock(state: &AppState, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    session_turn_mutex(state, id).lock_owned().await
 }
 
 /// 合并 session 历史与本轮入站消息，并在超过上限时压缩（共享写入前的唯一裁剪点）。
@@ -1763,6 +1796,11 @@ async fn prepare_session_chat_messages(
     request_id: &str,
     channel_label: &str,
 ) -> Result<Vec<ChatMessage>, AppError> {
+    if http_turns::reserved_session(session_id) {
+        return Err(AppError::BadRequest(
+            "tracked HTTP sessions require /api/turns".into(),
+        ));
+    }
     let id = session_id.to_string();
     let history = with_sessions(state, move |sessions| {
         Ok(sessions.get(&id)?.map(|rec| rec.messages))
@@ -1938,7 +1976,7 @@ where
 {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    let server_task = tokio::spawn(async move {
+    let mut server_task = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
@@ -1949,6 +1987,9 @@ where
     shutdown.await;
     tracing::info!("收到关闭信号，停止接受新连接，等待进行中请求结束");
     let shutdown_deadline = Instant::now() + shutdown_timeout;
+    if let Some(turns) = &state.http_turns {
+        turns.stop();
+    }
     state.gateway_channel_permit.close();
     let _ = shutdown_tx.send(());
     background.abort();
@@ -1968,7 +2009,7 @@ where
         }
     );
 
-    match tokio::time::timeout_at(shutdown_deadline, server_task).await {
+    match tokio::time::timeout_at(shutdown_deadline, &mut server_task).await {
         Ok(Ok(Ok(()))) => {
             tracing::info!("进行中请求已完成");
         }
@@ -1983,11 +2024,17 @@ where
             }
         }
         Err(_) => {
+            server_task.abort();
+            let _ = server_task.await;
             tracing::warn!(
                 secs = shutdown_timeout.as_secs(),
-                "优雅退出宽限期已到，结束剩余连接"
+                "优雅退出宽限期已到，停止 HTTP 服务 owner；未结算操作保留核对身份"
             );
         }
+    }
+
+    if let Some(turns) = &state.http_turns {
+        turns.drain_until(shutdown_deadline).await;
     }
 
     // Detached internal channel turns may outlive their HTTP caller. Drain them
@@ -1998,8 +2045,19 @@ where
         }
     })
     .await;
-    if !flush_sessions_on_shutdown(&state) {
-        tracing::warn!("关闭时 sessions 刷盘失败，仍继续退出");
+    if Instant::now() < shutdown_deadline {
+        let flush_state = state.clone();
+        let flush = tokio::task::spawn_blocking(move || flush_sessions_on_shutdown(&flush_state));
+        if !matches!(
+            tokio::time::timeout_at(shutdown_deadline, flush).await,
+            Ok(Ok(true))
+        ) {
+            tracing::warn!(
+                "关闭刷盘未在原宽限期内确认；SQLite 已提交事务保持权威，实际存储 owner 不提前释放"
+            );
+        }
+    } else {
+        tracing::warn!("原关闭宽限期已到，跳过额外 checkpoint；SQLite FULL/WAL 已提交事务保持权威");
     }
     tracing::info!("服务器已关闭");
     Ok(())
@@ -2086,6 +2144,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         anyhow::bail!("启用 MCP 必须设置 API Token");
     }
 
+    http_turns::validate_config(&config, api_token.as_deref())?;
     tenant_channel::validate_config(&config, api_token.as_deref())?;
     config.scheduler.validate()?;
     if config.scheduler.enabled {
@@ -2173,16 +2232,22 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     // 解析持久化路径
     let persist_path = persist_path_from_config(&config);
 
-    let sessions = if config.http.persist {
+    let mut sessions = if config.http.persist {
         open_configured_session_store(&config)?
     } else {
         SessionStore::memory()
     };
 
+    sessions.interrupt_http_turns()?;
+    let http_turns = config.http.tracked_turns.then(|| {
+        http_turns::Runtime::new(Duration::from_secs(config.http.tracked_turn_timeout_secs))
+    });
     let state = AppState {
         agent: Arc::new(agent),
         sessions: Arc::new(Mutex::new(sessions)),
         turn_locks: Arc::new(Mutex::new(HashMap::new())),
+        http_turns,
+        http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
         api_token: api_token.clone(),
         webhook_secret: webhook_secret.clone(),
         persist_enabled: config.http.persist,
@@ -3008,6 +3073,16 @@ async fn chat_handler(
         return Err(AppError::Unauthorized);
     }
 
+    if request
+        .session_id
+        .as_deref()
+        .is_some_and(http_turns::reserved_session)
+    {
+        return Err(AppError::BadRequest(
+            "tracked HTTP sessions require /api/turns".into(),
+        ));
+    }
+
     tracing::info!(
         request_id = %request_id,
         "收到聊天请求，消息数: {}, session_id: {:?}, stream: {stream}",
@@ -3732,6 +3807,8 @@ async fn hooks_inbound_handler(
 /// 应用错误类型
 #[derive(Debug)]
 enum AppError {
+    HttpTurnUnavailable,
+    HttpTurnNotFound,
     ChannelConflict,
     ChannelUnavailable,
     ServiceUnavailable,
@@ -3746,6 +3823,11 @@ enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
+            Self::HttpTurnNotFound => (StatusCode::NOT_FOUND, "http_turn_not_found".into()),
+            Self::HttpTurnUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "http_turns_unavailable".into(),
+            ),
             Self::ChannelConflict => (StatusCode::CONFLICT, "channel_state_conflict".to_string()),
             Self::ChannelUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -3963,6 +4045,12 @@ async fn chat_command(
         AgentConfig::default()
     };
 
+    anyhow::ensure!(
+        !session_id
+            .as_deref()
+            .is_some_and(http_turns::reserved_session),
+        "tracked HTTP sessions require the authenticated /api/turns protocol"
+    );
     tracing::info!("使用 Agent 配置: {}", config.name);
 
     if stream {
@@ -5430,6 +5518,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token,
             webhook_secret: None,
             persist_enabled: false,
@@ -5488,6 +5578,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token,
             webhook_secret,
             persist_enabled: false,
@@ -5526,6 +5618,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token,
             webhook_secret: None,
             persist_enabled: false,
@@ -5573,6 +5667,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -6626,6 +6722,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: true,
@@ -6830,6 +6928,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: true,
@@ -6881,6 +6981,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7215,6 +7317,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::from_memory(mem_map))),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: true,
@@ -7577,6 +7681,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7633,6 +7739,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7690,6 +7798,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7761,6 +7871,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7831,6 +7943,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7888,6 +8002,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -7945,6 +8061,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8006,6 +8124,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8067,6 +8187,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8132,6 +8254,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8201,6 +8325,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8270,6 +8396,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -8335,6 +8463,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,
@@ -9101,6 +9231,8 @@ mod tests {
             agent: Arc::new(agent),
             sessions: Arc::new(Mutex::new(SessionStore::memory())),
             turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            http_turns: None,
+            http_turn_controls: Arc::new(tokio::sync::Semaphore::new(4)),
             api_token: None,
             webhook_secret: None,
             persist_enabled: false,

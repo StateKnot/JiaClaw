@@ -1393,6 +1393,12 @@ fn default_channel_timeout() -> u64 {
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
+    /// Opt-in standalone durable HTTP turns; requires Brokerrouter, model_calls, persistence and authentication.
+    #[serde(default)]
+    pub tracked_turns: bool,
+    /// Total tracked-turn dispatch budget, 1..=300 seconds; current submitted work still settles.
+    #[serde(default = "default_tracked_turn_timeout")]
+    pub tracked_turn_timeout_secs: u64,
     /// Enable the private gateway channel chat protocol with fixed read-only tools.
     #[serde(default)]
     pub gateway_channel_chat: bool,
@@ -1517,6 +1523,10 @@ pub struct HttpConfig {
     pub metrics_public: bool,
 }
 
+fn default_tracked_turn_timeout() -> u64 {
+    300
+}
+
 fn default_http_bind() -> String {
     "127.0.0.1:8080".to_string()
 }
@@ -1544,6 +1554,8 @@ fn default_max_body_bytes() -> u64 {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
+            tracked_turns: false,
+            tracked_turn_timeout_secs: default_tracked_turn_timeout(),
             gateway_channel_chat: false,
             channels: vec![],
             bind: default_http_bind(),

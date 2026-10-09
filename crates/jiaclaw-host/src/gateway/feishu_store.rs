@@ -443,7 +443,7 @@ fn verify_owner(conn: &Connection, binding: &FeishuBindingSummary) -> Result<()>
     );
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     ensure!(
-        version == 0 || version == 10,
+        matches!(version, 0 | 10 | 11),
         "unsupported Feishu session schema"
     );
     if version == 0 {
@@ -1136,7 +1136,7 @@ mod tests {
                 conn.pragma_update(None, "application_id", 0x4a43_5447)
                     .unwrap();
             } else {
-                conn.pragma_update(None, "user_version", 11).unwrap();
+                conn.pragma_update(None, "user_version", 12).unwrap();
             }
             drop(conn);
             let before = fs::read(fixture.database()).unwrap();
@@ -1170,7 +1170,7 @@ mod tests {
                 .connection()
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         assert!(store.operations(100, 0).unwrap().is_empty());
         drop(store);

@@ -161,3 +161,7 @@ Discord 定时文字必须同时配置 `discord_guild_id`、非空 `scheduled_de
 网关 `discord` 默认空，最多 32 条；仅含 binding_id、bot_token_file、state_key_file、默认官方 `https://discord.com/api/v10` 和显式测试 allow_loopback。App/公开 verify_key/Bot/人/DM/全局 command_id 来自 schema 5 永久 registry；状态密钥为非零 32 字节的 64 个小写 hex 字符，原指纹永久保存，禁止在线换密钥。该私有 USER_INSTALL/BOT_DM 分支不读取单实例 `JIACLAW_CHANNEL_STATE_KEY`，不开放 guild 或主动 Bot 通知。配置、手动命令注册、PING bootstrap、短期 ephemeral 回复和无 Secret 停机维护见[独立用户 Discord](tenant-discord.md)。
 
 网关 `feishu` 默认空，最多 32 条；配置仅含 binding_id、app_secret_file、encrypt_key_file、verification_token_file、默认官方 `https://open.feishu.cn/open-apis` 和显式测试 allow_loopback。schema 6 永久 registry 固定 App/tenant/Bot open_id/人 open_id/p2p chat_id/user/backend。三个 Secret 为不同的私有 16–1024 可见 ASCII 凭据，没有 state_key。只接固定人的单聊文本，平台 token/Bot/tenant/Chat 真实合同与 900 ms 本地回调预算、后端 protocol 4 及停机维护见[独立用户飞书](tenant-feishu.md)；基础部署保持关闭，真实安装/TLS/供应商验收另计。
+
+## 持久 HTTP 请求
+
+`http.tracked_turns=false` 默认关闭新增异步请求；显式开启须认证、SQLite、Brokerrouter/model_calls 与有限工具期限，`tracked_turn_timeout_secs` 默认300、仅允许1..=300。会话 schema11 原子升级，旧二进制拒绝降级；唯一Bearer、固定UUID、结果配额与人工核对见[完整合同](http-turns.md)。当前HTTP/Web仍没有逐token入口。

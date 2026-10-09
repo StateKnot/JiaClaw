@@ -2016,7 +2016,9 @@ mod tests {
             .unwrap();
         db.job_conn()
             .unwrap()
-            .execute_batch("DROP TABLE job_creation_receipts; PRAGMA user_version=9;")
+            .execute_batch(
+                "DROP TABLE http_turns; DROP TABLE job_creation_receipts; PRAGMA user_version=9;",
+            )
             .unwrap();
         drop(db);
         let db = SessionStore::open(&path).unwrap();
@@ -2025,7 +2027,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         assert_eq!(
             db.get_job(&job.id).unwrap().unwrap().spec.prompt,
@@ -2148,7 +2150,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);

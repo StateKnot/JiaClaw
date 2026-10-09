@@ -559,7 +559,7 @@ fn verify_owner(conn: &Connection, binding: &WecomBindingSummary) -> Result<()> 
     expected_owner.execute_batch(OWNER_SCHEMA)?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     ensure!(
-        version == 0 || version == 10,
+        matches!(version, 0 | 10 | 11),
         "unsupported Wecom session schema"
     );
     if version == 0 {
@@ -1061,7 +1061,7 @@ mod tests {
                     .connection()
                     .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                10
+                11
             );
             drop(store);
             drop(f.open());
@@ -1203,7 +1203,7 @@ mod tests {
                 0 => conn
                     .pragma_update(None, "application_id", 0x4a43_4653)
                     .unwrap(),
-                1 => conn.pragma_update(None, "user_version", 11).unwrap(),
+                1 => conn.pragma_update(None, "user_version", 12).unwrap(),
                 2 => conn
                     .execute_batch("DROP TRIGGER gateway_wecom_owner_no_replace")
                     .unwrap(),

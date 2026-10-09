@@ -1,5 +1,25 @@
 # 基础能力验收记录
 
+## HTTP session 取消所有权最终 CI 回填
+
+[PR #94](https://github.com/StateKnot/JiaClaw/pull/94) 最终 head `e3986d6d3bb10532504de4d5d334a7447343cd19`、base `43cff1267ded9afeaf7a8dc1a028f82127e56eb4`、tree `a01a92187fbf1dc670505d2da76c1422e33002d6`、合并提交 `b9ccd5a26e3c3b023896e73c02758bdc7dc496bc` 已核对原始父提交与相同 tree。最终[普通 CI 37905394924](https://github.com/StateKnot/JiaClaw/actions/runs/37905394924) 三项成功，[原生候选 37905394930](https://github.com/StateKnot/JiaClaw/actions/runs/37905394930) 四项成功，公开发布作业 SKIPPED。macOS Rust1194、Linux1195；两平台全部31套Python通过，六项新真实SQL/StoreMutex/blocking-pool取消测试在六个平台作业均成功。Linux另过四套真实Chromium与单独启用的真实Docker，容器通过非root/只读根/命名卷恢复及私有gateway；镜像摘要 `dcbe7f77874893715a7af18fdd8012e0baa5197f1ecffcac5578b386e2a00f72`。
+
+四平台实际完整Rust、优化CLI七组与归档安装十三组通过；source revision/tree/parents/clean/native platform/实际资产字节由生成证据与job logs核对。四个Actions artifacts的head、未过期标识与ZIP digest也已对照官方API，没有另行下载ZIP作独立复验。证据 `/tmp/jiaclaw-oct9e-ci-audit/verified-assets.json` 保留完整archive/binary摘要；冻结本机binary SHA256 `61bbf2affa4df7d11ee235580780ffb62e7fb3e0ee1b3580fd467fd8b20a3c5b`。没有合并、公开发布或认证HTTP流式/真实渠道平台。
+
+## 持久 HTTP 请求身份批次
+
+[协议](http-turns.md)初验通过真实二进制七组，包含原模型turn身份、两轮原生写入、UUID重复/冲突、真实SQLitewriter阻断准入、丢失HTTP回复、明确取消/1秒总预算但原模型继续结算、工具失败停止余批、终态SQL事务回滚、SIGKILL及同停机宽限期退出、GET-only恢复不执行收据工具。九项存储/认证/真实控制owner边界覆盖固定结果/历史预算、永久10000身份/32预留、迁移/未来版本、TTL hold和取消waiter后实际blocking owner。普通CI与四平台优化候选均增加HTTP验收；本批固定head的最终资格由PR记录，不借用前批或初验成功。
+
+首轮全Rust在受限沙箱中41项本机socket/文件权限测试拒绝，随后按原授权在沙箱外复验；实际schema11回归发现旧fixture仍断言10/把11视为未来版本，以及schema9fixture保留新HTTP表，均按新声明更新fixture，保留原迁移/错误归属/约束/期限。当前HTTP/Web仍无逐token交付、无租户扩权，不认证StateKnot alpha、真实供应商或durable恢复。
+
+初版 head `aa2c02fed9d42f40181722a2579746ccf2d79e1e`、tree `e53b07273fdcdd382695e0701cb820838d899a35`、tested merge `acf37fe7b1ae3ac65aa23712f0073d5c0129ceb1` 的[普通 CI 37914774896](https://github.com/StateKnot/JiaClaw/actions/runs/37914774896)三项与[原生候选 37914774382](https://github.com/StateKnot/JiaClaw/actions/runs/37914774382)四项全部 SUCCESS，公开发布步骤 SKIPPED。每个平台实际执行九项新边界/六项旧存储取消测试与 HTTP 七组/CLI 七组；两普通平台全32套进程通过，Linux另有四Chromium及单独真实Docker，四候选全Rust（macOS1203/Linux1204）与归档安装十三组通过。原始父提交/tree、清洁源码、实际归档/binary与四个官方artifact ID/ZIP摘要已核对，未另行下载ZIP；完整记录在 `/tmp/jiaclaw-oct9f-ci-audit`。初版冻结本机binary `25882ad66d94326f026b1f318f053e83d414f1bf654ca897eab62d00c67b4572` 的1203 Rust及全部32套也通过；真实旧版创建的schema10历史迁移后不变，旧版拒绝schema11且数据库字节不改。
+
+最后合同复核发现：前置 lookup 未命中后，准入事务仍可能匹配同一原身份，此路径保留了副作用去重，却丢失 created 标志而返回202。修订把事务实际 created 标志贯穿准入通知，只有新记录202、已存在记录200；没有增加模型/工具派发、重试、等待或改变存储/预算合同。初版成功证据保留，修订后的最终固定 head 须独立完整验收，以本批 draft PR 最终说明为准。
+
+后续实际生命周期回归再次证明两个通知缺口：取消 handler 的真正等待者在存储工作排队时被 abort，四槽容量仍由真实 worker 占用且原 UUID 的 cancel_requested 已提交，但旧代码的运行停止信号未发出；另一个时序中许可已经占用、stop 已关闭准入且尚无 active，随后登记也未停止。两项在旧行为均精确失败，未使用模型 sleep 或关闭 TCP 代替 waiter abort。修订把持久化后的通知放进实际 control closure，并用同一 active 锁下的关闭状态检查覆盖迟到登记；不改当前模型的结算期限、预算或工具资源责任。最终包含十一项 HTTP 存储/认证/通知边界，须重新核对完整 Rust/32套及七项跨平台 CI，不把中间提交的成功作为最终资格。
+
+created 标志修订 head `82c7e374b890b542a47d25b151b34ab02312acf2`、tree `ad760cb247195cf1ca0bb02bd1c710f681044f8e`、tested merge `7a9ec6fd05ad4fa0648cd39ce6456dc5b3be9126` 的[普通 CI 37919348221](https://github.com/StateKnot/JiaClaw/actions/runs/37919348221)三项和[候选 37919348173](https://github.com/StateKnot/JiaClaw/actions/runs/37919348173)四项全部 SUCCESS，发布步骤 SKIPPED。该源码的完整1203 Rust/32本机套和两普通平台32套、Linux四Chromium/单独Docker、四候选原生Rust/HTTP七组/CLI七组/归档十三组均通过；源码父提交与四份实际资产/官方ZIP摘要一致，完整证据 `/tmp/jiaclaw-oct9g-delivery/pin.json`、`/tmp/jiaclaw-oct9g-ci-audit`。这仍未包含上述两个通知修复。它们的旧行为两项失败、修复后五项 runtime 定向全通过；新增最终源码的本机默认并行1205 Rust（396/123/686）、fmt/必需Clippy/locked build通过，最后固定 head 完整进程/跨平台资格以 PR 最终记录为准。
+
 ## CLI 真实流式、收据模式与取消
 
 2026-10-09 本批在 PR #92 的已通过 head `b208ea7b4a9fa626f8fee1526e2cb227713d6196` 上实际接通单次 `chat --stream`。严格有界 SSE、原始 stream:true 正文 SHA/operation和持久 remote ID先于预览；完整模型收据后才进入既有整批工具授权。schema2事务升级保留真实 schema1历史身份/收据/unknown，流式GET恢复额外核对 envelope/usage。HTTP/Web/独立用户仍未接流式；[配置与合同](cli-streaming.md)。
