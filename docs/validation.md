@@ -1,5 +1,17 @@
 # 基础能力验收记录
 
+## 持久 HTTP 身份最终 CI 回填
+
+[PR #95](https://github.com/StateKnot/JiaClaw/pull/95) 最终 head `01034bd2a3152869ecdd9f6aa58d62e04656d7c7`、tree `048c06595cc83c4bcefab65318ca3b8fec485593`、base `e3986d6d3bb10532504de4d5d334a7447343cd19`、实际 merge `f3ce2267f2f26e18b29887d45831edfe8c8ca872` 的原始父提交/tree与各job真实checkout已核对。[普通CI37924558232](https://github.com/StateKnot/JiaClaw/actions/runs/37924558232)三项与[四平台候选37924558245](https://github.com/StateKnot/JiaClaw/actions/runs/37924558245)四项全部SUCCESS，公开发布作业SKIPPED。macOS1205/Linux1206 Rust、两普通平台32套、十一项HTTP边界/六项旧session取消、HTTP七组/CLI七组、Linux四Chromium及单独真实Docker均通过；容器验证非root/只读根/命名卷恢复和真实租户ENOSPC隔离。
+
+四候选实际优化归档/安装十三控制通过，原始source/parents/tree/clean/native platform/实际archive/binary摘要以及四个官方artifact ID/ZIP digest一致，ZIP未另外下载。冻结本机binary `e148bc9c5633ff29ae22a3d0fdbba659af3a5b2f4e3ba25c71f020c52575b65b` 的1205 Rust/完整32套通过；真实PR94旧binary创建的schema10迁移保持历史，旧读者随后拒绝11且不改库字节。完整记录 `/tmp/jiaclaw-oct9h-delivery/pin.json`、`/tmp/jiaclaw-oct9h-ci-audit`。该交付仍是HTTP JSON，不认证下批stream/Web或上游durable。
+
+## 有界 HTTP 正文流式接线
+
+本批从上述已资格化head接线同一持久身份的 `/stream`：一个原生执行、原native八事件队列的唯一消费者和八个4KiB正文片段，没有重放订阅或第二个模型循环。两个新增责任测试直接drop未poll的真实Axum Body，以及使用已提交SQLite收据填满真实输出队列/推进有限期限；执行owner只有真实工作结束后释放，部分终态JSON失败不追加伪error/done。
+
+初版真实binary的新七组一次通过：认证先于正文、实际门控前预览/两轮原生工具/原子done、显式取消后的原模型结算、实际正文消费者结束后才释放fixture gate、终态SQL失败无done、真实TCP小接收窗的写入backpressure日志/结果核对/容量恢复，以及活跃stream共用原停机宽限/重启关闭创建后原ID仍JSONlookup。慢读时不同平台缓冲可能在会话提交前或后触发；分别要求needs_review无历史或completed已提交，而完整done交付仍不是这两个事实的证明。旧HTTP七组也通过。固定最终源码的全Rust、完整33套和七项跨平台/候选资格仍以本批PR最终记录为准；未认证Web、租户、反向代理、真实供应商或StateKnot恢复。
+
 ## HTTP session 取消所有权最终 CI 回填
 
 [PR #94](https://github.com/StateKnot/JiaClaw/pull/94) 最终 head `e3986d6d3bb10532504de4d5d334a7447343cd19`、base `43cff1267ded9afeaf7a8dc1a028f82127e56eb4`、tree `a01a92187fbf1dc670505d2da76c1422e33002d6`、合并提交 `b9ccd5a26e3c3b023896e73c02758bdc7dc496bc` 已核对原始父提交与相同 tree。最终[普通 CI 37905394924](https://github.com/StateKnot/JiaClaw/actions/runs/37905394924) 三项成功，[原生候选 37905394930](https://github.com/StateKnot/JiaClaw/actions/runs/37905394930) 四项成功，公开发布作业 SKIPPED。macOS Rust1194、Linux1195；两平台全部31套Python通过，六项新真实SQL/StoreMutex/blocking-pool取消测试在六个平台作业均成功。Linux另过四套真实Chromium与单独启用的真实Docker，容器通过非root/只读根/命名卷恢复及私有gateway；镜像摘要 `dcbe7f77874893715a7af18fdd8012e0baa5197f1ecffcac5578b386e2a00f72`。

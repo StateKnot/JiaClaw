@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-09 12:10 UTC 本轮再次读取当前main/release/issues：StateKnot `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140和Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41/未合并PR40均未变化。新[HTTP正文流式](http-streaming.md)复用既有Brokerrouter SSE，属于应用真实接线，不增加框架资格或另报重复issue；Web/租户/代理/供应商与durable门槛分别保留。
+
 2026-10-09 11:31 UTC 再固定 main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`，官方十三项 checks 全成功。[#160](https://github.com/StateKnot/StateKnot/pull/160) 增加 graph state/checkpoint 属性与参考模型证据；完整增量没有 crates 生产源码、runtime/integrations 或 lockfile 变化，alpha.1/release/#140 未变。这些属性模型不替代 JiaClaw durable driver 接线或真实恢复资格，继续保留精确 MCP pin 和 Brokerrouter #41 原生输出门槛。
 
 2026-10-09 10:35 UTC 固定 main `1699837c2885c38a686e90c27202610911dc153e`，官方十三项 checks 全成功；[#158](https://github.com/StateKnot/StateKnot/pull/158) 增加 71 个枚举/298 个分支的封闭向量，[#159](https://github.com/StateKnot/StateKnot/pull/159) 增加七个复合预算属性模型与边界控制。相对以下 e58db449 的完整文件差异没有 crates 生产源码、runtime/integrations 或 Cargo.lock 变化；release 仍 alpha.1、#140 OPEN/无回复。保留精确 HTTP MCP pin，不把测试证据增量记为可消费的新稳定合同，不新增重复 issue。

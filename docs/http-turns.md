@@ -1,6 +1,6 @@
 # 持久 HTTP 请求与结果核对
 
-本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。提交返回持久准入记录，随后按同一个 UUID 查询结果；当前 HTTP 返回 JSON，`streaming=false`。现有 `/api/chat` SSE 仍在完整回复后分块，Web 仍使用原聊天入口。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
+本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 仍使用原聊天入口。此协议不代表 StateKnot durable driver、工具自动恢复、租户网关或真实供应商认证。
 
 ## 开启与升级
 
@@ -27,8 +27,9 @@ store_path = "../state/model-calls/index.sqlite3"
 
 | 方法和路径 | 行为 |
 | --- | --- |
-| `GET /api/turns/capabilities` | protocol 1、是否允许新增、期限与容量；当前 streaming=false |
+| `GET /api/turns/capabilities` | protocol 1、是否允许新增、是否可流式、期限/字节容量与 stream_suffix |
 | `PUT /api/turns/{uuid-v4}` | create-only 准入；首次 202，同规范化请求重复 200；不重放模型/工具 |
+| `PUT /api/turns/{uuid-v4}/stream` | 同一 create-only 身份；首次202 SSE，旧身份200 JSON，无重连/重放 |
 | `GET /api/turns/{uuid-v4}` | 原准入/终态、active owner 与保留结果的权威快照 |
 | `POST /api/turns/{uuid-v4}/cancel` | 先持久记录取消意图，再停止后续派发；当前模型仍按原期限结算 |
 | `POST /api/turns/{uuid-v4}/review` | 无活动 owner/turn 写锁时，显式确认放弃未完成请求 |
@@ -72,10 +73,10 @@ note 为 1..1024 UTF-8 字节，首次记录保留，不允许覆盖成另一条
 
 ## 生命周期与验收范围
 
-实例只允许 **1 个**活动 HTTP turn（匹配当前单模型账本准入），共享进程流式 owner 也必须有余量；控制操作最多四个真实存储 owner，满即拒绝。实际 blocking SQLite 工作同时持有 turn/容量所有权，取消 HTTP waiter 不提前释放。客户端失联不会取消已授权的异步请求；取消须使用显式入口，当前没有 SSE body consumer。
+实例只允许 **1 个**活动 HTTP turn（匹配当前单模型账本准入），共享进程流式 owner 也必须有余量；控制操作最多四个真实存储 owner，满即拒绝。实际 blocking SQLite 工作同时持有 turn/容量所有权，取消 HTTP waiter 不提前释放。JSON 客户端失联不会取消已授权的异步请求，取消使用显式入口。SSE 的实际正文 drop 或有界交付失败会取消未来派发；当前模型/存储仍保留真实 owner，原 UUID 的落盘与人工核对规则不变。正文存在时仍占用共享 delivery 槽，不能把客户端 FIN 当成实际 Hyper 正文结束。
 
 取消通知由实际控制 worker 在成功写入原身份的意图后发出，不依赖 HTTP 等待者继续存活。停机先关闭准入，再检查同一个 active-owner 锁；已取得许可、稍后才完成登记的 owner 也会观察关闭状态并停止未来派发。这两个边界有真实 handler/SQLite 阻塞取消和已占用许可/登记时序回归，不以 TCP 写出或简单 sleep 代替实际责任验证。
 
 总期限和服务停机先停止新模型/工具派发，当前已提交模型仍按原 60 秒合同结算；不为结算、后续轮次或 shutdown 重置预算。HTTP owner 保持到当前原生尝试返回及会话事务结束。停机共享原 configured grace，超限后原 UUID 保留；下一次启动在数据库生命周期锁下把 running 标记 process_interrupted，**不恢复模型/工具循环**。额外 checkpoint 不延长宽限期；真正已经派发的 blocking 存储仍持有底层资源到结束。SQLite 模型账本与会话库分离，不宣称跨库 exactly-once。
 
-`tests/http_turns.py` 以实际二进制/HTTP/SSE/SQLite/进程信号验收七组：启动认证与期限，原身份两轮原生工具与重复/冲突/重启清理，外部 SQLite writer 阻断准入及丢失回复，显式取消/总期限后的结算与无预览副作用，失败工具停止后续批次，终态 SQL 回滚/人工核对，SIGKILL/同宽限期停机与 GET-only 模型恢复。另有存储/控制 owner 单元回归。fixture 凭据仅访问脱敏本机协议；真实 Brokerrouter slow-consumer 修复、供应商、HTTP/Web token delivery 和租户扩权仍分别待认证。
+`tests/http_turns.py` 以实际二进制/HTTP/SSE/SQLite/进程信号验收七组：启动认证与期限，原身份两轮原生工具与重复/冲突/重启清理，外部 SQLite writer 阻断准入及丢失回复，显式取消/总期限后的结算与无预览副作用，失败工具停止后续批次，终态 SQL 回滚/人工核对，SIGKILL/同宽限期停机与 GET-only 模型恢复。另有存储/控制 owner 单元回归。fixture 凭据仅访问脱敏本机协议；真实 Brokerrouter slow-consumer 修复、供应商、HTTP 流式的新增应用验收见[合同](http-streaming.md)，Web/租户/代理与供应商仍分别待接线或认证。
