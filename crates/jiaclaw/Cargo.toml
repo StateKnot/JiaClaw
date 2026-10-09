@@ -37,6 +37,7 @@ rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
 sha2 = "0.10"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "=3.16.0"
 mockito = "0.31"
 

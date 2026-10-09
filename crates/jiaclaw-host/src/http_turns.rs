@@ -25,6 +25,9 @@ use std::{
 use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
+#[path = "http_turn_stream.rs"]
+mod delivery;
+
 pub(super) fn reserved_session(id: &str) -> bool {
     id.starts_with("http:")
 }
@@ -267,7 +270,7 @@ pub(super) async fn capabilities(
 ) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
     Ok(Json(
-        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":false,"max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:"}),
+        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES}),
     ))
 }
 pub(super) async fn get(
@@ -288,6 +291,25 @@ pub(super) async fn submit(
     headers: HeaderMap,
     Path(id): Path<String>,
     request: Request,
+) -> Result<Response, AppError> {
+    submit_inner(state, headers, id, request, false).await
+}
+
+pub(super) async fn submit_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Response, AppError> {
+    submit_inner(state, headers, id, request, true).await
+}
+
+async fn submit_inner(
+    state: AppState,
+    headers: HeaderMap,
+    id: String,
+    request: Request,
+    streaming: bool,
 ) -> Result<Response, AppError> {
     authorize(&state, &headers)?;
     validate_id(&id)?;
@@ -345,6 +367,13 @@ pub(super) async fn submit(
         id: id.clone(),
         _permit: permit,
     });
+    let deadline = Instant::now() + owner.runtime.budget;
+    let mut events = Some(events);
+    let worker_events = if streaming { None } else { events.take() };
+    let (terminal_tx, terminal_rx) = oneshot::channel();
+    let terminal_tx = streaming.then_some(terminal_tx);
+    let worker_progress = progress.clone();
+    let worker_owner = owner.clone();
     tokio::spawn(async move {
         supervise(
             worker_state,
@@ -353,10 +382,12 @@ pub(super) async fn submit(
             hash,
             context,
             guard,
-            progress,
-            events,
+            worker_progress,
+            worker_events,
             sender,
-            owner,
+            terminal_tx,
+            worker_owner,
+            deadline,
         )
         .await;
     });
@@ -365,6 +396,16 @@ pub(super) async fn submit(
             "http_turn_owner_failed; GET the original identity before proceeding".into(),
         )
     })??;
+    if streaming && created {
+        return Ok(delivery::response(
+            receipt,
+            events.expect("stream has the sole progress receiver"),
+            progress,
+            terminal_rx,
+            owner,
+            deadline,
+        ));
+    }
     Ok(receipt_response(
         &state,
         &receipt,
@@ -385,11 +426,12 @@ async fn supervise(
     context: String,
     guard: tokio::sync::OwnedMutexGuard<()>,
     progress: ChatProgress,
-    mut events: ChatEvents,
+    mut events: Option<ChatEvents>,
     admitted: oneshot::Sender<Result<(Receipt, bool), AppError>>,
+    terminal: Option<oneshot::Sender<Result<Receipt, ()>>>,
     owner: Arc<Owner>,
+    deadline: Instant,
 ) {
-    let deadline = Instant::now() + owner.runtime.budget;
     let admission_id = id.clone();
     let sid = submission.session_id.clone();
     let storage_owner = owner.clone();
@@ -414,7 +456,7 @@ async fn supervise(
         &state,
         &submission,
         &progress,
-        &mut events,
+        events.as_mut(),
         deadline,
         &owner,
     )
@@ -445,13 +487,17 @@ async fn supervise(
     if completed.is_err() {
         tracing::error!("HTTP turn terminal transaction failed; original admission remains unresolved; no replay");
     }
+    if let Some(terminal) = terminal {
+        // Only the actual atomic transaction may certify the final receipt.
+        let _ = terminal.send(completed.map_err(|_| ()));
+    }
 }
 
 async fn execute(
     state: &AppState,
     submission: &Submission,
     progress: &ChatProgress,
-    events: &mut ChatEvents,
+    mut events: Option<&mut ChatEvents>,
     deadline: Instant,
     owner: &Arc<Owner>,
 ) -> Result<(Vec<ChatMessage>, Value, bool)> {
@@ -491,13 +537,13 @@ async fn execute(
             .agent
             .chat_stream_for(&request, ModelPurpose::Chat, progress);
         tokio::pin!(chat);
-        let mut receiving = true;
+        let mut receiving = events.is_some();
         loop {
             tokio::select! {
                 biased;
                 ()=&mut timer,if !timed_out=>{timed_out=true;progress.cancel();},
                 result=&mut chat=>break result?,
-                event=events.next(),if receiving=>{if event.is_none(){receiving=false;}}
+                event=async { events.as_mut().expect("JSON progress drain").next().await },if receiving=>{if event.is_none(){receiving=false;}}
             }
         }
     };

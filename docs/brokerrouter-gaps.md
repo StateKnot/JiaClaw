@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-09 12:10 UTC 本轮再次读取当前main/release/issues：StateKnot `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140和Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41/未合并PR40均未变化。新[HTTP正文流式](http-streaming.md)复用既有Brokerrouter SSE，属于应用真实接线，不增加框架资格或另报重复issue；Web/租户/代理/供应商与durable门槛分别保留。
+
 2026-10-09 本批 main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release、#31/#41 与未合并 draft #40 的 head `7a7afea0244828851118ba32d1cf37d906a3f388` 未变。实际新增[HTTP 请求身份/核对](http-turns.md)，调用现成 SSE 收据和同一原生授权循环，已准入 UUID 贯穿模型账本本地 turn_id；不伪造 governed turn header、不重发未知模型。当前 HTTP 出站是 JSON，Web/token delivery 和租户协议仍未接通；上游 slow-consumer、真实供应商与 durable 原生输出资格分别保留，不重复提交 issues。
 
 2026-10-09 本轮再次核对 main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release、#31（OPEN/一回复）、#41（OPEN/无回复）与未合并 draft #40（head `7a7afea0244828851118ba32d1cf37d906a3f388`），均没有新消费合同。main/PR40 十二项 FAILURE 的官方 annotations 仍明确因付款/额度未启动；同批 runner 标签升级警告不是代码失败。没有把应用 HTTP 会话提前释放锁归因于网关。单次 CLI SSE 的 PR #93 已通过最终七项 CI 和四平台候选安装，见[回填](validation.md#单次-cli-真流式最终-ci-回填)；HTTP/Web 仍待持久请求身份、有限发送及完整取消/停机接线，本批只修实际数据库取消边界。

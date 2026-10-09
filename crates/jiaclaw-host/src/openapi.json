@@ -3137,6 +3137,115 @@
           }
         }
       }
+    },
+    "/api/turns/{id}/stream": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "put": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create an original turn and consume bounded provisional SSE; an existing ID returns JSON only",
+        "responses": {
+          "200": {
+            "description": "Original authoritative JSON receipt; creation disabled or transport changed never replays or reconnects"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Identity/session/owner/capacity conflict; no queued execution"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          },
+          "202": {
+            "description": "Original admission is durable before SSE headers. Cache-Control:no-store and X-Accel-Buffering:no; final done only after atomic receipt/session transaction. Preview is not authority.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Authenticated body read exceeded five-second shared control budget; no admission or effects"
+          },
+          "413": {
+            "description": "Body exceeds the route or configured byte budget; no admission or effects"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "session_id",
+                  "prompt",
+                  "enabled_tools"
+                ],
+                "properties": {
+                  "session_id": {
+                    "type": "string",
+                    "pattern": "^http:[0-9a-f-]{36}$"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "At most 32 KiB UTF-8"
+                  },
+                  "enabled_tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 128,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128
+                    }
+                  },
+                  "enabled_skills": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "uniqueItems": true,
+                    "default": [],
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Strict Bearer/body/admission policy is shared with JSON PUT. Fresh202 is SSE admitted/model_started/preview/model_completed/tool_completed/done; done contains only an actually committed terminal receipt, which can require review. Missing/truncated done and error require GET of the original ID. Duplicates200 and all errors are JSON, without subscription, replay, automatic retry or Last-Event-ID. Body drop/backpressure cancels future dispatch but submitted models retain original settlement ownership. One 5s frame deadline, 8x4KiB transport queue, native8-event queue, preview2MiB/round and8MiB/turn, wire12MiB; no upstream/Web/tenant/proxy certification."
+      }
     }
   },
   "components": {

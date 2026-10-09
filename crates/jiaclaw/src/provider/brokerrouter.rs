@@ -953,12 +953,21 @@ mod tests {
         let provider = BrokerrouterProvider::new(&url, "fixture-key");
         let request = prepared(&provider, false);
         let pending = provider
-            .post_with_timeout(OPERATION_ID, &request, Duration::from_millis(100))
+            .post_with_timeout(OPERATION_ID, &request, REQUEST_TIMEOUT)
             .await
             .unwrap();
         assert_eq!(pending.remote_id(), Some(REMOTE_ID));
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Establish real response headers before advancing the clock. A 100ms
+        // socket handshake tested runner scheduling rather than persistence time.
+        // The original deadline is neither reassigned nor extended by this test.
+        tokio::time::pause();
+        tokio::time::advance(
+            pending.deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+        )
+        .await;
+        assert!(Instant::now() > pending.deadline);
         assert!(provider.finish(pending, &request).await.is_err());
+        tokio::time::resume();
         gate.add_permits(1);
         task.await.unwrap();
     }
