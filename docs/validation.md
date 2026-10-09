@@ -741,3 +741,26 @@ macOS job `113253179014` 的飞书前 10 组通过，第 11 组千条容量准�
 本地完整1194项Rust（396/123/675）、fmt、必需Clippy与locked build通过；最终测试文件的六项定向回归及必需Clippy再次通过，已有非必需lint警告不记为全lint无警告。冻结生产二进制SHA256 `61bbf2affa4df7d11ee235580780ffb62e7fb3e0ee1b3580fd467fd8b20a3c5b` 的七套实际进程回归全部通过：e2e、model_calls、cli_stream（七组）、user_gateway、channels、scheduler、scheduled_delivery。固定head最终跨平台/候选CI以本批draft PR最终说明为准，不借用PR93成功。数据库schema、5秒busy timeout、模型/工具预算、鉴权、既有HTTP/SSE/Web协议均未改变。
 
 这批是[HTTP流式前置修复](session-cancellation.md)，尚未增加HTTP/Web真流式入口、持久请求ID/未知响应核对、完整停机/代理认证或StateKnot durable恢复；下一步先完成本批固定head交付，再继续这些依赖。自动回访保持ACTIVE，每批结束后30分钟继续；不合并或公开发布。
+
+## Web 原请求流式最终 CI 回填
+
+[PR #97](https://github.com/StateKnot/JiaClaw/pull/97) 先前最终 head `6469e26a83f247aa186520155dd4e0ca81048968`、tree `19ea8b30c72cad3ed343e9230cb9d7eb727e9b6e` 已资格化：[CI 37950738062](https://github.com/StateKnot/JiaClaw/actions/runs/37950738062) 三项和[候选 37950738066](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066) 四项全部 SUCCESS，真实 merge `d0305622b8657119aec82ad8f340b44a0a690d45` 的父提交为 base `988d0cd04559e66c3d08bf7f21a0fc28825c17da` 与该 head，最终 tree 相同。公开 Release 作业在 PR 事件上 SKIPPED。
+
+该源码完整本机1207 Rust（396/123/688）、fmt/必需Clippy/locked build、同一冻结二进制 SHA256 `022cb3452b0bb9d2606767d0a6b9b8d4dcd4270b8bd02b208b3204e8cb5065ff` 的33套进程和五套实际浏览器/解析器通过；Web十组包含真实20技能目录及单次权限上限。CI两平台各33强制进程，Linux另有五浏览器及真实Docker/容器ENOSPC；native Rust为macOS1207/Linux1208。四平台优化候选各通过七组CLI、七组HTTP、七组HTTP-stream、解析器和十三组真实归档安装，源码清洁、native头及归档/安装binary字节核对成功。
+
+| 平台 | 实际验收 tar.gz SHA256 | 正式日志 |
+| --- | --- | --- |
+| `aarch64-apple-darwin` | `57e67155fa67d63f171cd529765d0225d44599005c1123f5a4a2d77029dd73ef` | [job 113888540127](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540127) |
+| `x86_64-apple-darwin` | `714948fbd4742708839e55db1cc905087e38f801fa0255fab86b51ba6827c931` | [job 113888540404](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540404) |
+| `aarch64-unknown-linux-gnu` | `5d8cf9c28a75d31f3d1667bc3bc9bb92cb39670e2c1dabe3a56c20cd3a1530f8` | [job 113888540406](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540406) |
+| `x86_64-unknown-linux-gnu` | `ba256636c94f8c936c70ff2ec234b539c3cf6c522c528d0ee76a181010eca353` | [job 113888540453](https://github.com/StateKnot/JiaClaw/actions/runs/37950738066/job/113888540453) |
+
+四个官方artifact ID/ZIP摘要与上传日志相符，未独立下载ZIP；候选保留七天，未公开发布。沙箱内localhost PermissionDenied日志保留，授权完整测试在相同最终源码成功；更早 intermediate `8fe038a1641009944b5a872311a6d50f9f64ec7f` 曾在原20秒启动期限空日志失败，根因未证实、失败和后续成功证据分开保留。本机最终 installer 耗时115.04秒、退出0，未放宽任何期限，空日志没有证明具体等待阶段。官方当前review/inline/conversation均为空，不把作者核对写成外部审查。
+
+## 原请求目录与丢失编号恢复批次
+
+2026-10-09 16:10 UTC 再核对上游，固定 main、发布和议题未变化。新增仅管理员认证的持久原请求目录，直接投影九个状态字段，不读取result正文/提示词/权限hash/人工记录，不做准入、工具或模型派发。读取共用四个实际存储control owner；raw query鉴权后严格检查，页容量1–50、offset≤10000、查询≤128字节，单页LIMIT+1判定has_more，created_ms/id降序，维持schema11。默认仅running或未review的needs_review，all/状态筛选仍可找到已review或清理正文的永久身份。页间为读取时快照，不承诺分页期间的新准入/状态变化不会移动记录。
+
+Web capability listing=true才显示目录；每页五条、响应32KiB、15秒读取，选中后必须GET同一原UUID完整收据再判断active/完成，摘要不解除会话、不重放。存在原请求hold时禁止切换编号；切换密钥/401清空目录和迟到结果。严格DTO校验拒绝正文/未知字段、重复身份、不符合筛选或排序；失败先清除旧按钮，无HTML执行。停用tracked_turns仍允许认证目录/原收据，不增加准入权限或租户网关路径。
+
+三项新增Rust、真实HTTP进程四组与嵌入Chromium十一组初验通过：有界/auth先行/no-store、真实完成/清理/大正文/同时间分页、cancel/review筛选、SIGKILL后关闭准入仍找回原unknown编号（模型账本unknown不伪造恢复），及浏览器连UUID片段也遗失后的目录→原GET、原hold禁止替换、分页/坏目录拒绝。网关全权限/只读Key的新目录404断言加入既有隔离回归。固定最终源码的完整检查/34强制进程/七CI/四native候选仍须单独验收，以本次PR最终说明为准，不借用上述6469已通过记录。

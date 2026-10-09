@@ -1,6 +1,6 @@
 // Incremental browser protocol contract, including byte boundaries and failure holds.
 const assert = require('assert');
-const {Parser,receipt,snapshot,capabilities} = require('../crates/jiaclaw-host/ui/turn-stream.js');
+const {Parser,receipt,snapshot,capabilities,catalog} = require('../crates/jiaclaw-host/ui/turn-stream.js');
 const id='11111111-1111-4111-8111-111111111111', session_id='http:22222222-2222-4222-8222-222222222222';
 const initial={id,session_id,request_hash:'a'.repeat(64),context_hash:'b'.repeat(64),created_ms:1,finished_ms:null,state:'running',session_committed:false,error:null,result:null,result_purged:false,cancel_requested:false,reviewed_ms:null,review_note:null};
 const terminal={...initial,finished_ms:2,state:'completed',session_committed:true,result:{reply:'最终🦀回复',status:'completed',routing:null,tool_names:['file_write']}};
@@ -28,3 +28,14 @@ assert.deepStrictEqual(capabilities(c),c);
 assert.doesNotThrow(()=>capabilities({...c,enabled:false,streaming:false,turn_budget_secs:0}));
 for(const change of [{protocol:2},{enabled:false},{turn_budget_secs:301},{stream_suffix:'https://other/'},{max_stream_wire_bytes:Infinity}])assert.throws(()=>capabilities({...c,...change}));
 console.log('PASS browser SSE parser: split UTF-8, strict identity/order/terminal, bounded wire/frame/preview, authorization and capabilities');
+
+const summary=Object.fromEntries(['id','session_id','created_ms','finished_ms','state','session_committed','cancel_requested','result_purged','reviewed_ms'].map(k=>[k,initial[k]]));
+const discovery={protocol:1,state:'unresolved',limit:5,offset:0,has_more:false,turns:[summary]};
+const expected={state:'unresolved',limit:5,offset:0};
+assert.doesNotThrow(()=>catalog(discovery,expected));
+assert.doesNotThrow(()=>catalog({...discovery,state:'all',turns:[{...summary,created_ms:100,finished_ms:1,state:'completed',session_committed:true}]},{...expected,state:'all'}));
+for(const bad of [{...discovery,offset:1},{...discovery,limit:51},{...discovery,state:'all'},{...discovery,has_more:true},{...discovery,turns:[summary,summary]}, {...discovery,turns:[{...summary,result:{reply:'private'}}]}, {...discovery,turns:[{...summary,id:'<img src=x>'}]}, {...discovery,turns:[{...summary,finished_ms:1}]}, {...discovery,turns:[{...summary,reviewed_ms:2}]}, {...discovery,turns:[{...summary,created_ms:-1}]}, {...discovery,turns:[{...summary,state:'needs_review',finished_ms:2,reviewed_ms:3}]}])assert.throws(()=>catalog(bad,expected));
+const second={...summary,id:session_id.slice(5)};
+assert.throws(()=>catalog({...discovery,turns:[summary,second]},expected));
+assert.doesNotThrow(()=>catalog({...discovery,turns:[second,summary]},expected));
+console.log('PASS parser 7: finite payload-free catalog, exact identity/state/query, tied ordering, no result exposure or summary authority');

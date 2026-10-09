@@ -217,6 +217,9 @@ try:
         print('PASS: default full keys, explicit read-only issuance, real own history/exports and bounded job reads')
 
         before_hold, before_content, before_models = hold_snapshot(), content_snapshot(), len(model_calls)
+        for credential in [*full.values(), *read.values()]:
+            api(credential, '/api/turns?state=all&limit=5', expected=404)
+            api(credential, '/api/turns/capabilities', expected=404)
         for who in ('alice', 'bob'):
             other = 'bob' if who == 'alice' else 'alice'
             for path in ['/api/sessions/' + sessions[other], '/api/sessions/' + sessions[other] + '/export',

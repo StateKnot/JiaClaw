@@ -96,6 +96,28 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   assert.strictEqual((await ctl('status','cancel-after-commit')).rows.find(r=>r.id===raceId).cancel_requested,0);assert.strictEqual(await page.locator('#message').inputValue(),'');await finish();assert.strictEqual((await ctl('status','cancel-after-commit')).count,1);
   console.log('PASS web stream 9: actual terminal commit wins cancel, no invented intent, stored history reconciles before draft release');
 
+  await ctl('gate','browser-catalog');const catalogId=await begin('browser-catalog');const catalogBefore=submissions.length;
+  // Discard the UUID fragment too; no browser persistence is available to help.
+  await page.goto(base);await page.locator('#api-token').fill(token);await page.locator('#connect-form button').click();await page.waitForFunction(()=>!document.getElementById('new-session').disabled);
+  await until(async()=>{s=await ctl('status','browser-catalog');return s.delivery_stopped},'catalog body owner stopped');
+  await page.locator('#turn-catalog summary').click();await page.locator('#turn-catalog-refresh').click();
+  const catalogButton=page.locator(`[data-turn-id="${catalogId}"]`);await catalogButton.waitFor();
+  assert.strictEqual(await page.locator('#turn-id').inputValue(),'');assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
+  assert.strictEqual(await page.locator('#turn-catalog-rows').locator('img').count(),0);assert.strictEqual(submissions.length,catalogBefore);
+  let originalGets=0;const countGet=req=>{if(req.method()==='GET'&&new URL(req.url()).pathname==='/api/turns/'+catalogId)originalGets++};page.on('request',countGet);
+  await catalogButton.click();await page.waitForFunction(id=>document.getElementById('turn-id').value===id&&document.getElementById('turn-state').textContent.includes('处理中'),catalogId);
+  assert.strictEqual(originalGets,1);assert.strictEqual(await catalogButton.isDisabled(),true);assert.strictEqual(await page.locator('#send').isDisabled(),true);
+  await releaseAndCheck('browser-catalog',catalogId);await page.locator('#turn-review summary').click();await page.locator('#turn-review-note').fill('Original model and body owner checked after losing fragment.');page.once('dialog',d=>d.accept());await page.locator('#turn-abandon').click();await finish();page.off('request',countGet);
+  assert.strictEqual(submissions.length,catalogBefore);assert.strictEqual(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
+  await page.locator('#turn-catalog-filter').selectOption('all');await page.waitForFunction(()=>!document.getElementById('turn-catalog-next').disabled);assert.strictEqual(await page.locator('#turn-catalog-rows button').count(),5);
+  const firstPage=await page.locator('#turn-catalog-rows button').evaluateAll(nodes=>nodes.map(n=>n.dataset.turnId));await page.locator('#turn-catalog-next').click();await page.waitForFunction(()=>document.getElementById('turn-catalog-status').textContent.startsWith('第 6'));
+  const nextPage=await page.locator('#turn-catalog-rows button').evaluateAll(nodes=>nodes.map(n=>n.dataset.turnId));assert(nextPage.every(id=>!firstPage.includes(id)));
+  await page.route('**/api/turns?**',async route=>{const response=await route.fetch({maxRetries:0,maxRedirects:0});const value=await response.json();value.turns[0].result={reply:'<img src=x onerror="window.CATALOG_XSS=1">'};await route.fulfill({response,json:value});});
+  await page.locator('#turn-catalog-refresh').click();await page.waitForFunction(()=>document.getElementById('turn-catalog-status').textContent.includes('未通过核对'));
+  assert.strictEqual(await page.locator('#turn-catalog-rows button').count(),0);assert.strictEqual(await page.locator('#turn-catalog-next').isDisabled(),true);assert.strictEqual(await page.evaluate(()=>typeof window.CATALOG_XSS),'undefined');assert.strictEqual(submissions.length,catalogBefore);
+  await page.unroute('**/api/turns?**');
+  console.log('PASS web stream 11: lost fragment recovers original via authenticated catalog then GET, bounded pages, held identity and malformed catalog cannot replay or expose payload');
+
   // Malformed transport is a frontend contract fault fixture, not a supplier test.
   await page.route('**/api/turns/*/stream',route=>{const body=route.request().postDataJSON(),rid=new URL(route.request().url()).pathname.split('/')[3];const receipt={id:rid,session_id:body.session_id,request_hash:'a'.repeat(64),context_hash:'b'.repeat(64),created_ms:1,finished_ms:null,state:'running',session_committed:false,error:null,result:null,result_purged:false,cancel_requested:false,reviewed_ms:null,review_note:null};const values=[{event:'admitted',protocol:1,receipt},{event:'model_started',turn_id:rid,operation_id:rid,remote_id:rid,round:0,model:'fixture'},{event:'preview',round:0,text:'<img src=x onerror="window.STREAM_XSS=1">临时🦀'}];return route.fulfill({status:202,headers:{'Content-Type':'text/event-stream; charset=utf-8'},body:values.map(v=>`event: ${v.event}\ndata: ${JSON.stringify(v)}\n\n`).join('')+'event: done\ndata: {"event":"done"'});});
   await begin('browser-corrupt');await page.waitForFunction(()=>document.getElementById('status').textContent.includes('勿重复执行'));

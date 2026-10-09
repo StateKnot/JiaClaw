@@ -1028,6 +1028,7 @@ fn build_router_with_body_limit(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/turns", get(http_turns::list))
         .route("/api/turns/capabilities", get(http_turns::capabilities))
         .route(
             "/api/turns/:id",

@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-09 16:10 UTC 官方API再次固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`（比较identical、ahead0）、唯一alpha.1与#140 OPEN/无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release、#31 OPEN/一回复、#41 OPEN/无回复、PR40仍未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388`。未出现新消费合同，不重复建issue或浮动升级HTTP MCP。PR97先前6469最终七项CI/四优化候选已[回填](validation.md#web-原请求流式最终-ci-回填)；本批持久原请求目录/遗失编号恢复属于应用接线，不加载正文、不派发，不替代StateKnot durable、stdio/外部写入、原生Schema或供应商认证。
+
 2026-10-09 13:48 UTC 再次从官方 API 固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140（OPEN/无回复），Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release/#31（OPEN/一回复）/#41（OPEN/无回复）/未合并 draft PR40 head `7a7afea0244828851118ba32d1cf37d906a3f388`，均未变化。PR96最终七项CI及四平台候选已逐项回填；本批[Web流式](web-streaming.md)继续实际接线原身份、授权、取消和核对，属于应用能力，不重复提交框架缺陷。租户、真实供应商/代理、stdio/外部写入和 durable 仍保留独立门槛。
 
 2026-10-09 12:10 UTC 本轮再次读取当前main/release/issues：StateKnot `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140和Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41/未合并PR40均未变化。新[HTTP正文流式](http-streaming.md)复用既有Brokerrouter SSE，属于应用真实接线，不增加框架资格或另报重复issue；Web/租户/代理/供应商与durable门槛分别保留。

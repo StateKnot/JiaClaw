@@ -15,7 +15,31 @@
     require(c.session_prefix === 'http:' && c.stream_suffix === '/stream' && c.max_active === 1 && c.max_identities === 10000 && c.max_retained_results === 32);
     require(!c.streaming || (Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 1 && c.turn_budget_secs <= 300));
     require(c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
+    require(c.listing === undefined || typeof c.listing === 'boolean');
     return c;
+  }
+  function catalog(value, expected) {
+    require(object(value) && Object.keys(value).length === 6 && value.protocol === 1);
+    require(['all','unresolved','running','completed','needs_review'].includes(value.state) && value.state === expected.state);
+    require(Number.isInteger(value.limit) && value.limit >= 1 && value.limit <= 50 && value.limit === expected.limit);
+    require(Number.isInteger(value.offset) && value.offset >= 0 && value.offset <= 10000 && value.offset === expected.offset);
+    require(typeof value.has_more === 'boolean' && Array.isArray(value.turns) && value.turns.length <= value.limit && (!value.has_more || value.turns.length === value.limit));
+    const fields = ['id','session_id','created_ms','finished_ms','state','session_committed','cancel_requested','result_purged','reviewed_ms'], seen = new Set();
+    let previous = null;
+    for (const r of value.turns) {
+      require(object(r) && Object.keys(r).length === fields.length && fields.every(k => Object.hasOwn(r,k)));
+      require(typeof r.id === 'string' && uuid.test(r.id) && typeof r.session_id === 'string' && r.session_id.startsWith('http:') && uuid.test(r.session_id.slice(5)) && !seen.has(r.id)); seen.add(r.id);
+      for (const key of ['created_ms','finished_ms','reviewed_ms']) require((key !== 'created_ms' && r[key] === null) || (Number.isSafeInteger(r[key]) && r[key] >= 0));
+      for (const key of ['session_committed','cancel_requested','result_purged']) require(typeof r[key] === 'boolean');
+      require(['running','completed','needs_review'].includes(r.state));
+      require(r.state !== 'running' || (r.finished_ms === null && !r.session_committed && !r.result_purged && r.reviewed_ms === null));
+      require(r.state === 'running' || r.finished_ms !== null);
+      require(r.state !== 'completed' || r.session_committed);
+      require(r.reviewed_ms === null || r.state === 'needs_review');
+      require(value.state === 'all' || (value.state === 'unresolved' ? (r.state === 'running' || (r.state === 'needs_review' && r.reviewed_ms === null)) : r.state === value.state));
+      require(!previous || previous.created_ms > r.created_ms || (previous.created_ms === r.created_ms && previous.id > r.id)); previous = r;
+    }
+    return value;
   }
   function receipt(r, expected) {
     require(object(r) && uuid.test(r.id) && typeof r.session_id === 'string' && r.session_id.startsWith('http:') && uuid.test(r.session_id.slice(5)));
@@ -106,7 +130,7 @@
     }
     finish() { this.consume(this.decoder.decode()); require(this.frameBytes === 0 && !this.lastLF && this.terminal); }
   }
-  const api = Object.freeze({bytes, uuid, capabilities, receipt, snapshot, Parser});
+  const api = Object.freeze({bytes, uuid, capabilities, catalog, receipt, snapshot, Parser});
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else globalThis.JiaClawTurnStream = api;
 })();

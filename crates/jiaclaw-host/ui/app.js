@@ -498,6 +498,7 @@ $('delivery-cancel').addEventListener('click', () => task(() => resolveDelivery(
 // its non-secret UUID across reload; credentials, prompts and permissions stay in memory.
 const Turn = JiaClawTurnStream;
 let turnCapabilities = null, pendingTurn = null, turnConnection = null, turnControlBusy = false;
+let turnCatalogPage = null;
 let resumeTurnId = /^#turn=([0-9a-f-]{36})$/.exec(location.hash)?.[1];
 if (!Turn.uuid.test(resumeTurnId || '')) resumeTurnId = null;
 const trackedSession = () => typeof selected === 'string' && selected.startsWith('http:');
@@ -522,9 +523,18 @@ function turnControls() {
   $('turn-abandon').disabled = !held || !pendingTurn?.fresh || pendingTurn?.active || turnControlBusy || !!turnConnection;
   $('turn-lookup-id').disabled = !connected || !!pendingTurn || busy;
   $('turn-lookup').querySelector('button').disabled = !connected || !!pendingTurn || busy;
+  const catalogDisabled = !connected || busy || turnControlBusy || turnCapabilities?.listing !== true;
+  $('turn-catalog').hidden = turnCapabilities?.listing !== true || readOnly;
+  $('turn-catalog-filter').disabled = catalogDisabled;
+  $('turn-catalog-refresh').disabled = catalogDisabled;
+  $('turn-catalog-prev').disabled = catalogDisabled || !turnCatalogPage || turnCatalogPage.offset === 0;
+  $('turn-catalog-next').disabled = catalogDisabled || !turnCatalogPage?.has_more || turnCatalogPage.offset + 5 > 10000;
+  for (const button of $('turn-catalog-rows').querySelectorAll('button')) button.disabled = catalogDisabled || held;
 }
 function forgetTurns() {
   turnConnection?.abort(); turnConnection = null; turnControlBusy = false; pendingTurn = null; turnCapabilities = null;
+  turnCatalogPage = null; $('turn-catalog').open = false; $('turn-catalog').hidden = true;
+  $('turn-catalog-filter').value = 'unresolved'; $('turn-catalog-rows').replaceChildren(); $('turn-catalog-status').textContent = '';
   history.replaceState(null, '', location.pathname + location.search);
   for (const id of ['turn-tools','turn-skills','turn-state']) $(id).replaceChildren();
   for (const id of ['turn-id','turn-review-note','turn-lookup-id']) $(id).value = '';
@@ -589,6 +599,38 @@ async function connectTurns() {
     renderPermissionList('turn-tools', tools.tools); renderPermissionList('turn-skills', skills.skills);
   }
 }
+async function loadTurnCatalog(offset = 0) {
+  const owner = identity, expected = {state:$('turn-catalog-filter').value,limit:5,offset};
+  // Clear old clickable rows before any new fetch/validation, including failures.
+  turnCatalogPage = null; $('turn-catalog-rows').replaceChildren(); $('turn-catalog-status').textContent = '正在读取状态摘要…'; controls();
+  let value;
+  try {
+    value = await api(`/api/turns?state=${expected.state}&limit=5&offset=${offset}`, 'GET', undefined, false, 15000, 32768);
+    if (owner !== identity) throw new StaleIdentity();
+    Turn.catalog(value, expected);
+  } catch (error) {
+    if (owner === identity) $('turn-catalog-status').textContent = '列表未通过核对；可按已知原编号单独查找。';
+    throw error;
+  }
+  turnCatalogPage = value;
+  $('turn-catalog-status').textContent = value.turns.length ? `第 ${offset + 1}–${offset + value.turns.length} 项状态摘要；选中后读取原收据。` : '本页暂无请求；可更换范围或重新读取。';
+  for (const row of value.turns) {
+    const article = document.createElement('article'), description = document.createElement('p'), button = document.createElement('button');
+    article.className = 'turn-catalog-row'; description.textContent = `${{running:'处理中',completed:'回复已保存',needs_review:'需要人工核对'}[row.state]}${row.reviewed_ms !== null ? ' · 已记录核对' : ''}${row.result_purged ? ' · 正文已清理' : ''}\n${row.id}\n${new Date(row.created_ms).toLocaleString()}`;
+    button.type = 'button'; button.className = 'subtle'; button.textContent = '核对原请求'; button.dataset.turnId = row.id;
+    button.addEventListener('click', () => {
+      if (owner !== identity || pendingTurn || busy || turnControlBusy) return;
+      // The page summary never marks a turn resolved or releases its session.
+      trackTurn(row.id); turnControl(attempt => checkTurn(attempt));
+    });
+    article.append(description,button); $('turn-catalog-rows').append(article);
+  }
+  controls();
+}
+$('turn-catalog-refresh').addEventListener('click', () => task(() => loadTurnCatalog()));
+$('turn-catalog-filter').addEventListener('change', () => task(() => loadTurnCatalog()));
+$('turn-catalog-prev').addEventListener('click', () => task(() => loadTurnCatalog(Math.max(0, (turnCatalogPage?.offset || 0) - 5))));
+$('turn-catalog-next').addEventListener('click', () => task(() => loadTurnCatalog((turnCatalogPage?.offset || 0) + 5)));
 // Bound the displayed draft independently of the larger validated wire budget.
 // One article per round, 64Ki characters each / 256Ki total, batched every frame.
 function previewRenderer(owner, attempt) {
