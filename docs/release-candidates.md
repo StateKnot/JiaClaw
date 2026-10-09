@@ -22,3 +22,5 @@ python3 tests/installer.py target/aarch64-apple-darwin/release/jiaclaw --archive
 PR 只有 read token，`draft` 作业条件明确排除 PR；不会创建 tag、Release 或写入发布资产。维护者推送匹配 `v<workspace.version>` 的 tag 后复用相同四平台链路，全部成功才创建带 `SHA256SUMS` 的 draft；公开发布仍须单独人工审核。应用、StateKnot durable、真实平台/供应商及恢复资格继续以各自认证范围为准。
 
 2026-10-09 本机 macOS arm64 优化构建、实际 E2E/SQLite/MCP 与最终归档安装/负例通过，二进制 SHA256 `2c767e02eaa75a324b48c446d73a86cc29b905f64ddeb89940305c59cc870028`、归档 `f6f015c26725a26363ddaf8504aea5d57d3cf58d1db5daa7f5bce10f9d9bbffd`。最终固定源码的四平台结果见交付 PR checks 与对应 JSON artifact。尚无公开 Release，不把该工作流接线本身记为四平台通过。
+
+首轮普通 CI `37879904141` 的 macOS Discord fixture 在两个独立连接间用 TCP 写入推断 body slot 已取得，未观察到429而失败；不能据此确定具体调度根因。修订 fixture 以实际 Hyper `100 Continue` 确认 handler 已轮询 body（生产代码先取每绑定许可），随后要求第二请求精确429、原请求精确408，再以401确认超时后许可已释放；保留原1.2秒观察和3秒完成预算，不改生产2秒 body 超时或任何授权。本机同一优化二进制的最终双租户九组全部通过，屏障分别0.313/0.266ms。最终验收以修订后固定 head 为准，首轮失败保留。

@@ -618,23 +618,43 @@ def main():
                 for key, value in signed(who, raw).items():
                     connection.putheader(key, value)
                 connection.putheader("Content-Length", str(len(raw)))
+                connection.putheader("Expect", "100-continue")
                 started = time.monotonic()
-                connection.endheaders(raw[:1])
-                # While this request holds the binding's one body-reader permit,
-                # another complete signed request must fail immediately with 429.
-                blocked = False
-                while time.monotonic() - started < 1.2:
+                connection.endheaders()
+                # Hyper's 100 Continue is sent when the handler polls the body,
+                # after acquiring this binding's reader slot. A TCP write alone
+                # does not order handlers on two separate connections.
+                try:
+                    readiness_deadline = started + 1.2
+                    interim = bytearray()
+                    while not interim.endswith(b"\r\n\r\n"):
+                        remaining = readiness_deadline - time.monotonic()
+                        assert remaining > 0, "body-reader Continue exceeded the original 1.2s observation budget"
+                        connection.sock.settimeout(remaining)
+                        try:
+                            chunk = connection.sock.recv(1)
+                        except socket.timeout as error:
+                            raise AssertionError("body-reader Continue exceeded the original 1.2s observation budget") from error
+                        assert chunk and len(interim) < 8192, "missing or unbounded body-reader Continue"
+                        interim.extend(chunk)
+                    assert interim == b"HTTP/1.1 100 Continue\r\n\r\n", "unexpected body-reader Continue response"
+                    assert time.monotonic() < readiness_deadline
+                    connection.sock.settimeout(4)
+                    barrier_ms = round((time.monotonic() - started) * 1000, 3)
                     status, _ = http(gateway_url, "/hooks/discord/" + bindings[who]["id"], "POST", data, wrong)
-                    assert status in (401, 429), "unexpected concurrent auth/body response"
-                    if status == 429:
-                        blocked = True
-                        break
-                    time.sleep(.01)
-                assert blocked, "partial request did not retain its bounded body-reader permit"
-                response = connection.getresponse()
-                assert response.status == 408 and time.monotonic() - started < 3
-                response.read()
-                connection.close()
+                    assert status == 429, "confirmed body-reader slot did not exclude the second request"
+                    assert time.monotonic() < readiness_deadline, "body-reader rejection exceeded the original observation budget"
+                    response = connection.getresponse()
+                    assert response.status == 408 and time.monotonic() - started < 3
+                    response.read()
+                    released_status, _ = http(gateway_url, "/hooks/discord/" + bindings[who]["id"], "POST", data, wrong)
+                    assert released_status == 401, "body-reader permit was not released after timeout"
+                    print("BODY_SLOT DIAGNOSTIC " + json.dumps({"who": who, "barrier": "http_100_continue",
+                                                               "barrier_ms": barrier_ms, "observation_budget_ms": 1200,
+                                                               "second_request_status": status, "body_timeout_status": 408,
+                                                               "after_timeout_status": released_status}, sort_keys=True), flush=True)
+                finally:
+                    connection.close()
                 assert not events(who) and model_count(who) == 0 and send_count(who) == 0
             print("PASS 1: default off, backend opt-in, strict application/command manifests, original-byte Ed25519, DM ownership, body/signature/local-reader budgets", flush=True)
 
