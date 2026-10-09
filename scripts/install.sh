@@ -31,7 +31,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 asset="jiaclaw-${version}-${target}.tar.gz"
-base="https://github.com/jiawenyao401/JiaClaw/releases/download/${version}"
+base="https://github.com/StateKnot/JiaClaw/releases/download/${version}"
 for file in "$asset" SHA256SUMS; do
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --connect-timeout 10 --max-time 120 "$base/$file" --output "$tmp/$file"
@@ -43,7 +43,9 @@ else actual=$(sha256sum "$tmp/$asset" | awk '{print $1}'); fi
 [ "$actual" = "$expected" ] || fail 'checksum mismatch; existing installation retained'
 tar -xzf "$tmp/$asset" -C "$tmp" jiaclaw
 [ -f "$tmp/jiaclaw" ] && [ ! -L "$tmp/jiaclaw" ] || fail 'release binary is not a regular file'
-"$tmp/jiaclaw" version >/dev/null || fail 'binary cannot run on this platform; existing installation retained'
+reported_version=$("$tmp/jiaclaw" version) || fail 'binary cannot run on this platform; existing installation retained'
+[ "$(printf '%s\n' "$reported_version" | sed -n '1p')" = "JiaClaw $version" ] || \
+  fail 'binary version does not match requested release; existing installation retained'
 staged=$(mktemp "$install_dir/.jiaclaw-install.XXXXXX")
 cat "$tmp/jiaclaw" > "$staged"
 chmod 755 "$staged"

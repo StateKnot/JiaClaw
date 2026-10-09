@@ -109,6 +109,6 @@ jiaclaw memory semantic refresh --config config.toml
 
 ## 验收范围
 
-`tests/semantic_memory.py` 使用真实 JiaClaw 二进制和本机 embeddings/chat 网关，覆盖 CLI、新进程恢复、原生工具模式、源变化、已提交后 SIGKILL 与未知 hold、GET 恢复、显式管理员核对和私有索引边界。2026-10-03，macOS arm64 最终二进制的 9 组验收全部通过；全量 Rust 773 项、fmt、Clippy correctness/suspicious、锁定构建及既有 e2e/native_tools/memory_io/model_routing 回归通过。传输单元测试另覆盖向量/响应边界，存储 12 项测试覆盖最大容量、原子替换和账本恢复。随后 [CI 37082943062](https://github.com/jiawenyao401/JiaClaw/actions/runs/37082943062) 在 [draft PR #70](https://github.com/jiawenyao401/JiaClaw/pull/70) 的 `dae57af27c77f553e6344f5391611b35df454bfe` 上通过 Linux/macOS、Chromium、真实容器沙箱及隔离网关卷检查。
+`tests/semantic_memory.py` 使用真实 JiaClaw 二进制和本机 embeddings/chat 网关，覆盖 CLI、新进程恢复、原生工具模式、源变化、已提交后 SIGKILL 与未知 hold、GET 恢复、显式管理员核对和私有索引边界。2026-10-03，macOS arm64 最终二进制的 9 组验收全部通过；全量 Rust 773 项、fmt、Clippy correctness/suspicious、锁定构建及既有 e2e/native_tools/memory_io/model_routing 回归通过。传输单元测试另覆盖向量/响应边界，存储 12 项测试覆盖最大容量、原子替换和账本恢复。随后 [CI 37082943062](https://github.com/StateKnot/JiaClaw/actions/runs/37082943062) 在 [draft PR #70](https://github.com/StateKnot/JiaClaw/pull/70) 的 `dae57af27c77f553e6344f5391611b35df454bfe` 上通过 Linux/macOS、Chromium、真实容器沙箱及隔离网关卷检查。
 
 上线前还需在固定网关提交、授权虚拟 Key、模型版本和地域下验证：语义检索质量、实际向量维度、usage/账务、请求 ID 和结果 GET、限额及未知状态核对。测试不调用真实供应商，不关闭 Brokerrouter 真实供应商认证议题，也不代表完成 StateKnot durable Agent 或工具副作用恢复。

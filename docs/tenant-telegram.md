@@ -119,4 +119,4 @@ cancel 作用于整事件的未完成投递并标记人工审查，不删除已�
 python3 tests/tenant_telegram.py target/debug/jiaclaw
 ```
 
-本批存储定向七项和原有 channel_store 35 项已通过；覆盖 owner/锁/链接拒绝、claim 回滚及 SQLITE_FULL、重复关联 ID、容量满后审计/清理、重启恢复、purge 外键级联和发送提示。最终二进制整机七组通过：真实双后端及 native 工具、channel 路由、私有会话/队列、用户禁用与永久绑定撤销、未知发送离线核对、跨重启 429 冷却及第五次停止、SIGKILL 后保守 hold 与后端继续完成，均不自动重放；本批七套既有进程回归通过。PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/jiawenyao401/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。真实 Telegram TLS/webhook、用户终端收发、代理配置及供应商计费需要单独授权验收。
+本批存储定向七项和原有 channel_store 35 项已通过；覆盖 owner/锁/链接拒绝、claim 回滚及 SQLITE_FULL、重复关联 ID、容量满后审计/清理、重启恢复、purge 外键级联和发送提示。最终二进制整机七组通过：真实双后端及 native 工具、channel 路由、私有会话/队列、用户禁用与永久绑定撤销、未知发送离线核对、跨重启 429 冷却及第五次停止、SIGKILL 后保守 hold 与后端继续完成，均不自动重放；本批七套既有进程回归通过。PR #80 最终 head `68b3a22867e65ed32154c4fc2292066da6f842b4` 已通过 [CI 37113957145](https://github.com/StateKnot/JiaClaw/actions/runs/37113957145)，含 Linux/macOS、Chromium 与真实容器。真实 Telegram TLS/webhook、用户终端收发、代理配置及供应商计费需要单独授权验收。

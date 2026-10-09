@@ -9,7 +9,7 @@ JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记�
 需要 Rust 1.88.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。
 
 ```sh
-git clone https://github.com/jiawenyao401/JiaClaw.git
+git clone https://github.com/StateKnot/JiaClaw.git
 cd JiaClaw
 cargo build --release --locked -p jiaclaw-host
 mkdir -p "$HOME/.local/bin"
@@ -39,13 +39,15 @@ jiaclaw chat --config "$HOME/.jiaclaw/config.toml" --session personal "你好"
 
 ## Release 与容器安装
 
+仓库已转入 [StateKnot 组织](https://github.com/StateKnot/JiaClaw)，现有检出与安装/发布状态见[迁移说明](docs/organization-migration.md)。
+
 版本 tag 触发四个平台的构建：Linux/macOS × x86_64/arm64，并生成含 `SHA256SUMS` 的 **draft Release**。维护者审核并公开 Release 后，可使用固定版本安装脚本：
 
 ```sh
 ./scripts/install.sh v0.1.0
 ```
 
-脚本验证校验和、确认二进制可运行后原子替换 `~/.local/bin/jiaclaw`，不调用 sudo、不改配置。首次 Release 未公开时请使用源码安装。Linux Release 在 Ubuntu 24.04 构建，需要 glibc 2.39 或更新版本；较旧发行版可使用容器或在本机编译。macOS 构建在 macOS 14 arm64 / 15 Intel 验证。
+脚本验证校验和、确认二进制可运行且版本与指定 Release 一致后原子替换 `~/.local/bin/jiaclaw`，不调用 sudo、不改配置。首次 Release 未公开时请使用源码安装。Linux Release 在 Ubuntu 24.04 构建，需要 glibc 2.39 或更新版本；较旧发行版可使用容器或在本机编译。macOS 构建在 macOS 14 arm64 / 15 Intel 验证。
 
 ```sh
 # 先修改 deploy/container.toml 的网关地址和逻辑模型，再注入两个环境变量。

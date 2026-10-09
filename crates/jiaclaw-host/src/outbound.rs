@@ -142,7 +142,9 @@ impl OutboundClient {
                     .header(
                         reqwest::header::USER_AGENT,
                         concat!(
-                            "DiscordBot (https://github.com/jiawenyao401/JiaClaw, ",
+                            "DiscordBot (",
+                            env!("CARGO_PKG_REPOSITORY"),
+                            ", ",
                             env!("CARGO_PKG_VERSION"),
                             ")"
                         ),
@@ -237,7 +239,9 @@ impl OutboundClient {
         .header(
             reqwest::header::USER_AGENT,
             concat!(
-                "DiscordBot (https://github.com/jiawenyao401/JiaClaw, ",
+                "DiscordBot (",
+                env!("CARGO_PKG_REPOSITORY"),
+                ", ",
                 env!("CARGO_PKG_VERSION"),
                 ")"
             ),
@@ -1150,7 +1154,7 @@ mod tests {
                         assert!(headers.starts_with(endpoint));
                         assert!(!headers.to_ascii_lowercase().contains("authorization:"));
                         assert!(headers.to_ascii_lowercase().contains(
-                            "user-agent: discordbot (https://github.com/jiawenyao401/jiaclaw, "
+                            "user-agent: discordbot (https://github.com/stateknot/jiaclaw, "
                         ));
                         assert_eq!(json["allowed_mentions"]["parse"], json!([]));
                         assert_eq!(json["allowed_mentions"]["replied_user"], false);

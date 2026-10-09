@@ -4131,7 +4131,7 @@ fn version_command() {
     println!("JiaClaw v{}", env!("CARGO_PKG_VERSION"));
     println!("基于 StateKnot 框架构建");
     println!("许可证: Apache-2.0 OR MIT");
-    println!("仓库: https://github.com/jiawenyao401/JiaClaw");
+    println!("仓库: {}", env!("CARGO_PKG_REPOSITORY"));
 }
 
 #[allow(clippy::too_many_lines)]

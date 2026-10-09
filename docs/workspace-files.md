@@ -174,15 +174,15 @@ Linux/macOS 上，`write_file`、`str_replace`、`delete_file`、`mkdir`、`move
 
 Rust 层另覆盖最终 pretty JSON 的 64 KiB 预算（含转义文件名）、2000 条扫描、32 层深度、遍历预算过期、共享锁/并发追加和取消后的 I/O 许可。全量 854 项 Rust 通过（library 343、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI；fmt、Clippy correctness/suspicious 和锁定构建通过，既有 style/pedantic warnings 保留。最终二进制的 `native_tools.py`、`memory_io.py` 四组与 `e2e.py` 回归全部通过。
 
-PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 37103576477](https://github.com/jiawenyao401/JiaClaw/actions/runs/37103576477) 的 Linux/macOS 与真实容器检查。上述证据属于上一批五工具与别名修复。
+PR #76 最终 head `277a89a5ade1e4ab84d7c17d696c004b7fd1e7ea` 已通过 [CI 37103576477](https://github.com/StateKnot/JiaClaw/actions/runs/37103576477) 的 Linux/macOS 与真实容器检查。上述证据属于上一批五工具与别名修复。
 
 上一批 PR #77 的 grep/glob 最终本机全量 Rust 864 项通过（library 353、core 122、host 389），1 项真实 Docker 专项本地 ignored 由 CI 执行；fmt、Clippy correctness/suspicious、锁定构建与 diff-check 通过，保留既有 style/pedantic warnings。真实二进制 `tests/file_search.py` 六组通过，覆盖匹配/权限、文件类型、扫描与读取预算、输出及多 `**` 模式；`workspace_files.py` 四组、`native_tools.py`、`memory_io.py` 四组和 `e2e.py` 回归全部通过。
 
-Rust 单独验证精确条目/深度/期限计数、metadata 检查后文件增长时最多读取 limit+1 字节并计入总预算、父目录改名后保留目录能力、叶子替换拒绝和动态规划匹配。非 UTF-8 文件名专项在 Linux 执行，APFS 不允许构造该测试名称，不能把本机通过当作该专项通过。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/jiawenyao401/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器；详见[验证记录](validation.md)。该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商请求，不以协议 fixture 代替断电硬件持久性认证。
+Rust 单独验证精确条目/深度/期限计数、metadata 检查后文件增长时最多读取 limit+1 字节并计入总预算、父目录改名后保留目录能力、叶子替换拒绝和动态规划匹配。非 UTF-8 文件名专项在 Linux 执行，APFS 不允许构造该测试名称，不能把本机通过当作该专项通过。PR #77 最终 head `bc7ef30467ad8c436585eeee4b1cfc99d16ef68f` 已通过 [CI 37105552392](https://github.com/StateKnot/JiaClaw/actions/runs/37105552392)，含 Linux/macOS、Chromium 与真实容器；详见[验证记录](validation.md)。该批只使用本机模型协议、一次性凭据和临时文件，没有真实供应商请求，不以协议 fixture 代替断电硬件持久性认证。
 
 PR #78 的 mkdir/move 最终本机 875 项 Rust 通过（library 364、core 122、host 389），1 项真实 Docker 专项本地 ignored 留待 CI；fmt、Clippy correctness/suspicious 与锁定 host 构建通过，保留既有 style/pedantic warnings。`memory_io` 定向 24 项通过，含 10 项新增本机 mutation 测试。最终生产二进制 `tests/workspace_mutations.py` 六组、`workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py` 和 `memory_io.py` 四组全部通过。
 
-本机 macOS 证据包含真实内核原子不覆盖竞争，以及 EXDEV / ENOSYS / EACCES 注入后不回退且保留两端；没有把它记为真实跨卷实测。Linux 另设 `/dev/shm` 与临时目录不同设备的真实 EXDEV 专项，CI 缺少该前提会失败，非 CI 仅允许显式跳过。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/jiawenyao401/JiaClaw/actions/runs/37107782116)，含 Linux/macOS、Chromium、真实容器及 Linux 真实 EXDEV 专项。完整证据见[验证记录](validation.md)。
+本机 macOS 证据包含真实内核原子不覆盖竞争，以及 EXDEV / ENOSYS / EACCES 注入后不回退且保留两端；没有把它记为真实跨卷实测。Linux 另设 `/dev/shm` 与临时目录不同设备的真实 EXDEV 专项，CI 缺少该前提会失败，非 CI 仅允许显式跳过。PR #78 最终 head `9690692bbb208fe5bebac3eab69a73540e335c16` 已通过 [CI 37107782116](https://github.com/StateKnot/JiaClaw/actions/runs/37107782116)，含 Linux/macOS、Chromium、真实容器及 Linux 真实 EXDEV 专项。完整证据见[验证记录](validation.md)。
 
 本轮 stat/tree 最终本机全量 Rust 884 项通过（library 372、core 123、host 389），1 项真实 Docker 专项本地 ignored 由 Linux CI 执行；fmt、Clippy correctness/suspicious 与锁定 host 构建通过，仍有 style/pedantic warnings。最终二进制 `tests/filesystem_info.py` 六组通过，验证元数据字段/时间、二进制与超大稀疏文件、相对 DFS/隐藏条目、链接与特殊类型、持写锁时只读可完成、严格参数及深度/条目/输出预算、独立配置和整批授权。`workspace_files.py` 四组、`file_search.py` 六组、`native_tools.py`、`mcp.py`、`memory_io.py` 四组、`e2e.py`、`workspace_mutations.py` 六组共七套本批进程回归全部通过、退出码 0。
 
