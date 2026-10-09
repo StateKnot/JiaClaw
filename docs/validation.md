@@ -868,3 +868,10 @@ PR #99 初版固定 head `364b2741a136ac9540b4bd12f8040e85b8f643dc`、tree `a364
 最后能力边界复核将网关tracked能力403/503从可选缺失中移除：原签名明确404才可使用已有普通会话路径，拒绝/暂不可用不可授权旧发送。浏览器第七组分别注入403/503并检查连接失败、无会话列表读取或PUT。最终生产binary重新冻结为 `b023f3f890a4055bf13ff2a0bbb06d133394bb3ba1e0d00e3fc7e583804c3311`，十组再次实际通过；098版的完整十二相关套件仅保留为上一阶段证据，不借用为新字节资格。
 
 最终 b023f3f8 字节上的13套相关本机验收（六浏览器，其中租户十组、原Web stream十二组；七API/进程）全部通过。最终源码完整1218 Rust（396/123/699）、fmt、必需correctness/suspicious Clippy、locked build与parser八组再次通过。完整跨平台36强制进程、Linux六浏览器/实际Docker及四优化候选的固定新head官方资格待核对；公开发布不执行，原各项生产/fixture期限保持不变。
+
+
+首版 a0f8c2e 官方[CI 37990756754](https://github.com/StateKnot/JiaClaw/actions/runs/37990756754)不计完整通过。[container 114023990792](https://github.com/StateKnot/JiaClaw/actions/runs/37990756754/job/114023990792)在源码构建前拉取固定Rust基础镜像因Docker Hub匿名额度429失败，日志SHA256 `6287a7c5196d38c844beb5b4eaad564b9cfdeffdfd82626a8f68890834d5394d`。Ubuntu完整36进程、原五浏览器/十二Web流式组及新租户1..6/8组已通过，随后第九组原40秒等待失败；日志SHA256 `64c41cc5c475c08a74ff59c1e0ea784feda05dd35a09f4830bf722eac2b817d1`。失败未打印实际页面状态，具体调度根因未证明；该夹具仅对GET注入running DTO，不能要求合法快完成的首次PUT仍running，也未等前一Bob请求的独立网关hold结算。
+
+修订先在原15秒范围核对该真实hold结算，并同时故障注入原首次PUT及后续GET的响应视图，分别断言真实HTTP202/200、单一PUT/模型派发、固定30秒窗口；补失败时实际status/收据/hold/计数诊断。没有改变真实后端状态、原执行或任何15/30/40/240秒预算。b023f3f8生产字节与全部编译输入保持不变，修订十组再次本机完整通过；其余十二套同字节相关回归及完整Rust/fmt/Clippy/parser证据保持有效，新固定head官方资格须重新核对。目录浏览器只证明实际独立有限页，时钟并列排序由原注册表/纯validator测试分别覆盖，不以浏览器日志措辞扩张资格。
+
+CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html)，无需账户或新增secret。匿名实际读取Rust、Debian、Alpine三个manifest的内容SHA256分别与现有固定值 `5771a3cc2081935c59ac52b92d49c9e164d4fed92c9f6420aa8cc50364aead6e`、`3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251`、`ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507`完全一致。只改变CI镜像来源，保留Dockerfile原默认值/所有内容摘要/20分钟container和40分钟主作业及候选预算，不做浮动标签回退、不跳过验收。manifest核对不代替实际镜像/ENOSPC/沙箱资格，仍由新完整CI强制验证；CI工作流变化也触发四平台候选重新资格化。

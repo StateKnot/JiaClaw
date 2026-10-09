@@ -6,6 +6,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
       - 'scripts/install.sh'
       - 'scripts/package_release.py'

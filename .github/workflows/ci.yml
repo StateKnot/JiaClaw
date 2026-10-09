@@ -84,7 +84,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           JIACLAW_TEST_DOCKER: /usr/bin/docker
-          JIACLAW_TEST_EXEC_IMAGE: alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
+          JIACLAW_TEST_EXEC_IMAGE: public.ecr.aws/docker/library/alpine@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
         run: |
           docker pull "$JIACLAW_TEST_EXEC_IMAGE"
           cargo test -p jiaclaw real_container --locked -- --ignored
@@ -96,7 +96,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: docker build --tag jiaclaw:ci .
+      # Docker's public ECR copies have the same pinned manifest bytes. Avoid
+      # Docker Hub anonymous quotas without credentials or a mutable fallback.
+      - name: Build image from pinned public Docker Official Images
+        run: |
+          docker build --tag jiaclaw:ci \
+            --build-arg RUST_IMAGE=public.ecr.aws/docker/library/rust@sha256:5771a3cc2081935c59ac52b92d49c9e164d4fed92c9f6420aa8cc50364aead6e \
+            --build-arg RUNTIME_IMAGE=public.ecr.aws/docker/library/debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 .
       - name: Image startup as non-root with read-only root filesystem
         run: python3 tests/container.py jiaclaw:ci
       - name: Isolated user gateway with bounded persistent volumes
