@@ -58,6 +58,12 @@ try:
     with tempfile.TemporaryDirectory(prefix='jiaclaw-web-stream-') as temporary:
         root = Path(temporary)
         app = fixture.App(root, 'browser', timeout=15)
+        # Actual installed catalog exceeds the per-turn authorization limit.
+        # No triggers: discovery must never silently grant any of these skills.
+        for index in range(20):
+            skill = app.workspace / 'skills' / f'catalog-{index:02d}'
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text(f'---\nname: catalog-{index:02d}\ndescription: Browser catalog acceptance\n---\nUse only when explicitly authorized.\n')
         app.start()
         control = ThreadingHTTPServer(('127.0.0.1', 0), Control)
         control.daemon_threads = True

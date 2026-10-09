@@ -185,9 +185,10 @@ $('chat-form').addEventListener('submit', event => {
       if (!turnCapabilities?.streaming || pendingTurn) return;
       if (Turn.bytes(text) > 32768) throw new Error('实时消息超过 32 KiB UTF-8 上限。');
       const names = id => [...$(id).querySelectorAll('input:checked')].map(e => e.value);
-      const tools = names('turn-tools');
+      const tools = names('turn-tools'), skills = names('turn-skills');
       if ($('turn-tools').childElementCount && !tools.length) { $('turn-permissions').open = true; throw new Error('请选择本次允许的工具；空白不会授权全部工具。'); }
-      const body = {session_id:selected, prompt:text, enabled_tools:tools, enabled_skills:names('turn-skills')};
+      if (tools.length > 128 || skills.length > 16) { $('turn-permissions').open = true; throw new Error('单次最多授权 128 个工具和 16 个技能；请减少勾选。'); }
+      const body = {session_id:selected, prompt:text, enabled_tools:tools, enabled_skills:skills};
       if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
       const attempt = trackTurn(createId(), body); await streamTurn(attempt); return;
     }
@@ -564,8 +565,10 @@ async function turnControl(fn) {
   catch (error) { if (owner === identity && !(error instanceof StaleIdentity)) { attempt.fresh = false; status(error.message + ' 请继续按原编号核对。', true); } }
   finally { if (owner === identity && pendingTurn === attempt) { turnControlBusy = false; controls(); } }
 }
-function renderPermissionList(id, records, maximum) {
-  if (!Array.isArray(records) || records.length > maximum || new Set(records.map(r => r.name)).size !== records.length || records.some(r => typeof r.name !== 'string' || !r.name || Turn.bytes(r.name) > 128 || typeof r.description !== 'string')) throw new Error('工具或技能注册表异常；未授权任何工具。');
+function renderPermissionList(id, records) {
+  // Catalog size and per-turn authorization are separate bounds. Installed
+  // skills beyond the submission limit must remain individually selectable.
+  if (!Array.isArray(records) || records.length > 4096 || records.some(r => !r || typeof r.name !== 'string' || !r.name || Turn.bytes(r.name) > 128 || typeof r.description !== 'string') || new Set(records.map(r => r.name)).size !== records.length) throw new Error('工具或技能注册表异常或超过 4096 项；未授权任何工具。');
   $(id).replaceChildren();
   for (const record of records) {
     const label = document.createElement('label'), input = document.createElement('input'), span = document.createElement('span');
@@ -583,7 +586,7 @@ async function connectTurns() {
   if (c.streaming) {
     const tools = await api('/api/tools', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
     const skills = await api('/api/skills', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
-    renderPermissionList('turn-tools', tools.tools, 128); renderPermissionList('turn-skills', skills.skills, 16);
+    renderPermissionList('turn-tools', tools.tools); renderPermissionList('turn-skills', skills.skills);
   }
 }
 // Bound the displayed draft independently of the larger validated wire budget.

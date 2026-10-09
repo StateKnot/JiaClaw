@@ -14,7 +14,19 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
  const finish=async()=>{await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);await page.locator('#turn-finish').click();};
  const releaseAndCheck=async(caseName,id)=>{await ctl('release',caseName);await until(async()=>{const s=await ctl('status',caseName);const r=await fetch(base+'/api/turns/'+id,{headers:{Authorization:'Bearer '+token}});const value=await r.json();return s.rows.some(r=>r.id===id&&r.state!=='running')&&!value.active},'actual terminal');await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-abandon').disabled);};
  try {
-  await page.goto(base);await connect();
+  await page.goto(base);
+  // Synthetic tool DTOs exercise only the catalog/selection wire contract;
+  // the 20 skills below are really installed and discovered by the server.
+  await page.route('**/api/tools',async route=>{const response=await route.fetch({maxRetries:0,maxRedirects:0});assert.strictEqual(response.status(),200);const body=await response.json();body.tools.push(...Array.from({length:128},(_,i)=>({name:'browser_catalog_'+i,description:'Catalog contract fixture'})));await route.fulfill({response,json:body});});
+  await connect();assert.strictEqual(await page.locator('#turn-skills input').count(),20);assert(await page.locator('#turn-tools input').count()>128);assert.strictEqual(await page.locator('#turn-permissions input:checked').count(),0);
+  await page.locator('#new-session').click();await page.locator('#turn-permissions summary').click();await page.locator('#turn-tools input[value="file_write"]').check();
+  await page.locator('#turn-tools input').evaluateAll(inputs=>{for(const input of inputs)if(input.value.startsWith('browser_catalog_'))input.checked=true;});
+  await page.locator('#message').fill('catalog-permission-negative');await page.locator('#send').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('单次最多授权'));
+  await page.locator('#turn-tools input').evaluateAll(inputs=>{for(const input of inputs)if(input.value.startsWith('browser_catalog_'))input.checked=false;});
+  await page.locator('#turn-skills input').evaluateAll(inputs=>{inputs.forEach((input,index)=>input.checked=index<17);});await page.locator('#send').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('单次最多授权')&&!document.getElementById('send').disabled);
+  assert.strictEqual(submissions.length,0);assert.strictEqual(await page.locator('#turn-id').inputValue(),'');assert.strictEqual(await page.evaluate(()=>location.hash),'');assert.strictEqual((await ctl('status','catalog-permission-negative')).count,0);assert.strictEqual((await ctl('status','catalog-permission-negative')).rows.length,0);
+  await page.unroute('**/api/tools');await connect();assert.strictEqual(await page.locator('#turn-skills input').count(),20);assert.strictEqual(await page.locator('#turn-permissions input:checked').count(),0);
+  console.log('PASS web stream 10: real 20-skill catalog plus oversized tool DTO catalog, no implicit permissions, per-turn limits reject before UUID/admission/model/effects');
   await page.locator('#new-session').click();await page.locator('#message').fill('permission-negative');await page.locator('#send').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('请选择本次允许的工具'));
   assert.strictEqual(submissions.length,0);assert.strictEqual((await ctl('status','permission-negative')).count,0);
   await ctl('gate','stream-tools');
