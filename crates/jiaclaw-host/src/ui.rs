@@ -30,3 +30,9 @@ pub(super) async fn javascript() -> Response {
 pub(super) async fn stylesheet() -> Response {
     asset("text/css; charset=utf-8", include_str!("../ui/app.css"))
 }
+pub(super) async fn turn_stream() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/turn-stream.js"),
+    )
+}

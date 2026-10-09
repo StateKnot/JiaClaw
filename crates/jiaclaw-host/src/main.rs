@@ -1023,6 +1023,7 @@ fn build_router_with_body_limit(
     let mut router = Router::new()
         .route("/", get(ui::index))
         .route("/ui/app.js", get(ui::javascript))
+        .route("/ui/turn-stream.js", get(ui::turn_stream))
         .route("/ui/app.css", get(ui::stylesheet))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
@@ -12044,6 +12045,24 @@ mod tests {
             .contains("frame-ancestors 'none'"));
         assert_eq!(page.headers()["x-content-type-options"], "nosniff");
         assert!(body_text(page).await.contains("JiaClaw"));
+        let parser = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/ui/turn-stream.js")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(parser.status(), StatusCode::OK);
+        assert_eq!(parser.headers()["cache-control"], "no-store");
+        assert_eq!(parser.headers()["x-content-type-options"], "nosniff");
+        assert!(parser.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("script-src 'self'"));
+        assert!(body_text(parser).await.contains("class Parser"));
         let response = app
             .oneshot(
                 Request::builder()

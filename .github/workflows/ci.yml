@@ -65,6 +65,7 @@ jobs:
       - run: python3 tests/wecom_startup.py target/debug/jiaclaw
       - run: python3 tests/dingtalk.py target/debug/jiaclaw
       - run: python3 tests/installer.py target/debug/jiaclaw
+      - run: node tests/turn_stream.cjs
       - name: Browser acceptance
         if: runner.os == 'Linux'
         run: |
@@ -74,6 +75,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/outbox_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/scheduler_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/read_only_browser.cjs target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/web_stream.py target/debug/jiaclaw
       - name: Real container sandbox acceptance
         if: runner.os == 'Linux'
         env:

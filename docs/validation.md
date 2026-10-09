@@ -1,5 +1,19 @@
 # 基础能力验收记录
 
+## Web 原请求流式批次
+
+本批复用 PR96 已资格化原身份/正文流式，实现认证 capability、显式工具/技能、新 http 会话、一次提交前记录原 UUID、片段编号刷新 GET、原正文/权限的明确同编号重试、持久取消、人工核对和未知结果保留。浏览器不派生新的模型循环、自动重连/重发或扩大 gateway/只读 Key 权限；真实执行 owner 和账本合同不变。
+
+开发二进制的真实 Chromium156.0.8078.4 / Playwright1.62.1 八组已通过：门控前预览/两轮实际 file_write 与 Unicode落盘、持久取消后零后续工具、刷新仅原 UUID GET且实际正文 owner 结束后才解除模型gate、真实终态SQL回滚/无成功、实际已提交响应丢失后的同 UUID/正文/权限200且零额外派发、1900KiB预览/结果的独立DOM上限、原浏览器总期限abort但原模型仍结算/不伪造cancel_requested，以及部分终态/XSS/移动布局/身份切换后的迟到清理。解析器另覆盖逐字节Unicode、大终态微片合并、身份/顺序/授权/终态与wire/帧/预览上限。
+
+首轮未找到固定版本浏览器，使用已安装Chromium进行开发验收；固定Playwright所需Chromium151仍在临时目录准备。首轮fixture把既有账本submitting误写为submitted，以及测试切换details展开状态不一致，均保留失败日志并修正；新会话现在清空工具选择并关闭权限表单，新跟踪关闭核对表单。原生产/fixture预算没有延长。后续固定最终源码、完整Rust/33套/五套浏览器与跨平台CI以本批draft PR最终证据为准，不借用开发成功；真实供应商、租户、代理及durable仍未认证。
+
+## HTTP 流式最终 CI 回填
+
+[PR #96](https://github.com/StateKnot/JiaClaw/pull/96) 最终 head `988d0cd04559e66c3d08bf7f21a0fc28825c17da`、tree `fb50e89bb17408ba66ff468d010f912f7d6ed365`、base `01034bd2a3152869ecdd9f6aa58d62e04656d7c7`、实际 merge `1820cb34be4028c99c639e6d07c1103e8ae31bbd` 的原始父提交、tree 与实际 checkout 一致。[普通 CI 37934504996](https://github.com/StateKnot/JiaClaw/actions/runs/37934504996) 三项与[候选 37934504971](https://github.com/StateKnot/JiaClaw/actions/runs/37934504971)四项全部 SUCCESS，公开发布作业 SKIPPED。macOS1207/Linux1208 Rust；两普通平台全部33套进程通过，HTTP 身份七组、正文流式七组、CLI七组、十三项HTTP资源/通知边界及六项旧session取消均在全部六个平台作业通过。Linux另有四Chromium、单独真实Docker；容器验证非root、只读根、命名卷恢复和真实租户ENOSPC。
+
+四候选完成真实优化归档安装十三组，source/parents/tree/clean/native platform、实际archive/binary摘要及官方artifact ID/ZIP digest均已核对，没有另行下载ZIP。证据 `/tmp/jiaclaw-oct9j-delivery/pin.json`、`/tmp/jiaclaw-oct9j-ci-audit/evidence.json`；本机冻结二进制 SHA256 `24d2b93581b942f928a8728fed8de377f4dd0d5752bb188b82120c3e209cc059` 的1207 Rust/fmt/必需Clippy/locked build/全部33套通过。此最终资格包含下文记录的原截止测试修正，不借用初版平台成功。它认证 standalone HTTP 应用接线，不认证 Web、租户、供应商、代理或 StateKnot durable。
+
 ## 持久 HTTP 身份最终 CI 回填
 
 [PR #95](https://github.com/StateKnot/JiaClaw/pull/95) 最终 head `01034bd2a3152869ecdd9f6aa58d62e04656d7c7`、tree `048c06595cc83c4bcefab65318ca3b8fec485593`、base `e3986d6d3bb10532504de4d5d334a7447343cd19`、实际 merge `f3ce2267f2f26e18b29887d45831edfe8c8ca872` 的原始父提交/tree与各job真实checkout已核对。[普通CI37924558232](https://github.com/StateKnot/JiaClaw/actions/runs/37924558232)三项与[四平台候选37924558245](https://github.com/StateKnot/JiaClaw/actions/runs/37924558245)四项全部SUCCESS，公开发布作业SKIPPED。macOS1205/Linux1206 Rust、两普通平台32套、十一项HTTP边界/六项旧session取消、HTTP七组/CLI七组、Linux四Chromium及单独真实Docker均通过；容器验证非root/只读根/命名卷恢复和真实租户ENOSPC隔离。

@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-09 13:48 UTC 再次从官方 API 固定 StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140（OPEN/无回复），Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release/#31（OPEN/一回复）/#41（OPEN/无回复）/未合并 draft PR40 head `7a7afea0244828851118ba32d1cf37d906a3f388`，均未变化。PR96最终七项CI及四平台候选已逐项回填；本批[Web流式](web-streaming.md)继续实际接线原身份、授权、取消和核对，属于应用能力，不重复提交框架缺陷。租户、真实供应商/代理、stdio/外部写入和 durable 仍保留独立门槛。
+
 2026-10-09 12:10 UTC 本轮再次读取当前main/release/issues：StateKnot `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`、alpha.1/#140和Brokerrouter `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无release/#31/#41/未合并PR40均未变化。新[HTTP正文流式](http-streaming.md)复用既有Brokerrouter SSE，属于应用真实接线，不增加框架资格或另报重复issue；Web/租户/代理/供应商与durable门槛分别保留。
 
 2026-10-09 本批 main `e01ecb94919d992eb0b74b3db00d70742820b4cc`、无 release、#31/#41 与未合并 draft #40 的 head `7a7afea0244828851118ba32d1cf37d906a3f388` 未变。实际新增[HTTP 请求身份/核对](http-turns.md)，调用现成 SSE 收据和同一原生授权循环，已准入 UUID 贯穿模型账本本地 turn_id；不伪造 governed turn header、不重发未知模型。当前 HTTP 出站是 JSON，Web/token delivery 和租户协议仍未接通；上游 slow-consumer、真实供应商与 durable 原生输出资格分别保留，不重复提交 issues。
@@ -17,7 +19,7 @@
 | 能力 | 上游当前状态 | JiaClaw 状态 |
 |---|---|---|
 | 文本 Chat Completions | 已支持 | BrokerrouterProvider 接入有界异步非流式请求，无重定向/自动重试 |
-| SSE | 已有协议支持，受端点能力与护栏限制；资源修复在未合并 PR #40 | 单次 CLI 已实际接通逐事件读取与收据/取消边界；现有 HTTP SSE 仍是完成后分块，Web/租户与联合认证另计 |
+| SSE | 已有协议支持，受端点能力与护栏限制；资源修复在未合并 PR #40 | 单次 CLI 和持久 HTTP 已实际接通逐事件读取与收据/取消边界，PR #93/#96 最终七项 CI 通过；旧 `/api/chat` 仍保留兼容分块，Web 本批接线，租户与联合认证另计 |
 | embeddings | 已有网关契约 | 已接入显式刷新、私有 SQLite 索引、内容新鲜度校验与持久化调用账本；供应商检索质量待授权验收，见[语义记忆](semantic-memory.md) |
 | 个人配置 `init-personal` | 已实现事务化初始化 | 可按上游消费者指南接入自己的网关 |
 | 工具调用 | 端点能力控制；fixture 已认证 | 已接原生 tools/tool_calls/role:tool 和调用 ID 关联，见[合同与验收](native-tools.md)；缺真实供应商生产默认 |
