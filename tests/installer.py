@@ -54,7 +54,8 @@ shutil.copyfile(source, args[args.index('--output')+1])
     assert (install / 'jiaclaw').read_bytes() == before
     # A checksummed archive can still contain the wrong release. Do not replace
     # an existing installation merely because the downloaded binary can run.
-    binary.write_text('#!/bin/sh\nprintf "JiaClaw invalid-fixture-version\\n"\n'); binary.chmod(0o755)
+    wrong_version = 'v9.9.9' if version != 'v9.9.9' else 'v0.0.0'
+    binary.write_text('#!/bin/sh\nprintf "JiaClaw ' + wrong_version + '\\n"\n'); binary.chmod(0o755)
     with tarfile.open(asset, 'w:gz') as archive: archive.add(binary, arcname='jiaclaw')
     checksum = hashlib.sha256(asset.read_bytes()).hexdigest()
     sums.write_text(checksum + '  ' + asset.name + '\n')
