@@ -731,6 +731,7 @@ mod tests {
                 permits: Arc::new(tokio::sync::Semaphore::new(1)),
                 timeout: Duration::from_secs(10),
                 control: Arc::new(tokio::sync::Semaphore::new(8)),
+                streams: Arc::new(tokio::sync::Semaphore::new(4)),
                 scheduled_jobs: false,
                 tracked_turns: false,
                 admission: crate::gateway::scheduler::Stop::new(),
@@ -813,6 +814,7 @@ mod tests {
             token: HeaderValue::from_static("Bearer private-backend"),
             permit,
             control: Arc::new(tokio::sync::Semaphore::new(2)),
+            streams: Arc::new(tokio::sync::Semaphore::new(2)),
         };
         let state = Arc::new(State {
             registry,
@@ -821,6 +823,7 @@ mod tests {
             permits: Arc::new(tokio::sync::Semaphore::new(1)),
             timeout: Duration::from_secs(10),
             control: Arc::new(tokio::sync::Semaphore::new(8)),
+            streams: Arc::new(tokio::sync::Semaphore::new(4)),
             scheduled_jobs: true,
             tracked_turns: false,
             admission: crate::gateway::scheduler::Stop::new(),

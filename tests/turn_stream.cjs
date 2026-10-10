@@ -56,3 +56,8 @@ assert.throws(()=>gatewaySnapshot({...ownResult,receipt:{...ownResult.receipt,se
 assert.throws(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial));
 assert.throws(()=>gatewaySnapshot({...ownResult,state:'completed'},initial));
 console.log('PASS parser 8: pinned tenant JSON scope, finite payload-free admissions, original receipt/session and fixed tool authority');
+
+const streamGateway={...gateway,gateway_protocol:2,streaming:true,stream_suffix:'/stream',turn_budget_secs:15,max_stream_wire_bytes:12*1024*1024,max_preview_round_bytes:2*1024*1024,max_preview_total_bytes:8*1024*1024};
+assert.doesNotThrow(()=>gatewayCapabilities(streamGateway));
+for(const change of [{streaming:false},{gateway_protocol:1},{turn_budget_secs:301},{turn_budget_secs:9},{stream_suffix:'/anything'},{max_stream_wire_bytes:Infinity},{max_preview_round_bytes:3},{max_preview_total_bytes:0}])assert.throws(()=>gatewayCapabilities({...streamGateway,...change}));
+console.log('PASS parser 9: explicit paired tenant SSE capability budgets; existing JSON workbench remains usable');

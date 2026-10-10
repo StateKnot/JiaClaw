@@ -434,6 +434,7 @@ mod tests {
                     token: axum::http::HeaderValue::from_static("Bearer test-only-token"),
                     permit: Arc::new(Semaphore::new(1)),
                     control: Arc::new(Semaphore::new(2)),
+                    streams: Arc::new(tokio::sync::Semaphore::new(2)),
                 },
             )]),
             client: reqwest::Client::builder()
@@ -445,6 +446,7 @@ mod tests {
             permits: Arc::new(Semaphore::new(1)),
             timeout: Duration::from_secs(5),
             control: Arc::new(Semaphore::new(8)),
+            streams: Arc::new(tokio::sync::Semaphore::new(4)),
             scheduled_jobs: true,
             tracked_turns: false,
             admission: crate::gateway::scheduler::Stop::new(),

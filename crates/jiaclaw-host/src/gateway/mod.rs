@@ -42,6 +42,7 @@ struct Backend {
     token: axum::http::HeaderValue,
     permit: Arc<Semaphore>,
     control: Arc<Semaphore>,
+    streams: Arc<Semaphore>,
 }
 struct State {
     registry: Registry,
@@ -51,6 +52,7 @@ struct State {
     permits: Arc<Semaphore>,
     timeout: Duration,
     control: Arc<Semaphore>,
+    streams: Arc<Semaphore>,
     scheduled_jobs: bool,
     tracked_turns: bool,
     reserved_turns: AtomicUsize,
@@ -283,6 +285,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 token,
                 permit: Arc::new(Semaphore::new(usize::from(!reserved.contains(&backend.id)))),
                 control: Arc::new(Semaphore::new(2)),
+                streams: Arc::new(tokio::sync::Semaphore::new(2)),
             },
         );
     }
@@ -304,6 +307,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         permits: Arc::new(Semaphore::new(capacity - reserved_count)),
         timeout,
         control: Arc::new(Semaphore::new(8)),
+        streams: Arc::new(tokio::sync::Semaphore::new(4)),
         scheduled_jobs: config.scheduled_jobs,
         tracked_turns: config.tracked_turns,
         reserved_turns: AtomicUsize::new(reserved_count),

@@ -23,6 +23,8 @@ use uuid::Uuid;
 const MAX_BODY: usize = 64 * 1024;
 const MAX_RECEIPT: usize = crate::http_turn_store::MAX_RESULT_BYTES + 16_384;
 const IO_BUDGET: Duration = Duration::from_secs(5);
+#[path = "turn_stream.rs"]
+mod stream;
 
 fn json_content(headers: &HeaderMap) -> bool {
     let mut values = headers.get_all(header::CONTENT_TYPE).iter();
@@ -47,6 +49,10 @@ struct Capability {
     max_active: usize,
     session_prefix: String,
     max_receipt_bytes: usize,
+    stream_suffix: String,
+    max_stream_wire_bytes: usize,
+    max_preview_round_bytes: usize,
+    max_preview_total_bytes: usize,
 }
 
 pub(super) async fn check_backend(
@@ -73,12 +79,16 @@ pub(super) async fn check_backend(
         let c: Capability = serde_json::from_slice(&bytes)?;
         ensure!(
             c.protocol == 1
-                && c.gateway_protocol == 1
+                && c.gateway_protocol == 2
                 && c.agent_name == identity
-                && !c.streaming
+                && c.streaming == c.enabled
                 && c.max_active == 1
                 && c.session_prefix == "http:"
-                && c.max_receipt_bytes == MAX_RECEIPT,
+                && c.max_receipt_bytes == MAX_RECEIPT
+                && c.stream_suffix == "/stream"
+                && c.max_stream_wire_bytes == crate::http_turns::delivery::WIRE_BYTES
+                && c.max_preview_round_bytes == crate::http_turns::delivery::ROUND_BYTES
+                && c.max_preview_total_bytes == crate::http_turns::delivery::PREVIEW_BYTES,
             "backend HTTP turn contract mismatch"
         );
         Ok(c.enabled)
@@ -91,6 +101,7 @@ enum Route {
     Capabilities,
     Catalog(usize, usize),
     Turn(Uuid),
+    Stream(Uuid),
     Cancel(Uuid),
 }
 fn canonical(value: &str) -> Option<Uuid> {
@@ -133,6 +144,11 @@ fn route(method: &Method, uri: &Uri) -> Option<Route> {
         return Some(Route::Capabilities);
     }
     let tail = uri.path().strip_prefix("/api/turns/")?;
+    if let Some(value) = tail.strip_suffix("/stream") {
+        return (method == Method::PUT)
+            .then(|| canonical(value).map(Route::Stream))
+            .flatten();
+    }
     if let Some(value) = tail.strip_suffix("/cancel") {
         return (method == Method::POST)
             .then(|| canonical(value).map(Route::Cancel))
@@ -367,7 +383,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
     match route {
         Route::Capabilities => response(
             Json(
-                json!({"protocol":1,"gateway_protocol":1,"enabled":true,"streaming":false,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"]}),
+                json!({"protocol":1,"gateway_protocol":2,"enabled":true,"streaming":true,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"],"stream_suffix":"/stream","turn_budget_secs":state.timeout.as_secs(),"max_stream_wire_bytes":crate::http_turns::delivery::WIRE_BYTES,"max_preview_round_bytes":crate::http_turns::delivery::ROUND_BYTES,"max_preview_total_bytes":crate::http_turns::delivery::PREVIEW_BYTES}),
             ),
             request_id,
         ),
@@ -387,8 +403,9 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                 Err(e) => admission_error(&e, request_id),
             }
         }
-        Route::Turn(id) | Route::Cancel(id) => {
+        Route::Turn(id) | Route::Stream(id) | Route::Cancel(id) => {
             let cancel = matches!(route, Route::Cancel(_));
+            let streaming = matches!(route, Route::Stream(_));
             let principal = p.clone();
             let existing = match db(state.registry.clone(), control.clone(), move |r| {
                 r.http_turn_identity(&principal, id, write)
@@ -400,11 +417,12 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
             };
             let body = if request.method() == Method::PUT {
                 if !json_content(request.headers())
-                    || request
-                        .headers()
-                        .get_all(header::ACCEPT)
-                        .iter()
-                        .any(|v| v.to_str().is_ok_and(|v| v.contains("text/event-stream")))
+                    || (!streaming
+                        && request
+                            .headers()
+                            .get_all(header::ACCEPT)
+                            .iter()
+                            .any(|v| v.to_str().is_ok_and(|v| v.contains("text/event-stream"))))
                 {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -501,6 +519,20 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                         request_id,
                     );
                 };
+                let delivery = if streaming {
+                    match stream::Delivery::admit(&state.streams, &backend.streams) {
+                        Ok(owner) => Some(owner),
+                        Err(_) => {
+                            return error(
+                                StatusCode::TOO_MANY_REQUESTS,
+                                "stream delivery capacity reached",
+                                request_id,
+                            )
+                        }
+                    }
+                } else {
+                    None
+                };
                 let (sender, waiter) = tokio::sync::oneshot::channel();
                 // Detach before durable admission: HTTP disconnect cannot discard an
                 // admitted execution owner, a DB operation or its capacity permits.
@@ -514,6 +546,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                         request_id,
                         deadline,
                         sender,
+                        delivery,
                     )
                     .await
                     {
@@ -553,6 +586,7 @@ async fn execute(
     request_id: Uuid,
     deadline: Instant,
     sender: tokio::sync::oneshot::Sender<Response>,
+    delivery: Option<Arc<stream::Delivery>>,
 ) -> bool {
     let backend = &state.backends[&p.backend_id];
     if !matches!(
@@ -621,6 +655,12 @@ async fn execute(
             return true;
         }
         Ok(true) => {}
+    }
+    if let Some(delivery) = delivery {
+        return stream::execute(
+            state, p, id, body, hash, request_id, deadline, sender, delivery,
+        )
+        .await;
     }
     let mut success = false;
     let mut idle = Instant::now() >= deadline; // No backend PUT can have been sent yet.
@@ -747,8 +787,11 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn routes_exclude_stream_admin_ambiguous_queries_and_noncanonical_ids() {
+    fn routes_accept_only_explicit_stream_put_and_exclude_admin_ambiguous_queries() {
         let id = Uuid::new_v4();
+        assert!(
+            matches!(route(&Method::PUT, &format!("/api/turns/{id}/stream").parse().unwrap()), Some(Route::Stream(found)) if found == id)
+        );
         for path in [
             format!("/api/turns/{id}/stream"),
             format!("/api/turns/{id}/review"),
