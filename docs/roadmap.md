@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[管理员确认停用技能的新来源版本](skill-source-approval.md)：本机 `skills set-source` 要求已登记且停用的目标、明确 HTTPS 来源/固定 Git 对象 ID/完整原始正文摘要，以及审查过的原锁 hash。目标能力读取、完整候选扫描和同步发布共用既有工作区 writer；成功保留停用与其他来源，只返回 `runtime_applied:false`。随后必须另行启用并认证重载原服务。固定源码 `5bc56d7` 的1252 Rust（另1忽略）、13套真实进程及七组独立 CLI 边界通过；[Standards](reviews/2026-10-11-skill-source-approval-standards.md)/[Spec](reviews/2026-10-11-skill-source-approval-spec.md)聚焦开放0，继承累计历史，不声称穷尽重审。新head的50必需Python、七Chromium和四优化候选须独立官方核对，不借父或本地。来源仍为管理员声明，整包下载/安装/撤销事务、签名、ACL及经验记忆继续开放。
+
+父 PR115 `b9bcf59` 已独立完整合格：七实际作业、49必需Python/七Chromium、四优化候选各13安装/归档/源码检查与artifact API摘要均通过。原Ubuntu首次在固定镜像拉取阶段收到 `toomanyrequests: Rate exceeded`，当时Docker命令尚未执行；同head失败作业重跑通过，不称应用代码修复、不推断账户/IP原因。最终证据只固定在PR正文/pin，不提交自引head纯文档触发资格循环。以下各批待验收文字保留为原交付时快照。
+
 2026-10-11 接入[管理员条件技能启停编辑](skill-policy-edit.md)：本机 `skills set-enabled` 明确要求已登记目录、布尔值与审查过的原 manifest hash，原锁读取、条件核验、完整候选扫描和原子发布共用现有工作区 writer。停用允许修复正文漂移，启用仍核验完整原字节；磁盘 receipt 明确 `runtime_applied:false`，必须另行成功重载原服务。真实初版 no-op 同hash两次发布已复现，修正为 v2 同值拒绝且不 rename，v1 同值允许迁移；hash 仅为内容条件，不保证 ABA 历史。最终 source `d347a278` 的1249 Rust（另1忽略）、12套真实进程、七组独立边界与 fmt/必需Clippy 通过；[Standards](reviews/2026-10-11-skill-policy-edit-standards.md) / [Spec](reviews/2026-10-11-skill-policy-edit-spec.md)聚焦开放0，初/最终证据分别保留。49必需Python/七Chromium/四优化候选的新head须独立官方核对，不借父/本地。安装/更新事务、签名、独立ACL、经验记忆与其他未认证里程碑继续开放。
 
 2026-10-11 接入[已锁技能持久启停](skill-activation.md)：必需来源锁可使用严格版本2逐项显式 `enabled`，停用记录跨重启保留来源、跳过叶文件读取，恢复前核对原字节；成功 HTTP/SIGHUP 重载原子替换表，失败保留旧表。只读 `skills policy` 展示同一次锁扫描的磁盘策略。后续正文/参考选择、摘要、关键词及显式注入排除停用项，不取消已选择工作、不抹除历史或扩大权限。冻结父负例、两次夹具错误与最终绿色证据分别保存。94编译输入、八实际进程套、七独立补边界和双轴审查见[验收记录](validation.md)、[Standards](reviews/2026-10-11-skill-activation-standards.md)和[Spec](reviews/2026-10-11-skill-activation-spec.md)。第48个必需Python套件和四优化候选的新固定head资格须独立核对，不借父或本地。安装事务、签名、独立ACL、经验记忆、真实供应商/浏览器、durable和租户范围继续开放。

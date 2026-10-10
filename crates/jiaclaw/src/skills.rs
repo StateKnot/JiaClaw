@@ -395,6 +395,24 @@ impl SkillDiscovery {
         lock::set_enabled(self, directory, enabled, expected_manifest_sha256)
     }
 
+    /// Confirm a reviewed source pin for an existing disabled declaration.
+    ///
+    /// Reads and verifies the complete proposed SKILL.md inside the workspace
+    /// writer, retaining disabled state. No download, activation or reload occurs.
+    ///
+    /// # Errors
+    /// Requires a current required lock, a changed valid pin, a safely readable
+    /// matching target body, and a valid full proposed enabled catalog. As with
+    /// set_enabled, an error after rename can have committed; inspect disk first.
+    pub fn set_source(
+        &self,
+        directory: &str,
+        source: &SkillSourcePin,
+        expected_manifest_sha256: &str,
+    ) -> Result<SkillLockPolicy, JiaClawError> {
+        lock::set_source(self, directory, source, expected_manifest_sha256)
+    }
+
     fn scan_locked(
         &self,
         strict: bool,

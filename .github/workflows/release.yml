@@ -19,6 +19,7 @@ on:
       - 'tests/skill_lock.py'
       - 'tests/skill_activation.py'
       - 'tests/skill_policy_edit.py'
+      - 'tests/skill_source_approval.py'
       - 'tests/host_log.py'
       - 'tests/mcp.py'
       - 'tests/native_result_limits.py'
@@ -95,6 +96,7 @@ jobs:
           python3 tests/skill_lock.py "target/$TARGET/release/jiaclaw"
           python3 tests/skill_activation.py "target/$TARGET/release/jiaclaw"
           python3 tests/skill_policy_edit.py "target/$TARGET/release/jiaclaw"
+          python3 tests/skill_source_approval.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw" --tool-errors
