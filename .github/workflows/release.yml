@@ -51,12 +51,14 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            job_timeout: 60
           - os: macos-14
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
-    # Four native toolchains run tests and optimized builds from a cold checkout.
-    # This job budget does not change any application or fixture deadline.
-    timeout-minutes: 40
+    # The Intel candidate needed ~38m for unit tests and cold optimized compilation
+    # before acceptance; retain a bounded budget for all remaining qualification.
+    # Other platforms retain 40m. Application and fixture deadlines are unchanged.
+    timeout-minutes: ${{ matrix.job_timeout || 40 }}
     env:
       TARGET: ${{ matrix.target }}
     steps:

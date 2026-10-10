@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+PR109 初次固定 head `fd4f98f` 的 Ubuntu/macOS 官方 CI 均在旧 `workspace_files` 拒绝断言失败；冻结最终二进制也复现三套文件测试仍期待失败后 `completed`/二次模型请求的接线遗漏。本轮按既有 unknown 停止合同修正三套 fixture，拒绝输入拆成逐个明确请求以保留全部边界，共享 wire 断言关闭新发现的 Standards P3 重复启发式，生产实现未变。完整43套实际进程命令已通过；共享版本三套随后重验通过，其余40套fixture字节未变，原矩阵与追加证据分开保留。新增 [Standards](reviews/2026-10-10-tool-failure-fixtures-standards.md) / [Spec](reviews/2026-10-10-tool-failure-fixtures-spec.md) 独立增量审查开放均0，继承范围与初版分别记录。旧 head 的局部候选通过不代替修正后 head 的七官方作业、43 Python、七 Chromium 和四优化候选资格；全部资格仍按固定 head 在PR正文/pin核对。
+
+旧 Intel 优化候选另因40分钟作业上限取消，官方 annotation 与单测20分50秒/优化编译16分49秒证据已保存；仅 Intel 矩阵项增加到60分钟，其他三项维持40分钟，所有验收命令和应用/fixture截止不变。新版本需完整通过该候选后才能计资格，取消不能冒充修复后成功。
+
 本轮已独立核对 PR107/108 最终固定 head 的全部七实际作业、每平台41必需Python、七Chromium和四优化候选各13安装/归档/源码检查；最终证据仅回填各PR正文/pin，未为自引head提交文档。随后冻结 PR108 二进制真实复现命令写入后超时仍继续派发：下一模型轮重复写入两次并报告完成。本批接线[失败工具效果边界](tool-failure-effects.md)，未知错误/超时停止后续批次和模型请求，受信本地纯错误保留反馈，custom/MCP/HTTP/semantic默认unknown；独立 Spec 初版另发现超大失败错误被标成完成并丢效果标记的 P2，真实 native-loop 负例复现后保留失败来源与 marker 修正；最终 [Standards](reviews/2026-10-10-tool-failure-effects-standards.md) / [Spec](reviews/2026-10-10-tool-failure-effects-spec.md) 当前开放均0，初版报告独立保留。本机最终源码1231 Rust通过（另1忽略），必需Clippy与fmt/parser通过；最终二进制的四组失败矩阵共24实际用例、文件/Docker成功结果丢失控制独立验收。初版源码12套相关进程验收与最终修正源码证据分别记录。本批新draft PR固定head的43必需Python/七Chromium/四优化候选资格另计，不能借用PR108。通用外部效果确定性、durable恢复、独立钉钉/WhatsApp、多模态及真实供应商/安装继续开放。
 
 2026-10-10 PR #105 固定 head `ac680464` 的[五渠道准入最终资格](validation.md#pr-105-五渠道准入最终-ci-回填)已独立核对七官方作业、40必需Python/七浏览器与四实际优化归档/安装/源码证明，Standards渠道事务P2重复启发式关闭；租户预览UI的PR104资格保持独立。本轮接线[私有状态文件Module](private-state-files.md)，模型账本和语义索引仅共享叶子检查/安全打开，原目录、锁、schema及恢复分别保留。本批1227 Rust与16套实际进程/三Chromium/parser全部通过，独立Standards/Spec新增未解决均0，历史私有文件P3重复启发式关闭。原渠道P2保持关闭。PR #106 源码 head `f0f12ec8` 的七官方作业/四优化候选也已[独立通过](validation.md#pr-106-私有状态文件最终-ci-回填)；后续文档回填提交仍按自身 head 验收。

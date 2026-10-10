@@ -21,6 +21,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+from tool_batches import assert_tool_batch
+
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/jiaclaw').resolve()
 env = {key: value for key, value in os.environ.items() if not key.startswith('JIACLAW_')}
@@ -172,22 +174,7 @@ class Host:
         return code, body, count
 
     def batch(self, calls, rejected=False):
-        code, body, count = self.chat(calls)
-        assert code == 200 and body['status'] == 'completed', (code, body.get('error'), count)
-        records = body['tool_calls']
-        assert len(records) == len(calls) and count == 2, (len(records), len(calls), count)
-        outputs = []
-        for (name, _args), record in zip(calls, records):
-            assert record['tool_name'] == name
-            result = record['result']
-            if rejected:
-                assert isinstance(result, dict) and result.get('error'), (name, result)
-            else:
-                assert isinstance(result, str), (name, result)
-                result = json.loads(result)
-                assert isinstance(result, dict)
-            outputs.append(result)
-        return outputs
+        return assert_tool_batch(self.chat, calls, rejected)
 
     def tool(self, name, arguments, rejected=False):
         return self.batch([(name, arguments)], rejected)[0]
