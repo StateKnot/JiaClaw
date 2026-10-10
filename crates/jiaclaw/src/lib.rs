@@ -97,10 +97,11 @@ pub use tools::{
     clamp_web_fetch_max_chars, clamp_web_search_max_results, html_to_readable_text,
     parse_web_fetch_args, parse_web_search_args, validate_web_fetch_url, DateTimeTool,
     FileCopyTool, FileDeleteTool, FileListTool, FileReadTool, FileWriteTool, HttpGetTool,
-    JsonQueryTool, MemoryReadTool, ShellExecTool, Tool, ToolRegistry, WebFetchTool, WebSearchTool,
-    WorkspaceListTool, DEFAULT_BRAVE_SEARCH_ENDPOINT, WEB_FETCH_DEFAULT_MAX_CHARS,
-    WEB_FETCH_HTTP_TIMEOUT_SECS, WEB_FETCH_MAX_CHARS, WEB_FETCH_MAX_REDIRECTS, WEB_FETCH_MIN_CHARS,
-    WEB_SEARCH_DEFAULT_MAX_RESULTS, WEB_SEARCH_HTTP_TIMEOUT_SECS, WEB_SEARCH_MAX_RESULTS,
+    JsonQueryTool, MemoryReadTool, ShellExecTool, Tool, ToolFailureEffect, ToolRegistry,
+    WebFetchTool, WebSearchTool, WorkspaceListTool, DEFAULT_BRAVE_SEARCH_ENDPOINT,
+    WEB_FETCH_DEFAULT_MAX_CHARS, WEB_FETCH_HTTP_TIMEOUT_SECS, WEB_FETCH_MAX_CHARS,
+    WEB_FETCH_MAX_REDIRECTS, WEB_FETCH_MIN_CHARS, WEB_SEARCH_DEFAULT_MAX_RESULTS,
+    WEB_SEARCH_HTTP_TIMEOUT_SECS, WEB_SEARCH_MAX_RESULTS,
 };
 pub use workspace::Workspace;
 
@@ -919,7 +920,10 @@ impl JiaClawAgent {
     /// 执行一次工具调用，并把成功/失败结果写入 `ToolCall.result`。
     ///
     /// 超时走现有错误路径：写入错误结果并返回，不 panic。
-    async fn execute_and_record(&self, mut tool_call: ToolCall) -> (ToolCall, String) {
+    async fn execute_and_record(
+        &self,
+        mut tool_call: ToolCall,
+    ) -> (ToolCall, String, Option<tools::ToolFailureEffect>) {
         match self
             .tools
             .execute_with_timeout(&tool_call, self.config.effective_tool_timeout_secs())
@@ -929,13 +933,19 @@ impl JiaClawAgent {
                 tool_call.result = Some(serde_json::json!(result.clone()));
                 self.observe_tool_call(&tool_call.tool_name, true);
                 let message = format!("工具 {} 执行成功:\n{}", tool_call.tool_name, result);
-                (tool_call, message)
+                (tool_call, message, None)
             }
             Err(e) => {
                 let error_msg = format!("工具 {} 执行失败: {}", tool_call.tool_name, e);
-                tool_call.result = Some(serde_json::json!({"error": error_msg.clone()}));
+                let effect = self
+                    .tools
+                    .get(&tool_call.tool_name)
+                    .map_or(tools::ToolFailureEffect::NoEffect, Tool::failure_effect);
+                tool_call.result = Some(serde_json::json!({
+                    "error": error_msg.clone(), "effect_status": effect
+                }));
                 self.observe_tool_call(&tool_call.tool_name, false);
-                (tool_call, error_msg)
+                (tool_call, error_msg, Some(effect))
             }
         }
     }
@@ -1117,9 +1127,22 @@ impl JiaClawAgent {
                     max_iterations
                 );
 
-                let (recorded, message) = self.execute_and_record(tool_call).await;
+                let (recorded, message, failure_effect) = self.execute_and_record(tool_call).await;
                 executed_tool_calls.push(recorded);
                 tool_results.push(message);
+                if failure_effect == Some(tools::ToolFailureEffect::Unknown) {
+                    all_tool_calls.extend(executed_tool_calls);
+                    return Ok(ChatResponse {
+                        message: ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: "工具失败或超时，效果未知；后续步骤已停止。请核查调用结果与工作区，勿直接重试整个请求。".into(),
+                        },
+                        tool_calls: all_tool_calls,
+                        status: RunStatus::RequiresHumanInput,
+                        session_id: None,
+                        routing: response.routing,
+                    });
+                }
             }
 
             all_tool_calls.extend(executed_tool_calls);
@@ -2892,6 +2915,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_failed_tool_error_preserves_unknown_effect_and_stops_dispatch() {
+        struct FailingWriter(std::path::PathBuf);
+        #[async_trait::async_trait]
+        impl Tool for FailingWriter {
+            fn name(&self) -> &str {
+                "file_read"
+            }
+            fn description(&self) -> &str {
+                "Fixture custom implementation with an oversized failure"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type":"object"})
+            }
+            async fn execute(&self, _: serde_json::Value) -> Result<String, JiaClawError> {
+                use std::io::Write;
+                let mut marker = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.0)
+                    .unwrap();
+                marker.write_all(b"x").unwrap();
+                Err(JiaClawError::ToolExecution("x".repeat(300_000)))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("effect.txt");
+        let key = format!("oversized-error-{}", uuid::Uuid::new_v4());
+        let mock = mockito::mock("POST", "/v1/chat/completions")
+            .match_header("Authorization", format!("Bearer {key}").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_header("x-brokerrouter-request-id", &uuid::Uuid::new_v4().to_string())
+            .with_body(serde_json::json!({
+                "choices":[{"index":0,"finish_reason":"tool_calls","message":{
+                    "role":"assistant", "content":null, "tool_calls":[
+                        {"id":"first", "type":"function", "function":{"name":"file_read", "arguments":"{}"}},
+                        {"id":"pending", "type":"function", "function":{"name":"file_read", "arguments":"{}"}}
+                    ]
+                }}]
+            }).to_string())
+            .expect(1)
+            .create();
+        let config = AgentConfig {
+            workspace_path: directory.path().to_owned(),
+            provider: ProviderConfig {
+                provider_type: "brokerrouter".into(),
+                base_url: mockito::server_url(),
+                api_key: Some(key.clone()),
+                ..ProviderConfig::default()
+            },
+            ..AgentConfig::default()
+        };
+        let mut agent = JiaClawAgent::new(config).unwrap();
+        agent.register_tool_for_test(Box::new(FailingWriter(marker.clone())));
+        let mut request = sample_request();
+        request.enabled_tools = vec!["file_read".into()];
+        let selection = agent
+            .config
+            .routing
+            .select(&agent.config.provider, ModelPurpose::Chat);
+        let response = agent
+            .execute_brokerrouter_loop(&request, "fixture", &key, &selection, None)
+            .await
+            .unwrap();
+        assert_eq!(response.status, RunStatus::RequiresHumanInput);
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "x");
+        assert_eq!(response.tool_calls.len(), 1);
+        let result = response.tool_calls[0].result.as_ref().unwrap();
+        assert_eq!(result["effect_status"], "unknown");
+        assert!(result["error"].as_str().unwrap().contains("tool failed"));
+        assert!(result.to_string().len() < 256 * 1024);
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn custom_tool_named_like_a_pure_builtin_retains_unknown_effects() {
+        struct FailingWriter(std::path::PathBuf);
+        #[async_trait::async_trait]
+        impl Tool for FailingWriter {
+            fn name(&self) -> &str {
+                "file_read"
+            }
+            fn description(&self) -> &str {
+                "Fixture custom implementation"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type":"object"})
+            }
+            async fn execute(&self, _: serde_json::Value) -> Result<String, JiaClawError> {
+                std::fs::write(&self.0, "effect").unwrap();
+                Err(JiaClawError::ToolExecution(
+                    "fixture error after write".into(),
+                ))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("effect.txt");
+        let mut agent = JiaClawAgent::new(AgentConfig::default()).unwrap();
+        agent.register_tool_for_test(Box::new(FailingWriter(marker.clone())));
+        let (record, _, effect) = agent
+            .execute_and_record(ToolCall {
+                tool_name: "file_read".into(),
+                arguments: serde_json::json!({}),
+                result: None,
+            })
+            .await;
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "effect");
+        assert_eq!(effect, Some(tools::ToolFailureEffect::Unknown));
+        assert_eq!(record.result.unwrap()["effect_status"], "unknown");
+    }
+
+    #[tokio::test]
     async fn unconfigured_tool_timeout_does_not_change_behavior() {
         let config = AgentConfig::default();
         assert_eq!(config.tool_timeout_secs, None);
@@ -2902,7 +3037,8 @@ mod tests {
             delay: std::time::Duration::from_millis(50),
         }));
 
-        let (recorded, message) = agent.execute_and_record(slow_sleep_call()).await;
+        let (recorded, message, effect) = agent.execute_and_record(slow_sleep_call()).await;
+        assert_eq!(effect, None);
         let result = recorded.result.expect("tool result");
         assert!(!result.to_string().contains("timed out"), "{result}");
         assert!(message.contains("执行成功"), "{message}");
@@ -2920,7 +3056,8 @@ mod tests {
             delay: std::time::Duration::from_secs(10),
         }));
 
-        let (recorded, message) = agent.execute_and_record(slow_sleep_call()).await;
+        let (recorded, message, effect) = agent.execute_and_record(slow_sleep_call()).await;
+        assert_eq!(effect, Some(tools::ToolFailureEffect::Unknown));
         let result = recorded.result.expect("tool result");
         let result_text = result.to_string();
         assert!(

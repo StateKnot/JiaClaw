@@ -82,6 +82,8 @@ jobs:
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw"
+          python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw" --tool-errors
+          python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw" --tool-errors --legacy
           python3 tests/cli_stream.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turns.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_stream.py "target/$TARGET/release/jiaclaw"

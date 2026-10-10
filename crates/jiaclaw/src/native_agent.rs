@@ -216,17 +216,24 @@ impl JiaClawAgent {
             messages.push(message);
             for (call, id) in calls.into_iter().zip(ids) {
                 if let Some(progress) = progress { progress.ensure_open()?; }
-                let (mut record, _) = self.execute_and_record(call).await;
-                let mut needs_review = progress.is_some() && record.result.as_ref().is_some_and(|value| value.get("error").is_some());
+                let (mut record, _, failure_effect) = self.execute_and_record(call).await;
+                // Unknown effects stop every entry point, including ordinary
+                // HTTP/CLI without a progress transport. A trusted local pure
+                // tool error can still be returned to the model for correction.
+                let mut needs_review = failure_effect == Some(crate::tools::ToolFailureEffect::Unknown);
                 let mut result = record.result.as_ref().unwrap_or(&Value::Null).to_string();
                 if result.len() > MAX_RESULT_BYTES {
-                    // Result loss is an execution boundary, independent of the
-                    // caller's progress transport. Stop this batch and any next
-                    // model round; the effect already occurred and cannot be replayed.
+                    // Lost result/error details stop dispatch independently of
+                    // transport. Preserve whether execution failed, and its
+                    // effect classification, instead of claiming completion.
                     needs_review = true;
-                    record.result = Some(
-                        json!({"error":"tool completed but result exceeds 256 KiB; do not replay this operation"}),
-                    );
+                    record.result = Some(match failure_effect {
+                        Some(effect) => json!({
+                            "error":"tool failed but error details exceed 256 KiB; do not replay this operation",
+                            "effect_status":effect,
+                        }),
+                        None => json!({"error":"tool completed but result exceeds 256 KiB; do not replay this operation"}),
+                    });
                     result = serde_json::to_string(&record.result)
                         .expect("fixed result is serializable");
                 }
