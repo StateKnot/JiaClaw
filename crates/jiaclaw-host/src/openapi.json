@@ -1245,7 +1245,7 @@
         ],
         "summary": "列出已加载技能",
         "operationId": "listSkills",
-        "description": "返回进程内技能注册表（启动扫描或最近一次热加载的结果）。改 `skills/**/SKILL.md` 后需 `POST /api/skills/reload` 或 Unix SIGHUP 才会反映到本列表与 chat。",
+        "description": "返回进程内技能注册表（启动扫描或最近一次热加载的结果）。改 `skills/**/SKILL.md` 后需 `POST /api/skills/reload` 或 Unix SIGHUP 才会反映到本列表与 chat。 agent.skill_lock_required=true 时，仅加载与管理员 skills.lock.json 一致的原始字节；source 是来源声明及完整原文件 hash，不是签名认证。",
         "security": [
           {
             "bearerAuth": []
@@ -4008,6 +4008,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillSourcePin"
           }
         }
       },
@@ -4768,6 +4771,31 @@
             "enum": [
               20001
             ]
+          }
+        }
+      },
+      "SkillSourcePin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repository",
+          "revision",
+          "skill_sha256"
+        ],
+        "description": "Administrator-declared origin and exact raw SKILL.md digest; not publisher authentication. Present only for a loaded required-lock catalog.",
+        "properties": {
+          "repository": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTPS origin declaration, no credentials/query/fragment; at most 1024 UTF-8 bytes."
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          },
+          "skill_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
           }
         }
       }

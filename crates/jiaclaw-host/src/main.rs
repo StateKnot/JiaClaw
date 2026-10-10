@@ -3585,6 +3585,8 @@ struct SkillInfo {
     name: String,
     description: String,
     path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<jiaclaw::SkillSourcePin>,
 }
 
 /// 技能列表响应
@@ -3607,6 +3609,7 @@ fn skill_infos(skills: &[jiaclaw::Skill]) -> Vec<SkillInfo> {
             name: skill.name.clone(),
             description: skill.description.clone(),
             path: skill.path.to_string_lossy().to_string(),
+            source: skill.source.clone(),
         })
         .collect()
 }
@@ -4364,7 +4367,8 @@ fn skills_command(config_path: Option<PathBuf>, verbose: bool) -> Result<()> {
 
     let skills_dir = config.workspace_path.join("skills");
 
-    let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path);
+    let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+        .with_lock_required(config.skill_lock_required);
 
     match discovery.discover() {
         Ok(skills) => {
@@ -4393,6 +4397,10 @@ fn skills_command(config_path: Option<PathBuf>, verbose: bool) -> Result<()> {
                     println!("   路径: {}", skill.path.display());
 
                     if verbose {
+                        if let Some(source) = &skill.source {
+                            println!("   来源声明: {} @ {}", source.repository, source.revision);
+                            println!("   原文件 SHA-256: {}", source.skill_sha256);
+                        }
                         println!("\n   内容预览:");
                         let preview = skill
                             .content
@@ -4431,7 +4439,10 @@ fn skills_reload_command(config_path: Option<PathBuf>) -> Result<()> {
     println!("🔄 JiaClaw 技能扫描（CLI）\n");
     println!("📁 工作空间: {}\n", config.workspace_path.display());
 
-    match jiaclaw::SkillDiscovery::new(&config.workspace_path).discover_strict() {
+    match jiaclaw::SkillDiscovery::new(&config.workspace_path)
+        .with_lock_required(config.skill_lock_required)
+        .discover_strict()
+    {
         Ok(skills) => {
             println!("✅ 扫描成功，将加载 {} 个技能:\n", skills.len());
             for skill in &skills {
@@ -4764,6 +4775,7 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
     let mut workspace_ok = false;
     let mut workspace_file_count = 0;
     let mut skills_count = 0;
+    let mut skills_ok = true;
 
     if config.workspace_path.exists() {
         println!("   状态: ✅ 存在");
@@ -4876,8 +4888,9 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
 
                 // 检查技能
                 let skills_dir = config.workspace_path.join("skills");
-                if skills_dir.exists() {
-                    let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path);
+                if skills_dir.exists() || config.skill_lock_required {
+                    let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+                        .with_lock_required(config.skill_lock_required);
                     match discovery.discover() {
                         Ok(skills) => {
                             skills_count = skills.len();
@@ -4892,6 +4905,7 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
                         }
                         Err(e) => {
                             println!("   ⚠️  技能发现失败: {e}");
+                            skills_ok = !config.skill_lock_required;
                         }
                     }
                 } else {
@@ -4911,7 +4925,7 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
     println!("\n🔧 工具系统");
     let provider_check = validate_host_provider(&config);
     let provider_ready = provider_check.is_ok();
-    let mut checks_ok = provider_ready;
+    let mut checks_ok = provider_ready && skills_ok;
     let local_tools = match JiaClawAgent::inspect_local_tool_catalog(&config) {
         Ok(tools) => {
             println!("   本地工具: {} 个", tools.len());

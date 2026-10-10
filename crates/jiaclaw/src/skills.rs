@@ -9,6 +9,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+mod lock;
+pub use lock::SkillSourcePin;
+
 const SKILL_FILE_BYTES: usize = 128 * 1024;
 const CATALOG_BYTES: usize = 2 * 1024 * 1024;
 const CATALOG_SKILLS: usize = 64;
@@ -82,6 +85,10 @@ pub struct Skill {
     /// Exact references permitted by the loaded skill declaration; never auto-read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<SkillResource>,
+
+    /// Loaded administrator origin declaration, never publisher authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SkillSourcePin>,
 }
 
 /// YAML frontmatter 结构
@@ -115,7 +122,7 @@ impl Skill {
             parent
         };
         Self::read(parent, &format!("./{dir_name}/SKILL.md"), skill_dir)?
-            .map(|(skill, _)| skill)
+            .map(|(skill, _, _)| skill)
             .ok_or_else(|| invalid("技能文件不存在"))
     }
 
@@ -125,7 +132,7 @@ impl Skill {
         workspace: &Path,
         relative: &str,
         skill_dir: &Path,
-    ) -> Result<Option<(Self, usize)>, JiaClawError> {
+    ) -> Result<Option<(Self, usize, String)>, JiaClawError> {
         let dir_name = skill_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -174,8 +181,10 @@ impl Skill {
                 content,
                 triggers,
                 resources,
+                source: None,
             },
             raw_bytes,
+            format!("{:x}", sha2::Sha256::digest(raw_content.as_bytes())),
         )))
     }
 
@@ -278,6 +287,7 @@ pub struct SkillDiscovery {
     workspace: PathBuf,
     /// 是否启用自动触发器激活
     auto_trigger_enabled: bool,
+    lock_required: bool,
 }
 
 impl SkillDiscovery {
@@ -288,7 +298,15 @@ impl SkillDiscovery {
             skills_root: workspace_path.join("skills"),
             workspace: workspace_path.to_path_buf(),
             auto_trigger_enabled: true,
+            lock_required: false,
         }
+    }
+
+    /// Require an exact administrator-owned skills.lock.json catalog.
+    #[must_use]
+    pub fn with_lock_required(mut self, required: bool) -> Self {
+        self.lock_required = required;
+        self
     }
 
     /// 设置是否启用自动触发器激活
@@ -337,6 +355,12 @@ impl SkillDiscovery {
     }
 
     fn scan(&self, strict: bool) -> Result<Vec<Skill>, JiaClawError> {
+        let catalog_lock = if self.lock_required {
+            Some(lock::CatalogLock::read(&self.workspace)?)
+        } else {
+            None
+        };
+        let strict = strict || self.lock_required;
         let mut skills = Vec::new();
         let mut names = HashSet::new();
         let mut bytes = 0;
@@ -356,7 +380,10 @@ impl SkillDiscovery {
                 )
             };
             match loaded {
-                Ok(Some((skill, raw_bytes))) => {
+                Ok(Some((mut skill, raw_bytes, raw_hash))) => {
+                    if let Some(lock) = &catalog_lock {
+                        skill.source = Some(lock.bind(&entry.name, &raw_hash)?);
+                    }
                     bytes += raw_bytes;
                     if bytes > CATALOG_BYTES || skills.len() == CATALOG_SKILLS {
                         return Err(invalid("技能目录最多 64 个技能/2 MiB 原始文本"));
@@ -374,6 +401,9 @@ impl SkillDiscovery {
                     tracing::warn!("跳过无效技能目录 {}: {e}", path.display());
                 }
             }
+        }
+        if let Some(lock) = catalog_lock {
+            lock.complete(skills.len())?;
         }
         Ok(skills)
     }
@@ -393,13 +423,18 @@ impl SkillDiscovery {
         {
             return Err(invalid("技能查询需要单个目录名，禁止路径穿越"));
         }
+        if self.lock_required {
+            return Ok(self.discover_strict()?.into_iter().find(|skill| {
+                skill.path.file_name().and_then(|name| name.to_str()) == Some(skill_name)
+            }));
+        }
         let skill_dir = self.skills_root.join(skill_name);
         Skill::read(
             &self.workspace,
             &format!("skills/{skill_name}/SKILL.md"),
             &skill_dir,
         )
-        .map(|loaded| loaded.map(|(skill, _)| skill))
+        .map(|loaded| loaded.map(|(skill, _, _)| skill))
     }
 
     /// 根据用户消息自动查找应该激活的技能
@@ -441,6 +476,7 @@ impl SkillDiscovery {
 pub struct SkillRegistry {
     inner: RwLock<Vec<Skill>>,
     reload_slot: Arc<tokio::sync::Semaphore>,
+    lock_required: bool,
 }
 
 impl SkillRegistry {
@@ -450,7 +486,15 @@ impl SkillRegistry {
         Self {
             inner: RwLock::new(skills),
             reload_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            lock_required: false,
         }
+    }
+
+    /// Capture the immutable administrator lock policy for all later reloads.
+    #[must_use]
+    pub fn with_lock_required(mut self, required: bool) -> Self {
+        self.lock_required = required;
+        self
     }
 
     fn lock_read(&self) -> RwLockReadGuard<'_, Vec<Skill>> {
@@ -604,7 +648,9 @@ impl SkillRegistry {
     }
 
     fn scan_and_publish(&self, workspace_path: &Path) -> Result<Vec<Skill>, JiaClawError> {
-        let new_skills = SkillDiscovery::new(workspace_path).discover_strict()?;
+        let new_skills = SkillDiscovery::new(workspace_path)
+            .with_lock_required(self.lock_required)
+            .discover_strict()?;
         {
             let mut guard = self.lock_write();
             guard.clone_from(&new_skills);
@@ -922,6 +968,7 @@ mod tests {
             content: "x".repeat(SKILL_FILE_BYTES + 1),
             triggers: Vec::new(),
             resources: Vec::new(),
+            source: None,
         };
         let args =
             serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});
@@ -952,6 +999,7 @@ mod tests {
                 content: body.clone(),
                 triggers: Vec::new(),
                 resources: Vec::new(),
+                source: None,
             };
             let args =
                 serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});

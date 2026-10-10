@@ -1,5 +1,17 @@
 # 基础能力验收记录
 
+## 管理员技能来源锁批次
+
+2026-10-11，最终生产源码 `2a5e4c327ddd563215882c13b6982f726eaaa798`，合同见[技能锁](skill-lock.md)。冻结父 PR112 实际 CLI 在必需锁不匹配时仍读取技能，证明尚未接线的应用能力。初版原生聊天夹具字段错误属于夹具P2；修正后六组全部真实PASS。交付检查另用冻结初始二进制复现嵌入 OpenAPI 缺 source 字段，补齐后重构建并重新完整验收，没有借旧编译输入资格。
+
+最终1243 Rust通过（412/123/708，另1真实Docker专项ignore）、fmt/锁定build/必需Clippy通过。冻结最终二进制七实际进程套：skill_lock六组、skill_resources六组、skill_read六组、skills十二组，以及native_tools/e2e/doctor。独立九边界针对最终二进制再执行：缺少技能根/显式空锁、64实际技能/64位object ID、128KiB精确上限/超一字节、65记录、嵌套未知字段/重复字段。HTTP/SIGHUP拒绝漂移与保留旧表、默认忽略未启用锁、正文/参考原白名单和来源不进入模型指令均有实际往返；不是供应商或安装认证。
+
+Standards/Spec分开报告，初版夹具P2、OpenAPI遗漏的实际RED与最终GREEN保留。累计基准origin/main=`4b2357fc`，只fresh本批及继承历史审查，不声称穷尽累计重审。最终编译输入、二进制、日志及审查摘要固定在 `/tmp/jiaclaw-oct11-skill-lock-delivery`，在target之外；完整输入和最终交付tree逐字节核对。
+
+增加第47个必需Python套件与四优化候选的锁实际验收，七Chromium和每候选13安装/归档/源码命令保留。新固定head官方结果独立待核对，不能借父PR112/111或本地；最终资格仅在正文/pin回填。来源声明/hash不能证明发布者身份，工作区写权限可改锁，无独立路径ACL/审批或安装生命周期资格。
+
+共享target约19.7GiB（超过20十进制GB已评估复用），Rust均设置incremental=0和dev/test debug=0。未复制target、创建专用cache或清理共享cache。最终df实测记入pin，不将APFS目录大小当释放量。
+
 ## 已声明技能参考资源读取批次
 
 生产路径修复输入固定在 `5a5cc77`，最终夹具固定 `e095f01d799b58ee8b6a19adf8fcbc127d50de9d`，两者93编译输入相同。冻结最终binary SHA256 `cb928ba70849333149ee8e177d03fd1b05e3c7a3062512d30ad8d5c243a4969d` 的实际CLI旧140字节负例转绿；六组CLI/鉴权HTTP/native-loop证明包括140/256字节实际路径、版本/撤销/改磁盘、原白名单、链接/硬链接/FIFO、UTF-8与两个输出预算。未执行脚本/安装、付费供应商或跨租户扩权。固定规格见 [资源合同](skill-resources.md)。

@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[管理员技能来源与内容锁](skill-lock.md)：默认关闭 `agent.skill_lock_required`；完整 SKILL.md 原字节（含 frontmatter）绑定来源声明和固定 Git object ID。启动、CLI、doctor、认证 HTTP/SIGHUP 共用同一策略；缺锁、漂移、未登记或缺失技能拒绝，失败保留旧表；公开元数据与嵌入 OpenAPI 已接线。冻结父负例、初版聊天协议夹具失败、真实 OpenAPI 遗漏与最终绿日志分别保存。最终 source `2a5e4c3` 的1243 Rust（另1忽略）、七实际进程套、九独立边界及 fmt/必需Clippy 通过；[Standards](reviews/2026-10-11-skill-lock-standards.md)/[Spec](reviews/2026-10-11-skill-lock-spec.md)聚焦开放0，累计历史继承，不声称穷尽重审。新固定head需47必需Python、七Chromium、四优化/安装候选的独立官方资格，不借父或本地。锁共享现有工作区写权限，不是独立ACL/审批门或签名认证；安装/更新/撤销、经验记忆、真实供应商/浏览器、durable和租户范围仍开放。
+
+本轮 PR111 repaired head `4bdeac5` 的七实际作业、45必需Python/七Chromium和四候选已独立全部核对通过。PR112 `8702089` 在本轮初始快照仍partial，不能借父资格。以下“待验收”保留为各批交付时快照，最终结果固定在正文/pin，不重复提交自引head文档造CI循环。
+
 2026-10-11 继续[主流Agent差距](reviews/2026-10-11-mainstream-agent-gap-review.md)，接入[已声明技能参考资源按需读取](skill-resources.md)：默认关闭独立开关，正文版本和声明资源原始字节双hash核验，实际worker在配置工作区能力内读取，原白名单/只读/共享I/O所有权不扩大。真实140/256字节路径、声明撤销/磁盘改版、父/叶链接/硬链接/FIFO、UTF-8/原始和JSON预算均有进程证据；初版生产路径P2和两项夹具P2已分别修正，独立[Standards](reviews/2026-10-11-skill-resources-standards.md)/[Spec](reviews/2026-10-11-skill-resources-spec.md)聚焦开放0。新批固定head仍需46必需Python、七Chromium、四优化候选的独立官方验收，不借父或本地资格。来源锁定、安装/更新/撤销、经验记忆、真实供应商/浏览器、durable与租户范围继续开放。
 
 父批最新状态：PR110 head `5ace6d9` 已独立七作业/四候选合格，结果固定在PR正文/pin，不再自引文档触发CI。PR111旧head `5fcdf2b` 的Ubuntu在活跃日志UTF-8尾部读取失败；启动和最终扫描均经真实片段RED→GREEN修正，最终严格扫描等待退出并包含shutdown日志。新head `4bdeac5` 的CI `38075103858` /候选 `38075103866` 正独立验收，不能借旧head三个候选。下方各批的“待验收”保留为当时交付快照。
