@@ -950,3 +950,20 @@ mattpocock-skills 的规范/规格双轴审查发现应用结算缺陷：原生 
 修订把原响应有效性和原 GET 成功同时作为清除审核条件；实际 idle 证明仍独立释放执行容量。`tests/tenant_http_stream.py` 第七组实际覆盖身份替换、原权限外工具事件、异常前准入、异常后 needs_review、重复原身份只查询、新写入 409/零效果及原停止证据后的人工清除。有效 SSE 和已有原生身份的有效 200 JSON lookup 均正常结算，模型各恰执行一次。成功验证与实际结算后的终态帧丢失不倒造审核 hold，客户端仍以原编号 GET 核对，不创建替代执行。
 
 两类故障与正常控制的最小反馈环、完整七组初验通过；standalone 文档已链接独立租户合同。旧 22bb 的本机和候选资格不得计入本次修订：最终 head 的 Rust、22 个相关进程/浏览器套件、七官方作业及四候选需分别核对后再回填。租户预览 UI、供应商、StateKnot durable、stdio/外部写入及公开发布仍保持开放。
+
+## PR #101 租户 SSE API 最终资格回填
+
+[PR #101](https://github.com/StateKnot/JiaClaw/pull/101) 最终head `d714a831a363a871c435976cb239899a871e47aa`、base `699adf6f3463927940db96f7e31e2edf38f926e0`、tree `a758753037cb41bdf48873a2200b19fc5e0686fc`。官方测试merge `f6bbd696f49d612246dc895f1d0cb7575633f9aa` 的tree与交付一致，parents为上述base/head。固定本机binary SHA256 `264c56b486f0610370445cfae236aecc9aee5d4c9cd00f6dc1f219c1800d040d`：1223 Rust、22相关进程/浏览器套件、fmt/必需Clippy/锁定构建/parser9通过。
+
+[主CI 38017112308](https://github.com/StateKnot/JiaClaw/actions/runs/38017112308) 与[候选资格 38017112291](https://github.com/StateKnot/JiaClaw/actions/runs/38017112291) 七个实际作业全部成功，公开Release步骤skipped。Ubuntu/macOS各38套必需Python，六原生作业各七组租户SSE及三个实际Body/actor/parser责任回归；Ubuntu另六浏览器套件与真实Docker隔离，容器非root/只读rootfs/命名卷/恢复和每租户ENOSPC通过。四原生优化归档各13组实际安装验收：
+
+| 架构 | 实际作业 | 归档 SHA256 |
+|---|---|---|
+| Linux aarch64 | 114109744354 | `0a653661e983ae96555d58f31229f06bd482f62a26c9e4e3bea697ab82965545` |
+| macOS aarch64 | 114109744467 | `40fcfa7845b20ba66656cd4610ce51a81a8f9097ded1bb544009f7b2cc94ce00` |
+| Linux x86_64 | 114109744529 | `b5095a160a3317c0cdbe38f6387ed864e577c672ead7ab8b91c36faeb31db3b3` |
+| macOS x86_64 | 114109744553 | `18a3d20e76363c35662bee079ea7605146b3ab5f29f6390d65777565c189f7a0` |
+
+四上传ZIP摘要和固定run/head已交叉核对，归档安装按实际作业日志认证，未独立下载ZIP。最终源码/编译输入/binary/日志/review/资产/正文读回固定于本机 `/tmp/jiaclaw-oct10o-tenant-stream-review-delivery/pin.json`，不是公开资产。协议拒绝后的审核hold必须保留，实际idle容量独立释放；有效200 JSON原ID查询正常结算。租户预览UI、stdio/外部写入、durable、供应商/代理和公开发布仍未完成。
+
+该固定版本随后在累计审查中被发现普通调用的结果超限继续派发缺陷；上述CI没有覆盖此场景，不能据此声称没有缺陷。新修复及新回归以独立固定head验收。

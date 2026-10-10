@@ -220,8 +220,10 @@ impl JiaClawAgent {
                 let mut needs_review = progress.is_some() && record.result.as_ref().is_some_and(|value| value.get("error").is_some());
                 let mut result = record.result.as_ref().unwrap_or(&Value::Null).to_string();
                 if result.len() > MAX_RESULT_BYTES {
-                    needs_review |= progress.is_some();
-                    // The effect already occurred. Record that explicitly instead of replaying it.
+                    // Result loss is an execution boundary, independent of the
+                    // caller's progress transport. Stop this batch and any next
+                    // model round; the effect already occurred and cannot be replayed.
+                    needs_review = true;
                     record.result = Some(
                         json!({"error":"tool completed but result exceeds 256 KiB; do not replay this operation"}),
                     );
@@ -238,7 +240,7 @@ impl JiaClawAgent {
                         tool_call_id: id, tool_name: records.last().expect("just inserted").tool_name.clone(),
                     }).await;
                 }
-                if needs_review { return Err(failure("streamed tool attempt failed or timed out; inspect its effect before continuing")); }
+                if needs_review { return Err(failure("tool attempt failed or its completed result is unavailable; inspect its effect before continuing")); }
             }
         }
         Err(failure("invalid zero iteration budget"))

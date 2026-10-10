@@ -1,5 +1,7 @@
 # StateKnot 集成状态
 
+2026-10-10 审查后修复预检：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/唯一alpha.1/#140 OPEN无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea不变。44个附着PR58–101当前head checks SUCCESS、无代码review/thread；PR101最终资格已[回填](validation.md#pr-101-租户-sse-api-最终资格回填)。本轮修复已完成工具结果超限后普通入口继续派发，属于JiaClaw应用缺陷，不向框架重复建issue、不扩大既有HTTP MCP或durable/stdio/供应商资格。
+
 2026-10-10 租户SSE API批次再次官方核对：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/唯一alpha.1/#140 OPEN无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea不变。附着PR58–100当前head检查全部SUCCESS，无代码review/thread。PR100最终七CI/四候选已[回填](validation.md#pr-100-网关停机最终资格回填)；本批[租户SSE API](tenant-http-turns.md#个人-key-sse-api)消费现成原生HTTP/模型SSE，补应用身份、授权、实际投递owner、取消和结算，不把应用接线缺失上报为框架缺陷。不增加stdio/写MCP、durable图/子Agent、原生Schema、真实供应商或代理资格，也不重复建issue。
 
 2026-10-10 本轮再次只读核对：StateKnot aa11b4f/唯一alpha.1/#140，Brokerrouter e01ecb9/无release/#31/#41/未合并PR40 head7a7afea均未变化；附着PR58–99当前head检查SUCCESS、无代码review/thread。PR99初版364b274最终七CI/四归档已回填；本批修复真实工作台拒绝合法gateway JSON和主容量忙时无法重连的应用接线，不把它上报为框架缺陷。现有HTTP MCP pin和原生Schema/stdio/durable/真实供应商门槛保持独立。

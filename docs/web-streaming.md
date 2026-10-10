@@ -1,6 +1,6 @@
 # 工作台的原请求流式与核对
 
-管理员 `serve` 按[持久 HTTP 配置](http-turns.md)开启 `http.tracked_turns`，使用固定逻辑 Brokerrouter 模型、模型调用账本、持久 SQLite 和有限工具/运行预算。浏览器在认证 `/api/turns/capabilities` 后才使用 `/stream`；密钥只留在页面内存。网关不开放这个协议，只读 Key 不探测它；没有能力时仍用旧会话流程，已有 `http:` 会话不能退回 `/api/chat`。
+管理员 `serve` 按[持久 HTTP 配置](http-turns.md)开启 `http.tracked_turns`，使用固定逻辑 Brokerrouter 模型、模型调用账本、持久 SQLite 和有限工具/运行预算。浏览器在认证 `/api/turns/capabilities` 后才使用 `/stream`；密钥只留在页面内存。网关另开放[个人 Key 原请求 JSON/SSE API](tenant-http-turns.md)，工作台目前使用 JSON、尚未接线租户预览。只读个人 Key 可读取能力与所属请求目录，但不探测原生工具/技能管理目录，也不能提交；没有能力时仍用旧会话流程，已有 `http:` 会话不能退回 `/api/chat`。
 
 新建的 `http:` 会话在首次准入前只存在页面内存。工具和技能默认不勾选；新建会话重新清空选择，发送时保存当前精确选择。已注册工具但未选择任何工具时拒绝发送，因为后端空列表的原语义为全部工具。没有自动选择技能、扩权或刷新注册表后添加权限。已有普通会话保持原 JSON 流程；不会迁移或重新执行旧请求。
 
@@ -18,7 +18,7 @@
 
 浏览器传输预算从 fetch 前一次锚定，为服务器 turn_budget_secs + 70 秒，不被响应头、事件、keepalive 重置，也不改变当前模型的服务端结算期限。接收验证12MiB wire、单帧2MiB+16KiB、每段1024 UTF-8字节、每轮2MiB/总8MiB预览；逐片 fatal UTF-8解码，微小读取合并为有界片段，不在每字节到达时重扫或复制完整终态，无完整 stream 副本。最多33模型轮；显示独立限每轮65536字符/总262144字符，requestAnimationFrame 合批并明确截断。收据 JSON 限2MiB+20KiB，capability16KiB、注册表2MiB、会话列表4MiB、历史26MiB（4MiB原存储的JSON转义预算），最多51条历史、每条65536显示字符。截断仍保留服务端原记录；完整导出走已有 session export API。读取、控制和历史有15秒等待预算；物理 TCP/代理截止与资源仍以服务器实际生命周期为准。
 
-验收使用固定 Playwright1.62.1、真实 Chromium、嵌入生产静态资源、一次性 localhost Brokerrouter 契约 fixture 与实际 SQLite：真实安装20个技能仍能连接，工具目录DTO超过128项仍可选择，而129个工具或17个技能的单次选择零原请求/准入/模型调用；门控结束前预览且零工具、两轮 native file_write/Unicode落盘、持久取消后模型结算但零后续工具、刷新按原 UUID GET不重放、真实SQL终态回滚后的 orphan/人工核对、实际已提交响应丢失后的显式同编号200核对、1900KiB预览/结果的有限DOM、浏览器原期限到期但原模型继续结算，以及实际终态提交赢得取消竞态时的意图/草稿核对。工具大目录、畸形部分终态和XSS为独立前端传输故障fixture；真实 native 执行只授权实际注册的 file_write。增量解析器有独立字节分片/顺序/身份/权限/帧与wire上限测试；四套旧浏览器维持 gateway/只读/任务/发件箱范围。此证据不认证真实供应商、租户 SSE、反向代理或 StateKnot durable。
+验收使用固定 Playwright1.62.1、真实 Chromium、嵌入生产静态资源、一次性 localhost Brokerrouter 契约 fixture 与实际 SQLite：真实安装20个技能仍能连接，工具目录DTO超过128项仍可选择，而129个工具或17个技能的单次选择零原请求/准入/模型调用；门控结束前预览且零工具、两轮 native file_write/Unicode落盘、持久取消后模型结算但零后续工具、刷新按原 UUID GET不重放、真实SQL终态回滚后的 orphan/人工核对、实际已提交响应丢失后的显式同编号200核对、1900KiB预览/结果的有限DOM、浏览器原期限到期但原模型继续结算，以及实际终态提交赢得取消竞态时的意图/草稿核对。工具大目录、畸形部分终态和XSS为独立前端传输故障fixture；真实 native 执行只授权实际注册的 file_write。增量解析器有独立字节分片/顺序/身份/权限/帧与wire上限测试；四套旧浏览器维持 gateway/只读/任务/发件箱范围。上述 standalone 浏览器证据不代替真实供应商、租户 SSE、反向代理或 StateKnot durable 认证；租户 SSE API 已有独立验收，租户预览 UI 仍开放。
 
 目录恢复额外真实Chromium第十一组覆盖丢失UUID片段、body实际关闭后认证列表→原GET、活动hold禁止选择替换、人工核对/分页及坏目录无payload/XSS/重放。HTTP进程四组单独证明SIGKILL重启且关闭准入的永久原身份可读；这与durable恢复、供应商及租户认证分开验收。
 
