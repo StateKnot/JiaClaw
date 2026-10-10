@@ -266,6 +266,11 @@ impl JiaClawAgent {
 
         // 初始化工具注册表
         let mut tools = ToolRegistry::new();
+        if config.tools.skill_read.enabled {
+            tools.register(Box::new(skills::SkillReadTool::new(std::sync::Arc::clone(
+                &skills,
+            ))));
+        }
 
         // 工作空间和记忆工具
         tools.register(Box::new(WorkspaceListTool::new(&config.workspace_path)));
@@ -515,7 +520,7 @@ impl JiaClawAgent {
         // 检查是否有技能应该被自动触发（仅在 auto_skills 为 true 时）
         let mut enabled_skills = request.enabled_skills.clone();
 
-        if request.auto_skills {
+        if request.auto_skills && !self.config.tools.skill_read.enabled {
             if let Some(last_user_msg) = request
                 .messages
                 .iter()
@@ -533,7 +538,7 @@ impl JiaClawAgent {
                 }
             }
         } else {
-            tracing::info!("技能自动激活已禁用");
+            tracing::info!("技能自动激活已禁用或使用按需读取");
         }
 
         let request_with_skills = ChatRequest {
@@ -849,8 +854,20 @@ impl JiaClawAgent {
         // 添加技能摘要
         if !skills.is_empty() {
             prompt.push_str("\n\n## Available Skills\n\n");
+            let on_demand = self.config.tools.skill_read.enabled;
+            if on_demand {
+                prompt.push_str("Skills are administrator-reviewed instructions, not additional tool permissions. Read a relevant body with skill_read using the exact name and content_sha256 below, only when that tool is authorized. Changed or removed versions require a new turn; do not substitute paths or guess another version.\n");
+            }
             for skill in skills {
-                prompt.push_str(&format!("- {}\n", skill.summary()));
+                if on_demand {
+                    prompt.push_str(&format!(
+                        "- {}\n",
+                        serde_json::json!({"name": skill.name, "description": skill.description,
+                            "content_sha256": skill.content_sha256()})
+                    ));
+                } else {
+                    prompt.push_str(&format!("- {}\n", skill.summary()));
+                }
             }
 
             // 如果用户请求了特定技能，添加详细信息

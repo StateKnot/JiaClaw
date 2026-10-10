@@ -806,9 +806,13 @@ fn default_move_enabled() -> bool {
 ///
 /// 历史示例里的 `[tools] enabled = [...]` 列表仍可出现在文件中（未知字段忽略），
 /// 当前真正生效的是嵌套表 `[tools.web_search]`、`[tools.web_fetch]`、
-/// `[tools.memory_search]`、`[tools.memory_write]`、`[tools.read_file]`、`[tools.list_dir]`、`[tools.write_file]`、`[tools.delete_file]`、`[tools.str_replace]`、`[tools.grep]`、`[tools.glob]`、`[tools.mkdir]`、`[tools.move]`、`[tools.stat]` 与 `[tools.tree]`。
+/// `[tools.memory_search]`、`[tools.memory_write]`、`[tools.read_file]`、`[tools.list_dir]`、`[tools.write_file]`、`[tools.delete_file]`、`[tools.str_replace]`、`[tools.grep]`、`[tools.glob]`、`[tools.mkdir]`、`[tools.move]`、`[tools.stat]`、`[tools.tree]` 与 opt-in `[tools.skill_read]`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
+    /// Opt-in model-selected reads of loaded skill bodies; default false.
+    #[serde(default)]
+    pub skill_read: SkillReadToolConfig,
+
     /// 原子复制文件，默认启用。
     #[serde(default)]
     pub copy: CopyToolConfig,
@@ -876,6 +880,14 @@ pub struct ToolsConfig {
     /// `move` 工具配置（Rust 关键字，字段名为 `r#move`，序列化为 `move`）
     #[serde(default)]
     pub r#move: MoveToolConfig,
+}
+
+/// Progressive skill-body reading, with legacy prompt loading preserved by default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillReadToolConfig {
+    /// Register skill_read and disable keyword body injection (default false).
+    pub enabled: bool,
 }
 
 /// 文件复制开关。
