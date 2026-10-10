@@ -23,6 +23,7 @@ on:
       - 'tests/tenant_http_fixture.py'
       - 'tests/tenant_http_browser.py'
       - 'tests/tenant_http_browser.cjs'
+      - 'tests/read_only_browser.cjs'
       - 'tests/turn_stream.cjs'
       - 'tests/turn_stream_browser.cjs'
       - 'tests/web_stream.py'

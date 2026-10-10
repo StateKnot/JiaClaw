@@ -914,3 +914,7 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 准备租户SSE时实际复现应用网关旧停机缺陷：上述冻结7ece binary、四条已收到200头的1.9MiB真实慢读TCP连接，SIGTERM后18.009秒仍未退出，旧HTTP优雅关闭挡住后续worker drain。实际网关/信号/registry配合本机协议后端，不含native模型或供应商；本批先完成生产停机边界，不把租户SSE标记完成。共享期限、停机准入与真实owner锁语义见[gateway](gateway.md#不确定写入停机与恢复)。新增四组强制进程验收和两个数据库owner并发回归，最终固定源码/跨平台资格另行记录。首轮未提升回环监听权限的gateway Rust有7项PermissionDenied（229通过），不计代码资格；初轮新进程在临时user-add原15秒超时，未触及停机，根因未证明。均保留证据，不增加期限、不把后续成功作为根因修复。
 
 同一新增慢读验收在旧7ece字节上超出17秒外部观察界限，保持before失败。初版新夹具先误读user-list的包装DTO，后又以竞争GET作为正文准入屏障；实际TCP诊断证明GET先占槽位、原partial POST收到429。改用真实HTTP `100 Continue`证明认证handler已开始读取正文，后再停机并补齐；保留原503/无hold/无后端POST断言及所有期限。以上夹具错误不记为生产修复或完整初验通过。
+
+生产源码最终冻结 binary SHA256 `3ae2fdbe8a21dd362f79102c421d6bdb7589fd531a37ee5dda77d02a2eb75f4f` 的1220 Rust（396/123/701）、fmt/必需Clippy/locked build/parser八组与十四套进程/实际浏览器通过。第一次该冻结字节在user-add原15秒超时，签名有效；同字节新副本version/user-add诊断约2.1秒返回，后续完整验收成功不证明首次根因。失败及诊断另行保留，不加自动重试。
+
+初版head `6d4260c427db74df4669a76d75c6250680085885` 的Linux [114074549538](https://github.com/StateKnot/JiaClaw/actions/runs/38005913227/job/114074549538)已通过37必需进程，浏览器前3套成功，随后旧read_only_browser第38行把暂停POST的429当作必须即时200而失败；原日志未打印错误正文，不推断首次429的具体来源。真实Native后端完成run之后、仅门控原调度HTTP收据交付的确定性重现，在同一冻结字节上得到`user request already in progress`、原hold仍in_flight，旧200断言同样失败。新夹具保留原Native run/收据/worker，不改DTO/状态/interval；逐个核对仅准入前的精确429，拒绝IDs无后端POST/持久准入审计，最后必须只有一次真实后端暂停POST与200/disabled结果。暂停与hold idle共用原20秒绝对预算，各RPC仍最多10秒且受剩余预算限制；未知/转发错误立即失败，不重放未知结果。只读DOM、模型次数、权限/撤销等原断言保留。修订需重新固定head并认证七作业/四归档；首轮其余成功不得借用为新head完整资格。

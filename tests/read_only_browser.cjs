@@ -6,7 +6,25 @@ const execFile=util.promisify(child.execFile),sleep=ms=>new Promise(resolve=>set
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'jiaclaw-read-only-browser-')),workspace=path.join(root,'workspace');fs.mkdirSync(workspace);
  const binary=path.resolve(process.argv[2]||'target/debug/jiaclaw'),backendToken=crypto.randomUUID(),modelToken=crypto.randomUUID();
  const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('JIACLAW_')));Object.assign(env,{JIACLAW_LOG_LEVEL:'info',JIACLAW_LOG_FORMAT:'text'});
- const processes=[],errors=[],writes=[];let browser,base,models=0,releaseCapability;
+ const processes=[],errors=[],writes=[];let browser,base,backendBase,models=0,releaseCapability,releaseReceipt,receiptReached=false;
+ const pausePosts=[],dispatchIds=[];let gated=false;const receiptGate=new Promise(resolve=>releaseReceipt=resolve);
+ // Withhold one real native dispatch receipt after its run has committed.
+ // A readable completed run does not release the gateway execution owner.
+ const bridge=http.createServer((req,res)=>{
+  const chunks=[];let bytes=0;req.on('data',chunk=>{bytes+=chunk.length;assert(bytes<=512*1024);chunks.push(chunk);});
+  if(req.method==='POST'&&/\/api\/jobs\/[^/]+\/pause$/.test(req.url))pausePosts.push(req.headers['x-request-id']);
+  const forward=http.request(new URL(req.url,backendBase),{method:req.method,headers:req.headers},upstream=>{
+   const body=[];let size=0;upstream.on('data',chunk=>{size+=chunk.length;if(size>2*1024*1024){errors.push('oversized bridge body');forward.destroy();return;}body.push(chunk);});
+   upstream.on('end',async()=>{try{
+    if(req.url==='/internal/scheduler/dispatch'&&upstream.statusCode===200&&!gated){
+     gated=true;dispatchIds.push(JSON.parse(Buffer.concat(chunks).toString()).request_id);receiptReached=true;await receiptGate;
+    }
+    if(!res.destroyed){res.writeHead(upstream.statusCode,upstream.headers);res.end(Buffer.concat(body));}
+   }catch(error){errors.push(error.name);res.destroy();}});
+   upstream.on('error',()=>{errors.push('bridge upstream error');res.destroy();});
+  });
+  forward.on('error',()=>{errors.push('bridge request error');res.destroy();});req.pipe(forward);
+ });
  const model=http.createServer(async(req,res)=>{try{
   assert.strictEqual(req.url,'/v1/chat/completions');assert.strictEqual(req.headers.authorization,'Bearer '+modelToken);assert(req.headers['idempotency-key']);
   let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);models++;
@@ -14,19 +32,21 @@ const execFile=util.promisify(child.execFile),sleep=ms=>new Promise(resolve=>set
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'saved: '+prompt},finish_reason:'stop'}]}));
  }catch(error){errors.push(error.name);res.writeHead(500);res.end();}});
  const cfg=path.join(root,'gateway.json');
- async function cli(...args){const result=await execFile(binary,['gateway',...args,'--config',cfg],{env,timeout:15000});return JSON.parse(result.stdout);}
- async function eventually(check,label,timeout=20000){const until=Date.now()+timeout;while(Date.now()<until){assert.deepStrictEqual(errors,[]);const result=await check();if(result)return result;await sleep(40);}throw new Error(label+' timed out');}
+ async function cliBefore(deadline,...args){const result=await execFile(binary,['gateway',...args,'--config',cfg],{env,timeout:Math.max(1,Math.min(15000,deadline-Date.now()))});return JSON.parse(result.stdout);}
+ async function cli(...args){return cliBefore(Infinity,...args);}
+ async function eventually(check,label,timeout=20000){const until=Date.now()+timeout;while(Date.now()<until){assert.deepStrictEqual(errors,[]);const result=await check();if(result&&Date.now()<=until)return result;await sleep(Math.max(0,Math.min(40,until-Date.now())));}throw new Error(label+' timed out');}
  async function launch(args,pattern){let log='';const process=child.spawn(binary,args,{env});processes.push(process);process.stdout.on('data',data=>log+=data);process.stderr.on('data',data=>log+=data);return eventually(()=>{assert.strictEqual(process.exitCode,null,'host exited before startup');const match=log.match(pattern);return match&&match[1];},'startup');}
- async function api(key,url,method='GET',body){const response=await fetch(base+url,{method,headers:{authorization:'Bearer '+key,...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(10000)});const raw=await response.text();return {status:response.status,body:raw?JSON.parse(raw):null};}
+ async function api(key,url,method='GET',body,deadline=Infinity){const response=await fetch(base+url,{method,headers:{authorization:'Bearer '+key,...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(Math.max(1,Math.min(10000,deadline-Date.now())))});const raw=await response.text();return {status:response.status,body:raw?JSON.parse(raw):null,request_id:response.headers.get('x-request-id')};}
  try{
   await new Promise(resolve=>model.listen(0,'127.0.0.1',resolve));
   const settings={agent:{name:'viewer',description:'Local acceptance',system_instructions:'Respond with text.',max_turns:10,workspace_path:workspace},provider:{provider_type:'brokerrouter',base_url:'http://127.0.0.1:'+model.address().port,api_key:modelToken,model:'fixture'},http:{bind:'127.0.0.1:0',api_token:backendToken,persist:true,persist_path:'../state/sessions.sqlite3',shutdown_timeout_secs:1},scheduler:{enabled:true,gateway_driven:true}};
   const backendCfg=path.join(root,'backend.json');fs.writeFileSync(backendCfg,JSON.stringify(settings));
-  const backend=await launch(['serve','--config',backendCfg],/HTTP 服务已启动于 (http:\/\/127\.0\.0\.1:\d+)/);
+  const backend=await launch(['serve','--config',backendCfg],/HTTP 服务已启动于 (http:\/\/127\.0\.0\.1:\d+)/);backendBase=backend;
+  await new Promise(resolve=>bridge.listen(0,'127.0.0.1',resolve));const bridged='http://127.0.0.1:'+bridge.address().port;
   // Reserve a free local port; production gateway config intentionally requires a fixed bind.
   const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const gatewayPort=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   const secret=path.join(root,'backend.secret');fs.writeFileSync(secret,backendToken,{mode:0o600});
-  fs.writeFileSync(cfg,JSON.stringify({bind:'127.0.0.1:'+gatewayPort,registry_path:path.join(root,'registry/users.sqlite3'),request_timeout_seconds:150,max_in_flight:4,scheduled_jobs:true,backends:[{id:'viewer',url:backend,token_file:secret}]}));
+  fs.writeFileSync(cfg,JSON.stringify({bind:'127.0.0.1:'+gatewayPort,registry_path:path.join(root,'registry/users.sqlite3'),request_timeout_seconds:150,max_in_flight:4,scheduled_jobs:true,backends:[{id:'viewer',url:bridged,token_file:secret}]}));
   const full=await cli('user-add','--backend','viewer'),read=await cli('key-add','--user',full.user_id,'--read-only');assert.strictEqual(full.read_only,false);assert.strictEqual(read.read_only,true);
   // Wait through health rather than depending on a gateway log message.
   const gateway=child.spawn(binary,['gateway','serve','--config',cfg],{env});processes.push(gateway);gateway.stdout.resume();gateway.stderr.resume();base='http://127.0.0.1:'+gatewayPort;
@@ -34,10 +54,30 @@ const execFile=util.promisify(child.execFile),sleep=ms=>new Promise(resolve=>set
   const session=(await api(full.token,'/api/sessions','POST')).body.session_id;
   assert.strictEqual((await api(full.token,'/api/chat','POST',{session_id:session,messages:[{role:'user',content:'private history <img src=x onerror="window.XSS=1">'}],stream:false})).status,200);
   const job=(await api(full.token,'/api/jobs','POST',{name:'private task',prompt:'private scheduled result',schedule:{kind:'interval',seconds:1},enabled_tools:['datetime_now'],timeout_secs:120})).body;
-  await eventually(async()=>{const response=await api(full.token,'/api/jobs/'+job.id+'/runs?limit=5&offset=0');return response.body.items.some(run=>run.status==='completed');},'scheduled result');
-  assert.strictEqual((await api(full.token,'/api/jobs/'+job.id+'/pause','POST')).status,200);
+  await eventually(async()=>{const response=await api(full.token,'/api/jobs/'+job.id+'/runs?limit=5&offset=0');return response.body.items.some(run=>run.status==='completed')&&receiptReached;},'scheduled result');
+  const rejected=[];
+  function knownBusy(response){
+   assert.strictEqual(response.status,429);assert.deepStrictEqual(response.body,{error:'user request already in progress'});
+   assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(response.request_id));rejected.push(response.request_id);
+  }
+  const busy=await api(full.token,'/api/jobs/'+job.id+'/pause','POST');knownBusy(busy);
+  const held=(await cli('user-list')).users[0].hold;
+  assert.strictEqual(held.state,'in_flight');assert.strictEqual(held.request_id,dispatchIds[0]);assert.strictEqual(pausePosts.length,0);
+  releaseReceipt();releaseReceipt=null;const pauseDeadline=Date.now()+20000;
+  // Only the exact gateway rejection before durable admission permits another
+  // explicit attempt. Unknown/forwarded responses fail; never replay them.
+  const paused=await eventually(async()=>{
+   const response=await api(full.token,'/api/jobs/'+job.id+'/pause','POST',undefined,pauseDeadline);
+   if(response.status===429){knownBusy(response);return false;}
+   assert.strictEqual(response.status,200);assert.strictEqual(response.body.id,job.id);assert.strictEqual(response.body.enabled,false);return response;
+  },'explicit pause after original gateway receipt',Math.max(1,pauseDeadline-Date.now()));
+  assert.deepStrictEqual(pausePosts,[paused.request_id]);
+  const audit=await cliBefore(pauseDeadline,'audit-list','--user',full.user_id,'--limit','100');assert.strictEqual(audit.has_more,false);
+  assert(audit.events.some(event=>event.request_id===paused.request_id));
+  for(const id of rejected)assert(!audit.events.some(event=>event.request_id===id),'known rejected pause cannot have a durable admission');
+  console.log('PASS: completed native run with held receipt yields pre-admission 429; original hold retained, rejected IDs unforwarded/unaudited, one successful pause within original 20s');
   // Pause blocks future dispatches; wait for any admitted completion before checking model counts.
-  await eventually(async()=>{const users=(await cli('user-list')).users;return users[0].hold===null;},'gateway idle');
+  await eventually(async()=>{const users=(await cliBefore(pauseDeadline,'user-list')).users;return users[0].hold===null;},'gateway idle',Math.max(1,pauseDeadline-Date.now()));
   browser=await chromium.launch({headless:true,...(process.env.JIACLAW_TEST_CHROMIUM?{executablePath:process.env.JIACLAW_TEST_CHROMIUM}:{})});const page=await browser.newPage({viewport:{width:1360,height:900}});
   page.on('pageerror',error=>errors.push(error.name));page.on('dialog',dialog=>dialog.accept());
   page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/')&&request.method()!=='GET')writes.push([request.method(),url.pathname]);});
@@ -89,8 +129,8 @@ const execFile=util.promisify(child.execFile),sleep=ms=>new Promise(resolve=>set
   await page.reload();assert(await page.locator('#refresh').isDisabled());assert.deepStrictEqual(errors,[]);
   console.log('PASS: real gateway/SQLite/Chromium read-only history and scheduled results; forced DOM sends zero mutations/models/holds; full-key switch, stale capability, malformed metadata and revocation fail closed; memory-only token/mobile layout');
  }finally{
-  if(releaseCapability)releaseCapability();if(browser)await browser.close();
+  if(releaseReceipt)releaseReceipt();if(releaseCapability)releaseCapability();if(browser)await browser.close();
   for(const process of processes.reverse()){if(process.exitCode===null&&process.signalCode===null){const ended=new Promise(resolve=>process.once('exit',resolve));process.kill('SIGTERM');let timer;await Promise.race([ended,new Promise(resolve=>timer=setTimeout(()=>{process.kill('SIGKILL');resolve();},10000))]);clearTimeout(timer);}}
-  await new Promise(resolve=>model.close(resolve));fs.rmSync(root,{recursive:true,force:true});
+  await new Promise(resolve=>bridge.close(resolve));await new Promise(resolve=>model.close(resolve));fs.rmSync(root,{recursive:true,force:true});
  }
 })().catch(error=>{console.error(error);process.exitCode=1;});
