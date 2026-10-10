@@ -233,6 +233,7 @@ fn serialize_uuid<S: Serializer>(id: &Uuid, serializer: S) -> Result<S::Ok, S::E
 #[derive(Clone)]
 pub struct Registry {
     path: PathBuf,
+    _process_lock: Option<std::sync::Arc<super::ProcessLock>>,
 }
 
 fn now_ms() -> i64 {
@@ -267,6 +268,10 @@ fn private_file(path: &Path) -> Result<()> {
 }
 
 impl Registry {
+    pub(super) fn with_process_lock(mut self, owner: std::sync::Arc<super::ProcessLock>) -> Self {
+        self._process_lock = Some(owner);
+        self
+    }
     /// Initialize or validate a private registry. Existing directories are never chmodded.
     pub fn open(path: &Path) -> Result<Self> {
         ensure!(
@@ -318,7 +323,10 @@ impl Registry {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => return Err(error.into()),
         }
-        let registry = Self { path };
+        let registry = Self {
+            path,
+            _process_lock: None,
+        };
         let mut conn = registry.raw_connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;

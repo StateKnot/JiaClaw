@@ -325,8 +325,13 @@ pub(super) async fn handle(
         if is_write {
             let registry = state.registry.clone();
             let principal = principal.clone();
-            match tokio::task::spawn_blocking(move || registry.admit_write(&principal, request_id))
-                .await
+            let admission = state.admission.clone();
+            match tokio::task::spawn_blocking(move || {
+                admission
+                    .admit(|| registry.admit_write(&principal, request_id))
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("gateway shutting down")))
+            })
+            .await
             {
                 Ok(Ok(())) => {}
                 Ok(Err(cause)) => {
@@ -728,6 +733,7 @@ mod tests {
                 control: Arc::new(tokio::sync::Semaphore::new(8)),
                 scheduled_jobs: false,
                 tracked_turns: false,
+                admission: crate::gateway::scheduler::Stop::new(),
                 reserved_turns: std::sync::atomic::AtomicUsize::new(0),
                 telegram: None,
                 slack: None,
@@ -817,6 +823,7 @@ mod tests {
             control: Arc::new(tokio::sync::Semaphore::new(8)),
             scheduled_jobs: true,
             tracked_turns: false,
+            admission: crate::gateway::scheduler::Stop::new(),
             reserved_turns: std::sync::atomic::AtomicUsize::new(0),
             telegram: None,
             slack: None,

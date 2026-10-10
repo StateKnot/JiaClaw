@@ -19,9 +19,11 @@ on:
       - 'tests/http_turn_catalog.py'
       - 'tests/http_turn_cli.py'
       - 'tests/tenant_http_turns.py'
+      - 'tests/gateway_shutdown.py'
       - 'tests/tenant_http_fixture.py'
       - 'tests/tenant_http_browser.py'
       - 'tests/tenant_http_browser.cjs'
+      - 'tests/read_only_browser.cjs'
       - 'tests/turn_stream.cjs'
       - 'tests/turn_stream_browser.cjs'
       - 'tests/web_stream.py'
@@ -79,6 +81,7 @@ jobs:
           python3 tests/http_turn_catalog.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_cli.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"
+          python3 tests/gateway_shutdown.py "target/$TARGET/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist
