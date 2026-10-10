@@ -22,7 +22,7 @@ JiaClaw 的 `provider_type = "brokerrouter"` 使用 Chat Completions 原生函�
 
 每轮最多接纳 32 个工具调用，单次对话请求最多 128 个，并受配置中的迭代次数限制。通用工具超时仅在配置 `tool_timeout_secs` 后生效，默认未设置；当前没有覆盖整次对话的总体 deadline，各具体工具另有自己的资源策略。最后一次模型迭代仍要求执行工具，或下一批次将超出总调用预算时，返回 `requireshumaninput` 状态及已完成记录，剩余批次不执行。模型消息必须来自 `assistant`，完整结束原因须为 `stop` 或与非空工具批次一致的 `tool_calls`。截断、畸形消息和不一致的结束原因会失败；不会猜测或执行不完整参数。
 
-单个工具参数 JSON 不超过 16 KiB，参数和 schema 另有深度/节点上限。工具结果不超过 256 KiB；结果超限时明确记录操作已经完成、结果过大并禁止据此重放，不能将输出失败当成副作用未发生。原生模型请求和响应各不超过 2 MiB，每次模型请求最长 60 秒，连接阶段最长 10 秒。端点必须是 HTTPS 或字面量 loopback HTTP，禁止 URL 凭证、query 和 fragment；客户端不跟随重定向、不自动重试。
+单个工具参数 JSON 不超过 16 KiB，参数和 schema 另有深度/节点上限。工具结果的 JSON wire 表示不超过 256 KiB（包含转义，不能仅按原始文件或 stdout 长度判断）。结果超限时保留该工具的已尝试记录及“操作已经完成、结果过大、禁止重放”说明，立即停止同批剩余工具和下一轮模型请求，返回 `requireshumaninput`。此边界适用于普通 CLI、兼容 `/api/chat` JSON/完成后 SSE、渠道/调度调用和持久流式入口，与是否存在进度传输对象无关；不能将输出失败当成副作用未发生。该修复不改变普通工具可恢复错误的既有行为，也不引入通用外部效果确定性或 durable 恢复。原生模型请求和响应各不超过 2 MiB，每次模型请求最长 60 秒，连接阶段最长 10 秒。端点必须是 HTTPS 或字面量 loopback HTTP，禁止 URL 凭证、query 和 fragment；客户端不跟随重定向、不自动重试。
 
 模型的文本内容作为文本返回。Brokerrouter 路径不会将正文中的 Markdown `tool` 代码块作为指令执行。`content: null` 的原生工具消息会保留在本轮模型上下文中，工具结果使用 `role: "tool"`，不会伪装成用户消息。
 
@@ -41,9 +41,12 @@ SQLite 当前持久化用户可见的会话消息；它没有保存此工具循�
 ```sh
 cargo build --locked -p jiaclaw-host
 python3 tests/native_tools.py target/debug/jiaclaw
+python3 tests/native_result_limits.py target/debug/jiaclaw
 python3 tests/mcp.py target/debug/jiaclaw
 ```
 
 `native_tools.py` 启动本地 HTTP 网关 fixture 和 JiaClaw 服务，检查原生多工具往返、ID 对应、白名单、整批拒绝无副作用、畸形模型响应、文本不执行以及 HTTP 错误脱敏。它还覆盖写文件后下一次模型调用失败、后续非法批次、跨轮重复 ID、最后一轮预算耗尽，验证已完成记录和文件保留、剩余工具不执行、中断说明可从会话读取。`mcp.py` 同时经过真实 StateKnot HTTP MCP 客户端、原生工具模型往返、CLI/HTTP 入口与 SQLite 会话存储。两者不使用真实付费供应商凭证。
 
 上游版本、未解决议题与生产验收界限见 [Brokerrouter 消费方状态](brokerrouter-gaps.md) 和 [StateKnot 消费方状态](stateknot-gaps.md)。
+
+`native_result_limits.py` 通过真实 HTTP/普通 CLI 和文件工具验证小输出往返、结果转义后超限、同批停止、下一轮停止、兼容 SSE 及历史保留。Linux CI 另以显式 `JIACLAW_TEST_DOCKER`/`JIACLAW_TEST_EXEC_IMAGE` 运行 `--exec`，使用预拉取的固定摘要镜像和真实沙箱追加效果；缺少所选依赖即失败，不跳过或改用宿主 shell。四平台候选二进制均执行文件模式。这是应用结果丢失边界验收，不是供应商、通用工具错误确定性或恢复认证。

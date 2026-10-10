@@ -34,6 +34,7 @@ jobs:
       - run: python3 tests/e2e.py target/debug/jiaclaw
       - run: python3 tests/mcp.py target/debug/jiaclaw
       - run: python3 tests/native_tools.py target/debug/jiaclaw
+      - run: python3 tests/native_result_limits.py target/debug/jiaclaw
       - run: python3 tests/workspace_files.py target/debug/jiaclaw
       - run: python3 tests/file_search.py target/debug/jiaclaw
       - run: python3 tests/workspace_mutations.py target/debug/jiaclaw
@@ -92,6 +93,7 @@ jobs:
         run: |
           docker pull "$JIACLAW_TEST_EXEC_IMAGE"
           cargo test -p jiaclaw real_container --locked -- --ignored
+          python3 tests/native_result_limits.py target/debug/jiaclaw --exec
           test -z "$(docker ps -aq --filter label=jiaclaw.sandbox=true)"
   container:
     runs-on: ubuntu-24.04

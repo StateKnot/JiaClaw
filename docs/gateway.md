@@ -2,9 +2,9 @@
 
 `jiaclaw gateway` 为个人 API Key 绑定一个专属 JiaClaw 后端。每个用户使用不同的进程、工作区、SQLite 会话、身份/记忆文件和 Brokerrouter 虚拟 Key。网关负责鉴权、固定后端映射和不确定写入暂停；隔离依赖本页的容器、网络、存储与运维配置，不能只给同一个后端换两个 Key。
 
-支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[Telegram 私聊](tenant-telegram.md)、[Slack 私聊](tenant-slack.md)和[Discord Bot DM 命令](tenant-discord.md)分别通过 PR #80/#83/#84 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key、可信管理员审计分别通过 PR #81/#82 最终跨平台及真实容器 CI。本批[独立用户飞书私聊](tenant-feishu.md)限定专用企业自建 App、固定人的 p2p 文本和停机核对，验收进行中。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
+支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[Telegram 私聊](tenant-telegram.md)、[Slack 私聊](tenant-slack.md)和[Discord Bot DM 命令](tenant-discord.md)分别通过 PR #80/#83/#84 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key、可信管理员审计分别通过 PR #81/#82 最终跨平台及真实容器 CI。[独立用户飞书私聊](tenant-feishu.md)限定专用企业自建 App、固定人的 p2p 文本和停机核对，已通过 PR #85 固定版本 CI；[独立用户企业微信](tenant-wecom.md)已通过 PR #87 固定版本 CI，真实安装与平台认证仍独立验收。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
-默认关闭的[独立用户持久 HTTP 请求](tenant-http-turns.md)支持个人 Key 的 JSON 准入、原编号查询/取消和永久目录，共用已有用户写入锁。租户 SSE 和工作台原请求接线仍另计。
+默认关闭的[独立用户持久 HTTP 请求](tenant-http-turns.md)支持个人 Key 的 JSON/SSE 准入、原编号查询/取消和永久目录，共用已有用户写入锁。JSON 工作台已通过 PR #99，SSE API 已通过 PR #101；工作台租户预览 UI 仍待接线，API 资格不代替 UI 资格。
 
 ## 请求与身份合同
 
@@ -17,7 +17,7 @@
 | `POST /api/chat` | 仅 JSON，必须明确 session_id；stream=true 和 SSE Accept 拒绝 |
 | `GET/POST /api/sessions`、`GET/DELETE /api/sessions/{id}` | 仅操作当前 Key 所属的独立后端 |
 | `/api/sessions/{id}/export`、`POST /api/sessions/import` | 支持受限 JSON/JSONL；只允许约定的 format/id/overwrite 查询参数 |
-| `/api/turns`、`/api/turns/{UUIDv4}` | 显式 tracked_turns=true 时支持受限 JSON 原请求/目录/取消，见专门合同；默认404 |
+| `/api/turns`、`/api/turns/{UUIDv4}` | 显式 tracked_turns=true 时支持受限 JSON/SSE 原请求、目录/取消，SSE 使用原 UUID 的 `/stream` 后缀；须配对 gateway_protocol=2，见专门合同；默认404 |
 | 显式后台扩展 | scheduled_jobs 开放受限用户任务接口；telegram/slack/discord 仅开放配置绑定的 POST /hooks/{渠道}/{binding UUID}；各有独立授权，见专门指南 |
 | 其他路径 | 不代理，返回 404；包括单实例渠道管理、metrics、工具/技能管理和任意 URL |
 

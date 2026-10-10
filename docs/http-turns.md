@@ -1,6 +1,6 @@
 # 持久 HTTP 请求与结果核对
 
-本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。[独立用户网关](tenant-http-turns.md)另有显式 JSON 准入合同，租户 streaming=false，不能直接套用 standalone SSE。此协议不代表 StateKnot durable driver、工具自动恢复或真实供应商认证。
+本协议供单用户 `serve` 实例显式开启，使用已接线的 Brokerrouter 原生工具循环、SSE 收据与授权。JSON 提交返回持久准入记录，随后按同一个 UUID 查询结果；同一次执行也可通过[有界 HTTP SSE](http-streaming.md)接收临时事件与提交后的终态。启用时 capability 的 streaming=true，关闭时false。现有 `/api/chat` SSE 仍在完整回复后分块，Web 已接通本协议，见[工作台流式](web-streaming.md)。[独立用户网关](tenant-http-turns.md)有显式 JSON/SSE 准入合同，配对 gateway_protocol=2、streaming=true；网关和租户后端必须一起升级并遵守原身份、授权和结算合同。租户工作台当前使用 JSON，预览 UI 尚待接线。此协议不代表 StateKnot durable driver、工具自动恢复或真实供应商认证。
 
 ## 服务停机后的本机维护
 
@@ -35,7 +35,7 @@ enabled = true
 store_path = "../state/model-calls/index.sqlite3"
 ```
 
-还须配置 Brokerrouter 提供商与有效 `tool_timeout_secs` 1..=30。本协议拒绝 gateway-driven scheduler 和 gateway_channel_chat 后端模式；外层网关白名单未开放任何 `/api/turns` 路径。没有认证、SQLite、模型账本或有限期限时启动拒绝，不能默默转为内存/无账本运行。
+还须配置 Brokerrouter 提供商与有效 `tool_timeout_secs` 1..=30。独立 `serve` 模式和 gateway_channel_chat/gateway-driven 租户后端使用不同准入标记与固定工具授权；租户模式须按[专门配置](tenant-http-turns.md#配置与迁移)部署，由网关开放受限 `/api/turns` 路径，不能直接套用本页管理员入口。没有认证、SQLite、模型账本或有限期限时启动拒绝，不能默默转为内存/无账本运行。
 
 会话库从 schema 10 原子升级到 **11**，保留已有历史、任务、渠道及身份。新版本校验 HTTP 表/索引的完整声明形状；缺失、替换或附加触发器须先人工检查，不能自动丢弃身份。旧二进制拒绝 schema 11，需升级所有读取该库的 CLI/后端维护工具。升级前停服务并备份整个 SQLite 数据库及 WAL；不要只复制正在写入的主文件。五个私有渠道 store 接受原 schema 10 后迁移和当前 11，仍拒绝其他版本和错误归属。
 
@@ -106,4 +106,4 @@ note 为 1..1024 UTF-8 字节，首次记录保留，不允许覆盖成另一条
 
 默认unresolved为running及reviewed_ms为空的needs_review；其他筛选可找到已核对或已清理正文的永久身份。按created_ms降序再id降序，单页来自一次SQLite读取快照；新增准入或筛选状态变化可能改变后续页，刷新第一页再核对，不能把offset分页当永久游标或完整导出。没有总数扫描，最多读取limit+1条状态投影，共享原四槽storage owner，满时409而不等待无限队列；数据库永久容量仍10000，不扩容或清理身份。
 
-目录不包含active，也不证明模型/工具已经停止；选中后必须 `GET /api/turns/{id}` 获取原收据与实际owner。关闭tracked_turns仍可认证读目录和原收据，不开放新提交；网关全权限及只读Key都没有此路由。进程重启后running转needs_review仍能查找，不能由列表自动执行、取消、review或恢复unknown模型账本。
+目录不包含active，也不证明模型/工具已经停止；选中后必须 `GET /api/turns/{id}` 获取原收据与实际owner。关闭tracked_turns仍可认证读目录和原收据，不开放新提交；网关另提供每个人 Key 所属用户的有界目录，全权限及只读 Key 均可查询，不能读取其他用户或 standalone 管理员目录。进程重启后running转needs_review仍能查找，不能由列表自动执行、取消、review或恢复unknown模型账本。
