@@ -15,6 +15,7 @@ on:
       - 'tests/doctor.py'
       - 'tests/skills.py'
       - 'tests/skill_read.py'
+      - 'tests/host_log.py'
       - 'tests/mcp.py'
       - 'tests/native_result_limits.py'
       - 'tests/cli_stream.py'

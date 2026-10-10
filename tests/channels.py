@@ -25,6 +25,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
 import uuid
+from host_log import read_running_log
+
+
+def verify_live_log_snapshots():
+    with tempfile.TemporaryDirectory(prefix='jiaclaw-channel-log-') as directory:
+        path = Path(directory) / 'live.log'
+        for character in ('续', '🦀'):
+            raw = character.encode('utf-8')
+            for cut in range(1, len(raw)):
+                path.write_bytes(b'prefix\n' + raw[:cut])
+                assert read_running_log(path) == 'prefix\n'
+                path.write_bytes(b'prefix\n' + raw)
+                assert read_running_log(path) == 'prefix\n' + character
+        for raw in (b'\xff', b'prefix\xe7\xff', b'\xe7\xbbx'):
+            path.write_bytes(raw)
+            try:
+                read_running_log(path)
+            except UnicodeDecodeError:
+                pass
+            else:
+                raise AssertionError('malformed UTF-8 must be rejected')
+
+
+verify_live_log_snapshots()
 
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/jiaclaw').resolve()
@@ -248,14 +272,14 @@ try:
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 assert process.poll() is None, log.read_text()
-                match = re.search(r'HTTP 服务已启动于 (http://127\.0\.0\.1:[1-9][0-9]*)', log.read_text())
+                match = re.search(r'HTTP 服务已启动于 (http://127\.0\.0\.1:[1-9][0-9]*)', read_running_log(log))
                 if match:
                     base = match.group(1)
                     eventually(lambda: channel_health() == 'running',
                                'channel worker running')
                     return
                 time.sleep(.05)
-            raise AssertionError('host startup timeout: ' + log.read_text())
+            raise AssertionError('host startup timeout: ' + read_running_log(log))
 
         def stop(kill=False):
             if process and process.poll() is None:
@@ -272,7 +296,7 @@ try:
                 if last:
                     return last
                 time.sleep(.05)
-            raise AssertionError(description + ' timed out; last=' + repr(last) + '\n' + log.read_text())
+            raise AssertionError(description + ' timed out; last=' + repr(last) + '\n' + read_running_log(log))
 
         def observed(case):
             return len(requests_by_case.get(case, []))
@@ -698,12 +722,12 @@ try:
         assert observed('after_fault') == 0
 
         public = json.dumps(events()) + json.dumps(request('/api/channels/deliveries')[1])
+        assert 'sealed_token' not in json.dumps(events())
+        stop()
         public += ''.join(path.read_text() for path in logs)
         for secret in [gateway_secret, telegram_token, slack_token, discord_body['token'],
                        env['JIACLAW_CHANNEL_STATE_KEY'], private_error]:
             assert secret not in public, 'credential or untrusted platform error leaked'
-        assert 'sealed_token' not in json.dumps(events())
-        stop()
         for path in [database, database.with_name(database.name + '-wal')]:
             if path.exists():
                 assert discord_body['token'].encode() not in path.read_bytes()
