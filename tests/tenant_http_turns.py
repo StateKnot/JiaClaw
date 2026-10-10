@@ -79,12 +79,12 @@ try:
                 return sum(p['who'] == who and p['prompt'] == prompt for p in posts)
 
         assert request(gp, '/api/turns/capabilities')[0] == 401
-        assert api('alice', '/api/turns/capabilities')['streaming'] is False
+        assert api('alice', '/api/turns/capabilities')['streaming'] is True
         a = backends['alice']
         assert request(a['port'], '/api/turns/capabilities', a['token'])[0] == 503
-        assert request(a['port'], '/api/turns/capabilities', a['token'], marker=True)[1]['gateway_protocol'] == 1
+        assert request(a['port'], '/api/turns/capabilities', a['token'], marker=True)[1]['gateway_protocol'] == 2
         wrong = str(uuid.uuid4())
-        assert request(a['port'], '/api/turns/' + wrong + '/stream', a['token'], 'PUT', body('forbidden-stream'), marker=True)[0] == 503
+        assert request(a['port'], '/api/turns/' + wrong + '/stream', a['token'], 'PUT', body('forbidden-stream'))[0] == 503
         for suffix in ('/stream', '/review', '/purge-result', '?backend=bob'):
             api('alice', '/api/turns/' + wrong + suffix, expected=404)
         api('alice', '/api/turns?limit=1&limit=2', expected=404)

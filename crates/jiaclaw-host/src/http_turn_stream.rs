@@ -18,9 +18,9 @@ use tokio::{
     time::Instant,
 };
 
-pub(super) const ROUND_BYTES: usize = 2 * 1024 * 1024;
-pub(super) const PREVIEW_BYTES: usize = 8 * 1024 * 1024;
-pub(super) const WIRE_BYTES: usize = 12 * 1024 * 1024;
+pub(crate) const ROUND_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const WIRE_BYTES: usize = 12 * 1024 * 1024;
 const FRAGMENT: usize = 4096;
 const WRITE_GRACE: Duration = Duration::from_secs(5);
 const TERMINAL_GRACE: Duration = Duration::from_secs(65);

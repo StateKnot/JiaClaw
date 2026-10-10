@@ -26,7 +26,7 @@ use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 #[path = "http_turn_stream.rs"]
-mod delivery;
+pub(super) mod delivery;
 
 pub(super) fn reserved_session(id: &str) -> bool {
     id.starts_with("http:")
@@ -280,7 +280,7 @@ pub(super) async fn capabilities(
 ) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
     Ok(Json(
-        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some() && !tenant_mode(state.agent.config()),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES,"gateway_protocol":if tenant_mode(state.agent.config()) {1} else {0},"agent_name":state.agent.config().name,"max_receipt_bytes":MAX_RESULT_BYTES+16384}),
+        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES,"gateway_protocol":if tenant_mode(state.agent.config()) {2} else {0},"agent_name":state.agent.config().name,"max_receipt_bytes":MAX_RESULT_BYTES+16384}),
     ))
 }
 
@@ -382,9 +382,6 @@ async fn submit_inner(
 ) -> Result<Response, AppError> {
     authorize(&state, &headers)?;
     validate_id(&id)?;
-    if streaming && tenant_mode(state.agent.config()) {
-        return Err(AppError::HttpTurnUnavailable);
-    }
     let body = match read_body(&state, request).await {
         Ok(body) => body,
         Err(response) => return Ok(response),

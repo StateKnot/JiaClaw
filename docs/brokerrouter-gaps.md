@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-10 租户SSE API批次再次官方核对：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/唯一alpha.1/#140 OPEN无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea不变。附着PR58–100当前head检查全部SUCCESS，无代码review/thread。PR100最终七CI/四候选已[回填](validation.md#pr-100-网关停机最终资格回填)；本批[租户SSE API](tenant-http-turns.md#个人-key-sse-api)消费现成原生HTTP/模型SSE，补应用身份、授权、实际投递owner、取消和结算，不把应用接线缺失上报为框架缺陷。不增加stdio/写MCP、durable图/子Agent、原生Schema、真实供应商或代理资格，也不重复建issue。
+
 2026-10-10 本轮再次只读核对：StateKnot aa11b4f/唯一alpha.1/#140，Brokerrouter e01ecb9/无release/#31/#41/未合并PR40 head7a7afea均未变化；附着PR58–99当前head检查SUCCESS、无代码review/thread。PR99初版364b274最终七CI/四归档已回填；本批修复真实工作台拒绝合法gateway JSON和主容量忙时无法重连的应用接线，不把它上报为框架缺陷。现有HTTP MCP pin和原生Schema/stdio/durable/真实供应商门槛保持独立。
 
 2026-10-10 租户原请求批次官方核对：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/alpha.1/#140 OPEN，Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31、#41 OPEN，PR40未合并/head `7a7afea0244828851118ba32d1cf37d906a3f388` 均未变化。附着PR58–98当前head检查SUCCESS、无代码review/thread；draft未审通知不算外部审查。本批[独立用户HTTP JSON](tenant-http-turns.md)属于应用授权/身份接线，不上报重复框架缺陷，不借用原生Schema、stdio、durable恢复或租户SSE资格；PR98最终CI已[回填](validation.md#停机-http-维护最终-ci-回填)。

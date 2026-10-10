@@ -923,3 +923,30 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 修订head `bde8b02e38d2f7105d12c16483446b00ee702c03` 的Linux候选 [114083718542](https://github.com/StateKnot/JiaClaw/actions/runs/38008796806/job/114083718542)在Rust并发记忆追加用例失败，12线程中的7个返回固定workspace-flock/EWOULDBLOCK，未构建或安装该候选；单worker harness不能消除用例内部竞争。原日志没有持锁时长/owner身份，因此不认定为fsync慢、泄漏锁或具体进程。原样本机目标一次PASS；用真实目录锁owner持续持有的控制实验，旧200×2ms后必须成功的断言在0.58秒确定性失败，证明它拒绝了生产允许的准入前busy，但不证明该实验就是原CI根因。
 
 修订同一用例验证实际合同：先由真实owner持锁、12线程同时尝试，必须全部精确busy且目录零创建；owner释放后另一轮12线程同时争抢，每个成功ID必须恰有一条原记录、每个busy ID必须没有记录，其他错误立即失败。所有原owner join后，仅对明确拒绝的ID各做一次新的显式尝试，最终仍是12条各一次，再验证持锁拒绝不写入与释放后的第13条。生产非阻塞锁/IO/工具均未改，不增加等待期限或在CI自动重跑；旧夹具“所有竞争者必须在200次轮询内成功”的时序假设改为真实完成与拒绝语义，原36项memory_io全套已本机通过。所有未知效果禁止重试，旧锁/准入失败根因继续开放；本批最终固定head七作业与四归档需重新验收，bde及6d结果只作历史。
+
+## PR 100 网关停机最终资格回填
+
+[PR #100](https://github.com/StateKnot/JiaClaw/pull/100) 最终 head `699adf6f3463927940db96f7e31e2edf38f926e0`、tree `a4694b193cc3ce997b3643fb5597f2e08a77fbae`；官方实际 merge `e5b9f94bba3e50f22c7fb5175152215b37ab17ab` 同 tree、父提交为 PR99 最终273004a与该head。冻结本机 binary SHA256 `d84259d0027462dc09d8fd541580286d5224827004cd55c950ae28695df76a22` 的1220 Rust、fmt/必需Clippy/锁定构建、八parser组和15相关进程/浏览器套件全部通过。真实旧PR99慢读HTTP连接令SIGTERM排空18秒后仍存活；新四组TCP/持久hold/原owner/晚到正文验收通过，原17秒外部观察和生产15秒共享grace未延长。
+
+[主CI 38009644661](https://github.com/StateKnot/JiaClaw/actions/runs/38009644661) 与[候选资格 38009644610](https://github.com/StateKnot/JiaClaw/actions/runs/38009644610) 七个实际执行作业全部SUCCESS，公开release步骤SKIPPED。Ubuntu/macOS各37套必需Python、Ubuntu六套真实浏览器和真实Docker沙箱通过；容器 `50403b578b16ec0a8b90de256482b86daf61f3e0259d7bf5d5c86ef16c7adc03` 通过非root/只读rootfs/命名卷/恢复及实际每租户ENOSPC。四原生架构实际构建、优化binary协议回归与13组原归档安装通过：
+
+| 架构 | 实际作业 | 归档 SHA256 |
+|---|---|---|
+| macOS x86_64 | 114086496149 | `ae3980d569d9c14657f6b239b2002766e3acfbb8deee71e0433c92c2d44aa75d` |
+| Linux aarch64 | 114086496363 | `f528a4d52b0c44f1e5ab364bee95b3e2828f1873d2cf4440da13c03afa2bb20a` |
+| Linux x86_64 | 114086496420 | `1de3535964e4d52752e7817cca186160310ae1b35587005a5fef113bbde04dc0` |
+| macOS aarch64 | 114086496494 | `44c415a409b3fc6d214f6ea2a5ebd67fee8644791c3e3a0fa79340a32e3b5955` |
+
+四GitHub上传ZIP摘要和固定run/head元数据已交叉核对，未独立下载ZIP；归档安装按实际job日志认证。本机源20文件/90编译输入、日志、四资产、PR正文读回和review均固定到 `/tmp/jiaclaw-oct10m-shutdown-delivery/pin.json`；该目录是本机审计证据，不是发布资产。
+
+首版6d Linux只读浏览器暂停429没有原响应正文，具体根因未证明；新夹具在真实Native提交后挡住原dispatch收据，证明hold仍在时暂停429且零backend pause POST，再释放并在同一20秒预算内只重试已证明未准入的busy。第二版bde Linux x86_64 12写线程测试错误地要求非阻塞workspace flock竞争者都成功，实际CI锁持有者/时长仍未证明；真实已持有目录锁的控制复现使旧断言失败，改为12竞争者完成后的实际成功/已知busy零效果核对，最后仅对明确未准入者显式新尝试，全12条各一次。生产文件I/O未改，本机36 MemoryIO/20次真12线程通过。初版一次15秒user-add启动失败及历史锁/双准入失败具体根因仍未认证；不得将最终通过报告为这些根因已修复或并行负载资格。
+
+本批仍是明确的HTTP/应用owner停机资格：OS/文件系统永久卡住的blocking DB可继续占用运行时，监督进程强制终止及原收据核对仍是最后边界；不冒充硬OS停机、真实供应商、上游durable或公开发布。PR仍draft/未合并。
+
+## 租户 SSE 协议拒绝审查回归
+
+mattpocock-skills 的规范/规格双轴审查发现应用结算缺陷：原生 SSE 身份校验失败后，后续有效 GET 的 completed/active=false 会清除审核 hold。冻结 22bb 二进制（SHA256 `2e3d98cd2774f7b44c5a4dc313deb56da899419c878cfa5061deb0c686bb6949`）通过真实 Native、网关和故障代理两次复现；代理确认原 hold 为 in_flight 后让原模型恰执行一次并持久完成，再破坏原身份，GET 前 hold 已消失。这是应用接线缺陷，不报告为框架缺陷。
+
+修订把原响应有效性和原 GET 成功同时作为清除审核条件；实际 idle 证明仍独立释放执行容量。`tests/tenant_http_stream.py` 第七组实际覆盖身份替换、原权限外工具事件、异常前准入、异常后 needs_review、重复原身份只查询、新写入 409/零效果及原停止证据后的人工清除。有效 SSE 和已有原生身份的有效 200 JSON lookup 均正常结算，模型各恰执行一次。成功验证与实际结算后的终态帧丢失不倒造审核 hold，客户端仍以原编号 GET 核对，不创建替代执行。
+
+两类故障与正常控制的最小反馈环、完整七组初验通过；standalone 文档已链接独立租户合同。旧 22bb 的本机和候选资格不得计入本次修订：最终 head 的 Rust、22 个相关进程/浏览器套件、七官方作业及四候选需分别核对后再回填。租户预览 UI、供应商、StateKnot durable、stdio/外部写入及公开发布仍保持开放。

@@ -999,6 +999,7 @@ mod tests {
                 permits: Arc::new(Semaphore::new(1)),
                 timeout: Duration::from_secs(180),
                 control: Arc::new(Semaphore::new(1)),
+                streams: Arc::new(tokio::sync::Semaphore::new(4)),
                 scheduled_jobs: false,
                 tracked_turns: false,
                 admission: crate::gateway::scheduler::Stop::new(),
@@ -1173,6 +1174,7 @@ mod tests {
                 ),
                 permit: Arc::new(Semaphore::new(1)),
                 control: Arc::new(Semaphore::new(1)),
+                streams: Arc::new(tokio::sync::Semaphore::new(4)),
             },
         )]);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1536,6 +1538,7 @@ mod tests {
             ),
             permit: Arc::new(Semaphore::new(1)),
             control: Arc::new(Semaphore::new(1)),
+            streams: Arc::new(tokio::sync::Semaphore::new(4)),
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = configure(

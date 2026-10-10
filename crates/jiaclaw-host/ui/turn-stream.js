@@ -20,9 +20,11 @@
   }
   function gatewayCapabilities(c) {
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
+    if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
-    require(c.protocol === 1 && c.gateway_protocol === 1 && c.scope === 'gateway' && c.enabled === true && c.streaming === false && c.listing === true);
+    require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
+    if (c.gateway_protocol === 2) require(c.stream_suffix === '/stream' && Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 10 && c.turn_budget_secs <= 300 && c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === 2 && new Set(c.enabled_tools).size === 2 && c.enabled_tools.every(t => ['datetime_now','json_query'].includes(t)));
     return c;
   }
