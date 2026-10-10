@@ -6,11 +6,12 @@
 //! to bypass unresolved submissions. The owner keeps this store alive until
 //! admitted network work and its final persistence have finished.
 
+use crate::private_state_file;
 use jiaclaw_core::{JiaClawError, ModelPurpose};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::{Mutex, MutexGuard},
@@ -130,66 +131,10 @@ impl NewCall {
     }
 }
 
-fn private_file(path: &Path) -> Result<fs::Metadata> {
-    let metadata = fs::symlink_metadata(path).map_err(failure)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(failure(
-            "state files must be ordinary files without symlinks",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.nlink() != 1 || metadata.permissions().mode() & 0o777 != 0o600 {
-            return Err(failure(
-                "state files require mode 0600 and exactly one hard link",
-            ));
-        }
-    }
-    Ok(metadata)
-}
-
 fn suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     PathBuf::from(name)
-}
-
-fn create_private_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            private_file(path)?;
-            let mut options = OpenOptions::new();
-            options.read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            }
-            options.open(path).map_err(failure)?
-        }
-        Err(error) => return Err(failure(error)),
-    };
-    let metadata = private_file(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata().map_err(failure)?;
-        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() || opened.nlink() != 1 {
-            return Err(failure("state file changed during open"));
-        }
-    }
-    Ok(file)
 }
 
 fn state_path(workspace: &Path, requested: &Path) -> Result<(PathBuf, PathBuf)> {
@@ -388,7 +333,8 @@ fn encode_receipt(value: &Value) -> Result<Vec<u8>> {
 impl Store {
     pub fn open(workspace: &Path, requested: &Path) -> Result<Self> {
         let (workspace, path) = state_path(workspace, requested)?;
-        let ownership = create_private_file(&suffix(&path, ".lock"))?;
+        let ownership =
+            private_state_file::open_or_create(&suffix(&path, ".lock")).map_err(failure)?;
         fs2::FileExt::try_lock_exclusive(&ownership).map_err(|_| {
             failure("another process owns model-call state; stop serve before using the CLI")
         })?;
@@ -396,7 +342,7 @@ impl Store {
             let sidecar = suffix(&path, suffix_name);
             match fs::symlink_metadata(&sidecar) {
                 Ok(_) => {
-                    let metadata = private_file(&sidecar)?;
+                    let metadata = private_state_file::inspect(&sidecar).map_err(failure)?;
                     let maximum = if suffix_name == "-shm" {
                         4 * 1024 * 1024
                     } else {
@@ -410,7 +356,7 @@ impl Store {
                 Err(error) => return Err(failure(error)),
             }
         }
-        let file = create_private_file(&path)?;
+        let file = private_state_file::open_or_create(&path).map_err(failure)?;
         let size = file.metadata().map_err(failure)?.len();
         if size > MAX_DATABASE_BYTES {
             return Err(failure("model-call database exceeds 32 MiB"));
@@ -1260,7 +1206,7 @@ mod tests {
             fs::set_permissions(&calls, fs::Permissions::from_mode(0o700)).unwrap();
         }
         let path = calls.join("index.sqlite3");
-        let file = create_private_file(&path).unwrap();
+        let file = private_state_file::open_or_create(&path).unwrap();
         drop(file);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(&SCHEMA.replace(
@@ -1321,7 +1267,11 @@ mod tests {
         let moved = parent.join("original.sqlite3");
         fs::rename(&database, &moved).unwrap();
         symlink(&moved, &database).unwrap();
-        assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());
+        assert!(matches!(
+            Store::open(&workspace, Path::new("../calls/index.sqlite3")),
+            Err(JiaClawError::ToolExecution(message))
+                if message == "model-call store: state files must be ordinary files without symlinks"
+        ));
         fs::remove_file(&database).unwrap();
         fs::hard_link(&moved, &database).unwrap();
         assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());
@@ -1349,12 +1299,12 @@ mod tests {
         fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(fs::read(&database).unwrap(), original);
         let sidecar = suffix(&database, "-shm");
-        let file = create_private_file(&sidecar).unwrap();
+        let file = private_state_file::open_or_create(&sidecar).unwrap();
         file.set_len(4 * 1024 * 1024 + 1).unwrap();
         drop(file);
         assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());
         fs::remove_file(sidecar).unwrap();
-        let file = OpenOptions::new().write(true).open(&database).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&database).unwrap();
         file.set_len(MAX_DATABASE_BYTES + 1).unwrap();
         drop(file);
         assert!(Store::open(&workspace, Path::new("../calls/index.sqlite3")).is_err());

@@ -40,6 +40,7 @@ mod native_agent;
 mod schema_work;
 pub use mcp::inspect_mcp_server;
 mod model_calls;
+mod private_state_file;
 mod provider;
 pub use model_calls::ModelCalls;
 mod progress;
