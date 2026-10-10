@@ -164,7 +164,7 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
 pub struct JiaClawAgent {
     config: AgentConfig,
     workspace: Workspace,
-    skills: SkillRegistry,
+    skills: std::sync::Arc<SkillRegistry>,
     tools: ToolRegistry,
     /// 可选：每次真实 tool 执行后回调（serve 的 Prometheus 计数）。
     tool_metrics: Option<ToolMetricsHook>,
@@ -262,7 +262,7 @@ impl JiaClawAgent {
         if !skills.is_empty() {
             tracing::info!("发现 {} 个技能", skills.len());
         }
-        let skills = SkillRegistry::new(skills);
+        let skills = std::sync::Arc::new(SkillRegistry::new(skills));
 
         // 初始化工具注册表
         let mut tools = ToolRegistry::new();
@@ -395,6 +395,14 @@ impl JiaClawAgent {
                 Err(e)
             }
         }
+    }
+
+    /// Reload off the async executor with per-registry capacity retained by the worker.
+    ///
+    /// # Errors
+    /// Busy capacity, invalid skills or a failed worker; inspect the current snapshot after cancellation.
+    pub async fn reload_skills_async(&self) -> Result<Vec<Skill>, JiaClawError> {
+        self.skills.reload_async(&self.config.workspace_path).await
     }
 
     /// 获取工具注册表

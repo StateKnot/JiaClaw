@@ -1,5 +1,21 @@
 # 基础能力验收记录
 
+## 有界技能发现与重载批次
+
+2026-10-11，源代码固定 `0291084e6e358fcde17d5452d83460b50026f188`，合同见[技能指南](skills.md)。冻结前一批二进制的原始 CLI 两次复现外部叶/目录链接读入与 FIFO 超过3秒阻塞；测试全部使用合成标记，没有读取用户秘密。初版真实回归另外复现普通空目录阻止重载，独立 Standards 审查提出的测试争槽由八并发 Rust 技能测试实际复现400/200不匹配。修正分别跳过非技能目录与将同步/异步许可归属各注册表，初版日志和独立初始报告保留。
+
+最终源码实际执行：
+
+- 1235 Rust单元测试通过（404/123/708），另1真实 Docker专项保持独立 ignored；全套串行测试正常结束，未借初版1235项资格。初次受限沙箱的43失败属于本机能力被拒绝，保留失败日志；获准本机测试环境完整重跑后通过。
+- 格式检查、锁定构建和 Clippy correctness/suspicious 通过；既有 style/pedantic 警告仍在。
+- 原始CLI四场景修复后通过；新真实 `tests/skills.py` CLI/认证HTTP覆盖12个输出组以及空目录、重复名称、缺少根目录清空和鉴权断言全部通过。根/父/叶链接、硬链接、FIFO、文本与元数据超限、失败保留原快照均实际驱动。
+- 修正后既有七项技能 Rust 测试以八工作线程通过；注册表取消/真实工作容量/独立实例回归已在完整 Rust 中通过。四套已有真实进程 `e2e.py`、`doctor.py`、`native_tools.py` 和 `workspace_files.py` 在最终二进制上重新通过。
+- 独立[Standards](reviews/2026-10-11-bounded-skills-standards.md)与[Spec](reviews/2026-10-11-bounded-skills-spec.md)聚焦开放均0。用户指定累计基准 `origin/main` 固定 `4b2357fc`，历史结论继承，不声称穷尽累计代码重审。
+
+日志、冻结二进制、源文件身份和新交付 pin 保存于 `/tmp/jiaclaw-oct11-bounded-skills-delivery` 及 `/tmp/jiaclaw-oct11-skills-*`，位于 target 之外。复用共享 Rust 1.88缓存，未复制/创建任务专用target；构建命令设置 incremental=0、dev/test debug=0，保留断言、溢出检查与全部测试。没有删除共享缓存或宣称释放空间。
+
+本批官方CI已增加第44个必需Python套件，四个优化候选各执行新技能进程验收；最终交付 head 的七实际作业、七Chromium、四优化/安装/归档/源码证明仍需独立核对。资格仅在PR正文/pin回填，避免自引用文档提交循环。没有认证 stdio/OAuth/外部MCP写入、真实供应商/安装、自动记忆、按需技能生态或 durable恢复。
+
 ## PR #102 执行结果丢失修复最终 CI 回填
 
 固定 head `d3bb650a81f54193d2a0a260af0858936d03f9ea`、base `d714a831a363a871c435976cb239899a871e47aa`、tree `f2ed4115a6c0e978c1a1c2e2c7721dbdb76c9e04`；官方测试 merge `dfc84a263bdead96ae8be1537bc02ac64e7c18a9` 的 tree 相同，双 parent 为上述 base/head。2026-10-10 04:36 UTC 后实际读取 [CI 38022482921](https://github.com/StateKnot/JiaClaw/actions/runs/38022482921) 与 [候选 38022482925](https://github.com/StateKnot/JiaClaw/actions/runs/38022482925)：七作业 SUCCESS，draft 发布 SKIPPED，仍为未合并 draft PR。

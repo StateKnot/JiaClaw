@@ -4,8 +4,25 @@
 //! 技能发现和管理
 
 use jiaclaw_core::JiaClawError;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+const SKILL_FILE_BYTES: usize = 128 * 1024;
+const CATALOG_BYTES: usize = 2 * 1024 * 1024;
+const CATALOG_SKILLS: usize = 64;
+const CATALOG_ENTRIES: usize = 256;
+
+fn invalid(reason: impl std::fmt::Display) -> JiaClawError {
+    JiaClawError::Configuration(format!("存在无效技能文件: {reason}"))
+}
+
+fn identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
 
 /// 技能定义
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -45,40 +62,71 @@ impl Skill {
     ///
     /// 如果技能文件不存在或无法读取，返回错误。
     pub fn from_file(skill_dir: &Path) -> Result<Self, JiaClawError> {
-        let skill_file = skill_dir.join("SKILL.md");
-
-        if !skill_file.exists() {
-            return Err(JiaClawError::Configuration(format!(
-                "技能文件不存在: {}",
-                skill_file.display()
-            )));
-        }
-
-        let raw_content = std::fs::read_to_string(&skill_file).map_err(|e| {
-            JiaClawError::Configuration(format!("无法读取技能文件 {}: {e}", skill_file.display()))
-        })?;
-
         let dir_name = skill_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .ok_or_else(|| invalid("技能目录需要 UTF-8 名称"))?;
+        let parent = skill_dir
+            .parent()
+            .ok_or_else(|| invalid("技能目录缺少父目录"))?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        Self::read(parent, &format!("./{dir_name}/SKILL.md"), skill_dir)?
+            .map(|(skill, _)| skill)
+            .ok_or_else(|| invalid("技能文件不存在"))
+    }
 
-        let (frontmatter, content) = Self::parse_frontmatter(&raw_content)?;
+    // The workspace is the administrator-selected authority. Discovery always reads
+    // from it, never from an ambient skills/ or per-skill path checked earlier.
+    fn read(
+        workspace: &Path,
+        relative: &str,
+        skill_dir: &Path,
+    ) -> Result<Option<(Self, usize)>, JiaClawError> {
+        let dir_name = skill_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| invalid("技能目录需要 UTF-8 名称"))?;
+        let Some(file) = crate::memory_io::read_text(workspace, relative, SKILL_FILE_BYTES, false)
+            .map_err(invalid)?
+        else {
+            return Ok(None);
+        };
+        if !identifier(dir_name) {
+            return Err(invalid(
+                "技能目录名需要 1..=128 UTF-8 字节且无首尾空白/控制字符",
+            ));
+        }
+        let raw_content = file.text;
+        let raw_bytes = raw_content.len();
 
-        let name = frontmatter.name.unwrap_or(dir_name);
+        let (frontmatter, content) = Self::parse_frontmatter(&raw_content).map_err(invalid)?;
+
+        let name = frontmatter.name.unwrap_or_else(|| dir_name.to_string());
         let description = frontmatter
             .description
             .unwrap_or_else(|| Self::extract_description(&content));
         let triggers = frontmatter.triggers;
-
-        Ok(Self {
-            name,
-            description,
-            path: skill_dir.to_path_buf(),
-            content,
-            triggers,
-        })
+        if !identifier(&name)
+            || description.len() > 2048
+            || triggers.len() > 32
+            || triggers.iter().any(|trigger| !identifier(trigger))
+        {
+            return Err(invalid("name/trigger 最多 128 字节且非空、无首尾空白/控制字符；description 最多 2048 字节；triggers 最多 32 项"));
+        }
+        Ok(Some((
+            Self {
+                name,
+                description,
+                path: skill_dir.to_path_buf(),
+                content,
+                triggers,
+            },
+            raw_bytes,
+        )))
     }
 
     /// 解析 YAML frontmatter
@@ -171,6 +219,7 @@ impl Skill {
 pub struct SkillDiscovery {
     /// 技能根目录
     skills_root: PathBuf,
+    workspace: PathBuf,
     /// 是否启用自动触发器激活
     auto_trigger_enabled: bool,
 }
@@ -181,6 +230,7 @@ impl SkillDiscovery {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             skills_root: workspace_path.join("skills"),
+            workspace: workspace_path.to_path_buf(),
             auto_trigger_enabled: true,
         }
     }
@@ -193,25 +243,21 @@ impl SkillDiscovery {
     }
 
     /// 列出 `skills/` 下的一级子目录。目录不存在时返回空列表。
-    fn skill_directories(&self) -> Result<Vec<PathBuf>, JiaClawError> {
-        if !self.skills_root.exists() {
-            tracing::debug!("技能目录不存在: {}", self.skills_root.display());
-            return Ok(Vec::new());
+    fn skill_directories(&self) -> Result<Vec<crate::files::DirEntryInfo>, JiaClawError> {
+        // lstat distinguishes an absent directory from a dangling link. This is
+        // only an absence check: the capability I/O below enforces access safety.
+        match std::fs::symlink_metadata(&self.skills_root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(invalid(e)),
+            Ok(_) => (),
         }
-
-        let entries = std::fs::read_dir(&self.skills_root)
-            .map_err(|e| JiaClawError::Configuration(format!("无法读取技能目录: {e}")))?;
-
-        let mut dirs = Vec::new();
-        for entry in entries {
-            let entry =
-                entry.map_err(|e| JiaClawError::Configuration(format!("无法读取目录条目: {e}")))?;
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            }
+        let (entries, truncated) =
+            crate::memory_io::list_directory(&self.workspace, "skills", CATALOG_ENTRIES + 1, false)
+                .map_err(invalid)?;
+        if truncated || entries.len() > CATALOG_ENTRIES {
+            return Err(invalid("技能目录扫描不完整或超过 256 个条目"));
         }
-        Ok(dirs)
+        Ok(entries)
     }
 
     /// 发现所有技能（启动时宽松模式：单个坏文件跳过并 warn）。
@@ -220,21 +266,7 @@ impl SkillDiscovery {
     ///
     /// 如果无法读取技能目录，返回错误。
     pub fn discover(&self) -> Result<Vec<Skill>, JiaClawError> {
-        let mut skills = Vec::new();
-
-        for path in self.skill_directories()? {
-            match Skill::from_file(&path) {
-                Ok(skill) => {
-                    tracing::debug!("发现技能: {}", skill.name);
-                    skills.push(skill);
-                }
-                Err(e) => {
-                    tracing::warn!("跳过无效技能目录 {}: {e}", path.display());
-                }
-            }
-        }
-
-        Ok(skills)
+        self.scan(false)
     }
 
     /// 严格扫描：任一现存 `SKILL.md` 无法读取或解析则失败（热加载用）。
@@ -245,33 +277,48 @@ impl SkillDiscovery {
     ///
     /// 无法读取 `skills/`，或至少一个技能文件无效。
     pub fn discover_strict(&self) -> Result<Vec<Skill>, JiaClawError> {
-        let mut skills = Vec::new();
-        let mut errors = Vec::new();
+        self.scan(true)
+    }
 
-        for path in self.skill_directories()? {
-            let skill_file = path.join("SKILL.md");
-            if !skill_file.exists() {
-                tracing::debug!("跳过无 SKILL.md 的目录: {}", path.display());
+    fn scan(&self, strict: bool) -> Result<Vec<Skill>, JiaClawError> {
+        let mut skills = Vec::new();
+        let mut names = HashSet::new();
+        let mut bytes = 0;
+        for entry in self.skill_directories()? {
+            let path = self.skills_root.join(&entry.name);
+            if entry.kind != "dir" && entry.kind != "symlink" {
                 continue;
             }
-            match Skill::from_file(&path) {
-                Ok(skill) => {
-                    tracing::debug!("发现技能: {}", skill.name);
+            // A linked directory is invalid even if its target has no SKILL.md.
+            let loaded = if entry.kind == "symlink" {
+                Err(invalid("技能目录禁止符号链接"))
+            } else {
+                Skill::read(
+                    &self.workspace,
+                    &format!("skills/{}/SKILL.md", entry.name),
+                    &path,
+                )
+            };
+            match loaded {
+                Ok(Some((skill, raw_bytes))) => {
+                    bytes += raw_bytes;
+                    if bytes > CATALOG_BYTES || skills.len() == CATALOG_SKILLS {
+                        return Err(invalid("技能目录最多 64 个技能/2 MiB 原始文本"));
+                    }
+                    if !names.insert(skill.name.clone()) {
+                        return Err(invalid("技能名称重复"));
+                    }
                     skills.push(skill);
                 }
+                Ok(None) => (),
                 Err(e) => {
-                    errors.push(format!("{}: {e}", path.display()));
+                    if strict {
+                        return Err(e);
+                    }
+                    tracing::warn!("跳过无效技能目录 {}: {e}", path.display());
                 }
             }
         }
-
-        if !errors.is_empty() {
-            return Err(JiaClawError::Configuration(format!(
-                "存在无效技能文件: {}",
-                errors.join("; ")
-            )));
-        }
-
         Ok(skills)
     }
 
@@ -281,13 +328,22 @@ impl SkillDiscovery {
     ///
     /// 如果技能文件存在但无法解析，返回错误。
     pub fn find(&self, skill_name: &str) -> Result<Option<Skill>, JiaClawError> {
-        let skill_dir = self.skills_root.join(skill_name);
-
-        if !skill_dir.exists() {
-            return Ok(None);
+        if !identifier(skill_name)
+            || Path::new(skill_name).components().count() != 1
+            || !matches!(
+                Path::new(skill_name).components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+        {
+            return Err(invalid("技能查询需要单个目录名，禁止路径穿越"));
         }
-
-        Skill::from_file(&skill_dir).map(Some)
+        let skill_dir = self.skills_root.join(skill_name);
+        Skill::read(
+            &self.workspace,
+            &format!("skills/{skill_name}/SKILL.md"),
+            &skill_dir,
+        )
+        .map(|loaded| loaded.map(|(skill, _)| skill))
     }
 
     /// 根据用户消息自动查找应该激活的技能
@@ -328,6 +384,7 @@ impl SkillDiscovery {
 #[derive(Debug)]
 pub struct SkillRegistry {
     inner: RwLock<Vec<Skill>>,
+    reload_slot: Arc<tokio::sync::Semaphore>,
 }
 
 impl SkillRegistry {
@@ -336,6 +393,7 @@ impl SkillRegistry {
     pub fn new(skills: Vec<Skill>) -> Self {
         Self {
             inner: RwLock::new(skills),
+            reload_slot: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -365,6 +423,44 @@ impl SkillRegistry {
     ///
     /// 目录无法读取，或任一 `SKILL.md` 无效。此时注册表内容不变。
     pub fn reload(&self, workspace_path: &Path) -> Result<Vec<Skill>, JiaClawError> {
+        let _permit = self
+            .reload_slot
+            .try_acquire()
+            .map_err(|_| invalid("技能重载正在进行"))?;
+        self.scan_and_publish(workspace_path)
+    }
+
+    /// Bounded background reload. Cancellation of the waiter does not cancel the
+    /// admitted scan or release its per-registry capacity; inspect the snapshot.
+    ///
+    /// # Errors
+    /// Busy capacity, invalid input or a failed worker; no partial table is published.
+    pub async fn reload_async(
+        self: &Arc<Self>,
+        workspace: &Path,
+    ) -> Result<Vec<Skill>, JiaClawError> {
+        let registry = Arc::clone(self);
+        let workspace = workspace.to_path_buf();
+        self.run_reload(move || registry.scan_and_publish(&workspace))
+            .await
+    }
+
+    async fn run_reload<F>(&self, reload: F) -> Result<Vec<Skill>, JiaClawError>
+    where
+        F: FnOnce() -> Result<Vec<Skill>, JiaClawError> + Send + 'static,
+    {
+        let permit = Arc::clone(&self.reload_slot)
+            .try_acquire_owned()
+            .map_err(|_| invalid("技能重载正在进行，请先核对 /api/skills"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            reload()
+        })
+        .await
+        .map_err(|_| invalid("技能重载任务失败"))?
+    }
+
+    fn scan_and_publish(&self, workspace_path: &Path) -> Result<Vec<Skill>, JiaClawError> {
         let new_skills = SkillDiscovery::new(workspace_path).discover_strict()?;
         {
             let mut guard = self.lock_write();
@@ -378,6 +474,143 @@ impl SkillRegistry {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn cancelled_reload_keeps_capacity_until_worker_finishes_and_isolates_registries() {
+        let registry = Arc::new(SkillRegistry::new(Vec::new()));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&registry);
+        let waiting = tokio::spawn(async move {
+            worker
+                .run_reload(move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(Vec::new())
+                })
+                .await
+        });
+        entered_rx.await.unwrap();
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        assert!(registry
+            .run_reload(|| panic!("busy reload must not dispatch"))
+            .await
+            .is_err());
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(registry.reload(workspace.path()).is_err());
+        let independent = Arc::new(SkillRegistry::new(Vec::new()));
+        assert!(independent
+            .reload_async(workspace.path())
+            .await
+            .unwrap()
+            .is_empty());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if registry.reload_async(workspace.path()).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_limits_are_complete_or_rejected() {
+        let workspace = tempfile::tempdir().unwrap();
+        let discovery = SkillDiscovery::new(workspace.path());
+        for index in 0..64 {
+            write_skill(
+                workspace.path(),
+                &format!("skill-{index:02}"),
+                "# Body\ntext",
+            );
+        }
+        let skills = discovery.discover_strict().unwrap();
+        assert_eq!(skills.len(), 64);
+        assert_eq!(skills[0].name, "skill-00");
+        write_skill(workspace.path(), "skill-64", "# Body\ntext");
+        assert!(discovery.discover().is_err());
+        assert!(discovery.discover_strict().is_err());
+
+        let workspace = tempfile::tempdir().unwrap();
+        let discovery = SkillDiscovery::new(workspace.path());
+        let prefix = "---\ndescription: bounded\n---\n";
+        let body = format!("{prefix}{}", "x".repeat(SKILL_FILE_BYTES - prefix.len()));
+        for index in 0..16 {
+            write_skill(workspace.path(), &format!("skill-{index:02}"), &body);
+        }
+        assert_eq!(discovery.discover_strict().unwrap().len(), 16);
+        write_skill(workspace.path(), "skill-16", "text");
+        assert!(discovery.discover().is_err());
+        assert!(discovery.discover_strict().is_err());
+
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("skills");
+        fs::create_dir(&root).unwrap();
+        for index in 0..256 {
+            fs::create_dir(root.join(format!("empty-{index}"))).unwrap();
+        }
+        let discovery = SkillDiscovery::new(workspace.path());
+        assert!(discovery.discover_strict().unwrap().is_empty());
+        fs::write(root.join("extra"), "not a skill").unwrap();
+        assert!(discovery.discover().is_err());
+        assert!(discovery.discover_strict().is_err());
+    }
+
+    #[test]
+    fn skill_metadata_limits_and_find_authority() {
+        let workspace = tempfile::tempdir().unwrap();
+        let content = format!(
+            "---\nname: {}\ndescription: {}\ntriggers: [{}]\n---\nbody",
+            "n".repeat(128),
+            "d".repeat(2048),
+            vec!["t".repeat(128); 32].join(", ")
+        );
+        write_skill(workspace.path(), "valid", &content);
+        let discovery = SkillDiscovery::new(workspace.path());
+        assert!(discovery.find("valid").unwrap().is_some());
+        assert!(discovery.find("missing").unwrap().is_none());
+        for name in [
+            "../external",
+            "/external",
+            "valid/../valid",
+            ".",
+            "..",
+            " valid",
+            "valid\n",
+        ] {
+            assert!(discovery.find(name).is_err(), "{name:?}");
+        }
+        for bad in [
+            "---\nname: ''\n---\nbody",
+            "---\ntriggers: ['']\n---\nbody",
+            "---\nname: \"bad\\nname\"\n---\nbody",
+        ] {
+            write_skill(workspace.path(), "invalid", bad);
+            assert!(discovery.discover_strict().is_err());
+            assert_eq!(discovery.discover().unwrap().len(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_skill_read_rejects_linked_directory_and_leaf() {
+        use std::os::unix::fs::symlink;
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("SKILL.md"), "synthetic outside").unwrap();
+        let linked = workspace.path().join("linked");
+        symlink(outside.path(), &linked).unwrap();
+        assert!(Skill::from_file(&linked).is_err());
+        let normal = workspace.path().join("normal");
+        fs::create_dir(&normal).unwrap();
+        symlink(outside.path().join("SKILL.md"), normal.join("SKILL.md")).unwrap();
+        assert!(Skill::from_file(&normal).is_err());
+    }
 
     #[test]
     fn test_skill_from_file() {
