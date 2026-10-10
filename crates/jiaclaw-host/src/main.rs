@@ -5115,15 +5115,21 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
         println!("   提供商就绪状态: ✅ 可启动");
     }
 
-    if has_key {
+    if config.provider.provider_type == "stub" {
+        println!("   API Key: 不需要（显式 stub）");
+    } else if has_key {
         println!("   API Key: ✅ 已配置");
 
         if config.provider.provider_type == "brokerrouter" {
-            println!("\n   🔍 Brokerrouter 连接测试");
+            println!("\n   🔍 Brokerrouter 本地配置检查");
             println!("      注意: 完整的连接测试需要有效的虚拟密钥");
             println!("      当前仅进行配置验证");
 
-            println!("      Base URL: ✅ 满足安全端点格式要求");
+            if provider_ready {
+                println!("      Base URL: ✅ 满足安全端点格式要求");
+            } else {
+                println!("      Base URL: ❌ 无效（详情见提供商就绪状态）");
+            }
 
             // 检查虚拟密钥格式
             let key = env_key.as_deref().or(config.provider.api_key.as_deref());
@@ -5367,10 +5373,20 @@ async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<(
 
     // 5. StateKnot 集成状态
     println!("\n⚙️  StateKnot 集成");
-    println!("   状态: ⏳ 等待稳定 API 发布");
-    println!("   持久化: ❌ 未启用");
-    println!("   PostgreSQL: ❌ 未配置");
+    println!(
+        "   HTTP MCP: 已接线（配置 {} 个服务器；连通性见工具系统检查）",
+        config.mcp.servers.len()
+    );
+    println!("   StateKnot durable driver: 未接线（不提供工具执行断点恢复）");
     println!("   💡 参见 docs/stateknot-gaps.md 了解详情");
+
+    println!("\n💾 应用存储配置");
+    if config.http.persist {
+        println!("   会话存储: SQLite（配置已启用；doctor 不打开会话库）");
+    } else {
+        println!("   会话存储: 内存（重启不保留）");
+    }
+    println!("   会话库可用性及恢复未由本次诊断验证；与 StateKnot durable 执行分别验收");
 
     // 6. 总结
     println!("\n📊 总结");
