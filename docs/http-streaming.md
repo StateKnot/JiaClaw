@@ -1,6 +1,6 @@
 # 持久 HTTP 的有界事件流
 
-单用户管理员 `serve` 显式开启 `http.tracked_turns` 后，可以用 `PUT /api/turns/{原始UUIDv4}/stream` 接收同一次执行的 SSE。鉴权、正文、原会话命名空间、准入/结果预算、模型账本、取消和人工核对均沿用[持久 HTTP 合同](http-turns.md)。不增加上游治理 turn、StateKnot durable、自动恢复或外部写入授权。现有 `/api/chat` 保留兼容分块 SSE；[单用户工作台](web-streaming.md)仅在认证能力允许的新 `http:` 会话使用此入口。租户网关按独立的[个人 Key SSE 合同](tenant-http-turns.md#个人-key-sse-api)开放同一路径，使用配对 protocol 2、固定工具授权和原用户审核占用；个人 Key 工作台目前继续使用 JSON，租户预览 UI 尚未接线。
+单用户管理员 `serve` 显式开启 `http.tracked_turns` 后，可以用 `PUT /api/turns/{原始UUIDv4}/stream` 接收同一次执行的 SSE。鉴权、正文、原会话命名空间、准入/结果预算、模型账本、取消和人工核对均沿用[持久 HTTP 合同](http-turns.md)。不增加上游治理 turn、StateKnot durable、自动恢复或外部写入授权。现有 `/api/chat` 保留兼容分块 SSE；[单用户工作台](web-streaming.md)仅在认证能力允许的新 `http:` 会话使用此入口。租户网关按独立的[个人 Key SSE 合同](tenant-http-turns.md#个人-key-sse-api)开放同一路径，使用配对 protocol 2、固定工具授权和原用户审核占用；个人 Key 工作台按认证协议2接有界预览，协议1保留JSON，详见[Web合同](web-streaming.md)。
 
 ## 提交和响应
 

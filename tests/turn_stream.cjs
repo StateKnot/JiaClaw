@@ -9,11 +9,12 @@ const values=[{event:'admitted',protocol:1,receipt:initial},{event:'model_starte
 const wire=Buffer.concat(values.map(event));
 for(const width of [1,2,7,4096,wire.length]){const output=[],p=new Parser({id,session_id},['file_write'],v=>output.push(v));for(let offset=0;offset<wire.length;offset+=width)p.push(wire.subarray(offset,offset+width));p.finish();assert.deepStrictEqual(output,values);}
 const longWire=Buffer.concat([event(values[0]),event({...values[5],receipt:{...terminal,result:{...terminal.result,reply:'🦀'.repeat(16384)}}})]);
-const tiny=new Parser({id,session_id},[],()=>{});for(let i=0;i<longWire.length;i++)tiny.push(longWire.subarray(i,i+1));tiny.finish();assert(tiny.parts.length===0&&tiny.partial.length===0);
+const tiny=new Parser({id,session_id},['file_write'],()=>{});for(let i=0;i<longWire.length;i++)tiny.push(longWire.subarray(i,i+1));tiny.finish();assert(tiny.parts.length===0&&tiny.partial.length===0);
 const parsed=(frames,tools=['file_write'])=>{const p=new Parser({id,session_id},tools,()=>{});for(const frame of frames)p.push(frame);p.finish();};
 assert.doesNotThrow(()=>parsed([event(values[0]),Buffer.from(': keepalive\n\n'),...values.slice(1).map(event)]));
 for(const bad of [wire.subarray(0,wire.length-1),Buffer.concat([wire,event(values[1])]),Buffer.concat([Buffer.from('\xef\xbb\xbf'),wire]),Buffer.from(wire.toString().replace(/\n/g,'\r\n')),Buffer.from('event: admitted\ndata: {}\nretry: 1\n\n'),Buffer.from([0xff]),event({...values[0],receipt:{...initial,id:session_id.slice(5)}}),Buffer.concat([event(values[0]),event({...values[1],turn_id:session_id.slice(5)})]),Buffer.concat([event(values[0]),event({...values[1],round:1})]),Buffer.concat([event(values[0]),event(values[1]),event({...values[2],text:'x'.repeat(1025)})]),Buffer.concat(values.map(v=>event(v.event==='done'?{...v,receipt:initial}:v)))])assert.throws(()=>parsed([bad]));
 assert.throws(()=>parsed(values.map(event),['datetime_now']));
+assert.throws(()=>parsed([event(values[0]),event(values[5])],['datetime_now']));
 const roundOverflow=[event(values[0]),event(values[1]),...Array.from({length:2049},()=>event({...values[2],text:'x'.repeat(1024)}))];assert.throws(()=>parsed(roundOverflow));
 const p=new Parser({id,session_id},[],()=>{});assert.throws(()=>p.push(Buffer.alloc(12*1024*1024+1)));
 const big=new Parser({id,session_id},[],()=>{});assert.throws(()=>big.push(Buffer.from('event: done\ndata: '+ 'x'.repeat(2*1024*1024+20000))));
@@ -52,6 +53,9 @@ assert.throws(()=>gatewayCatalog(discovery,{limit:5,offset:0}));
 const metadata2={...admission,id:session_id.slice(5)};assert.throws(()=>gatewayCatalog({...admissions,requests:[admission,metadata2]},{limit:5,offset:0}));assert.doesNotThrow(()=>gatewayCatalog({...admissions,requests:[metadata2,admission]},{limit:5,offset:0}));
 const ownResult={protocol:1,active:false,receipt:{...terminal,result:{...terminal.result,tool_names:['datetime_now']}}};
 assert.doesNotThrow(()=>gatewaySnapshot(ownResult,initial));
+assert.doesNotThrow(()=>gatewaySnapshot(ownResult,initial,new Set(['datetime_now'])));
+assert.throws(()=>gatewaySnapshot(ownResult,initial,new Set(['json_query'])));
+assert.throws(()=>snapshot(ownResult,initial,new Set(['json_query'])));
 assert.throws(()=>gatewaySnapshot({...ownResult,receipt:{...ownResult.receipt,session_id:'http:'+id}},initial));
 assert.throws(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial));
 assert.throws(()=>gatewaySnapshot({...ownResult,state:'completed'},initial));

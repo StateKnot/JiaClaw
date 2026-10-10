@@ -63,13 +63,17 @@ function clearIdentity() {
   for (const id of ['jobs-list', 'job-runs', 'job-title', 'job-summary', 'job-detail-prompt', 'job-detail-contract', 'jobs-count', 'jobs-health', 'job-create-id', 'job-create-state']) $(id).replaceChildren();
   renderMessages([]); renderSessions();
 }
-async function api(path, method = 'GET', body, optional = false, timeout = 0, maxBytes = 0) {
+async function api(path, method = 'GET', body, optional = false, timeout = 0, maxBytes = 0, parentSignal = null) {
   if (readOnly && method !== 'GET') throw new ApiError('当前密钥仅允许查看；修改内容或运行模型需要完整权限密钥。', 403);
   const owner = identity, credential = token, controller = new AbortController();
+  const abort = () => controller.abort();
+  parentSignal?.addEventListener('abort', abort, {once:true});
+  if (parentSignal?.aborted) controller.abort();
   const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
   try {
     const response = await fetch(path, { method, signal: controller.signal, credentials: 'omit', cache: 'no-store', headers: { ...(credential ? { Authorization: `Bearer ${credential}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     if (owner !== identity) throw new StaleIdentity();
+    controller.signal.throwIfAborted();
     if (response.status === 401) { clearIdentity(); throw new ApiError('鉴权失败，请重新连接并检查 API Token。', 401); }
     if (optional === true && response.status === 404) return MISSING_ROUTE;
     if (Array.isArray(optional) && optional.includes(response.status)) return null;
@@ -79,6 +83,7 @@ async function api(path, method = 'GET', body, optional = false, timeout = 0, ma
     let data;
     try { data = maxBytes ? await boundedJson(response, maxBytes, owner) : await response.json(); } catch (error) { if (owner !== identity) throw new StaleIdentity(); if (error instanceof ApiError || error.name === 'AbortError') throw error; throw new ApiError(`服务响应异常（HTTP ${response.status}）`, response.status); }
     if (owner !== identity) throw new StaleIdentity();
+    controller.signal.throwIfAborted();
     if (!response.ok) throw new ApiError(clipped(data?.error || `请求失败（HTTP ${response.status}）`, 1024), response.status);
     if (reviewRequired) throw new Error(reviewMessage);
     return data;
@@ -86,7 +91,7 @@ async function api(path, method = 'GET', body, optional = false, timeout = 0, ma
     if (owner !== identity && !(error instanceof ApiError && error.code === 401)) throw new StaleIdentity();
     if (error.name === 'AbortError' && controller.signal.aborted) throw new ApiTimeout('请求超时；服务器可能仍在处理，请刷新并核对结果。');
     throw error;
-  } finally { if (timer) clearTimeout(timer); controller.abort(); }
+  } finally { if (timer) clearTimeout(timer); parentSignal?.removeEventListener('abort', abort); controller.abort(); }
 }
 async function boundedJson(response, maximum, owner) {
   const reader = response.body?.getReader();
@@ -537,7 +542,7 @@ const turnResolved = () => pendingTurn?.fresh && !pendingTurn.active && (pending
 function turnControls() {
   $('turn-workspace').hidden = !connected || !turnCapabilities || (readOnly && !tenantTurns());
   $('turn-permissions').hidden = !trackedSession() || !turnWritable();
-  $('chat-note').textContent = trackedSession() ? (tenantTurns() ? '回复按原编号保存在服务端；本页观察结束后仍可核对。' : '实时文字为临时预览；按原编号核对已保存结果。') : '回复完成后显示；支持工具调用。';
+  $('chat-note').textContent = trackedSession() ? (turnCapabilities?.streaming ? '实时文字为临时预览；按原编号核对已保存结果。' : '回复按原编号保存在服务端；本页观察结束后仍可核对。') : '回复完成后显示；支持工具调用。';
   const held = !!pendingTurn;
   $('new-session').disabled ||= held;
   $('delete-session').disabled ||= held || (tenantTurns() && trackedSession());
@@ -582,9 +587,9 @@ function trackTurn(id, body = null, session = null) {
   $('turn-state').textContent = '尚未核对结果；请保留原编号，勿以新编号重复执行。'; controls();
   return pendingTurn;
 }
-const turnApi = (path, method = 'GET', body, timeout = 15000) => api(path, method, body, false, timeout, 2 * 1024 * 1024 + 20 * 1024);
+const turnApi = (path, method = 'GET', body, timeout = 15000, signal = null) => api(path, method, body, false, timeout, 2 * 1024 * 1024 + 20 * 1024, signal);
 function showTurnSnapshot(value, attempt) {
-  (tenantTurns() ? Turn.gatewaySnapshot : Turn.snapshot)(value, attempt.receipt || attempt);
+  (tenantTurns() ? Turn.gatewaySnapshot : Turn.snapshot)(value, attempt.receipt || attempt, attempt.body ? new Set(attempt.body.enabled_tools) : null);
   attempt.receipt = value.receipt; attempt.session_id = value.receipt.session_id; attempt.active = value.active; attempt.fresh = true;
   const r = value.receipt;
   $('turn-state').textContent = `${{running:'处理中',completed:'回复已保存',needs_review:'需要人工核对'}[r.state]} · ${value.active ? '实际执行仍占用资源' : '当前无活跃执行'}${r.cancel_requested ? ' · 已记录停止请求' : ''}${r.session_committed && r.state !== 'completed' ? ' · 会话已提交，结果仍需核对' : ''}${r.reviewed_ms != null ? ' · 已记录人工核对' : ''}${r.result_purged ? ' · 结果正文已清理' : ''}`;
@@ -599,10 +604,10 @@ function showGatewayResult(attempt) {
   $('turn-state').textContent += r.state === 'completed' && r.result ? ' · 显示原收据中的回复，未读取或重建会话历史' : ' · 未取得可显示的已完成回复';
   if (r.state === 'completed' && r.result && attempt.body && $('message').value.trim() === attempt.body.prompt) $('message').value = '';
 }
-async function checkTurn(attempt = pendingTurn, timeout = 15000) {
+async function checkTurn(attempt = pendingTurn, timeout = 15000, signal = null) {
   if (!attempt) return;
   const owner = identity;
-  const value = await turnApi('/api/turns/' + attempt.id, 'GET', undefined, timeout);
+  const value = await turnApi('/api/turns/' + attempt.id, 'GET', undefined, timeout, signal);
   if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
   showTurnSnapshot(value, attempt);
   if (tenantTurns()) showGatewayResult(attempt);
@@ -639,7 +644,7 @@ async function connectTurns(gateway) {
   const c = await api('/api/turns/capabilities', 'GET', undefined, gateway ? [404] : [403,404,503], 15000, 16384);
   if (!c) return;
   turnCapabilities = gateway ? Turn.gatewayCapabilities(c) : Turn.capabilities(c);
-  $('turn-mode').textContent = gateway ? '新请求异步保存回复。本页最多观察 30 秒，之后可按原编号核对；结束跟踪不解除需要管理员核对的执行占用。' : '新建会话使用实时预览。旧会话保持原有发送方式；预览不代表已保存。';
+  $('turn-mode').textContent = gateway ? (c.streaming ? '新请求显示临时预览，结束后按原编号核对已保存回复；断流或停止交付后仍需核对，结束跟踪不解除管理员核对占用。' : '新请求异步保存回复。本页最多观察 30 秒，之后可按原编号核对；结束跟踪不解除需要管理员核对的执行占用。') : '新建会话使用实时预览。旧会话保持原有发送方式；预览不代表已保存。';
   $('turn-catalog-note').textContent = gateway ? '列表只含本用户的原编号、会话编号和准入时间，不表示执行状态。选中后读取原收据；不会再次执行。新记录可能改变后续分页。' : '列表仅展示状态摘要。选中后核对原请求；不会再次执行。每页为读取时的状态，新记录可能改变后续分页。';
   $('turn-permissions-note').textContent = gateway ? '请选择本次需要的时间和 JSON 查询工具；默认不授权。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
   if (gateway && !readOnly) {
@@ -703,7 +708,7 @@ function previewRenderer(owner, attempt) {
   renderer.close = () => { if (frame !== null) { cancelAnimationFrame(frame); flush(); } };
   return renderer;
 }
-const submitTurn = attempt => tenantTurns() ? jsonTurn(attempt) : streamTurn(attempt);
+const submitTurn = attempt => turnCapabilities?.streaming ? streamTurn(attempt) : jsonTurn(attempt);
 async function jsonTurn(attempt) {
   const owner = identity, controller = new AbortController(); turnConnection = controller; attempt.fresh = false;
   // This finite observation window covers the initial PUT and all subsequent GETs.
@@ -749,7 +754,13 @@ async function streamTurn(attempt) {
   const owner = identity, credential = token, controller = new AbortController(); turnConnection = controller; attempt.fresh = false;
   // One browser transport deadline anchored before fetch, never reset by headers,
   // keepalives or events. It does not replace the server/current-model deadline.
-  const timer = setTimeout(() => controller.abort(), (turnCapabilities.turn_budget_secs + 70) * 1000);
+  const deadline = performance.now() + (turnCapabilities.turn_budget_secs + 70) * 1000;
+  const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - performance.now()));
+  const reconcile = () => {
+    const left = deadline - performance.now();
+    if (left <= 0 || controller.signal.aborted) throw new ApiTimeout('交付期限已到；请核对原请求。');
+    return checkTurn(attempt, Math.max(1, Math.min(15000, Math.floor(left))), controller.signal);
+  };
   let reader = null, done = false; const render = previewRenderer(owner, attempt);
   try {
     status('正在读取临时预览…');
@@ -758,7 +769,7 @@ async function streamTurn(attempt) {
     if (response.status === 401) { clearIdentity(); throw new ApiError('鉴权失败，请重新连接并检查 API Token。',401); }
     if (response.status === 200) {
       const value = await boundedJson(response, 2 * 1024 * 1024 + 20 * 1024, owner);
-      showTurnSnapshot(value, attempt); render.close(); await checkTurn(attempt); return;
+      showTurnSnapshot(value, attempt); render.close(); await reconcile(); return;
     }
     if (response.status !== 202) {
       const value = await boundedJson(response, 16384, owner);
@@ -767,6 +778,7 @@ async function streamTurn(attempt) {
     if (response.headers.get('content-type')?.toLowerCase() !== 'text/event-stream; charset=utf-8') throw new Error('流式响应类型异常');
     const parser = new Turn.Parser(attempt, attempt.body.enabled_tools, value => {
       if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+      if (tenantTurns() && ['admitted','done'].includes(value.event)) Turn.gatewaySnapshot({protocol:value.protocol,receipt:value.receipt,active:value.event === 'admitted'}, attempt.receipt || attempt);
       if (value.event === 'admitted') { attempt.receipt = value.receipt; attempt.active = true; $('turn-state').textContent = '已准入原请求；临时预览尚未保存。'; controls(); }
       else if (value.event === 'done') { attempt.receipt = value.receipt; done = true; controls(); }
       else if (value.event === 'error') throw new Error('交付停止，原模型或工具可能仍在结算。');
@@ -779,7 +791,7 @@ async function streamTurn(attempt) {
     }
     parser.finish(); render.close();
     if (!done) throw new Error('未收到完整已提交结果');
-    await checkTurn(attempt);
+    await reconcile();
   } catch (error) {
     if (owner !== identity) { if (error instanceof ApiError && error.code === 401) throw error; throw new StaleIdentity(); }
     attempt.fresh = false;

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import sys
 import tenant_http_fixture as f
 
 class App:
@@ -67,8 +68,11 @@ try:
         root=Path(temporary);app=App(root);control=ThreadingHTTPServer(('127.0.0.1',0),Control);control.daemon_threads=True
         threading.Thread(target=control.serve_forever,daemon=True).start()
         config=root/'browser.json';config.write_text(json.dumps({'base':f'http://127.0.0.1:{app.gp}','alice':app.users['alice']['token'],'bob':app.users['bob']['token'],'readonly':app.readonly['token'],'control':f'http://127.0.0.1:{control.server_port}'}))
-        r=subprocess.run(['node','tests/tenant_http_browser.cjs',str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
-        print('ALL TENANT HTTP BROWSER GROUPS PASS',flush=True)
+        preview = sys.argv[2:] == ['--preview']
+        assert not sys.argv[2:] or preview, 'only --preview is supported'
+        script = 'tests/tenant_http_preview_browser.cjs' if preview else 'tests/tenant_http_browser.cjs'
+        r=subprocess.run(['node',script,str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
+        print('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS',flush=True)
 finally:
     for gate in f.gates.values():gate['release'].set()
     for p in reversed(f.processes):f.stop(p)
