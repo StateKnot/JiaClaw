@@ -4,6 +4,7 @@
 //! 技能发现和管理
 
 use jiaclaw_core::JiaClawError;
+use sha2::Digest;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -213,6 +214,10 @@ impl Skill {
     pub fn summary(&self) -> String {
         format!("**{}**: {}", self.name, self.description)
     }
+
+    pub(crate) fn content_sha256(&self) -> String {
+        format!("{:x}", sha2::Sha256::digest(self.content.as_bytes()))
+    }
 }
 
 /// 技能发现器
@@ -415,6 +420,37 @@ impl SkillRegistry {
         self.lock_read().clone()
     }
 
+    // Read only the loaded table, never an ambient path. Selecting the body and
+    // checking its expected version share the same read lock as the catalog.
+    fn read_content(&self, name: &str, expected_hash: &str) -> Result<String, JiaClawError> {
+        let guard = self.lock_read();
+        let skill = guard
+            .iter()
+            .find(|skill| skill.name == name)
+            .ok_or_else(|| {
+                JiaClawError::ToolExecution(
+                    "skill is not loaded; start a new turn after reviewing the catalog".into(),
+                )
+            })?;
+        if skill.content.len() > SKILL_FILE_BYTES || skill.content_sha256() != expected_hash {
+            return Err(JiaClawError::ToolExecution(
+                "skill content version is unavailable; start a new turn after reviewing the catalog"
+                    .into(),
+            ));
+        }
+        // The native loop records a JSON string, whose escapes can exceed the
+        // raw text budget. Reject before returning a successful result that the
+        // loop would otherwise lose and mark for human review.
+        if serde_json::to_string(&skill.content).map_or(true, |encoded| {
+            encoded.len() > crate::tools::MAX_NATIVE_RESULT_BYTES
+        }) {
+            return Err(JiaClawError::ToolExecution(
+                "skill body exceeds the serialized tool-output budget".into(),
+            ));
+        }
+        Ok(skill.content.clone())
+    }
+
     /// 重新扫描工作区 `skills/` 并替换注册表。
     ///
     /// 磁盘扫描在锁外完成；仅成功后短时间持写锁替换。失败时保留旧表。
@@ -470,10 +506,176 @@ impl SkillRegistry {
     }
 }
 
+pub(crate) struct SkillReadTool {
+    registry: Arc<SkillRegistry>,
+}
+
+impl SkillReadTool {
+    pub(crate) fn new(registry: Arc<SkillRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillReadArgs {
+    name: String,
+    content_sha256: String,
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for SkillReadTool {
+    fn name(&self) -> &str {
+        "skill_read"
+    }
+
+    fn description(&self) -> &str {
+        "Read one administrator-reviewed loaded skill body using its exact catalog name and content_sha256. No filesystem paths or new tool permissions."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "required": ["name", "content_sha256"],
+            "additionalProperties": false
+        })
+    }
+
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<String, JiaClawError> {
+        let args: SkillReadArgs = serde_json::from_value(args).map_err(|_| {
+            JiaClawError::ToolExecution(
+                "skill_read requires exactly name and content_sha256".into(),
+            )
+        })?;
+        if !identifier(&args.name)
+            || args.content_sha256.len() != 64
+            || !args
+                .content_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(JiaClawError::ToolExecution(
+                "skill_read requires a bounded catalog name and lowercase SHA-256".into(),
+            ));
+        }
+        self.registry.read_content(&args.name, &args.content_sha256)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::Tool;
     use std::fs;
+
+    #[tokio::test]
+    async fn skill_read_uses_loaded_version_and_never_an_ambient_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: declared-name\ndescription: catalog only\n---\noriginal body",
+        )
+        .unwrap();
+        let registry = Arc::new(SkillRegistry::new(
+            SkillDiscovery::new(workspace.path())
+                .discover_strict()
+                .unwrap(),
+        ));
+        let original = registry.snapshot().pop().unwrap();
+        let tool = SkillReadTool::new(Arc::clone(&registry));
+        let args =
+            serde_json::json!({"name": original.name, "content_sha256": original.content_sha256()});
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: declared-name\ndescription: catalog only\n---\nreplacement body",
+        )
+        .unwrap();
+        assert_eq!(tool.execute(args.clone()).await.unwrap(), "original body");
+        registry.reload(workspace.path()).unwrap();
+        assert!(tool.execute(args).await.is_err());
+        let replacement = registry.snapshot().pop().unwrap();
+        assert_eq!(tool.execute(serde_json::json!({"name": replacement.name, "content_sha256": replacement.content_sha256()})).await.unwrap(), "replacement body");
+        fs::remove_dir_all(workspace.path().join("skills")).unwrap();
+        registry.reload(workspace.path()).unwrap();
+        assert!(tool.execute(serde_json::json!({"name": replacement.name, "content_sha256": replacement.content_sha256()})).await.is_err());
+        for name in [
+            "../private.txt",
+            "/private.txt",
+            "",
+            " declared-name",
+            "bad\nname",
+        ] {
+            assert!(tool
+                .execute(
+                    serde_json::json!({"name": name, "content_sha256": original.content_sha256()})
+                )
+                .await
+                .is_err());
+        }
+        assert_eq!(
+            tool.failure_effect(),
+            crate::tools::ToolFailureEffect::NoEffect
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_read_rejects_invalid_arguments_and_unbounded_library_inputs() {
+        let skill = Skill {
+            name: "reviewed".into(),
+            description: String::new(),
+            path: PathBuf::new(),
+            content: "x".repeat(SKILL_FILE_BYTES + 1),
+            triggers: Vec::new(),
+        };
+        let args =
+            serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});
+        let tool = SkillReadTool::new(Arc::new(SkillRegistry::new(vec![skill])));
+        assert!(tool.execute(args.clone()).await.is_err());
+        for invalid in [
+            serde_json::json!({"name": "reviewed"}),
+            serde_json::json!({"name": "reviewed", "content_sha256": "f".repeat(63)}),
+            serde_json::json!({"name": "reviewed", "content_sha256": "F".repeat(64)}),
+            serde_json::json!({"name": "reviewed", "content_sha256": "g".repeat(64)}),
+            serde_json::json!({"name": "reviewed", "content_sha256": "f".repeat(64), "path": "SKILL.md"}),
+            serde_json::json!([]),
+        ] {
+            assert!(tool.execute(invalid).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_read_checks_serialized_output_before_success() {
+        for (body, succeeds) in [
+            ("x".repeat(SKILL_FILE_BYTES), true),
+            ("\u{0001}".repeat(SKILL_FILE_BYTES), false),
+        ] {
+            let skill = Skill {
+                name: "reviewed".into(),
+                description: String::new(),
+                path: PathBuf::new(),
+                content: body.clone(),
+                triggers: Vec::new(),
+            };
+            let args =
+                serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});
+            let tool = SkillReadTool::new(Arc::new(SkillRegistry::new(vec![skill])));
+            let result = tool.execute(args).await;
+            assert_eq!(result.is_ok(), succeeds);
+            if succeeds {
+                assert_eq!(result.unwrap(), body);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_reload_keeps_capacity_until_worker_finishes_and_isolates_registries() {

@@ -11,6 +11,9 @@ use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Maximum serialized result retained by the native loop.
+pub(crate) const MAX_NATIVE_RESULT_BYTES: usize = 256 * 1024;
+
 /// What a failed tool attempt can prove about its effects.
 ///
 /// This is an implementation guarantee, not a model/MCP annotation or an error

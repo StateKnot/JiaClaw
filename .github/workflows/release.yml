@@ -14,6 +14,8 @@ on:
       - 'tests/e2e.py'
       - 'tests/doctor.py'
       - 'tests/skills.py'
+      - 'tests/skill_read.py'
+      - 'tests/host_log.py'
       - 'tests/mcp.py'
       - 'tests/native_result_limits.py'
       - 'tests/cli_stream.py'
@@ -84,6 +86,7 @@ jobs:
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/skills.py "target/$TARGET/release/jiaclaw"
+          python3 tests/skill_read.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw" --tool-errors

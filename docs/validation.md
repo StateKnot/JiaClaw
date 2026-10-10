@@ -1,5 +1,15 @@
 # 基础能力验收记录
 
+## 模型按需技能正文读取批次
+
+2026-10-11，源码固定 `edf4323247c8b0a493126607f38debed51db8d2e`，合同见[skill_read](skill-read.md)。冻结父 PR110 二进制确认原生入口拒绝未注册的 skill_read，证明应用能力缺口，不是框架缺陷。初次测试夹具缺少必填 max_turns，在启动配置阶段失败；修正后的父负例与新二进制绿色日志独立保留。
+
+本批完整 Rust 验收1238项通过（407/123/708），另1真实 Docker专项保持独立 ignored。最终二进制实际运行六组 skill_read CLI/认证HTTP/原生模型往返：缺省关键词兼容、摘要后选择、显式技能、auto=false、原白名单、严格参数、正文不能授权文件写入、目录生成后实际重载替换/移除、已加载与磁盘版本分离、120 KiB正文和 JSON扩展超预算的 no_effect 拒绝。既有 skills/native_tools/e2e/doctor 进程回归、fmt及必需 Clippy 另留日志；最终交付 pin 核对每个编译输入与源码/交付树和二进制摘要，不能把初版二进制冒充最终身份。
+
+独立[Standards](reviews/2026-10-11-skill-read-standards.md)/[Spec](reviews/2026-10-11-skill-read-spec.md)聚焦开放均0，固定累计基准 origin/main=`4b2357fc`，历史结论继承，不声称穷尽重审。日志、源码身份、冻结二进制和 pin 位于 `/tmp/jiaclaw-oct11-skill-read-delivery` 与 `/tmp/jiaclaw-oct11-skill-read-*.log`，在编译缓存之外。
+
+新增第45个官方必需Python套件，四优化候选各执行 skill_read。最终固定 head 的七实际作业、七Chromium、四优化/安装/归档/源码和artifact摘要须独立核对，不能借父PR110或本地资格；最终官方结果仅回填 PR正文/pin，避免自引文档循环。复用已评估的共享target，不复制、不创建专用target、不删除共享缓存，所有 Rust 命令设置 incremental=0、dev/test debug=0。真实供应商的选择质量、技能来源可信度、参考资源、安装治理、经验生成、跨租户授权、stdio/OAuth/外部写入和durable恢复没有认证。
+
 ## 有界技能发现与重载批次
 
 2026-10-11，源代码固定 `0291084e6e358fcde17d5452d83460b50026f188`，合同见[技能指南](skills.md)。冻结前一批二进制的原始 CLI 两次复现外部叶/目录链接读入与 FIFO 超过3秒阻塞；测试全部使用合成标记，没有读取用户秘密。初版真实回归另外复现普通空目录阻止重载，独立 Standards 审查提出的测试争槽由八并发 Rust 技能测试实际复现400/200不匹配。修正分别跳过非技能目录与将同步/异步许可归属各注册表，初版日志和独立初始报告保留。

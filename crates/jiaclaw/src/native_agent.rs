@@ -22,7 +22,6 @@ use tokio::time::Instant;
 const MAX_CALLS_PER_ROUND: usize = 32;
 const MAX_CALLS_PER_TURN: usize = 128;
 const MAX_ARGUMENT_BYTES: usize = 16 * 1024;
-const MAX_RESULT_BYTES: usize = 256 * 1024;
 // Each pure preflight has a finite waiting budget, in addition to the enclosing host/cron turn.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -222,7 +221,7 @@ impl JiaClawAgent {
                 // tool error can still be returned to the model for correction.
                 let mut needs_review = failure_effect == Some(crate::tools::ToolFailureEffect::Unknown);
                 let mut result = record.result.as_ref().unwrap_or(&Value::Null).to_string();
-                if result.len() > MAX_RESULT_BYTES {
+                if result.len() > crate::tools::MAX_NATIVE_RESULT_BYTES {
                     // Lost result/error details stop dispatch independently of
                     // transport. Preserve whether execution failed, and its
                     // effect classification, instead of claiming completion.
