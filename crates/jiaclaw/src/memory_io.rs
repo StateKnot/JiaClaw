@@ -1548,22 +1548,74 @@ mod tests {
     #[test]
     fn concurrent_appends_commit_without_lost_updates_and_lock_is_released() {
         let ws = tempfile::tempdir().unwrap();
+        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
+        let owner = writer_lock(&root).unwrap();
+        // Busy is a permitted rejection before mutation, not a promise that
+        // another writer's fsync will finish within a polling interval.
+        let start = std::sync::Barrier::new(13);
         std::thread::scope(|scope| {
             for i in 0..12 {
                 let path = ws.path();
+                let start = &start;
                 scope.spawn(move || {
-                    let text = format!("record-{i:02}");
-                    after_workspace_contention(|| write_text(path, "a", &text, false, 32768))
-                        .unwrap();
+                    start.wait();
+                    let result = write_text(path, "a", &format!("record-{i:02}"), false, 32768);
+                    assert!(workspace_lock_busy(&result));
                 });
             }
+            start.wait();
         });
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 0);
+        drop(owner);
+
+        // All twelve original callers compete on the actual kernel lock.
+        // Retry only identified busy rejections, after every original owner
+        // has joined; never repeat a successful or uncertain mutation.
+        let start = std::sync::Barrier::new(13);
+        let outcomes = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for i in 0..12 {
+                let path = ws.path();
+                let start = &start;
+                handles.push(scope.spawn(move || {
+                    start.wait();
+                    (
+                        i,
+                        write_text(path, "a", &format!("record-{i:02}"), false, 32768),
+                    )
+                }));
+            }
+            start.wait();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut pending = Vec::new();
+        let committed = std::fs::read_to_string(ws.path().join("a")).unwrap();
+        for (i, outcome) in outcomes {
+            let occurrences = committed.matches(&format!("record-{i:02}")).count();
+            match outcome {
+                Ok(_) => assert_eq!(occurrences, 1),
+                Err(error) => {
+                    assert!(workspace_lock_busy(&Err::<(), _>(error)));
+                    assert_eq!(occurrences, 0);
+                    pending.push(i);
+                }
+            }
+        }
+        assert_eq!(
+            committed.lines().filter(|line| !line.is_empty()).count(),
+            12 - pending.len()
+        );
+        for i in pending {
+            write_text(ws.path(), "a", &format!("record-{i:02}"), false, 32768).unwrap();
+        }
         let text = std::fs::read_to_string(ws.path().join("a")).unwrap();
         assert_eq!(text.lines().filter(|s| !s.is_empty()).count(), 12);
         for i in 0..12 {
             assert_eq!(text.matches(&format!("record-{i:02}")).count(), 1);
         }
-        let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
         let lock = after_workspace_contention(|| writer_lock(&root)).unwrap();
         assert!(workspace_lock_busy(&write_text(
             ws.path(),

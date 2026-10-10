@@ -918,3 +918,8 @@ CI显式使用[Docker官方公开ECR镜像](https://docs.aws.amazon.com/AmazonEC
 生产源码最终冻结 binary SHA256 `3ae2fdbe8a21dd362f79102c421d6bdb7589fd531a37ee5dda77d02a2eb75f4f` 的1220 Rust（396/123/701）、fmt/必需Clippy/locked build/parser八组与十四套进程/实际浏览器通过。第一次该冻结字节在user-add原15秒超时，签名有效；同字节新副本version/user-add诊断约2.1秒返回，后续完整验收成功不证明首次根因。失败及诊断另行保留，不加自动重试。
 
 初版head `6d4260c427db74df4669a76d75c6250680085885` 的Linux [114074549538](https://github.com/StateKnot/JiaClaw/actions/runs/38005913227/job/114074549538)已通过37必需进程，浏览器前3套成功，随后旧read_only_browser第38行把暂停POST的429当作必须即时200而失败；原日志未打印错误正文，不推断首次429的具体来源。真实Native后端完成run之后、仅门控原调度HTTP收据交付的确定性重现，在同一冻结字节上得到`user request already in progress`、原hold仍in_flight，旧200断言同样失败。新夹具保留原Native run/收据/worker，不改DTO/状态/interval；逐个核对仅准入前的精确429，拒绝IDs无后端POST/持久准入审计，最后必须只有一次真实后端暂停POST与200/disabled结果。暂停与hold idle共用原20秒绝对预算，各RPC仍最多10秒且受剩余预算限制；未知/转发错误立即失败，不重放未知结果。只读DOM、模型次数、权限/撤销等原断言保留。修订需重新固定head并认证七作业/四归档；首轮其余成功不得借用为新head完整资格。
+
+
+修订head `bde8b02e38d2f7105d12c16483446b00ee702c03` 的Linux候选 [114083718542](https://github.com/StateKnot/JiaClaw/actions/runs/38008796806/job/114083718542)在Rust并发记忆追加用例失败，12线程中的7个返回固定workspace-flock/EWOULDBLOCK，未构建或安装该候选；单worker harness不能消除用例内部竞争。原日志没有持锁时长/owner身份，因此不认定为fsync慢、泄漏锁或具体进程。原样本机目标一次PASS；用真实目录锁owner持续持有的控制实验，旧200×2ms后必须成功的断言在0.58秒确定性失败，证明它拒绝了生产允许的准入前busy，但不证明该实验就是原CI根因。
+
+修订同一用例验证实际合同：先由真实owner持锁、12线程同时尝试，必须全部精确busy且目录零创建；owner释放后另一轮12线程同时争抢，每个成功ID必须恰有一条原记录、每个busy ID必须没有记录，其他错误立即失败。所有原owner join后，仅对明确拒绝的ID各做一次新的显式尝试，最终仍是12条各一次，再验证持锁拒绝不写入与释放后的第13条。生产非阻塞锁/IO/工具均未改，不增加等待期限或在CI自动重跑；旧夹具“所有竞争者必须在200次轮询内成功”的时序假设改为真实完成与拒绝语义，原36项memory_io全套已本机通过。所有未知效果禁止重试，旧锁/准入失败根因继续开放；本批最终固定head七作业与四归档需重新验收，bde及6d结果只作历史。
