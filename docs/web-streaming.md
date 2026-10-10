@@ -18,11 +18,11 @@
 
 浏览器传输预算从 fetch 前一次锚定，为服务器 turn_budget_secs + 70 秒，不被响应头、事件、keepalive 重置，也不改变当前模型的服务端结算期限。流结束或200 JSON后的原GET共用剩余传输期限、最多15秒，并联到同一个 abort signal；超时、身份切换或pagehide停止尚未完成的读取，done本身不能越过核对。接收验证12MiB wire、单帧2MiB+16KiB、每段1024 UTF-8字节、每轮2MiB/总8MiB预览；逐片 fatal UTF-8解码，微小读取合并为有界片段，不在每字节到达时重扫或复制完整终态，无完整 stream 副本。最多33模型轮；显示独立限每轮65536字符/总262144字符，requestAnimationFrame 合批并明确截断。收据 JSON 限2MiB+20KiB，capability16KiB、注册表2MiB、会话目录512KiB/最多50条（另有一条standalone待准入占位）、历史26MiB（4MiB原存储的JSON转义预算），最多51条历史、每条65536显示字符。截断仍保留服务端原记录；完整导出走已有 session export API。读取、控制和历史有15秒等待预算；物理 TCP/代理截止与资源仍以服务器实际生命周期为准。
 
-验收使用固定 Playwright1.62.1、真实 Chromium、嵌入生产静态资源、一次性 localhost Brokerrouter 契约 fixture 与实际 SQLite：真实安装20个技能仍能连接，工具目录DTO超过128项仍可选择，而129个工具或17个技能的单次选择零原请求/准入/模型调用；门控结束前预览且零工具、两轮 native file_write/Unicode落盘、持久取消后模型结算但零后续工具、刷新按原 UUID GET不重放、真实SQL终态回滚后的 orphan/人工核对、实际已提交响应丢失后的显式同编号200核对、1900KiB预览/结果的有限DOM、浏览器原期限到期但原模型继续结算，以及实际终态提交赢得取消竞态时的意图/草稿核对。工具大目录、畸形部分终态和XSS为独立前端传输故障fixture；真实 native 执行只授权实际注册的 file_write。增量解析器有独立字节分片/顺序/身份/权限/帧与wire上限测试；四套旧浏览器维持 gateway/只读/任务/发件箱范围。上述 standalone 浏览器证据不代替真实供应商、租户 SSE、反向代理或 StateKnot durable 认证；租户 SSE API 已有独立验收，租户预览 UI 仍开放。
+验收使用固定 Playwright1.62.1、真实 Chromium、嵌入生产静态资源、一次性 localhost Brokerrouter 契约 fixture 与实际 SQLite：真实安装20个技能仍能连接，工具目录DTO超过128项仍可选择，而129个工具或17个技能的单次选择零原请求/准入/模型调用；门控结束前预览且零工具、两轮 native file_write/Unicode落盘、持久取消后模型结算但零后续工具、刷新按原 UUID GET不重放、真实SQL终态回滚后的 orphan/人工核对、实际已提交响应丢失后的显式同编号200核对、1900KiB预览/结果的有限DOM、浏览器原期限到期但原模型继续结算，以及实际终态提交赢得取消竞态时的意图/草稿核对。工具大目录、畸形部分终态和XSS为独立前端传输故障fixture；真实 native 执行只授权实际注册的 file_write。增量解析器有独立字节分片/顺序/身份/权限/帧与wire上限测试；四套旧浏览器维持 gateway/只读/任务/发件箱范围。上述 standalone 浏览器证据不代替真实供应商、租户 SSE、反向代理或 StateKnot durable 认证；租户 SSE API 与租户预览 UI 各有独立验收，UI 固定 head 资格见下文。
 
 目录恢复额外真实Chromium第十一组覆盖丢失UUID片段、body实际关闭后认证列表→原GET、活动hold禁止选择替换、人工核对/分页及坏目录无payload/XSS/重放。HTTP进程四组单独证明SIGKILL重启且关闭准入的永久原身份可读；这与durable恢复、供应商及租户认证分开验收。
 
-本批独立[租户预览验收](tenant-http-turns.md#个人-key-预览工作台)九组真实Chromium已通过，涵盖两实际后端/网关、原模型预结算文字、只读原GET、持久取消/独立管理员核对、同ID响应丢失、迟到身份、两项明确前端期限故障及done/200/final GET一致的本次工具选择核验。最终固定提交的官方CI与供应商/代理资格分别保留；此前standalone证据不借给租户。协议1 JSON的原十组另以严格能力形状fixture验证当前真实JSON路由兼容。
+本批独立[租户预览验收](tenant-http-turns.md#个人-key-预览工作台)九组真实Chromium已通过，涵盖两实际后端/网关、原模型预结算文字、只读原GET、持久取消/独立管理员核对、同ID响应丢失、迟到身份、两项明确前端期限故障及done/200/final GET一致的本次工具选择核验。PR #104 固定 head `7fcdc5f3` 的[官方CI与四实际候选](validation.md#pr-104-租户预览-ui-最终-ci-回填)已独立通过，真实供应商/代理资格仍开放；此前standalone证据不借给租户。协议1 JSON的原十组另以严格能力形状fixture验证当前真实JSON路由兼容。
 
 永久完成身份可能比TTL/已删除的历史及清理正文保留得更久。原GET仍可确认完成；已认证历史GET返回404时页面明确显示历史不可读取，清除旧历史显示而不伪造空会话，原收据仍按active/状态决定能否结束跟踪。该情况下不自动清草稿；明确结束跟踪仅清除仍匹配原请求的草稿，不重建或重放。其他读取/鉴权/协议错误仍保持未知hold。所有JSON/可选响应的fetch在退出时abort，404不遗留未读body。实际Chromium第十二组通过认证API真实删除已完成历史和清理结果后，再从目录选原收据，确认无永久UI hold、无伪造历史或模型调用。
 

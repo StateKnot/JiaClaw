@@ -1,6 +1,6 @@
 # 独立用户持久 HTTP 请求
 
-个人 API Key 可显式提交、发现、查询和取消自己的 JSON 请求。每个用户仍须部署专属后端、工作区、会话库与 Brokerrouter 虚拟 Key，遵守[网关生产部署边界](gateway.md)。本功能默认关闭；它提供 JSON 异步请求和显式租户 SSE API 合同；工作台目前继续使用 JSON，租户预览 UI 尚未接线，最终资格见验收记录。
+个人 API Key 可显式提交、发现、查询和取消自己的请求。每个用户仍须部署专属后端、工作区、会话库与 Brokerrouter 虚拟 Key，遵守[网关生产部署边界](gateway.md)。本功能默认关闭；工作台在协议2使用有界租户 SSE 预览，在协议1使用 JSON。租户预览 UI 已完成真实接线，PR #104 固定 head 的[独立官方资格](validation.md#pr-104-租户预览-ui-最终-ci-回填)已通过。
 
 ## 配置与迁移
 
@@ -98,4 +98,4 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 
 断流、刷新、pagehide或换Key关闭实际浏览器delivery，服务器仍按原owner/hold结算；与JSON的断开不取消异步执行语义分别保留。显式取消先持久原停止意图再abort交付。原编号、草稿、只有内存的权限与密钥、只读/跨用户查证和管理员独立核对沿用上文；仅GET的只读Key不会打开流式PUT，完成查看也不清管理员审核hold。
 
-本地验收使用真实嵌入资源、Chromium、两个私有后端/实际网关/SQLite/模型fixture，九组覆盖实际准入后的预结算预览、reload/只读GET、持久取消与真实owner、前端终态授权故障、真实响应丢失后的显式同ID200/GET、换Key的迟到结算和独立用户。第九组保持真实合法done/EOF，只篡改最终GET或重复200的工具名；已在初版复现错误清草稿，最终done、200、GET共享receipt的本次选择核验后全部拒绝，正确原GET才解除跟踪。两项期限用明确前端故障fixture缩短原长timer并延迟headers/final GET；真实服务器/模型/control期限不变，不宣称物理85秒、真实代理或供应商认证。原十组JSON工作台另以严格协议1能力形状的前端fixture，在当前真实JSON后端路径验证兼容，不冒充另一历史版本的实机资格。固定最终head的官方CI仍须单独验收。
+本地验收使用真实嵌入资源、Chromium、两个私有后端/实际网关/SQLite/模型fixture，九组覆盖实际准入后的预结算预览、reload/只读GET、持久取消与真实owner、前端终态授权故障、真实响应丢失后的显式同ID200/GET、换Key的迟到结算和独立用户。第九组保持真实合法done/EOF，只篡改最终GET或重复200的工具名；已在初版复现错误清草稿，最终done、200、GET共享receipt的本次选择核验后全部拒绝，正确原GET才解除跟踪。两项期限用明确前端故障fixture缩短原长timer并延迟headers/final GET；真实服务器/模型/control期限不变，不宣称物理85秒、真实代理或供应商认证。原十组JSON工作台另以严格协议1能力形状的前端fixture，在当前真实JSON后端路径验证兼容，不冒充另一历史版本的实机资格。PR #104 固定 head `7fcdc5f3` 的七官方作业与四实际候选已独立核对通过；后续新提交仍须取得自己的资格。

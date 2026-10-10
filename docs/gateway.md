@@ -4,7 +4,15 @@
 
 支持同源 Web 聊天和会话管理。[独立用户定时任务](tenant-cron.md)已通过 PR #71 最终 CI，默认关闭；仅允许 datetime_now/json_query，不允许任务外发。默认关闭的[Telegram 私聊](tenant-telegram.md)、[Slack 私聊](tenant-slack.md)和[Discord Bot DM 命令](tenant-discord.md)分别通过 PR #80/#83/#84 最终 CI，以永久身份绑定、同一用户 hold 和共享执行容量准入。管理员签发的只读 Key、可信管理员审计分别通过 PR #81/#82 最终跨平台及真实容器 CI。[独立用户飞书私聊](tenant-feishu.md)限定专用企业自建 App、固定人的 p2p 文本和停机核对，已通过 PR #85 固定版本 CI；[独立用户企业微信](tenant-wecom.md)已通过 PR #87 固定版本 CI，真实安装与平台认证仍独立验收。其他多用户渠道、HEARTBEAT、MCP、exec 和其他后台执行仍不在此准入范围内。基础部署样例保持后台关闭；普通 `jiaclaw serve` 仍是单用户实例，不改变 StateKnot durable 或真实供应商认证状态。
 
-默认关闭的[独立用户持久 HTTP 请求](tenant-http-turns.md)支持个人 Key 的 JSON/SSE 准入、原编号查询/取消和永久目录，共用已有用户写入锁。JSON 工作台已通过 PR #99，SSE API 已通过 PR #101；工作台租户预览 UI 仍待接线，API 资格不代替 UI 资格。
+默认关闭的[独立用户持久 HTTP 请求](tenant-http-turns.md)支持个人 Key 的 JSON/SSE 准入、原编号查询/取消和永久目录，共用已有用户写入锁。JSON 工作台已通过 PR #99，SSE API 已通过 PR #101；租户预览工作台的 PR #104 固定 head `7fcdc5f3` 已独立通过七项官方作业、七套 Chromium 与四实际候选，[最终资格](validation.md#pr-104-租户预览-ui-最终-ci-回填)不借用 API 资格。供应商/代理与物理长期限仍另行认证。
+
+## 五渠道共享准入事务
+
+Telegram、Slack、Discord、飞书、企业微信保留各自的公开准入方法和平台身份校验。私有实现只接受封闭的五个渠道以及 execute/send 两类效果；实际审计 action 从固定渠道目录选择，其他渠道的合法 action 也不能被当前渠道接受。RFC4122 UUIDv7 请求、规范非 nil RFC4122 对象和 operation 校验在打开写事务之前完成，保留原错误顺序和文本。
+
+每次准入在一个 IMMEDIATE 事务中重新读取当前 binding/用户/专属后端，经原平台 Adapter 检查后才插入既有共享 write hold，再写仅包含 binding/object UUID 的审计并提交。审计写入失败会回滚 hold；成功提交前不返回授权 binding。不能复用 earlier `*_authorized` 查询的结果或把平台检查移到事务外。已准入和 needs_review hold、未知结果、管理员核对、撤销与重启规则不变。
+
+HTTP、API Key、用户定时等入口有各自身份和权限合同，不经这套渠道 Adapter；它们仍与五渠道共享同一用户 hold。没有新渠道、存储迁移或新增自动重发。验收通过现有平台授权/禁用/撤销/只读/损坏行/回滚回归，加上五渠道 execute/send 的真实 SQLite 审计失败、错误平台 action 和跨渠道 hold 矩阵；本批固定 head 的官方资格仍单独验收。
 
 ## 请求与身份合同
 

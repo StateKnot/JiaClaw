@@ -21,6 +21,10 @@ Brokerrouter 使用原生 `tools` / `assistant.tool_calls` / `role:tool`；请�
 
 模型网关适配是现有应用路径；StateKnot durable runtime 尚未链接。MCP 使用 StateKnot 的发布版 HTTP client，启动时完成固定 endpoint、白名单、descriptor pin 和 schema 校验，再一次性注册到 ToolRegistry。未批准的工具和 server instructions 不进入模型提示。未来 durable adapter 必须接管 admission、执行、存储和恢复语义。
 
+## 网关渠道准入
+
+独立用户 Telegram、Slack、Discord、飞书和企业微信的准入由 registry 的私有 `admit_channel` Module 统一拥有：严格请求/对象身份及封闭渠道/execute/send 检查后，在同一 IMMEDIATE 事务中执行各平台既有 live binding Adapter，再完成共享 hold、仅 UUID 的审计和提交。平台安装/成员/后端身份检查仍在原 Adapter 内，不能用先前授权快照替代事务中的读取；返回 binding 以成功提交为前提。现有五个 `admit_*` Interface、审计 action/note、错误类别、schema 与恢复语义保持兼容。HTTP、定时和 API Key 准入保留各自身份事务，共享同一 hold 规则；不能把渠道验证套到其他入口。合同见[网关渠道准入](gateway.md#五渠道共享准入事务)。
+
 ## 模型用途边界
 
 可信 CLI/HTTP、渠道 worker、调度 worker 和 HEARTBEAT 入口分别选择 chat、channel、scheduled、heartbeat；摘要单独使用 summary。管理员的顶层 routing 配置映射到同一 Brokerrouter 的授权逻辑 model 和有限参数，在工具循环前固定。入口内容不能指定用途，渠道通知不改变 scheduled 选择；具体继承与上限见[模型路由](model-routing.md)。
