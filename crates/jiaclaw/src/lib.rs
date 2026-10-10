@@ -92,7 +92,7 @@ pub use session::{
     ConversationSummarizer, SESSION_SUMMARY_MAX_TOKENS, SESSION_SUMMARY_PREFIX,
     SESSION_SUMMARY_PROMPT, SESSION_SUMMARY_TEMPERATURE,
 };
-pub use skills::{Skill, SkillDiscovery, SkillRegistry};
+pub use skills::{Skill, SkillDiscovery, SkillRegistry, SkillSourcePin};
 pub use tools::{
     clamp_web_fetch_max_chars, clamp_web_search_max_results, html_to_readable_text,
     parse_web_fetch_args, parse_web_search_args, validate_web_fetch_url, DateTimeTool,
@@ -258,16 +258,23 @@ impl JiaClawAgent {
         let workspace = Workspace::load(&config.workspace_path)?;
 
         // 发现技能
-        let skill_discovery = SkillDiscovery::new(&config.workspace_path);
-        let skills = skill_discovery.discover().unwrap_or_else(|e| {
-            tracing::warn!("技能发现失败: {e}");
-            Vec::new()
-        });
+        let skill_discovery = SkillDiscovery::new(&config.workspace_path)
+            .with_lock_required(config.skill_lock_required);
+        let skills = if config.skill_lock_required {
+            skill_discovery.discover()?
+        } else {
+            skill_discovery.discover().unwrap_or_else(|e| {
+                tracing::warn!("技能发现失败: {e}");
+                Vec::new()
+            })
+        };
 
         if !skills.is_empty() {
             tracing::info!("发现 {} 个技能", skills.len());
         }
-        let skills = std::sync::Arc::new(SkillRegistry::new(skills));
+        let skills = std::sync::Arc::new(
+            SkillRegistry::new(skills).with_lock_required(config.skill_lock_required),
+        );
 
         // 初始化工具注册表
         let mut tools = ToolRegistry::new();

@@ -166,6 +166,10 @@ pub struct AgentConfig {
     #[serde(default = "default_workspace_path")]
     pub workspace_path: std::path::PathBuf,
 
+    /// Require an administrator-owned exact skill source/content lock.
+    #[serde(default)]
+    pub skill_lock_required: bool,
+
     /// 模型提供商配置
     #[serde(default)]
     pub provider: ProviderConfig,
@@ -2016,6 +2020,7 @@ impl Default for AgentConfig {
             system_instructions: "You are JiaClaw, a helpful personal assistant.".to_string(),
             max_turns: 10,
             workspace_path: default_workspace_path(),
+            skill_lock_required: false,
             provider: ProviderConfig::default(),
             routing: ModelRoutingConfig::default(),
             model_calls: ModelCallsConfig::default(),
