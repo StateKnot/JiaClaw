@@ -1,0 +1,13 @@
+# Skill activation — final independent Standards source review
+
+Fixed cumulative base `4b2357fcf01f47ba08d7724edbba7accfb60972c`; source head `a350a4c1d2aa737f82e6e9239534f1e8133bb57f`. Complete cumulative commit history read. Fresh parent `9b0b2d91f2b998e91049e305ff7a82e7e8ab657d` covers eight paths; final focus `dc8dc202..a350a4c1` contains DTO field documentation and fixture corrections. Prior cumulative/source-lock conclusions and independent initial activation report are inherited, not exhaustively rereviewed. All twelve Fowler heuristics considered as judgments; repository boundaries override them and tooling-enforced matters excluded.
+
+**Zero open hard Standards violations or actionable Fowler findings.** User production, authority, resource/cache rules and the skill contract documents apply.
+
+Field documentation correctly distinguishes normalized disk policy, one manifest byte digest, declared directory identity and retained source claims. The fixture now keeps native progressive reads separate from intentional legacy explicit injection, and generates valid opaque native call IDs while verifying exact returned IDs. Neither repair weakens production validation or the original tool-set assertions. Initial and intermediate fixture RED logs are separate; these are fixture corrections, not product fixes.
+
+Governance remains inside the existing lock module: bounded schema parsing, explicit version-2 Booleans, directory lookup and enabled-catalog completeness. Disabled leaves are skipped before I/O; shared skill-root/directory and manifest/entry budgets remain. One lock snapshot feeds readonly inspection and its strict scan. Existing registry publication preserves the prior table on failure. The actual per-registry blocking worker owns reload capacity until completion; new activation logic does not add a second lifecycle owner or cancellation shortcut.
+
+Loaded-body and resource selection still occur under the registry read lock, with readonly output and byte/version budgets unchanged. An already selected read may settle after disable; subsequent selection sees the new table. Documentation explicitly avoids ACL, runtime cancellation, earlier prompt erasure or expanded workspace/tool authority claims.
+
+Independently read six final activation PASS groups in `/tmp/jiaclaw-oct11-activation-process-final.log`; verified all 94 compiled-input hashes against `a350a4c1` with zero mismatches. Reviewer did not execute tests or compile. Initial 1246 Rust evidence and ongoing final Rust execution are distinct; final official qualification remains separate and pending. Final Standards count: **0 open findings; no worst issue**. Spec remains independent.

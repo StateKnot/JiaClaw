@@ -10,7 +10,7 @@ TOML 与 JSON 使用同一契约，顶层必须有 `agent`，其他段覆盖 `ag
 |---|---|
 | `agent.name`, `description`, `system_instructions`, `max_turns` | 配置文件必填；`max_turns` 是保留元数据，实际消息历史上限为 50 条 |
 | `agent.workspace_path` | `~/.jiaclaw/workspace` 的展开后的主目录路径 |
-| `agent.skill_lock_required` | 默认 false；true 时启动/诊断/热加载必须通过[管理员技能来源锁](skill-lock.md)，不能退回空目录 |
+| `agent.skill_lock_required` | 默认 false；true 时启动/诊断/热加载必须通过[管理员技能来源锁](skill-lock.md)，不能退回空目录；锁版本2支持[持久启停](skill-activation.md)和只读 `skills policy` |
 | `agent.tool_timeout_secs` | 缺省不限；正整数限制单次工具调用；建议 45 秒 |
 | `agent.max_tool_iterations` | 5，限制整个工具循环，生效范围 1–32 |
 | `provider.provider_type` | `brokerrouter`；另有 `openai_compatible` 兼容路径与明确的 `stub` 离线模式 |

@@ -92,7 +92,9 @@ pub use session::{
     ConversationSummarizer, SESSION_SUMMARY_MAX_TOKENS, SESSION_SUMMARY_PREFIX,
     SESSION_SUMMARY_PROMPT, SESSION_SUMMARY_TEMPERATURE,
 };
-pub use skills::{Skill, SkillDiscovery, SkillRegistry, SkillSourcePin};
+pub use skills::{
+    Skill, SkillDiscovery, SkillLockPolicy, SkillPolicyEntry, SkillRegistry, SkillSourcePin,
+};
 pub use tools::{
     clamp_web_fetch_max_chars, clamp_web_search_max_results, html_to_readable_text,
     parse_web_fetch_args, parse_web_search_args, validate_web_fetch_url, DateTimeTool,

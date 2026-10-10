@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod lock;
-pub use lock::SkillSourcePin;
+pub use lock::{SkillLockPolicy, SkillPolicyEntry, SkillSourcePin};
 
 const SKILL_FILE_BYTES: usize = 128 * 1024;
 const CATALOG_BYTES: usize = 2 * 1024 * 1024;
@@ -360,6 +360,28 @@ impl SkillDiscovery {
         } else {
             None
         };
+        self.scan_locked(strict, catalog_lock)
+    }
+
+    /// Inspect the exact disk lock used by one strict scan, including disabled entries.
+    ///
+    /// # Errors
+    /// Requires captured lock policy and a valid complete enabled catalog.
+    pub fn inspect_policy(&self) -> Result<SkillLockPolicy, JiaClawError> {
+        if !self.lock_required {
+            return Err(invalid("技能策略检查要求 skill_lock_required=true"));
+        }
+        let lock = lock::CatalogLock::read(&self.workspace)?;
+        let policy = lock.policy.clone();
+        self.scan_locked(true, Some(lock))?;
+        Ok(policy)
+    }
+
+    fn scan_locked(
+        &self,
+        strict: bool,
+        catalog_lock: Option<lock::CatalogLock>,
+    ) -> Result<Vec<Skill>, JiaClawError> {
         let strict = strict || self.lock_required;
         let mut skills = Vec::new();
         let mut names = HashSet::new();
@@ -367,6 +389,14 @@ impl SkillDiscovery {
         for entry in self.skill_directories()? {
             let path = self.skills_root.join(&entry.name);
             if entry.kind != "dir" && entry.kind != "symlink" {
+                continue;
+            }
+            // Still reject a linked directory, but never open a disabled leaf.
+            if entry.kind == "dir"
+                && catalog_lock
+                    .as_ref()
+                    .is_some_and(|lock| lock.disabled(&entry.name))
+            {
                 continue;
             }
             // A linked directory is invalid even if its target has no SKILL.md.

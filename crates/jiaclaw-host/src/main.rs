@@ -295,6 +295,8 @@ enum SessionCommands {
 enum SkillsCommands {
     /// 重新扫描工作区 `skills/` 并打印结果（不通知已运行的 serve）
     Reload,
+    /// 只读验证并输出磁盘中的必需锁策略（不代表运行服务已应用）
+    Policy,
 }
 
 /// 长期记忆子命令
@@ -440,6 +442,13 @@ async fn main() -> Result<()> {
         } => match action {
             Some(SkillsCommands::Reload) => {
                 skills_reload_command(config)?;
+            }
+            Some(SkillsCommands::Policy) => {
+                let config = load_agent_config(config)?;
+                let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+                    .with_lock_required(config.skill_lock_required)
+                    .inspect_policy()?;
+                println!("{}", serde_json::to_string_pretty(&policy)?);
             }
             None => {
                 skills_command(config, verbose)?;
@@ -12090,6 +12099,15 @@ mod tests {
             }
             _ => panic!("应为 skills reload 子命令"),
         }
+    }
+
+    #[test]
+    fn test_cli_skills_policy_parses_with_global_config() {
+        let cli = Cli::try_parse_from(["jiaclaw", "skills", "policy", "--config", "cfg.toml"])
+            .expect("policy should accept the original global config flag");
+        assert!(matches!(cli.command, Commands::Skills {
+            action: Some(SkillsCommands::Policy), config: Some(ref path), ..
+        } if path == std::path::Path::new("cfg.toml")));
     }
     #[tokio::test]
     async fn sqlite_http_empty_chat_delete_and_restart() {

@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[已锁技能持久启停](skill-activation.md)：必需来源锁可使用严格版本2逐项显式 `enabled`，停用记录跨重启保留来源、跳过叶文件读取，恢复前核对原字节；成功 HTTP/SIGHUP 重载原子替换表，失败保留旧表。只读 `skills policy` 展示同一次锁扫描的磁盘策略。后续正文/参考选择、摘要、关键词及显式注入排除停用项，不取消已选择工作、不抹除历史或扩大权限。冻结父负例、两次夹具错误与最终绿色证据分别保存。94编译输入、八实际进程套、七独立补边界和双轴审查见[验收记录](validation.md)、[Standards](reviews/2026-10-11-skill-activation-standards.md)和[Spec](reviews/2026-10-11-skill-activation-spec.md)。第48个必需Python套件和四优化候选的新固定head资格须独立核对，不借父或本地。安装事务、签名、独立ACL、经验记忆、真实供应商/浏览器、durable和租户范围继续开放。
+
 2026-10-11 接入[管理员技能来源与内容锁](skill-lock.md)：默认关闭 `agent.skill_lock_required`；完整 SKILL.md 原字节（含 frontmatter）绑定来源声明和固定 Git object ID。启动、CLI、doctor、认证 HTTP/SIGHUP 共用同一策略；缺锁、漂移、未登记或缺失技能拒绝，失败保留旧表；公开元数据与嵌入 OpenAPI 已接线。冻结父负例、初版聊天协议夹具失败、真实 OpenAPI 遗漏与最终绿日志分别保存。最终 source `2a5e4c3` 的1243 Rust（另1忽略）、七实际进程套、九独立边界及 fmt/必需Clippy 通过；[Standards](reviews/2026-10-11-skill-lock-standards.md)/[Spec](reviews/2026-10-11-skill-lock-spec.md)聚焦开放0，累计历史继承，不声称穷尽重审。新固定head需47必需Python、七Chromium、四优化/安装候选的独立官方资格，不借父或本地。锁共享现有工作区写权限，不是独立ACL/审批门或签名认证；安装/更新/撤销、经验记忆、真实供应商/浏览器、durable和租户范围仍开放。
 
 本轮 PR111 repaired head `4bdeac5` 的七实际作业、45必需Python/七Chromium和四候选已独立全部核对通过。PR112 `8702089` 在本轮初始快照仍partial，不能借父资格。以下“待验收”保留为各批交付时快照，最终结果固定在正文/pin，不重复提交自引head文档造CI循环。
