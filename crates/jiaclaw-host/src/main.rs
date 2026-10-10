@@ -3702,7 +3702,7 @@ async fn reload_skills_handler(
         return Err(AppError::Unauthorized);
     }
 
-    match state.agent.reload_skills() {
+    match state.agent.reload_skills_async().await {
         Ok(discovered) => {
             let skills = skill_infos(&discovered);
             let reloaded = skills.len();
@@ -3930,7 +3930,7 @@ fn spawn_skill_reload_on_sighup(agent: Arc<JiaClawAgent>) -> Option<tokio::task:
                         break;
                     }
                     tracing::info!("收到 SIGHUP，开始重载技能");
-                    match agent.reload_skills() {
+                    match agent.reload_skills_async().await {
                         Ok(skills) => {
                             tracing::info!(count = skills.len(), "SIGHUP 技能重载成功");
                         }
@@ -4364,12 +4364,6 @@ fn skills_command(config_path: Option<PathBuf>, verbose: bool) -> Result<()> {
 
     let skills_dir = config.workspace_path.join("skills");
 
-    if !skills_dir.exists() {
-        println!("❌ 技能目录不存在: {}", skills_dir.display());
-        println!("\n💡 运行 'jiaclaw init' 创建工作空间和示例技能");
-        return Ok(());
-    }
-
     let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path);
 
     match discovery.discover() {
@@ -4433,17 +4427,9 @@ fn skills_command(config_path: Option<PathBuf>, verbose: bool) -> Result<()> {
 
 fn skills_reload_command(config_path: Option<PathBuf>) -> Result<()> {
     let config = load_agent_config(config_path)?;
-    let skills_dir = config.workspace_path.join("skills");
 
     println!("🔄 JiaClaw 技能扫描（CLI）\n");
     println!("📁 工作空间: {}\n", config.workspace_path.display());
-
-    if !skills_dir.exists() {
-        println!("⚠️  技能目录不存在: {}", skills_dir.display());
-        println!("   扫描结果：0 个技能（与空目录相同）");
-        print_skills_reload_serve_hint();
-        return Ok(());
-    }
 
     match jiaclaw::SkillDiscovery::new(&config.workspace_path).discover_strict() {
         Ok(skills) => {

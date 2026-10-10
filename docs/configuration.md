@@ -108,7 +108,7 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 六个平台使用统一持久 inbox/outbox 与有界异步发送；fixture 测试覆盖协议，不等于真实渠道联调认证。会话按安装、会话、线程和发送者绑定；工作区仍是实例共享，没有多用户工作区隔离。
 
-`memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md。`memory_read` 按逻辑文件名读取这些配置路径；提示注入、记忆读取和 CLI 展示最多读取 32 KiB，按 UTF-8 边界截断；`memory_write` / `memory_append` / `soul_write` / `user_write` 的最终文件均不得超过 32 KiB。父目录/目标链接与非常规文件被拒绝，提交与并发边界见[记忆文件指南](memory-files.md)。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。
+`memory.path` 默认 MEMORY.md；`identity.soul_path/user_path` 默认 SOUL.md/USER.md。`memory_read` 按逻辑文件名读取这些配置路径；提示注入、记忆读取和 CLI 展示最多读取 32 KiB，按 UTF-8 边界截断；`memory_write` / `memory_append` / `soul_write` / `user_write` 的最终文件均不得超过 32 KiB。父目录/目标链接与非常规文件被拒绝，提交与并发边界见[记忆文件指南](memory-files.md)。技能从 `workspace/skills/*/SKILL.md` 发现；HTTP `POST /api/skills/reload` 或 Unix SIGHUP 重新加载。技能文件最多128 KiB、完整目录最多64技能/2 MiB/256顶层条目，拒绝链接及特殊文件；失败重载保留旧表，授权/取消和资源边界见[技能合同](skills.md)。
 
 `[memory.semantic] enabled` 默认 false，关闭时不创建索引或发送 embedding 请求。启用要求 Brokerrouter、非空 `model` / `space_revision`、`dimensions` 为 1–3072；`sources=[]` 默认只使用 `memory.path`，最多 3 个文件，每个 128 KiB、总共 384 KiB。`index_path` 默认 `../state/semantic/index.sqlite3`，必须在工作区外的私有状态目录并独立于其他数据库；`timeout_secs` 默认 30，范围 1–120。最多 512 个 1024 字节 UTF-8 块，每批最多 8 个；当前文档与查询使用同样的原文预处理，要求已认证的对称 embedding 模型，且同逻辑模型的候选端点属于同一向量空间；`space_revision` 不自动检测上游权重变化。每次刷新有 5 分钟新请求入场预算，响应上限 2 MiB，搜索摘录合计 16 KiB / JSON 64 KiB。源变更/删除先返回 `stale_index`，不请求查询 embedding；未知提交持久 hold，重启、重建、同库模型/Key 变更不能绕过。`memory semantic` CLI 维护前须停止同库 `serve`。配置、成本授权、GET 恢复及管理员核对见[语义记忆指南](semantic-memory.md)；本批验证状态见[验收记录](validation.md)。
 

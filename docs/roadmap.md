@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 根据[主流 Agent 差距研究](reviews/2026-10-11-mainstream-agent-gap-review.md)继续技能生态的可落地前置工作：冻结旧二进制两次真实复现工作区外技能链接读取与 FIFO 阻塞，现有发现改用[有界技能读取合同](skills.md)。完整目录/原始文本/元数据/重复名称边界、认证严格重载和每注册表同步/异步容量已实际接线；等待取消不释放实际 worker 的许可。独立审查初版发现普通空目录兼容 P2 与全局槽造成并行测试干扰 P2，均经真实 CLI/并行 Rust 复现修正，初版报告保留。最终源码 `0291084` 的1235 Rust（另1忽略）、必需 Clippy/fmt、原始四场景复现、真实技能 CLI/HTTP 套件、七项并行技能测试和四套既有进程回归通过；[Standards](reviews/2026-10-11-bounded-skills-standards.md)/[Spec](reviews/2026-10-11-bounded-skills-spec.md)聚焦开放均0，继承累计审查不声称穷尽重审。新 draft PR 的固定 head 官方 CI/四优化候选独立待验收，不借 PR109资格。按需原生技能工具、来源/版本治理、经验记忆和浏览器仍开放，本批不标记完整技能生态。
+
+PR109 最终 `f5319902` 的七实际作业、两平台各43必需Python、七Chromium及四优化候选已独立通过，最终证据保存在 PR正文和 `/tmp/jiaclaw-oct10-tool-failure-delivery/pin.json`，没有为自引head另交纯文档触发CI；下方“待核对/仍需”记录是之前的批次状态。上游本轮 StateKnot `aa11b4f`/唯一alpha.1/#140未变；Brokerrouter连接器404由本机已授权gh身份补充核对，main仍`e01ecb9`，无发布，#31/#41开放且#40仍为未合并草稿；#49在两种入口仍不可见，只记实际404。
+
 PR109 初次固定 head `fd4f98f` 的 Ubuntu/macOS 官方 CI 均在旧 `workspace_files` 拒绝断言失败；冻结最终二进制也复现三套文件测试仍期待失败后 `completed`/二次模型请求的接线遗漏。本轮按既有 unknown 停止合同修正三套 fixture，拒绝输入拆成逐个明确请求以保留全部边界，共享 wire 断言关闭新发现的 Standards P3 重复启发式，生产实现未变。完整43套实际进程命令已通过；共享版本三套随后重验通过，其余40套fixture字节未变，原矩阵与追加证据分开保留。新增 [Standards](reviews/2026-10-10-tool-failure-fixtures-standards.md) / [Spec](reviews/2026-10-10-tool-failure-fixtures-spec.md) 独立增量审查开放均0，继承范围与初版分别记录。旧 head 的局部候选通过不代替修正后 head 的七官方作业、43 Python、七 Chromium 和四优化候选资格；全部资格仍按固定 head 在PR正文/pin核对。
 
 旧 Intel 优化候选另因40分钟作业上限取消，官方 annotation 与单测20分50秒/优化编译16分49秒证据已保存；仅 Intel 矩阵项增加到60分钟，其他三项维持40分钟，所有验收命令和应用/fixture截止不变。新版本需完整通过该候选后才能计资格，取消不能冒充修复后成功。
