@@ -1,5 +1,17 @@
 # 基础能力验收记录
 
+## 已声明技能参考资源读取批次
+
+生产路径修复输入固定在 `5a5cc77`，最终夹具固定 `e095f01d799b58ee8b6a19adf8fcbc127d50de9d`，两者93编译输入相同。冻结最终binary SHA256 `cb928ba70849333149ee8e177d03fd1b05e3c7a3062512d30ad8d5c243a4969d` 的实际CLI旧140字节负例转绿；六组CLI/鉴权HTTP/native-loop证明包括140/256字节实际路径、版本/撤销/改磁盘、原白名单、链接/硬链接/FIFO、UTF-8与两个输出预算。未执行脚本/安装、付费供应商或跨租户扩权。固定规格见 [资源合同](skill-resources.md)。
+
+完整Mac Rust在所需本地监听/特殊文件权限下通过 `409/123/708` 共1240项、另1项Docker忽略；锁定build、format与必需Clippy通过，非强制历史style警告保留。同一二进制的原六skill_read组、十二skills组、native_tools/e2e/doctor共五既有进程套全部通过。日志在 `/tmp/jiaclaw-oct11-skill-resources-delivery` 和 `/tmp/jiaclaw-oct11-resource-*.log`，不存于target。受限环境的43项监听/FIFO拒绝是未合格执行，日志单独保留，原断言没有弱化。
+
+初版550二进制的路径P2真实RED与最终绿色分开；5a夹具的长leaf残留实际Directory not empty、e90未settled六PASS和e095最终停止后严格日志六PASS分别保留。独立 [Standards](reviews/2026-10-11-skill-resources-standards.md)/[Spec](reviews/2026-10-11-skill-resources-spec.md)最终新增未解决0；累计基准4b2357fc，明确继承与本批聚焦，不声称穷尽重审。新固定交付head的46必需Python、七Chromium、四实际优化候选/安装归档源码仍待官方独立验收，不借父或本机。
+
+上游本轮StateKnot仍main `aa11b4f`、唯一alpha.1、#140 open无回复；Brokerrouter main `e01ecb9`、无release、#31/#41 open，PR40更新为 `ce38170401e0f92a47cc912033ffb482f99073d8` 仍draft未合并。文件变化含transport/接线/部署验收材料，draft材料不是已发布、可消费的MCP/durable认证；PR49实际404仅记不可见。HTTP只读MCP范围继续维护，stdio/OAuth/外部写入、来源/安装生命周期、真实供应商/浏览器、durable/多模态/WhatsApp/业务试用仍分别开放。
+
+缓存沿用仓库target约19.7GiB（超过20十进制GB已评估）；普通Rust命令设置CARGO_INCREMENTAL=0与dev/test debug=0，不复制target，无新专用cache或清理。最终实际df另存在交付pin；不以APFS目录大小宣称回收量。
+
 ## 模型按需技能正文读取批次
 
 2026-10-11，源码固定 `edf4323247c8b0a493126607f38debed51db8d2e`，合同见[skill_read](skill-read.md)。冻结父 PR110 二进制确认原生入口拒绝未注册的 skill_read，证明应用能力缺口，不是框架缺陷。初次测试夹具缺少必填 max_turns，在启动配置阶段失败；修正后的父负例与新二进制绿色日志独立保留。

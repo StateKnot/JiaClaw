@@ -90,6 +90,8 @@ copy 的异步入口与其他文件/记忆工具共用八槽阻塞 I/O 容量，
 
 `[tools.skill_read] enabled = true` 显式启用[模型按需读取技能](skill-read.md)，缺省 false。启用后目录只提供名称/描述/正文 hash，关键词不再自动注入正文；调用方显式 `enabled_skills` 仍注入选定正文。读取须原请求工具白名单授权并匹配当前已加载正文版本，拒绝热加载替换、路径和未知字段，不授予正文中提到的其他工具权限。
 
+同段 `resources_enabled = true` 可另注册[声明资源读取](skill-resources.md)，缺省 false 且必须同时 enabled=true。每个参考文件须在 frontmatter jiaclaw_resources 中声明 references/ 相对路径与原始字节 SHA-256，仍遵守独立工具白名单、正文/声明版本和文件/输出预算。
+
 ## MCP
 
 `mcp.servers` 默认空，不访问任何远程服务器。使用 StateKnot `0.1.0-alpha.1` 的 HTTP client；完整字段、审查与指纹生成流程见 [MCP 配置](mcp.md)。每个工具必须显式分类 `effect = "read_only"` 并固定完整描述的 SHA-256。服务启动前验证本地策略；任何已批准工具缺失、描述变更或 schema 无效都会中止启动，避免静默丢失能力。更新配置/凭证/工具描述后重启；没有自动接受新版描述。

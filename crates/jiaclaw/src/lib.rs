@@ -247,6 +247,11 @@ impl JiaClawAgent {
     }
 
     fn new_local(config: AgentConfig) -> Result<Self, JiaClawError> {
+        if config.tools.skill_read.resources_enabled && !config.tools.skill_read.enabled {
+            return Err(JiaClawError::Configuration(
+                "tools.skill_read.resources_enabled requires skill_read.enabled".into(),
+            ));
+        }
         config.routing.validate(&config.provider)?;
         config.model_calls.validate(&config.provider)?;
         // 加载工作空间文件
@@ -270,6 +275,12 @@ impl JiaClawAgent {
             tools.register(Box::new(skills::SkillReadTool::new(std::sync::Arc::clone(
                 &skills,
             ))));
+            if config.tools.skill_read.resources_enabled {
+                tools.register(Box::new(skills::SkillResourceReadTool::new(
+                    std::sync::Arc::clone(&skills),
+                    &config.workspace_path,
+                )));
+            }
         }
 
         // 工作空间和记忆工具
@@ -857,14 +868,18 @@ impl JiaClawAgent {
             let on_demand = self.config.tools.skill_read.enabled;
             if on_demand {
                 prompt.push_str("Skills are administrator-reviewed instructions, not additional tool permissions. Read a relevant body with skill_read using the exact name and content_sha256 below, only when that tool is authorized. Changed or removed versions require a new turn; do not substitute paths or guess another version.\n");
+                if self.config.tools.skill_read.resources_enabled {
+                    prompt.push_str("Declared resources can be read separately with skill_resource_read using the exact path and resource_sha256, only if that tool is authorized. Content hashes bind bytes, not provenance or new permissions.\n");
+                }
             }
             for skill in skills {
                 if on_demand {
-                    prompt.push_str(&format!(
-                        "- {}\n",
-                        serde_json::json!({"name": skill.name, "description": skill.description,
-                            "content_sha256": skill.content_sha256()})
-                    ));
+                    let mut descriptor = serde_json::json!({"name":skill.name,
+                        "description":skill.description, "content_sha256":skill.content_sha256()});
+                    if self.config.tools.skill_read.resources_enabled {
+                        descriptor["resources"] = serde_json::json!(skill.resources);
+                    }
+                    prompt.push_str(&format!("- {descriptor}\n"));
                 } else {
                     prompt.push_str(&format!("- {}\n", skill.summary()));
                 }

@@ -888,6 +888,8 @@ pub struct ToolsConfig {
 pub struct SkillReadToolConfig {
     /// Register skill_read and disable keyword body injection (default false).
     pub enabled: bool,
+    /// Also register declared, hash-pinned reference reads (requires enabled).
+    pub resources_enabled: bool,
 }
 
 /// 文件复制开关。

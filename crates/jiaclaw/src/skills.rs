@@ -13,6 +13,7 @@ const SKILL_FILE_BYTES: usize = 128 * 1024;
 const CATALOG_BYTES: usize = 2 * 1024 * 1024;
 const CATALOG_SKILLS: usize = 64;
 const CATALOG_ENTRIES: usize = 256;
+const SKILL_RESOURCES: usize = 8;
 
 fn invalid(reason: impl std::fmt::Display) -> JiaClawError {
     JiaClawError::Configuration(format!("存在无效技能文件: {reason}"))
@@ -23,6 +24,38 @@ fn identifier(value: &str) -> bool {
         && value.len() <= 128
         && value.trim() == value
         && !value.chars().any(char::is_control)
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Administrator-declared UTF-8 reference, pinned to exact file bytes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillResource {
+    pub path: String,
+    pub sha256: String,
+}
+
+impl SkillResource {
+    fn valid(&self) -> bool {
+        let parts: Vec<_> = self.path.split('/').collect();
+        self.path.len() <= 256
+            && (2..=16).contains(&parts.len())
+            && parts[0] == "references"
+            && parts.iter().all(|part| {
+                !part.is_empty()
+                    && part.trim() == *part
+                    && !part.chars().any(char::is_control)
+                    && !matches!(*part, "." | "..")
+                    && !part.contains(['\\', ':'])
+            })
+            && valid_hash(&self.sha256)
+    }
 }
 
 /// 技能定义
@@ -45,6 +78,10 @@ pub struct Skill {
     /// 触发关键词列表（可选）
     #[serde(default)]
     pub triggers: Vec<String>,
+
+    /// Exact references permitted by the loaded skill declaration; never auto-read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<SkillResource>,
 }
 
 /// YAML frontmatter 结构
@@ -54,6 +91,8 @@ struct SkillFrontmatter {
     description: Option<String>,
     #[serde(default)]
     triggers: Vec<String>,
+    #[serde(default)]
+    jiaclaw_resources: Vec<SkillResource>,
 }
 
 impl Skill {
@@ -111,12 +150,21 @@ impl Skill {
             .description
             .unwrap_or_else(|| Self::extract_description(&content));
         let triggers = frontmatter.triggers;
+        let resources = frontmatter.jiaclaw_resources;
         if !identifier(&name)
             || description.len() > 2048
             || triggers.len() > 32
             || triggers.iter().any(|trigger| !identifier(trigger))
         {
             return Err(invalid("name/trigger 最多 128 字节且非空、无首尾空白/控制字符；description 最多 2048 字节；triggers 最多 32 项"));
+        }
+        let mut resource_paths = HashSet::new();
+        if resources.len() > SKILL_RESOURCES
+            || resources
+                .iter()
+                .any(|resource| !resource.valid() || !resource_paths.insert(resource.path.clone()))
+        {
+            return Err(invalid("jiaclaw_resources 最多 8 个唯一 references/ 相对路径及小写 SHA-256；路径最多 256 字节/16 组件"));
         }
         Ok(Some((
             Self {
@@ -125,6 +173,7 @@ impl Skill {
                 path: skill_dir.to_path_buf(),
                 content,
                 triggers,
+                resources,
             },
             raw_bytes,
         )))
@@ -142,6 +191,7 @@ impl Skill {
                     name: None,
                     description: None,
                     triggers: Vec::new(),
+                    jiaclaw_resources: Vec::new(),
                 },
                 content.to_string(),
             ));
@@ -165,6 +215,7 @@ impl Skill {
                     name: None,
                     description: None,
                     triggers: Vec::new(),
+                    jiaclaw_resources: Vec::new(),
                 },
                 content.to_string(),
             ))
@@ -451,6 +502,62 @@ impl SkillRegistry {
         Ok(skill.content.clone())
     }
 
+    fn read_resource(
+        &self,
+        workspace: &Path,
+        args: &SkillResourceArgs,
+    ) -> Result<String, JiaClawError> {
+        // Admission selects the current declaration under one short lock. A later
+        // reload cannot retract an already selected read; its exact bytes stay pinned.
+        let path = {
+            let guard = self.lock_read();
+            let skill = guard
+                .iter()
+                .find(|skill| skill.name == args.name)
+                .ok_or_else(|| invalid("技能资源所属技能不再加载"))?;
+            if skill.content.len() > SKILL_FILE_BYTES
+                || skill.content_sha256() != args.content_sha256
+                || skill.resources.len() > SKILL_RESOURCES
+                || !skill.resources.iter().any(|resource| {
+                    resource.valid()
+                        && resource.path == args.path
+                        && resource.sha256 == args.resource_sha256
+                })
+            {
+                return Err(invalid("技能资源声明或正文版本已失效，请在新一轮核对目录"));
+            }
+            let relative = skill
+                .path
+                .strip_prefix(workspace)
+                .map_err(|_| invalid("技能资源不属于配置工作区"))?;
+            let parts: Vec<_> = relative.components().collect();
+            if parts.len() != 2
+                || parts[0].as_os_str() != "skills"
+                || !parts
+                    .iter()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(invalid("技能资源必须属于工作区一级技能目录"));
+            }
+            relative
+                .join(&args.path)
+                .to_str()
+                .ok_or_else(|| invalid("技能资源需要 UTF-8 路径"))?
+                .to_owned()
+        };
+        let file = crate::memory_io::read_text(workspace, &path, SKILL_FILE_BYTES, false)?
+            .ok_or_else(|| invalid("已声明技能资源文件不存在"))?;
+        if format!("{:x}", sha2::Sha256::digest(file.text.as_bytes())) != args.resource_sha256 {
+            return Err(invalid("技能资源字节不匹配管理员声明的 SHA-256"));
+        }
+        if serde_json::to_string(&file.text).map_or(true, |encoded| {
+            encoded.len() > crate::tools::MAX_NATIVE_RESULT_BYTES
+        }) {
+            return Err(invalid("技能资源超过序列化输出预算"));
+        }
+        Ok(file.text)
+    }
+
     /// 重新扫描工作区 `skills/` 并替换注册表。
     ///
     /// 磁盘扫描在锁外完成；仅成功后短时间持写锁替换。失败时保留旧表。
@@ -555,13 +662,7 @@ impl crate::tools::Tool for SkillReadTool {
                 "skill_read requires exactly name and content_sha256".into(),
             )
         })?;
-        if !identifier(&args.name)
-            || args.content_sha256.len() != 64
-            || !args
-                .content_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !identifier(&args.name) || !valid_hash(&args.content_sha256) {
             return Err(JiaClawError::ToolExecution(
                 "skill_read requires a bounded catalog name and lowercase SHA-256".into(),
             ));
@@ -570,11 +671,195 @@ impl crate::tools::Tool for SkillReadTool {
     }
 }
 
+pub(crate) struct SkillResourceReadTool {
+    registry: Arc<SkillRegistry>,
+    workspace: PathBuf,
+}
+
+impl SkillResourceReadTool {
+    pub(crate) fn new(registry: Arc<SkillRegistry>, workspace: &Path) -> Self {
+        Self {
+            registry,
+            workspace: workspace.to_path_buf(),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillResourceArgs {
+    name: String,
+    content_sha256: String,
+    path: String,
+    resource_sha256: String,
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for SkillResourceReadTool {
+    fn name(&self) -> &str {
+        "skill_resource_read"
+    }
+
+    fn description(&self) -> &str {
+        "Read a declared references/ UTF-8 file using exact skill and resource hashes. Original request tool permissions apply; no paths or scripts outside the declaration."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object", "properties": {
+                "name": {"type":"string", "minLength":1, "maxLength":128},
+                "content_sha256": {"type":"string", "pattern":"^[0-9a-f]{64}$"},
+                "path": {"type":"string", "minLength":1, "maxLength":256},
+                "resource_sha256": {"type":"string", "pattern":"^[0-9a-f]{64}$"}
+            }, "required":["name", "content_sha256", "path", "resource_sha256"],
+            "additionalProperties":false
+        })
+    }
+
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<String, JiaClawError> {
+        let args: SkillResourceArgs = serde_json::from_value(args)
+            .map_err(|_| invalid("skill_resource_read 需要精确的四个声明参数"))?;
+        if !identifier(&args.name)
+            || !valid_hash(&args.content_sha256)
+            || !(SkillResource {
+                path: args.path.clone(),
+                sha256: args.resource_sha256.clone(),
+            })
+            .valid()
+        {
+            return Err(invalid(
+                "skill_resource_read 需要目录名称、references/ 路径及小写 SHA-256",
+            ));
+        }
+        let registry = Arc::clone(&self.registry);
+        let workspace = self.workspace.clone();
+        crate::memory_io::run_blocking(move || registry.read_resource(&workspace, &args)).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::Tool;
     use std::fs;
+
+    #[test]
+    fn resource_declarations_are_bounded_canonical_and_atomic_on_reload() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&dir).unwrap();
+        let declaration =
+            serde_json::json!({"path":"references/guide.md", "sha256":"f".repeat(64)});
+        let write = |resources: serde_json::Value| {
+            fs::write(dir.join("SKILL.md"), format!("---\nname: reviewed\ndescription: catalog\njiaclaw_resources: {resources}\n---\nbody")).unwrap();
+        };
+        write(serde_json::json!([declaration]));
+        let registry = SkillRegistry::new(
+            SkillDiscovery::new(workspace.path())
+                .discover_strict()
+                .unwrap(),
+        );
+        assert_eq!(registry.snapshot()[0].resources.len(), 1);
+        // Existence/contents are deliberately not inspected during discovery.
+        for path in [
+            "/references/guide.md",
+            "references/../outside",
+            "references/./guide.md",
+            "references//guide.md",
+            "references/",
+            "scripts/run.sh",
+            "references/a\\b",
+            "references/C:drive",
+            "references/ leading",
+            "references/trailing ",
+            "references/bad\nname",
+        ] {
+            write(serde_json::json!([{"path":path,"sha256":"f".repeat(64)}]));
+            assert!(registry.reload(workspace.path()).is_err(), "{path}");
+            assert_eq!(
+                registry.snapshot()[0].resources[0].path,
+                "references/guide.md"
+            );
+        }
+        for resources in [serde_json::json!([declaration, declaration]),
+            serde_json::json!([{"path":"references/guide.md","sha256":"F".repeat(64)}]),
+            serde_json::json!([{"path":"references/guide.md","sha256":"f".repeat(64),"extra":true}]),
+            serde_json::json!((0..9).map(|i| serde_json::json!({"path":format!("references/{i}.md"),"sha256":"f".repeat(64)})).collect::<Vec<_>>())] {
+            write(resources);
+            assert!(registry.reload(workspace.path()).is_err());
+        }
+        for length in [129, 245] {
+            let path = format!("references/{}", "a".repeat(length));
+            write(serde_json::json!([{"path":path,"sha256":"f".repeat(64)}]));
+            registry.reload(workspace.path()).unwrap();
+            assert_eq!(registry.snapshot()[0].resources[0].path, path);
+        }
+        write(
+            serde_json::json!([{"path":format!("references/{}", "a".repeat(246)),"sha256":"f".repeat(64)}]),
+        );
+        assert!(registry.reload(workspace.path()).is_err());
+        assert_eq!(registry.snapshot()[0].resources[0].path.len(), 256);
+    }
+
+    #[tokio::test]
+    async fn resource_read_pins_bytes_and_current_declaration_without_extending_authority() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(dir.join("references")).unwrap();
+        let original = "approved raw resource\n";
+        let hash = format!("{:x}", sha2::Sha256::digest(original.as_bytes()));
+        let write = |resource_hash: &str| {
+            fs::write(dir.join("SKILL.md"),
+            format!("---\nname: reviewed\ndescription: catalog\njiaclaw_resources: [{{path: references/guide.md, sha256: {resource_hash}}}]\n---\nbody")).unwrap()
+        };
+        write(&hash);
+        fs::write(dir.join("references/guide.md"), original).unwrap();
+        let registry = Arc::new(SkillRegistry::new(
+            SkillDiscovery::new(workspace.path())
+                .discover_strict()
+                .unwrap(),
+        ));
+        let body_hash = registry.snapshot()[0].content_sha256();
+        let args = serde_json::json!({"name":"reviewed", "content_sha256":body_hash,
+            "path":"references/guide.md", "resource_sha256":hash});
+        let tool = SkillResourceReadTool::new(Arc::clone(&registry), workspace.path());
+        assert_eq!(tool.execute(args.clone()).await.unwrap(), original);
+        fs::write(dir.join("references/guide.md"), "replacement").unwrap();
+        assert!(tool.execute(args.clone()).await.is_err());
+        fs::write(dir.join("references/guide.md"), original).unwrap();
+        write(&"a".repeat(64));
+        registry.reload(workspace.path()).unwrap();
+        assert_eq!(registry.snapshot()[0].content_sha256(), body_hash);
+        assert!(tool.execute(args.clone()).await.is_err());
+        write(&hash);
+        registry.reload(workspace.path()).unwrap();
+        for path in [
+            "../outside",
+            "references/undeclared.md",
+            "references/./guide.md",
+        ] {
+            let mut bad = args.clone();
+            bad["path"] = serde_json::json!(path);
+            assert!(tool.execute(bad).await.is_err());
+        }
+        let outside = tempfile::tempdir().unwrap();
+        let mut skills = registry.snapshot();
+        skills[0].path = outside.path().join("skills/reviewed");
+        let foreign =
+            SkillResourceReadTool::new(Arc::new(SkillRegistry::new(skills)), workspace.path());
+        assert!(foreign.execute(args.clone()).await.is_err());
+        let mut extra = args;
+        extra["extra"] = serde_json::json!(true);
+        assert!(tool.execute(extra).await.is_err());
+        assert_eq!(
+            tool.failure_effect(),
+            crate::tools::ToolFailureEffect::NoEffect
+        );
+    }
 
     #[tokio::test]
     async fn skill_read_uses_loaded_version_and_never_an_ambient_path() {
@@ -636,6 +921,7 @@ mod tests {
             path: PathBuf::new(),
             content: "x".repeat(SKILL_FILE_BYTES + 1),
             triggers: Vec::new(),
+            resources: Vec::new(),
         };
         let args =
             serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});
@@ -665,6 +951,7 @@ mod tests {
                 path: PathBuf::new(),
                 content: body.clone(),
                 triggers: Vec::new(),
+                resources: Vec::new(),
             };
             let args =
                 serde_json::json!({"name": skill.name, "content_sha256": skill.content_sha256()});

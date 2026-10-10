@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 继续[主流Agent差距](reviews/2026-10-11-mainstream-agent-gap-review.md)，接入[已声明技能参考资源按需读取](skill-resources.md)：默认关闭独立开关，正文版本和声明资源原始字节双hash核验，实际worker在配置工作区能力内读取，原白名单/只读/共享I/O所有权不扩大。真实140/256字节路径、声明撤销/磁盘改版、父/叶链接/硬链接/FIFO、UTF-8/原始和JSON预算均有进程证据；初版生产路径P2和两项夹具P2已分别修正，独立[Standards](reviews/2026-10-11-skill-resources-standards.md)/[Spec](reviews/2026-10-11-skill-resources-spec.md)聚焦开放0。新批固定head仍需46必需Python、七Chromium、四优化候选的独立官方验收，不借父或本地资格。来源锁定、安装/更新/撤销、经验记忆、真实供应商/浏览器、durable与租户范围继续开放。
+
+父批最新状态：PR110 head `5ace6d9` 已独立七作业/四候选合格，结果固定在PR正文/pin，不再自引文档触发CI。PR111旧head `5fcdf2b` 的Ubuntu在活跃日志UTF-8尾部读取失败；启动和最终扫描均经真实片段RED→GREEN修正，最终严格扫描等待退出并包含shutdown日志。新head `4bdeac5` 的CI `38075103858` /候选 `38075103866` 正独立验收，不能借旧head三个候选。下方各批的“待验收”保留为当时交付快照。
+
 2026-10-11 接入[模型按需技能正文读取](skill-read.md)：显式开关默认关闭；启用后目录仅含摘要与正文 SHA-256，模型在原请求白名单内读取指定的已加载版本，不因关键词提前注入正文。名称不是路径，热加载替换/移除后拒绝旧版本，读取与版本核验共享短锁，正文和 JSON 转义后的输出分别有界，失败为本地只读 no_effect。显式 enabled_skills 与缺省配置保持兼容，技能不能授予工具权限，租户范围未扩大。冻结 PR110 二进制的缺少工具负例、最终源码1238 Rust（另1忽略）及本批真实进程验收分开保存；[Standards](reviews/2026-10-11-skill-read-standards.md)/[Spec](reviews/2026-10-11-skill-read-spec.md)聚焦开放均0，历史累计审查继承。新固定 head 的45必需Python、七Chromium和四优化候选官方资格独立待验收；父PR110资格不代替本批。参考资源、来源治理、安装生命周期、经验记忆、真实供应商与浏览器仍分别开放。
 
 2026-10-11 根据[主流 Agent 差距研究](reviews/2026-10-11-mainstream-agent-gap-review.md)继续技能生态的可落地前置工作：冻结旧二进制两次真实复现工作区外技能链接读取与 FIFO 阻塞，现有发现改用[有界技能读取合同](skills.md)。完整目录/原始文本/元数据/重复名称边界、认证严格重载和每注册表同步/异步容量已实际接线；等待取消不释放实际 worker 的许可。独立审查初版发现普通空目录兼容 P2 与全局槽造成并行测试干扰 P2，均经真实 CLI/并行 Rust 复现修正，初版报告保留。最终源码 `0291084` 的1235 Rust（另1忽略）、必需 Clippy/fmt、原始四场景复现、真实技能 CLI/HTTP 套件、七项并行技能测试和四套既有进程回归通过；[Standards](reviews/2026-10-11-bounded-skills-standards.md)/[Spec](reviews/2026-10-11-bounded-skills-spec.md)聚焦开放均0，继承累计审查不声称穷尽重审。新 draft PR 的固定 head 官方 CI/四优化候选独立待验收，不借 PR109资格。按需原生技能工具、来源/版本治理、经验记忆和浏览器仍开放，本批不标记完整技能生态。
