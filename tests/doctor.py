@@ -77,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
     assert '提供商就绪状态: ❌' in invalid_endpoint.stdout, invalid_endpoint.stdout
     assert '配置尚未就绪' in invalid_endpoint.stdout, invalid_endpoint.stdout
     assert 'fixture-not-a-real-key' not in invalid_endpoint.stdout, invalid_endpoint.stdout
+    assert 'Base URL: ✅ 满足安全端点格式要求' not in invalid_endpoint.stdout, invalid_endpoint.stdout
 
     config['provider'] = {'provider_type': 'stub', 'model': 'fixture-model', 'base_url': 'http://127.0.0.1:1'}
     config['model_calls']['enabled'] = False
@@ -85,7 +86,19 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
     stub = run()
     assert stub.returncode == 0, stub.stdout
     assert '显式 stub' in stub.stdout, stub.stdout
+    assert '当前 provider 需要 API Key' not in stub.stdout, stub.stdout
+    assert 'API Key: 不需要（显式 stub）' in stub.stdout, stub.stdout
+    assert 'HTTP MCP: 已接线' in stub.stdout, stub.stdout
+    assert 'StateKnot durable driver: 未接线' in stub.stdout, stub.stdout
+    assert '会话存储: SQLite（配置已启用；doctor 不打开会话库）' in stub.stdout, stub.stdout
+    assert '等待稳定 API 发布' not in stub.stdout, stub.stdout
     assert not state.exists(), 'default doctor initialized disabled persistent state'
+
+    config['http'] = {'persist': False}
+    config_path.write_text(json.dumps(config))
+    memory = run()
+    assert memory.returncode == 0, memory.stdout
+    assert '会话存储: 内存（重启不保留）' in memory.stdout, memory.stdout
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), RejectMcp)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -96,6 +109,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
     }
     config['model_calls']['enabled'] = True
     config['memory']['semantic']['enabled'] = True
+    config['http'] = {'persist': True, 'persist_path': str(state / 'sessions.json')}
     config_path.write_text(json.dumps(config))
     initialized = run('--connect', environment=configured_key_env)
     assert initialized.returncode == 0, initialized.stdout
@@ -103,6 +117,8 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
     assert (state / 'model-calls.sqlite3').is_file(), 'opted-in model-call store was not opened'
     assert (state / 'semantic.sqlite3').is_file(), 'opted-in semantic store was not opened'
     assert RejectMcp.requests == 0, 'store initialization submitted an MCP, model, or embedding request'
+    assert '会话存储: SQLite（配置已启用；doctor 不打开会话库）' in initialized.stdout, initialized.stdout
+    assert not (state / 'sessions.sqlite3').exists(), 'doctor initialized the serve-only session store'
 
     config['mcp']['servers'] = [{
         'name': 'fixture', 'endpoint': f'http://127.0.0.1:{server.server_port}/mcp/',
@@ -126,6 +142,9 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
         assert offline.returncode == 0, offline.stdout
         assert '远程工具: 未连接' in offline.stdout, offline.stdout
         assert RejectMcp.requests == 0, 'default doctor contacted the MCP server'
+        assert 'HTTP MCP: 已接线（配置 1 个服务器；连通性见工具系统检查）' in offline.stdout, offline.stdout
+        assert 'Brokerrouter 本地配置检查' in offline.stdout, offline.stdout
+        assert 'Brokerrouter 连接测试' not in offline.stdout, offline.stdout
 
         active = run('--connect', environment=authenticated_env)
         assert active.returncode != 0, active.stdout
@@ -140,3 +159,4 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-doctor-') as temp:
         server_thread.join(timeout=2)
 
     print('PASS: truthful provider/MCP credential exits, invalid endpoint exit, explicit stub, offline read-only default, opted-in stores/MCP without model, embedding, or tool calls')
+    print('PASS: truthful stub/endpoint/MCP/durable/session capability status without initializing the session store')

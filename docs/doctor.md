@@ -21,3 +21,11 @@ jiaclaw doctor --connect --config "$HOME/.jiaclaw/config.toml"
 `--connect` opts into MCP discovery and initialization of enabled private model-call and semantic-memory stores. It does not submit model or embedding requests and does not invoke discovered tools. It can create private SQLite files and send requests to the configured MCP endpoints, so review the config and endpoint permissions first. The process returns nonzero when initialization or an opted-in MCP connection fails.
 
 The MCP check only establishes that the configured discovery contract is reachable and that the reviewed allowlist can be installed. It does not certify a production supplier, provider credential, durable execution/recovery behavior, or the effect of a remote tool implementation.
+
+## Capability status and session storage
+
+Provider and integration status describe the actual configured path. Explicit stub mode does not require a model key. An invalid endpoint cannot also display a successful endpoint check, and the Brokerrouter section is labeled a local configuration check, not a network connection test.
+
+StateKnot HTTP MCP is integrated; its configured server count is shown separately from the discovery result above. StateKnot durable graph execution is not integrated. The application can persist session history in SQLite when `[http] persist = true`; when disabled, sessions are in memory and do not survive a restart. Neither session history nor model-call receipts provide resumable tool execution.
+
+`doctor` reports session storage configuration only. Even `--connect` does not open, migrate, lock, or create the HTTP session database: it initializes only the enabled Agent private stores described above. Session database availability and recovery require their separate serve/deployment checks. A successful diagnostic does not certify that session storage or a supplier is operational.
