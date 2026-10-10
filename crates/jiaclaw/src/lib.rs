@@ -39,10 +39,12 @@ mod memory_io;
 mod native_agent;
 mod schema_work;
 pub use mcp::inspect_mcp_server;
+pub use mcp::{validate_mcp_configuration, validate_mcp_credentials};
 mod model_calls;
 mod private_state_file;
 mod provider;
 pub use model_calls::ModelCalls;
+pub use provider::validate_endpoint as validate_provider_endpoint;
 mod progress;
 pub use progress::{ChatEvents, ChatProgress, ChatProgressEvent};
 
@@ -174,6 +176,23 @@ pub struct JiaClawAgent {
 }
 
 impl JiaClawAgent {
+    /// Inspect the local tool registry without contacting MCP servers or opening persistent stores.
+    ///
+    /// # Errors
+    /// Returns local workspace, routing, execution-policy or model-call configuration errors.
+    pub fn inspect_local_tool_catalog(config: &AgentConfig) -> Result<Vec<String>, JiaClawError> {
+        config.memory.semantic.validate()?;
+        let agent = Self::new_local(config.clone())?;
+        let mut tools = agent
+            .tools
+            .list()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        tools.sort();
+        Ok(tools)
+    }
+
     /// 创建新的 `JiaClaw` Agent 实例
     ///
     /// # Errors

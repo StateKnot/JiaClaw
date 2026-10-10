@@ -35,6 +35,8 @@ effect = "read_only"
 
 全零摘要仅为占位，必须换成实际审查值；否则启动失败。JSON 配置使用相同顶层 `mcp.servers` 数组。工具以 `mcp_inventory_lookup` 注册；remote name 与本地 alias 独立。`JiaClawAgent::connect(config).await` 为库调用入口；同步 `new` 拒绝有 MCP 的配置，避免配置被忽略。`serve`、`chat` 与 `doctor` 使用异步入口。
 
+CLI `doctor` 默认只做本地只读检查；完整就绪、错误退出与显式连接合同见 [`docs/doctor.md`](doctor.md)。
+
 `serve` 启用 MCP 时，即使监听 loopback 也必须设置 API Token。它只保护实例 API；各渠道仍按自己的签名认证，共享同一实例工作区和获批工具。无多用户权限模型，不应将个人实例分享给不同权限的用户。
 
 ## 固定资源与失败合同

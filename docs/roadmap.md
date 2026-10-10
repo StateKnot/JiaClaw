@@ -2,6 +2,8 @@
 
 2026-10-10 PR #105 固定 head `ac680464` 的[五渠道准入最终资格](validation.md#pr-105-五渠道准入最终-ci-回填)已独立核对七官方作业、40必需Python/七浏览器与四实际优化归档/安装/源码证明，Standards渠道事务P2重复启发式关闭；租户预览UI的PR104资格保持独立。本轮接线[私有状态文件Module](private-state-files.md)，模型账本和语义索引仅共享叶子检查/安全打开，原目录、锁、schema及恢复分别保留。本批1227 Rust与16套实际进程/三Chromium/parser全部通过，独立Standards/Spec新增未解决均0，历史私有文件P3重复启发式关闭。原渠道P2保持关闭。PR #106 源码 head `f0f12ec8` 的七官方作业/四优化候选也已[独立通过](validation.md#pr-106-私有状态文件最终-ci-回填)；后续文档回填提交仍按自身 head 验收。
 
+本批修复 doctor 的真实首用假成功：缺少模型 key、无效 provider endpoint、缺失/无效 MCP bearer 均以非零退出，stub 只在显式配置时报告。默认检查离线且不打开私有存储；显式 `--connect` 验证实际 MCP discovery 和启用存储，但不执行模型、embedding 或远程工具调用。新增冻结 CLI 真实进程覆盖与 Standards/Spec 双轴增量审查；完整批次固定 head 的 CI 与四候选资格单独核对。
+
 PR #103 固定 head `0e1d28fe` 的七官方作业/四候选已[最终回填](validation.md#pr-103-会话目录最终-ci-回填)；首次Mac Discord503根因未确认，同head重跑成功与根因修复保持区别。PR104初版200/final GET工具选择缺口经真实负例复现，最终与done共享receipt选择核验后关闭，初版失败证据独立保留。
 
 2026-10-10 会话目录批次先完成 PR #102 的七官方作业与四候选实际日志核对，见[最终回填](validation.md#pr-102-执行结果丢失修复最终-ci-回填)。随后按审查修复[目录资源边界](session-catalog.md)：Memory/SQLite 存储侧摘要、最多50条游标页、网关只读查询接线、TTL不触达与SQL分批清理，工作台只保留当前页。新 head 的本地/双轴/官方资格分开记录；租户预览 UI 随后推进，已有 SSE API 资格不代替 UI。

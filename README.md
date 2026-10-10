@@ -27,7 +27,7 @@ jiaclaw doctor --config "$HOME/.jiaclaw/config.toml"
 jiaclaw serve --config "$HOME/.jiaclaw/config.toml"
 ```
 
-打开 [本机工作台](http://127.0.0.1:8080)，输入 API Token，创建会话并聊天。Token 仅留在页面内存中。服务缺少模型 Key 时启动失败；离线验收需明确把 `provider_type` 改为 `stub`。
+`doctor` 默认只读本地配置，不会连接 MCP 服务器或打开私有持久化存储；缺少当前模型提供商必需的 Key 时会以非零状态退出。需要验证远端 MCP 连通性时，显式使用 `jiaclaw doctor --connect --config ...`；该模式可能初始化私有 SQLite 状态，但不会发送模型请求或调用工具。离线验收需明确配置 `provider_type = "stub"`。详见 [`doctor` 检查合同](docs/doctor.md)。打开 [本机工作台](http://127.0.0.1:8080)，输入 API Token，创建会话并聊天。Token 仅留在页面内存中。服务缺少模型 Key 时启动失败。
 
 CLI 也支持持久化多轮对话：
 
