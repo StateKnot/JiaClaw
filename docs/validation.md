@@ -1,5 +1,20 @@
 # 基础能力验收记录
 
+## 2026-10-11 管理员条件技能策略编辑
+
+规范：[条件编辑](skill-policy-edit.md)。固定生产源码 `d347a278b2dc8b520bb8abb63defdb358caa29d6`，累计审查基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh parent `3c4dde50`；继承历史审查，不声称穷尽重审。源码独立 [Standards](reviews/2026-10-11-skill-policy-edit-standards.md) 和 [Spec](reviews/2026-10-11-skill-policy-edit-spec.md)开放0；报告中仍运行的验收是审查当时快照，最终结果如下。
+
+冻结父 CLI 真实拒绝未实现命令。初版 `def29821` 完整1249 Rust通过，但独立 Spec 另发现规范化 v2 相同值仍发布：两次实际 exit0、原hash相同、三个不同 inode。初版 binary SHA256 `b59a54df75840d1e29fd9e821628bcfff808a13c1e95e13f6a2953d67820fcea`、[初Spec](reviews/2026-10-11-skill-policy-edit-spec-initial.md)、[独立RED核验](reviews/2026-10-11-skill-policy-edit-spec-red.md)与[初Standards](reviews/2026-10-11-skill-policy-edit-standards-initial.md)分别保留；初版绿测试不是 no-op 合格证据。
+
+最终 binary SHA256 `43ef5e25c8c0b539b99fc65013e566fefc8337e84b54f32d5fd55cbf0283fa61`，94编译输入逐字节匹配源码。完整416库/123core/710host共1249 Rust通过，另1忽略；locked build、fmt、仓库要求的Clippy correctness/suspicious通过，非强制style警告保留。12套实际进程：新policy_edit及activation/lock/resources/body/skills/native/e2e/doctor/workspace_files/mutations/copy全部成功。
+
+新七组主进程覆盖 v1迁移与来源保持、双向v2同值无rename、必需参数/目录/hash、漂移修复/无效启用、两个实际writer、链接/硬链接/FIFO/容量/缺锁、真实OS写入限制/目录权限失败清理，以及认证运行服务仅在手动reload后改变目录。独立七组另覆盖v1同true/两个来源/0600、不同目录并发、另一启用项漂移与凭据诊断脱敏等边界。正文 hash 不变不代表没有中间历史修改；post-rename同步失败可已提交，禁止自动重试。Python额外py_compile写入macOS用户缓存被沙箱拒绝，改用无文件写入的compile核对语法通过；该环境检查不冒充产品负例。
+
+证据和冻结binary在 `/tmp/jiaclaw-oct11-skill-policy-edit-delivery/`，日志 `/tmp/jiaclaw-oct11-policy-edit-{rust,build,clippy,fmt}-final.log`、`/tmp/jiaclaw-oct11-policy-edit-final-*.log` 与独立边界日志。该记录是本地固定源码验收，新交付head仍需独立七官方作业、49必需Python、七真实Chromium、四优化候选各13安装/归档/源码检查及实际API摘要；不借父或本地资格。此批没有供应商、安装事务、签名、独立ACL、HTTP/模型写权限或自动reload认证。
+
+本地编译前df核验，复用已评估共享target约19.7GiB，CARGO_INCREMENTAL=0及dev/test debug=0；未复制target、未创建专用cache、未清理，实际回收0，证据在cache外。交付最终df和完整身份留pin，目录累计du不算释放量。
+
+
 ## 已锁技能持久启停批次
 
 2026-10-11，编译源 `37daf0cc0eab45277ce90c71bc11c03a72d190d7`，最终原生夹具源 `a350a4c1d2aa737f82e6e9239534f1e8133bb57f`，94编译输入逐字节相同，合同见[启停策略](skill-activation.md)。冻结父PR113实际CLI拒绝版本2只证明应用能力缺口；原负例要求固定诊断文字的夹具错误单独保留。初Spec发现按需场景错误地显式启用正文，实际首轮模型断言失败；修正请求后又复现夹具工具调用ID含空格的协议拒绝，最终修正ID通过。两次RED属于夹具错误，不能称为生产缺陷修复或回退显式正文合同。
