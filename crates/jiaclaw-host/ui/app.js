@@ -631,7 +631,7 @@ async function connectTurns(gateway) {
   $('turn-permissions-note').textContent = gateway ? '请选择本次需要的时间和 JSON 查询工具；默认不授权。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
   if (gateway && !readOnly) {
     renderPermissionList('turn-tools', [{name:'datetime_now',description:'读取当前时间'},{name:'json_query',description:'查询 JSON'}]); renderPermissionList('turn-skills', []);
-  } else if (c.streaming) {
+  } else if (!gateway && c.streaming) {
     const tools = await api('/api/tools', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
     const skills = await api('/api/skills', 'GET', undefined, false, 15000, 2 * 1024 * 1024);
     renderPermissionList('turn-tools', tools.tools); renderPermissionList('turn-skills', skills.skills);
