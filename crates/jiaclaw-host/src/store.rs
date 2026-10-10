@@ -2,17 +2,80 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Authoritative `SQLite` session storage and an explicit ephemeral backend.
-use super::SessionRecord;
+use super::{ListSessionsResponse, SessionRecord, SessionSummary};
 use anyhow::{Context, Result};
 use jiaclaw_core::ChatMessage;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     io::Read,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::Instant;
+
+/// Shared by standalone admission and the authenticated gateway route allowlist.
+/// The opaque cursor is lowercase hex of the last ID's exact UTF-8 bytes.
+pub(super) struct SessionPageQuery {
+    pub(super) limit: usize,
+    after: Option<String>,
+}
+impl SessionPageQuery {
+    pub(super) fn parse(raw: Option<&str>) -> Result<Self> {
+        let mut query = Self {
+            limit: 50,
+            after: None,
+        };
+        let Some(raw) = raw else { return Ok(query) };
+        anyhow::ensure!(
+            !raw.is_empty() && raw.len() <= 2080,
+            "invalid session page query"
+        );
+        let mut seen = HashSet::new();
+        for part in raw.split('&') {
+            let (key, value) = part.split_once('=').context("invalid session page query")?;
+            anyhow::ensure!(seen.insert(key), "duplicate session page query");
+            match key {
+                "limit" => {
+                    anyhow::ensure!(
+                        !value.is_empty()
+                            && !value.starts_with('0')
+                            && value.bytes().all(|b| b.is_ascii_digit()),
+                        "invalid session page limit"
+                    );
+                    query.limit = value.parse()?;
+                    anyhow::ensure!(
+                        (1..=50).contains(&query.limit),
+                        "invalid session page limit"
+                    );
+                }
+                "after" => {
+                    anyhow::ensure!(
+                        (2..=2048).contains(&value.len())
+                            && value.len() % 2 == 0
+                            && value
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                        "invalid session page cursor"
+                    );
+                    let bytes = (0..value.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&value[i..i + 2], 16))
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    query.after = Some(String::from_utf8(bytes)?);
+                }
+                _ => anyhow::bail!("unknown session page query"),
+            }
+        }
+        Ok(query)
+    }
+}
+fn session_cursor(id: &str) -> String {
+    id.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 pub(super) enum SessionStore {
     Memory(HashMap<String, SessionRecord>),
@@ -350,29 +413,88 @@ impl SessionStore {
             }
         }
     }
-    pub(super) fn list(&self) -> Result<Vec<(String, SessionRecord)>> {
-        match self {
-            Self::Memory(map) => Ok(map
-                .iter()
-                .map(|(id, rec)| (id.clone(), rec.clone()))
-                .collect()),
-            Self::Sqlite { conn, .. } => {
-                let mut stmt =
-                    conn.prepare("SELECT id,messages,accessed_ms FROM sessions ORDER BY id")?;
-                let rows = stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })?;
-                rows.map(|row| {
-                    let (id, json, touched) = row?;
-                    Ok((id, decode(&json, touched)?))
-                })
-                .collect()
+    pub(super) fn list_page(
+        &self,
+        query: &SessionPageQuery,
+        hide_jobs: bool,
+    ) -> Result<ListSessionsResponse> {
+        let (sessions, has_more): (Vec<SessionSummary>, bool) = match self {
+            Self::Memory(map) => {
+                // Keep at most one page plus a lookahead, even for an unordered
+                // ephemeral store. Borrow IDs; never clone message histories.
+                let mut page = BTreeMap::new();
+                for (id, rec) in map {
+                    if query.after.as_ref().is_some_and(|after| id <= after)
+                        || (hide_jobs && id.starts_with("job:"))
+                    {
+                        continue;
+                    }
+                    page.insert(id.as_str(), rec.messages.len());
+                    if page.len() > query.limit + 1 {
+                        page.pop_last();
+                    }
+                }
+                let has_more = page.len() > query.limit;
+                let sessions = page
+                    .into_iter()
+                    .take(query.limit)
+                    .map(|(id, message_count)| {
+                        anyhow::ensure!(
+                            (1..=1024).contains(&id.len()),
+                            "stored session ID exceeds catalog budget"
+                        );
+                        Ok(SessionSummary {
+                            id: id.into(),
+                            message_count,
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                (sessions, has_more)
             }
-        }
+            Self::Sqlite { conn, .. } => {
+                // Discover bounded IDs first. The lookahead never parses its
+                // history. Count only the actual page, using one reused local
+                // SQLite statement; no body is copied or decoded in Rust.
+                let comparison = if query.after.is_some() { ">" } else { ">=" };
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 1024 THEN id END FROM sessions WHERE id {comparison} ?1 AND (?2=0 OR substr(id,1,4)!='job:') ORDER BY id LIMIT ?3"
+                ))?;
+                let mut ids = stmt
+                    .query_map(
+                        params![
+                            query.after.as_deref().unwrap_or(""),
+                            hide_jobs,
+                            query.limit + 1
+                        ],
+                        |row| row.get::<_, Option<String>>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let has_more = ids.len() > query.limit;
+                ids.truncate(query.limit);
+                let mut count = conn.prepare("SELECT CASE WHEN length(CAST(messages AS BLOB)) <= 33554432 AND json_type(messages)='array' THEN json_array_length(messages) END FROM sessions WHERE id=?1")?;
+                let sessions = ids
+                    .into_iter()
+                    .map(|id| {
+                        let id = id.context("stored session ID exceeds catalog budget")?;
+                        let message_count = count
+                            .query_row([&id], |row| row.get::<_, Option<usize>>(0))?
+                            .context(
+                                "stored session history is invalid or exceeds catalog budget",
+                            )?;
+                        Ok(SessionSummary { id, message_count })
+                    })
+                    .collect::<Result<_>>()?;
+                (sessions, has_more)
+            }
+        };
+        let next_cursor =
+            has_more.then(|| session_cursor(&sessions.last().expect("nonempty page").id));
+        Ok(ListSessionsResponse {
+            sessions,
+            limit: query.limit,
+            has_more,
+            next_cursor,
+        })
     }
     pub(super) fn touch(&mut self, id: &str) -> Result<()> {
         match self {
@@ -423,19 +545,20 @@ impl SessionStore {
                 let cutoff =
                     now_ms().saturating_sub(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX));
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                // Indexed discovery; active turns are exempt until their commit.
-                let expired = {
-                    let mut stmt = tx.prepare("SELECT id FROM sessions WHERE accessed_ms<=?1")?;
-                    let rows = stmt.query_map([cutoff], |row| row.get::<_, String>(0))?;
-                    rows.collect::<rusqlite::Result<Vec<_>>>()?
-                };
+                // Delete bounded batches in SQLite; a directory refresh must
+                // not allocate every expired ID before producing its page.
+                // Exempt real owners and unresolved effects before LIMIT so
+                // protected rows cannot starve later expired sessions.
+                let active_json = serde_json::to_string(active)?;
                 let mut deleted = 0;
-                for id in expired {
-                    if !active.contains(&id) {
-                        deleted += tx.execute(
-                            "DELETE FROM sessions WHERE id=?1 AND accessed_ms<=?2 AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled')))) AND NOT EXISTS (SELECT 1 FROM http_turns h WHERE h.session_id=sessions.id AND (h.state='running' OR (h.state='needs_review' AND h.reviewed_ms IS NULL))) AND NOT EXISTS (SELECT 1 FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE r.session_id=sessions.id AND d.state NOT IN ('delivered','cancelled'))",
-                            params![id, cutoff],
-                        )?;
+                loop {
+                    let count = tx.execute(
+                        "DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE accessed_ms<=?2 AND id NOT IN (SELECT value FROM json_each(?1)) AND NOT EXISTS (SELECT 1 FROM channel_events e WHERE e.session_id=sessions.id AND (e.status IN ('received','processing') OR (e.status='needs_review' AND e.reviewed_ms IS NULL) OR EXISTS (SELECT 1 FROM channel_outbox d WHERE d.event_id=e.id AND d.state NOT IN ('delivered','cancelled')))) AND NOT EXISTS (SELECT 1 FROM http_turns h WHERE h.session_id=sessions.id AND (h.state='running' OR (h.state='needs_review' AND h.reviewed_ms IS NULL))) AND NOT EXISTS (SELECT 1 FROM job_runs r JOIN channel_outbox d ON d.job_run_id=r.id WHERE r.session_id=sessions.id AND d.state NOT IN ('delivered','cancelled')) LIMIT 256)",
+                        params![active_json, cutoff],
+                    )?;
+                    deleted += count;
+                    if count == 0 {
+                        break;
                     }
                 }
                 tx.commit()?;

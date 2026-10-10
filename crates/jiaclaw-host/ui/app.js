@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 const MISSING_ROUTE = Symbol('missing-route');
 let token = '', selected = null, connected = false, busy = false, readOnly = false, sessionList = [];
+let sessionNext = null;
 let identity = 0, operation = 0, scheduledJobs = false, jobList = [], selectedJob = null;
 let jobsOffset = 0, jobsNext = null, jobsPrevious = [], runsOffset = 0, runsNext = null, runsPrevious = [];
 let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted = false;
@@ -17,6 +18,7 @@ function controls() {
   $('access-mode').hidden = !connected || !readOnly;
   $('job-create').hidden = readOnly;
   $('refresh').disabled = !connected || busy;
+  $('session-next').disabled = !connected || busy || sessionNext === null;
   $('delete-session').disabled = !connected || readOnly || !selected || busy;
   $('message').disabled = !connected || readOnly || !selected || busy;
   $('send').disabled = !connected || readOnly || !selected || busy;
@@ -44,6 +46,7 @@ function controls() {
 }
 function clearIdentity() {
   forgetTurns(); identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
+  sessionNext = null;
   $('access-mode').hidden = true; $('job-create').hidden = false;
   scheduledJobs = false; jobList = []; selectedJob = null; jobsMode = null; jobsHealth = null; pendingCreate = null;
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
@@ -129,7 +132,16 @@ function renderMessages(messages) {
   }
   $('messages').scrollTop = $('messages').scrollHeight;
 }
-async function refresh() { sessionList = (await api('/api/sessions', 'GET', undefined, false, 15000, 4 * 1024 * 1024)).sessions; $('session-list-state').hidden = true; if (trackedSession() && !tenantTurns() && !sessionList.some(s => s.id === selected)) sessionList.unshift({id:selected, message_count:0}); renderSessions(); }
+async function refresh(after = null) {
+  const page = await api('/api/sessions' + (after === null ? '' : '?after=' + after), 'GET', undefined, false, 15000, 512 * 1024);
+  const cursor = id => Array.from(new TextEncoder().encode(id), byte => byte.toString(16).padStart(2, '0')).join('');
+  if (!page || page.limit !== 50 || typeof page.has_more !== 'boolean' || !Array.isArray(page.sessions) || page.sessions.length > 50 || page.sessions.some(s => !s || typeof s.id !== 'string' || !s.id || new TextEncoder().encode(s.id).length > 1024 || !Number.isSafeInteger(s.message_count) || s.message_count < 0) || new Set(page.sessions.map(s => s.id)).size !== page.sessions.length || (page.has_more ? page.sessions.length !== 50 || page.next_cursor !== cursor(page.sessions.at(-1).id) || page.next_cursor === after : page.next_cursor !== null)) throw new Error('会话目录响应异常；未跳过记录，请联系管理员核对。');
+  sessionList = page.sessions; sessionNext = page.next_cursor;
+  $('session-list-state').hidden = false;
+  $('session-list-state').textContent = `${sessionList.length} 条会话${page.has_more ? ' · 还有下一页' : ' · 已到末页'}；刷新列表返回第一页。`;
+  if (trackedSession() && !tenantTurns() && !sessionList.some(s => s.id === selected)) sessionList.unshift({id:selected, message_count:0});
+  renderSessions();
+}
 async function select(id, allowMissing = false) {
   const session = await api(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, allowMissing ? true : false, 15000, 26 * 1024 * 1024);
   if (session === MISSING_ROUTE && allowMissing) {
@@ -184,6 +196,7 @@ $('connect-form').addEventListener('submit', event => {
   }, true);
 });
 $('refresh').addEventListener('click', () => task(async () => { await refresh(); status('会话列表已更新'); }));
+$('session-next').addEventListener('click', () => task(async () => { if (sessionNext !== null) { await refresh(sessionNext); status('已读取下一页会话'); } }));
 $('new-session').addEventListener('click', () => task(async () => {
   if (!connected || readOnly) return;
   if (pendingTurn) return;

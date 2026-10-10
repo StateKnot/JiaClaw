@@ -1,5 +1,20 @@
 # 基础能力验收记录
 
+## PR #102 执行结果丢失修复最终 CI 回填
+
+固定 head `d3bb650a81f54193d2a0a260af0858936d03f9ea`、base `d714a831a363a871c435976cb239899a871e47aa`、tree `f2ed4115a6c0e978c1a1c2e2c7721dbdb76c9e04`；官方测试 merge `dfc84a263bdead96ae8be1537bc02ac64e7c18a9` 的 tree 相同，双 parent 为上述 base/head。2026-10-10 04:36 UTC 后实际读取 [CI 38022482921](https://github.com/StateKnot/JiaClaw/actions/runs/38022482921) 与 [候选 38022482925](https://github.com/StateKnot/JiaClaw/actions/runs/38022482925)：七作业 SUCCESS，draft 发布 SKIPPED，仍为未合并 draft PR。
+
+两个主测试作业各 39 个 mandatory Python suites 通过；六个原生测试/候选作业均完成 5 组文件结果丢失回归，Linux 主作业还完成 5 组真实 Docker exec，低输出对照正常完成，超限四组停止同批/后续模型并保留一次效果。六套 Chromium、原 tenant SSE/取消/收据/SQL ownership 等门禁继续通过。容器的非 root/只读根/恢复/真实 ENOSPC 验收通过。
+
+| 候选作业 | 平台 | 实际归档 SHA256 |
+|---|---|---|
+| 114126264506 | Linux x86_64 | `0bcf1a1ce6baabbc42c656a5f34f99f919990fafe9bc6d3a65d57c181460f616` |
+| 114126264571 | macOS x86_64 | `c64796408bc5e3bf3d8ac2223b06db7b1e3448e6ad6969ac9488c0e368eec0ed` |
+| 114126264594 | macOS aarch64 | `a0f3063b2910b50b004f7921eb3be3f0ef6459d92f032f8266cb9c387cc049b5` |
+| 114126264612 | Linux aarch64 | `7aab0a44e1011a2f5e292b5ed733b78e689dca1d47d90f66eccba59ee1a32b36` |
+
+四候选各 13 组实际安装验收，源码 merge/tree/parents、未脏跟踪源码、资产 zip 摘要与官方 artifact 身份已核对。实际日志/JSON/摘要保存在本批缓存之外 `/tmp/jiaclaw-oct10-result-loss-ci-audit` 与 `/tmp/jiaclaw-oct10-result-loss-delivery/pin.json`。资格仅覆盖确定的已完成结果超限，不认证通用工具错误/超时、durable、stdio、真实供应商或租户预览 UI。
+
 ## Web 原请求流式批次
 
 本批复用 PR96 已资格化原身份/正文流式，实现认证 capability、显式工具/技能、新 http 会话、一次提交前记录原 UUID、片段编号刷新 GET、原正文/权限的明确同编号重试、持久取消、人工核对和未知结果保留。浏览器不派生新的模型循环、自动重连/重发或扩大 gateway/只读 Key 权限；真实执行 owner 和账本合同不变。

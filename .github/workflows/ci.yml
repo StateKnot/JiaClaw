@@ -48,6 +48,7 @@ jobs:
       - run: python3 tests/http_turns.py target/debug/jiaclaw
       - run: python3 tests/http_stream.py target/debug/jiaclaw
       - run: python3 tests/http_turn_catalog.py target/debug/jiaclaw
+      - run: python3 tests/session_catalog.py target/debug/jiaclaw
       - run: python3 tests/http_turn_cli.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_turns.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_stream.py target/debug/jiaclaw

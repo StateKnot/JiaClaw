@@ -126,6 +126,25 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
   await page.locator('#delete-session').click();
   await page.waitForFunction(()=>document.getElementById('status').textContent==='会话已删除');
   assert.strictEqual(await page.locator('#sessions button').count(),0);
+  // Actual server catalog, not a synthetic page response. DOM keeps one page.
+  for(let i=0;i<53;i++){const response=await fetch(base+'/api/sessions',{method:'POST',headers:{authorization:'Bearer '+token}});assert.strictEqual(response.status,200);}
+  await page.locator('#refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#sessions button').length===50&&!document.getElementById('session-next').disabled);
+  const firstIds=await page.locator('#sessions button').evaluateAll(buttons=>buttons.map(b=>b.title));
+  await page.locator('#sessions button').first().click();
+  await page.waitForFunction(id=>document.getElementById('session-title').textContent===`会话 ${id.slice(0,12)}`&&document.getElementById('status').textContent==='已连接 · 会话就绪'&&!document.getElementById('send').disabled, firstIds[0]);
+  const title=await page.locator('#session-title').textContent();
+  await page.locator('#session-next').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='已读取下一页会话');
+  assert.strictEqual(await page.locator('#sessions button').count(),3);assert(await page.locator('#session-next').isDisabled());
+  assert.strictEqual(await page.locator('#session-title').textContent(),title);assert.strictEqual(await page.locator('#send').isDisabled(),false);
+  const lastIds=await page.locator('#sessions button').evaluateAll(buttons=>buttons.map(b=>b.title));assert.strictEqual(new Set([...firstIds,...lastIds]).size,53);
+  await page.locator('#refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#sessions button').length===50&&!document.getElementById('session-next').disabled);
+  let releasePage, pageReached=false;
+  await page.route('**/api/sessions?after=*',async route=>{const response=await route.fetch();pageReached=true;await new Promise(resolve=>releasePage=resolve);await route.fulfill({response});});
+  await page.locator('#session-next').click();while(!pageReached)await new Promise(resolve=>setTimeout(resolve,10));
+  await page.locator('#api-token').fill('invalid-pagination-identity');await page.getByRole('button',{name:'连接',exact:true}).click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('鉴权失败'));
+  releasePage();await page.waitForTimeout(100);assert.strictEqual(await page.locator('#sessions button').count(),0);assert(await page.locator('#session-next').isDisabled());assert.strictEqual(await page.locator('#messages .message').count(),0);
+  await page.unroute('**/api/sessions?after=*');
+  console.log('PASS: real Chromium session catalog bounded pages, stable selection, first-page reset and stale identity response cleared');
   await page.reload();assert.strictEqual(await page.locator('#new-session').isDisabled(),true);
   assert.deepStrictEqual(errors,[]);
   console.log('PASS: real Chromium connect/create/chat/delete; identity-switch and revoked-key state clearing; text-only model rendering; capability-gated task CRUD/204, 2xx review headers preserve chat/job drafts, text-only bounded results and stale identity guard; memory-only token; mobile layout');

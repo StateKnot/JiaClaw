@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, RawQuery, Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{
@@ -3188,6 +3188,9 @@ struct SessionSummary {
 #[derive(Debug, Serialize, Deserialize)]
 struct ListSessionsResponse {
     sessions: Vec<SessionSummary>,
+    limit: usize,
+    has_more: bool,
+    next_cursor: Option<String>,
 }
 
 /// 读取会话响应
@@ -3207,7 +3210,8 @@ struct CreateSessionResponse {
 async fn list_sessions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<ListSessionsResponse>, AppError> {
+    RawQuery(raw): RawQuery,
+) -> Result<Response, AppError> {
     if !check_api_auth(&state, &headers) {
         tracing::warn!(
             request_id = request_id_log_value(&headers),
@@ -3216,35 +3220,23 @@ async fn list_sessions_handler(
         return Err(AppError::Unauthorized);
     }
 
+    let query = store::SessionPageQuery::parse(raw.as_deref())
+        .map_err(|_| AppError::BadRequest("invalid_session_page_query".into()))?;
     purge_expired_sessions(&state).await;
-
-    let mut sessions: Vec<SessionSummary> = with_sessions(&state, move |map| {
-        let entries = map.list()?;
-        for (id, _) in &entries {
-            map.touch(id)?;
-        }
-        Ok(entries
-            .into_iter()
-            .map(|(id, rec)| SessionSummary {
-                id,
-                message_count: rec.messages.len(),
-            })
-            .collect())
-    })
-    .await?;
-    // Scheduled results have a dedicated bounded runs API. Do not expose
-    // reserved job sessions as ordinary editable/importable chat sessions.
-    if state.agent.config().scheduler.gateway_driven {
-        sessions.retain(|session| !session.id.starts_with("job:"));
-    }
-    sessions.sort_by(|a, b| a.id.cmp(&b.id));
+    let hide_jobs = state.agent.config().scheduler.gateway_driven;
+    let page = with_sessions(&state, move |map| map.list_page(&query, hide_jobs)).await?;
 
     tracing::info!(
         request_id = request_id_log_value(&headers),
         "列出 sessions: {} 个",
-        sessions.len()
+        page.sessions.len()
     );
-    Ok(Json(ListSessionsResponse { sessions }))
+    let mut response = Json(page).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        "no-store".parse().expect("static cache header"),
+    );
+    Ok(response)
 }
 
 /// 从权威会话存储读取历史；不存在返回 404。
@@ -6862,6 +6854,34 @@ mod tests {
             .unwrap();
         let list: ListSessionsResponse = serde_json::from_slice(&body).unwrap();
         assert!(!list.sessions.iter().any(|s| s.id == session_id));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn session_catalog_does_not_keep_idle_memory_sessions_alive() {
+        let app = create_test_app_with_session_ttl(Some(1));
+        let id = http_create_session(&app).await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let page: ListSessionsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.sessions.len(), 1);
+        tokio::time::advance(Duration::from_millis(500)).await;
+        assert_eq!(
+            http_get_session_status(&app, &id).await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test(start_paused = true)]
