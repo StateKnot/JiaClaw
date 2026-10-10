@@ -1072,3 +1072,5 @@ PR #106 固定源码 `f0f12ec8cdf21f4acd37d8598d0418da44817417`、tree `e2d8adf7
 Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chromium。四优化候选均通过13项安装/归档/源码检查，逐项核对二进制、来源提交、tree、parents、artifact ID与上传ZIP摘要。新Module两个文件系统测试，并在模型调用和语义记忆两个实际Store各保留一组原领域状态回归。首轮unsafe测试编译失败是测试违反仓库forbid规则，修订后通过；它不是生产运行失败或生产缺陷修复。
 
 逐作业日志、上传归档身份/摘要、源码父项、merge、PR状态及双轴报告已存于 `/tmp/jiaclaw-oct10-private-state-ci-audit/evidence.json` 和 `/tmp/jiaclaw-oct10-private-state-delivery/pin.json`。公开Release未发布（draft步骤skipped）；真实供应商、物理浏览器期限、durable/stdio/外部写入恢复仍需独立认证。
+
+这份资格只证明源码 head `f0f12ec8`。随后为回填本节而推送的文档 head `85c7d7f5f10c0cba17be7e5309d96164be836166`、tree `d1af00267b5257aeb117153fbe8170ccdfade210`，在 09:54 UTC 的官方状态读取中，其自身 CI `38043115415` 和 Release qualification `38043115448` 仍在运行；不能继承前一head的通过状态。本节的资格状态按固定head读取，任何后续文档提交也要核对其自身触发的CI与候选作业。
