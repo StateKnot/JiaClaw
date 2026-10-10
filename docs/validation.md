@@ -1,5 +1,15 @@
 # 基础能力验收记录
 
+## 2026-10-11 MCP 启动的实际阶段结算
+
+规范：[MCP 启动阶段验收](mcp-startup-validation.md)。累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `6e338ad..5de3e5e` 仅改 `mcp.rs` 的 `cfg(test)`。独立[Standards](reviews/2026-10-11-mcp-startup-standards.md)/[Spec](reviews/2026-10-11-mcp-startup-spec.md)源码聚焦开放0，继承累计历史；初审未借后续全量或官方资格。
+
+历史默认并行 MCP 许可断言预期3、实际4，没有阶段日志，不能证明具体历史触发路径。测试模块内持真实发现响应使旧断言三次实际失败；生产前缀未变，注入已恢复并逐字节核对。新测试先观察真实 localhost 发现请求或实际 Schema 许可准入，再推进原配置一秒截止；真实设置/结算 guard 不扩大生产期限。发现超时全许可可用、Schema 超时原许可仍归实际工作，原注册表均为空、远端工具调用均为零；实际响应尝试/阻塞工作结算后，分别新的正常五秒启动成功。传输和总截止同瞬间，两种既有脱敏配置错误均可先结算。
+
+最终源码两个阶段各三次实际回归通过；完整默认并行及官方既有串行 workspace Rust 各实际420库/123core/711host，共1254通过、1忽略，包含两个阶段回归。locked build/fmt/必需Clippy correctness和suspicious通过，既有非强制style警告保留。原完整失败、三次受控RED、初暂停时钟未结算、首次英文错误前缀断言夹具失败、中间GREEN和最终源码结果分别保留；不将夹具错误称作产品缺陷或上游缺陷。真实 MCP、doctor、e2e三套进程也通过；冻结执行二进制与最终重新构建逐字节相同，SHA256 `053d307ab689d23fbb40a7ed77258eec41d2f372c60840c7122644270ae74ad2`。
+
+诊断日志位于 `/tmp/jiaclaw-oct11-mcp-startup-diagnosis/`，交付 pin 位于 `/tmp/jiaclaw-oct11-mcp-startup-delivery/`。97项仓库输入逐字节绑定源码，含原94项主清单及三个测试嵌入配置。只一项测试文件改变，其生产前缀及其他96项与父相同。新head的七实际官方作业、50必需Python、七Chromium、四优化候选各13安装/归档/源码检查及两阶段回归独立核对；不借父PR116、本地或旧head资格。时钟注入不是物理一秒、供应商、安装或durable认证，原始artifact ZIP未本机下载。
+
 ## 2026-10-11 写入测试的实际 owner 结算
 
 规范：[写入并发验收](writer-test-settlement.md)。累计基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `e0cf340..af0c8e1` 仅改 `memory_io.rs` 的测试模块。独立 [Standards](reviews/2026-10-11-writer-settlement-standards.md)/[Spec](reviews/2026-10-11-writer-settlement-spec.md)聚焦开放0，初审未借后续完整验收，继承累计结论而非穷尽重审。

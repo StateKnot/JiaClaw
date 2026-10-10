@@ -529,6 +529,7 @@ mod tests {
         Held,
         Unauthorized,
         Redirect,
+        HeldDiscovery,
     }
 
     struct Fixture {
@@ -536,6 +537,7 @@ mod tests {
         descriptor: Value,
         requests: Arc<Mutex<Vec<(Value, String)>>>,
         response_gate: Arc<Semaphore>,
+        finished_responses: Arc<Semaphore>,
         task: JoinHandle<()>,
     }
 
@@ -553,6 +555,8 @@ mod tests {
             let recorded = requests.clone();
             let response_gate = Arc::new(Semaphore::new(0));
             let gate = response_gate.clone();
+            let finished_responses = Arc::new(Semaphore::new(0));
+            let finished = finished_responses.clone();
             let mut descriptor = json!({
                 "name": "lookup", "description": "Look up a reviewed inventory record.",
                 "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "maxLength": 100}},
@@ -603,6 +607,10 @@ mod tests {
                         String::from_utf8_lossy(&bytes[..header_end]).into_owned(),
                     ));
                     let is_call = request["method"] == "tools/call";
+                    if request["method"] == "server/discover" && matches!(mode, Mode::HeldDiscovery)
+                    {
+                        gate.acquire().await.unwrap().forget();
+                    }
                     if is_call && matches!(mode, Mode::Delay) {
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
@@ -679,6 +687,7 @@ mod tests {
                             }
                         }
                     }
+                    finished.add_permits(1);
                 }
             });
             Self {
@@ -686,6 +695,7 @@ mod tests {
                 descriptor,
                 requests,
                 response_gate,
+                finished_responses,
                 task,
             }
         }
@@ -994,10 +1004,11 @@ mod tests {
             expiring.servers[0].timeout_secs = 1;
             let workers = SchemaWorkers::new();
             let gate = BlockingGate::start().await;
-            let mut registry = ToolRegistry::new();
-            let error = initialize_with_workers(&expiring, &mut registry, &workers)
-                .await
-                .unwrap_err();
+            let (result, mut registry) = expire_startup_after_phase(expiring, &workers, || {
+                workers.slots.available_permits() == MAX_SCHEMA_WORKERS - 1
+            })
+            .await;
+            let error = result.unwrap_err();
             assert!(matches!(error, JiaClawError::Configuration(_)));
             assert!(error.to_string().contains("deadline exceeded"));
             assert!(registry.list().is_empty());
@@ -1006,15 +1017,100 @@ mod tests {
             gate.finish().await;
             wait_for_slots(&workers.slots, MAX_SCHEMA_WORKERS).await;
             assert!(registry.list().is_empty());
-            // A fresh positive startup uses the fixture's normal configured budget (30s).
-            // The gated negative remains 1s: deadline/no publication/real ownership are unchanged.
-            // Recovery is not a promise that cold HTTP + schema compilation fits in that 1s.
+            // Recovery uses a fresh original startup cutoff from the normal fixture config.
+            // Virtual-time admission evidence is not physical one-second cold-start certification.
             initialize_with_workers(&config, &mut registry, &workers)
                 .await
                 .unwrap();
             assert!(registry.get("mcp_inventory_lookup").is_some());
             assert_eq!(fixture.call_count(), 0);
         });
+    }
+
+    #[test]
+    fn discovery_deadline_never_admits_schema_work_or_publishes_late_response() {
+        single_thread_runtime().block_on(async {
+            let fixture = Fixture::start(Mode::HeldDiscovery, false).await;
+            let config = fixture.config();
+            let mut expiring = config.clone();
+            expiring.servers[0].timeout_secs = 1;
+            let workers = SchemaWorkers::new();
+            let (result, mut registry) = expire_startup_after_phase(expiring, &workers, || {
+                fixture
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(request, _)| request["method"] == "server/discover")
+            })
+            .await;
+            let error = result.unwrap_err();
+            assert!(matches!(error, JiaClawError::Configuration(_)));
+            // The transport cutoff and the encompassing startup cutoff share
+            // this instant. Either existing configuration error can settle first.
+            assert!(
+                matches!(&error, JiaClawError::Configuration(message)
+                    if message.contains("deadline exceeded")
+                        || message == "MCP: server discovery failed (transport, authentication or protocol)"),
+                "unexpected discovery cutoff result: {error}"
+            );
+            assert!(registry.list().is_empty());
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS);
+            assert_eq!(fixture.call_count(), 0);
+            let requests = fixture.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].0["method"], "server/discover");
+            // Release both the abandoned discovery response and a fresh startup.
+            // Completing the old response cannot publish into the expired registry.
+            fixture.response_gate.add_permits(2);
+            tokio::time::timeout(Duration::from_secs(2), fixture.finished_responses.acquire())
+                .await
+                .expect("abandoned discovery response did not settle")
+                .unwrap()
+                .forget();
+            assert!(registry.list().is_empty());
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS);
+            initialize_with_workers(&config, &mut registry, &workers)
+                .await
+                .unwrap();
+            assert!(registry.get("mcp_inventory_lookup").is_some());
+            assert_eq!(workers.slots.available_permits(), MAX_SCHEMA_WORKERS);
+            assert_eq!(fixture.call_count(), 0);
+        });
+    }
+
+    async fn expire_startup_after_phase(
+        config: McpConfig,
+        workers: &SchemaWorkers,
+        phase_ready: impl Fn() -> bool,
+    ) -> (Result<(), JiaClawError>, ToolRegistry) {
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].timeout_secs, 1);
+        // Keep one original configured cutoff. A runnable setup loop prevents
+        // paused-time auto-advance while real HTTP reaches the selected phase.
+        tokio::time::pause();
+        let running = workers.clone();
+        let pending = tokio::spawn(async move {
+            let mut registry = ToolRegistry::new();
+            let result = initialize_with_workers(&config, &mut registry, &running).await;
+            (result, registry)
+        });
+        let setup_cutoff = std::time::Instant::now() + Duration::from_secs(5);
+        while !phase_ready() {
+            assert!(
+                std::time::Instant::now() < setup_cutoff && !pending.is_finished(),
+                "startup never reached the selected actual phase"
+            );
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        // Blocking work inhibits auto-advance. Resume after the original cutoff
+        // to settle the timer wheel, with a separate bounded observation waiter.
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .expect("startup did not settle after its original cutoff")
+            .unwrap()
     }
 
     #[tokio::test]
