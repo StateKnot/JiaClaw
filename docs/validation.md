@@ -1,5 +1,17 @@
 # 基础能力验收记录
 
+## 已锁技能持久启停批次
+
+2026-10-11，编译源 `37daf0cc0eab45277ce90c71bc11c03a72d190d7`，最终原生夹具源 `a350a4c1d2aa737f82e6e9239534f1e8133bb57f`，94编译输入逐字节相同，合同见[启停策略](skill-activation.md)。冻结父PR113实际CLI拒绝版本2只证明应用能力缺口；原负例要求固定诊断文字的夹具错误单独保留。初Spec发现按需场景错误地显式启用正文，实际首轮模型断言失败；修正请求后又复现夹具工具调用ID含空格的协议拒绝，最终修正ID通过。两次RED属于夹具错误，不能称为生产缺陷修复或回退显式正文合同。
+
+同一冻结二进制八套实际进程通过：新activation六组，以及skill_lock六组、skill_resources六组、skill_read六组、skills十二组与native_tools/e2e/doctor。新验收覆盖v1兼容、严格v2布尔/重复/null拒绝、停用损坏/链接/硬链接/FIFO及缺失目录不读取、目录链接拒绝、认证原子reload、磁盘编辑未应用、失败重新启用保留旧表、SIGHUP与重启、旧目录后的实际native正文/参考选择no_effect，以及legacy关键词和显式注入排除停用项。独立Spec另外执行七组边界：64缺失停用目录和排序/raw hash、65超限、根链接、混合同名称、未登记技能、重复重新启用失败保留旧表、合法切换。模型、Key和服务均为本机合成fixture，不证明供应商或安装资格。
+
+完整最终Rust通过1246项（414/123/709，另1真实Docker专项ignore），fmt、locked build和required Clippy结果固定于交付pin；初1246项Rust与最终执行日志分开保存，不能借父资格。Standards/Spec分开报告，累计基准origin/main固定 `4b2357fc`，完整历史继承、fresh本批，不声称穷尽累计重审。原始初报告、错误日志和最终报告保留。编译输入、冻结binary、日志hash和审查身份位于 `/tmp/jiaclaw-oct11-skill-activation-delivery`，在target之外。
+
+官方两平台增加第48个必需Python套件，四优化候选执行六组启停及原技能/资源/worker测试，七Chromium、每候选13安装/归档/源码命令保留。新交付head七实际作业和四artifact API摘要须独立核验；最后官方证据只回填PR正文/pin，避免自引文档循环。原始ZIP未本机下载则不扩大摘要认证范围。来源管理员声明不是签名，成功停用不会撤销已选择I/O、历史提示或一般文件权限；安装/更新事务与审批仍未完成。
+
+Rust设置incremental=0、dev/test debug=0，共享target超过20十进制GB已评估复用；没有复制target、创建专用cache或清理共享cache。实际df在pin记录，实际回收0，不以APFS累计目录大小当释放量。
+
 ## 管理员技能来源锁批次
 
 2026-10-11，最终生产源码 `2a5e4c327ddd563215882c13b6982f726eaaa798`，合同见[技能锁](skill-lock.md)。冻结父 PR112 实际 CLI 在必需锁不匹配时仍读取技能，证明尚未接线的应用能力。初版原生聊天夹具字段错误属于夹具P2；修正后六组全部真实PASS。交付检查另用冻结初始二进制复现嵌入 OpenAPI 缺 source 字段，补齐后重构建并重新完整验收，没有借旧编译输入资格。

@@ -1,0 +1,13 @@
+# Skill activation — independent initial Standards review
+
+Pinned source `dc8dc2029917a6ff96b79d2bdf282825d474fcdb`; cumulative comparison `git diff 4b2357fcf01f47ba08d7724edbba7accfb60972c...dc8dc2029917a6ff96b79d2bdf282825d474fcdb`. Complete cumulative commit list `/tmp/jiaclaw-oct11-activation-commit-list.txt` read. Fresh focus `9b0b2d91f2b998e91049e305ff7a82e7e8ab657d...dc8dc2029917a6ff96b79d2bdf282825d474fcdb` covers eight paths. Architecture, source-lock, body/resource and reload ownership conclusions are inherited, not exhaustively rereviewed.
+
+**Zero new hard Standards violations or actionable Fowler findings.** User production/auth/resource/cache rules and the specified skill contract documents apply. All twelve Fowler heuristics were considered as judgments; documented repository boundaries override them and tooling-enforced matters are excluded.
+
+`skills/lock.rs` retains ownership of schema normalization, source validation, sorting, lookup and enabled-catalog coverage. The explicit Boolean deserializer distinguishes omission from invalid null/type, while normalized policy records serve a concrete readonly CLI consumer. It avoids duplicating lock interpretation at host entry points. `inspect_policy` captures one lock object for both reported digest and strict scan, rather than separately rescanning a mutable manifest.
+
+The scanner skips disabled leaves before capability I/O, while still rejecting directory symlinks and enforcing the shared root/entry bounds. Enabled skills retain existing exact-byte validation, publication and worker ownership. Policy selection stays in the lock module; no new installation, writing, approval, cancellation or tenant authority is introduced. The CLI states disk inspection cannot certify a running registry.
+
+The new fixture exercises authentic reload, process restart, stale body/reference selection and legacy keyword/explicit injection. It retains exact request tool sets, readonly failure effects, prior-table checks and settled strict log scanning. Workflow steps require this same fixture for ordinary and optimized binaries. The incremental diagnostic change checks the parent's actual skill-lock rejection rather than asserting an unrelated diagnostic spelling.
+
+Reviewer made no production edits, compilation, tests or network calls. Current production/fixture code is untested at this review point; the preserved parent negative is capability-gap evidence only, not new-head qualification. Runtime, compiler-input identity and official candidates require their own evidence. Initial Standards count: **0 open findings; no worst issue**. Spec remains independent.

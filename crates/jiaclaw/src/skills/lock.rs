@@ -30,10 +30,43 @@ struct Manifest {
 struct Entry {
     directory: String,
     source: SkillSourcePin,
+    #[serde(default, deserialize_with = "explicit_enabled")]
+    enabled: Option<bool>,
 }
 
-// Owns parsing and exact catalog coverage; callers never interpret lock bytes.
-pub(super) struct CatalogLock(HashMap<String, SkillSourcePin>);
+fn explicit_enabled<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    <bool as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+/// Normalized disk policy; inspection does not certify a running registry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SkillLockPolicy {
+    /// Supported source-lock schema version, preserving version 1 semantics.
+    pub version: u32,
+    /// SHA-256 of the single raw manifest read by this disk inspection.
+    pub manifest_sha256: String,
+    /// All declarations sorted by directory; at most 64 entries.
+    pub skills: Vec<SkillPolicyEntry>,
+}
+
+/// Administrator declaration, retained when loading is disabled.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SkillPolicyEntry {
+    /// Canonical top-level directory, distinct from the model-visible skill name.
+    pub directory: String,
+    /// Whether this declaration participates in strict loading and byte checks.
+    pub enabled: bool,
+    /// Retained administrator origin; no publisher authentication is implied.
+    pub source: SkillSourcePin,
+}
+
+// Owns parsing, selection and exact enabled-catalog coverage.
+pub(super) struct CatalogLock {
+    pub(super) policy: SkillLockPolicy,
+    by_directory: HashMap<String, usize>,
+}
 
 impl CatalogLock {
     pub(super) fn read(workspace: &Path) -> Result<Self, JiaClawError> {
@@ -44,19 +77,49 @@ impl CatalogLock {
         // Do not echo parse errors or origin data, which could contain credentials.
         let manifest: Manifest =
             serde_json::from_str(&file.text).map_err(|_| invalid("技能锁 JSON/schema 无效"))?;
-        if manifest.version != 1 || manifest.skills.len() > CATALOG_SKILLS {
-            return Err(invalid("技能锁要求 version=1，最多 64 个唯一目录"));
+        if !matches!(manifest.version, 1 | 2) || manifest.skills.len() > CATALOG_SKILLS {
+            return Err(invalid("技能锁要求 version=1或2，最多 64 个唯一目录"));
         }
-        let mut entries = HashMap::new();
+        let mut entries = Vec::new();
         for entry in manifest.skills {
             if !directory(&entry.directory)
                 || !source(&entry.source)
-                || entries.insert(entry.directory, entry.source).is_some()
+                || (manifest.version == 1 && entry.enabled.is_some())
+                || (manifest.version == 2 && entry.enabled.is_none())
             {
-                return Err(invalid("技能锁目录、来源声明或唯一性无效"));
+                return Err(invalid("技能锁目录、来源或显式启停策略无效"));
+            }
+            entries.push(SkillPolicyEntry {
+                directory: entry.directory,
+                enabled: entry.enabled.unwrap_or(true),
+                source: entry.source,
+            });
+        }
+        entries.sort_by(|left, right| left.directory.cmp(&right.directory));
+        let mut by_directory = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if by_directory
+                .insert(entry.directory.clone(), index)
+                .is_some()
+            {
+                return Err(invalid("技能锁目录重复"));
             }
         }
-        Ok(Self(entries))
+        use sha2::Digest;
+        Ok(Self {
+            policy: SkillLockPolicy {
+                version: manifest.version,
+                manifest_sha256: format!("{:x}", sha2::Sha256::digest(file.text.as_bytes())),
+                skills: entries,
+            },
+            by_directory,
+        })
+    }
+
+    pub(super) fn disabled(&self, directory: &str) -> bool {
+        self.by_directory
+            .get(directory)
+            .is_some_and(|index| !self.policy.skills[*index].enabled)
     }
 
     pub(super) fn bind(
@@ -64,10 +127,11 @@ impl CatalogLock {
         directory: &str,
         raw_hash: &str,
     ) -> Result<SkillSourcePin, JiaClawError> {
-        let pin = self
-            .0
+        let index = self
+            .by_directory
             .get(directory)
             .ok_or_else(|| invalid("实际技能未登记在必需锁中"))?;
+        let pin = &self.policy.skills[*index].source;
         if pin.skill_sha256 != raw_hash {
             return Err(invalid("技能原始文件与必需锁不一致"));
         }
@@ -75,7 +139,14 @@ impl CatalogLock {
     }
 
     pub(super) fn complete(&self, loaded: usize) -> Result<(), JiaClawError> {
-        if loaded != self.0.len() {
+        if loaded
+            != self
+                .policy
+                .skills
+                .iter()
+                .filter(|entry| entry.enabled)
+                .count()
+        {
             return Err(invalid("必需锁登记的技能文件缺失"));
         }
         Ok(())
@@ -185,7 +256,7 @@ mod tests {
         let lock = workspace.path().join("skills.lock.json");
         let valid = manifest("body");
         for bad in [
-            serde_json::json!({"version":2,"skills":[]}),
+            serde_json::json!({"version":3,"skills":[]}),
             serde_json::json!({"version":1,"skills":[],"extra":true}),
             serde_json::json!({"version":1,"skills":[valid["skills"][0],valid["skills"][0]]}),
         ] {
@@ -222,5 +293,91 @@ mod tests {
         }
         fs::write(&lock, "{\"version\":1,\"version\":1,\"skills\":[]}").unwrap();
         assert!(CatalogLock::read(workspace.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn activation_policy_disables_reads_and_persists_across_reload_and_restart() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&dir).unwrap();
+        let raw = "---\nname: approved\n---\nbody";
+        fs::write(dir.join("SKILL.md"), raw).unwrap();
+        let lock = workspace.path().join("skills.lock.json");
+        let mut value = manifest(raw);
+        value["version"] = 2.into();
+        value["skills"][0]["enabled"] = true.into();
+        fs::write(&lock, value.to_string()).unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let registry = std::sync::Arc::new(
+            SkillRegistry::new(discovery.discover().unwrap()).with_lock_required(true),
+        );
+        let hash = registry.snapshot()[0].content_sha256();
+        value["skills"][0]["enabled"] = false.into();
+        fs::write(&lock, value.to_string()).unwrap();
+        // A disk edit alone must not imply that the running registry applied it.
+        assert_eq!(registry.read_content("approved", &hash).unwrap(), "body");
+        fs::write(dir.join("SKILL.md"), [b'x', 0xff]).unwrap();
+        registry.reload_async(workspace.path()).await.unwrap();
+        assert!(registry.snapshot().is_empty());
+        assert!(registry.read_content("approved", &hash).is_err());
+        assert!(discovery.discover().unwrap().is_empty());
+        assert!(!discovery.inspect_policy().unwrap().skills[0].enabled);
+        fs::remove_file(dir.join("SKILL.md")).unwrap();
+        fs::remove_dir(&dir).unwrap();
+        assert!(discovery.discover().unwrap().is_empty());
+        value["skills"][0]["enabled"] = true.into();
+        fs::write(&lock, value.to_string()).unwrap();
+        assert!(registry.reload_async(workspace.path()).await.is_err());
+        assert!(registry.snapshot().is_empty());
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), raw).unwrap();
+        registry.reload_async(workspace.path()).await.unwrap();
+        assert_eq!(registry.snapshot()[0].name, "approved");
+    }
+
+    #[test]
+    fn activation_schema_requires_explicit_boolean_and_retains_one_lock_snapshot() {
+        use sha2::Digest;
+        let workspace = tempfile::tempdir().unwrap();
+        let lock = workspace.path().join("skills.lock.json");
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let mut value = manifest("body");
+        value["version"] = 2.into();
+        for enabled in [serde_json::Value::Null, "false".into(), 0.into()] {
+            value["skills"][0]["enabled"] = enabled;
+            fs::write(&lock, value.to_string()).unwrap();
+            assert!(discovery.inspect_policy().is_err());
+        }
+        value["skills"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        fs::write(&lock, value.to_string()).unwrap();
+        assert!(discovery.inspect_policy().is_err());
+        value["skills"][0]["enabled"] = false.into();
+        let bytes = value.to_string();
+        fs::write(&lock, &bytes).unwrap();
+        let captured = CatalogLock::read(workspace.path()).unwrap();
+        fs::write(&lock, "{\"version\":2,\"skills\":[]}").unwrap();
+        let policy = captured.policy.clone();
+        assert!(discovery
+            .scan_locked(true, Some(captured))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            policy.manifest_sha256,
+            format!("{:x}", sha2::Sha256::digest(bytes.as_bytes()))
+        );
+        assert_eq!(policy.skills[0].directory, "reviewed");
+        assert!(!policy.skills[0].enabled);
+        value["version"] = 1.into();
+        for enabled in [serde_json::Value::Null, true.into(), false.into()] {
+            value["skills"][0]["enabled"] = enabled;
+            fs::write(&lock, value.to_string()).unwrap();
+            assert!(discovery.inspect_policy().is_err());
+        }
+        assert!(SkillDiscovery::new(workspace.path())
+            .inspect_policy()
+            .is_err());
     }
 }
