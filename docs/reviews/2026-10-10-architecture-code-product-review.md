@@ -76,6 +76,8 @@ flowchart TD
 
 ## Standards
 
+后续批次独立处理的累计代码与架构审查见交付各自固定的 Standards/Spec 报告：PR #105 关闭渠道准入事务 P2 重复启发式；PR #106 通过两处实际 Store 共用私有叶文件 Module，关闭私有文件 P3 重复启发式。PR #106 的固定源码 head `f0f12ec8cdf21f4acd37d8598d0418da44817417` 已通过其七项官方 CI 作业与四平台优化候选，具体日志/归档见[最终回填](../validation.md#pr-106-私有状态文件最终-ci-回填)。之后推送的验证文档 head `85c7d7f5f10c0cba17be7e5309d96164be836166` 的CI当时仍运行，当前提交仍要按自己的固定head重新核验。以上为有固定增量与消费方的范围审查，不取代全仓库穷尽审查、上游 durable 接线或真实供应商资格。
+
 固定比较：`4b2357fc…d714a831`（three-dot）；已读完整 86 个 commit 与 206 文件清单，按资源、授权、存储和取消风险抽查，未声称逐行穷尽 112,045 新增行。未编译或运行测试。
 
 - **[P2 · 硬风险] 会话列表仍按全部历史大小占用内存。** [store.rs:353](/Users/jiawy/Documents/jiaclaw/crates/jiaclaw-host/src/store.rs:353) 的新增 hunk 为 `SELECT id,messages,accessed_ms FROM sessions ORDER BY id`，随后 `decode(...).collect()`；[main.rs:3222](/Users/jiawy/Documents/jiaclaw/crates/jiaclaw-host/src/main.rs:3222) 只需数量却加载全部正文并逐条 `touch`。违背用户 AGENTS 的“生产级可用”及明确资源边界要求：合法历史增长即可使一次 GET 的内存/写事务数随数据库增长；网关 2 MiB 响应上限发生得太晚，不能保护 512 MiB 后端。应改成 SQL 摘要查询、有界分页和明确 TTL 触达语义；OOM 尚未动态复现。
@@ -154,7 +156,7 @@ Spec：2项确认发现，轴内最严重为P1结果丢失后的重复效果与�
 | Spec 执行结果丢失 P1 | PR #102 已修复并固定 head 核对七作业/四候选；有界输出仍正常，已完成结果丢失停止批次/下一模型轮，不依赖 progress |
 | Standards 目录资源 / Spec 文档 | PR #103 的存储侧摘要、有限分页、TTL不触达已固定 head 核对；首次Mac503的未确认根因与同head重跑通过分开记录 |
 | 租户预览 UI | PR #104 固定 `7fcdc5f3` 的七官方作业、七浏览器/九组真实预览、四实际归档已独立核对；初版工具选择核验P2经真实负例修复，最终本批两轴未解决0 |
-| Standards 渠道准入重复启发式 | 本批将五个真实 Adapter 接到一个私有事务 Module，保留平台 live lookup，补齐实际审计故障/共享hold矩阵；关闭以本批固定head双轴与资格为准 |
-| Standards 私有文件能力重复启发式 | 仍开放；不把 ledger/schema/恢复语义一起合并 |
+| Standards 渠道准入重复启发式 | PR #105固定ac680464的两轴和七CI/四实际候选独立合格；五个真实Adapter共用IMMEDIATE事务与故障矩阵，历史P2关闭 |
+| Standards 私有文件能力重复启发式 | 两个实际Store共享私有叶子文件检查/打开；最终独立Standards本批新增0、历史P3关闭，Spec新增未解决0；ledger/schema/恢复语义分别保留，本批官方资格另计 |
 
 业务定位和指标仍为待真实试用验证的假设；浏览器/候选绿日志不是真实供应商、渠道安装或商业数据。完整里程碑、durable/委派和未认证能力仍按[roadmap](../roadmap.md)开放，不自动合并或公开发布。

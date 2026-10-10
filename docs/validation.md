@@ -1030,3 +1030,47 @@ Linux实际 Chromium 覆盖租户预览九组（含坏 final GET / 真实响应�
 最终冻结二进制 SHA256 `824aad00ba3b957c2e2d5afd8f6046cd9b8509cc98259e77ab2523de867b2356` 使用92项编译输入；源码冻结后完整1225 Rust unit、format与仓库要求的Clippy通过（既有非强制style警告保留）。同一二进制的13套真实进程回归、七套Chromium浏览器与parser合同共21套全部通过；五平台原生队列、实际双后端/网关、SQLite/停机/未知hold和原租户JSON/预览合同均单独运行，日志与摘要保存在上述交付目录。
 
 Standards/Spec两轴独立报告本批新增未解决0；历史渠道事务重复P2启发式关闭，私有文件能力重复P3仍开放。固定最终Git提交和92编译输入逐字节核对，审查以 `origin/main` 的 `4b2357fc` 为累计基准。本批官方CI/四实际候选需取得新head的独立资格，不能沿用PR104。真实供应商/平台安装、durable/stdio/外部写入继续开放。
+
+## PR #105 五渠道准入最终 CI 回填
+
+固定head `ac6804646e3e9fbee2b26ea7194abeb8227b9cef`、tree `0b4e4876454e6468bce33a67937895bcb2a61379`、实际merge `fe922c6c60e36850e61a9dd6b7467f0b9dda9ee9` 的源码/父提交已核对。CI [38037298982](https://github.com/StateKnot/JiaClaw/actions/runs/38037298982) 与候选 [38037298878](https://github.com/StateKnot/JiaClaw/actions/runs/38037298878) 独立通过，未借PR104资格。七实际成功作业如下；draft发布作业为skipped，没有公开发布。
+
+| 作业 | 官方ID | 实际证据 |
+|---|---|---|
+| container | 114170299450 | 真实容器/nonroot/只读root/卷恢复/每租户ENOSPC |
+| test (ubuntu-24.04) | 114170299552 | 全Rust/原生流式/HTTP/租户/新准入矩阵；40必需Python；七Chromium/九预览/十JSON |
+| test (macos-14) | 114170299559 | 全Rust/原生流式/HTTP/租户/新准入矩阵；40必需Python |
+| build (macos-14, aarch64-apple-darwin) | 114170298843 | 全Rust/原生流式/HTTP/租户/新准入矩阵；13组实际安装与源码/资产证明；归档SHA256 `4a9268e6ad136ae1574e488f1e0b4e6017f749da11ec2b64cebdaec4b16759f2` |
+| build (ubuntu-24.04-arm, aarch64-unknown-linux-gnu) | 114170299047 | 全Rust/原生流式/HTTP/租户/新准入矩阵；13组实际安装与源码/资产证明；归档SHA256 `9686012f812132e0448686e71948b63bea5f75e68e9524906ce3567f6a92860b` |
+| build (macos-15-intel, x86_64-apple-darwin) | 114170299060 | 全Rust/原生流式/HTTP/租户/新准入矩阵；13组实际安装与源码/资产证明；归档SHA256 `5a9db0ec1bfb644f8c8373132af4866298d6889a5b51207acb9f3e1d427e3f90` |
+| build (ubuntu-24.04, x86_64-unknown-linux-gnu) | 114170299086 | 全Rust/原生流式/HTTP/租户/新准入矩阵；13组实际安装与源码/资产证明；归档SHA256 `2f27c978f03dc72557ce7ecae9ed195d1ab16104251cdf137ec329db95ebe47c` |
+
+日志、资产身份、实际源码证明与摘要保存在 `/tmp/jiaclaw-oct10-channel-admission-ci-audit/evidence.json`；PR105正文已回填并读回固定head/draft。四native候选均核对5渠道/40错误action/10审计失败重试/50共享hold矩阵。本批最终双轴新增未解决0，历史渠道事务P2启发式关闭；私有文件P3进入下一批独立交付。首次PR103 Mac Discord503仍保留未确认根因，不能用本批成功声称已修复。供应商/真实安装、物理85秒/代理、durable/stdio/写入恢复仍开放。
+
+## 共享私有状态文件批次
+
+[文件处理合同](private-state-files.md)将模型调用/语义两个实际Store的相同叶子文件检查与打开实现收拢为私有Module。原目录/独占锁/SQLite关闭顺序、domain错误、header/schema/容量与恢复状态机分别保留。完整Mac Rust `398/123/706` 共1227 unit通过；新增两个真实文件用例、两个Store原错误前缀以及既有迁移/sidecar/未知hold/SQL回滚一并通过；format与仓库必需Clippy通过，非强制历史style警告保留。
+
+首轮测试直接调用unsafe libc被仓库forbid规则阻止，日志保存在 `/tmp/jiaclaw-oct10-private-state-delivery/initial-compile-unsafe-test.log`，不是生产缺陷或runtime负例。最终测试使用仓库既有安全方式。macOS开关回显另作实际探针，不以F_GETFL回显NOFOLLOW作为合同断言。同一冻结二进制 SHA256 `3d4c07bb98f6489bb5ab431dbb73e3da1c2f71a3c2cde8b4bb8346fa04df031d` 的12套实际进程、三套真实Chromium工作台与parser共16套全部通过，包含实际模型调用与embedding准入、SIGKILL/重启/未知hold/原GET不重放、schema迁移和私有状态拒绝，以及原生两轮/结果丢失、CLI/HTTP与租户JSON/预览。93编译输入与固定Git源码逐字节核对；独立Standards/Spec与本head官方CI/四候选分别验收，不能借PR105。
+
+最终独立Standards与Spec本批新增未解决均0，历史私有文件P3启发式关闭；目录形态仍有相似之处，书面Module合同将其保留在Adapter内，没有为了消除启发式合并业务策略。93编译输入、冻结二进制与16套实际日志均逐项核对。跟踪的历史Standards两项重复均已关闭，不等于全仓库无任何设计问题或完整里程碑认证。本批编译缓存已验证真实路径/Cargo标签、构建锁及打开文件后清理，可用空间实际增加约1.85GB；冻结日志/二进制/报告另存，仓库原缓存保留。
+
+## PR #106 私有状态文件最终 CI 回填
+
+PR #106 固定源码 `f0f12ec8cdf21f4acd37d8598d0418da44817417`、tree `e2d8adf7bbf6c799cfca38f16a93db22e3e0bd78`、merge `9cb7ff5cbfc02622c5aa7d2cae7351c7ca24819a` 的 [CI 38040795773](https://github.com/StateKnot/JiaClaw/actions/runs/38040795773) 与 [Release qualification 38040795786](https://github.com/StateKnot/JiaClaw/actions/runs/38040795786) 均成功。七个实际作业成功，draft发布job skipped；每份日志绑定同一merge tree/parents。该审计只属于PR #106，不借用PR #105。
+
+| 作业 | 官方ID | 固定head证据 |
+|---|---:|---|
+| container | 114180464856 | 实际容器安全、HTTP/恢复与租户空间边界验收 |
+| test (ubuntu-24.04) | 114180464990 | 399/123/706 Rust unit、40必需Python、七Chromium、容器/浏览器验收及四项私有文件合同测试 |
+| test (macos-14) | 114180465030 | 398/123/706 Rust unit、40必需Python、parser及四项私有文件合同测试 |
+| build (ubuntu-24.04, x86_64-unknown-linux-gnu) | 114180464926 | 399/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `56dcd83487ab047d08b01ba10945d264e0919230acd99d0aabbc2f4e47ddf34b` |
+| build (macos-15-intel, x86_64-apple-darwin) | 114180465078 | 398/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `3ae6dc6b8b9c3ea1b33b1f33b8efca1c298381086c1700dde3bef40c85bc7540` |
+| build (macos-14, aarch64-apple-darwin) | 114180465092 | 398/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `8ca3922981bfede5f2f5b9e23b1b83afec592a0933d2f6318bd1059b03e2d017` |
+| build (ubuntu-24.04-arm, aarch64-unknown-linux-gnu) | 114180465094 | 399/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `561a64709d7dc27b5fea250274a28971e32d6dc6896c9945265c3557e904b402` |
+
+Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chromium。四优化候选均通过13项安装/归档/源码检查，逐项核对二进制、来源提交、tree、parents、artifact ID与上传ZIP摘要。新Module两个文件系统测试，并在模型调用和语义记忆两个实际Store各保留一组原领域状态回归。首轮unsafe测试编译失败是测试违反仓库forbid规则，修订后通过；它不是生产运行失败或生产缺陷修复。
+
+逐作业日志、上传归档身份/摘要、源码父项、merge、PR状态及双轴报告已存于 `/tmp/jiaclaw-oct10-private-state-ci-audit/evidence.json` 和 `/tmp/jiaclaw-oct10-private-state-delivery/pin.json`。公开Release未发布（draft步骤skipped）；真实供应商、物理浏览器期限、durable/stdio/外部写入恢复仍需独立认证。
+
+这份资格只证明源码 head `f0f12ec8`。随后为回填本节而推送的文档 head `85c7d7f5f10c0cba17be7e5309d96164be836166`、tree `d1af00267b5257aeb117153fbe8170ccdfade210`，在 09:54 UTC 的官方状态读取中，其自身 CI `38043115415` 和 Release qualification `38043115448` 仍在运行；不能继承前一head的通过状态。本节的资格状态按固定head读取，任何后续文档提交也要核对其自身触发的CI与候选作业。

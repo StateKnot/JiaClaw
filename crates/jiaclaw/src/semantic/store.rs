@@ -7,12 +7,13 @@
 //! Replacing, relocating or rolling back this database is an administrative
 //! recovery operation; a different database cannot discover this one's holds.
 
+use crate::private_state_file;
 use jiaclaw_core::JiaClawError;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::Read,
     path::{Component, Path, PathBuf},
     sync::{Mutex, MutexGuard},
@@ -344,66 +345,10 @@ fn decode_receipt(bytes: &[u8], expected_count: usize) -> Result<Vec<Vec<f32>>> 
     Ok(vectors)
 }
 
-fn private_file(path: &Path) -> Result<fs::Metadata> {
-    let metadata = fs::symlink_metadata(path).map_err(failure)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(failure(
-            "state files must be ordinary files without symlinks",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.nlink() != 1 || metadata.permissions().mode() & 0o777 != 0o600 {
-            return Err(failure(
-                "state files require mode 0600 and exactly one hard link",
-            ));
-        }
-    }
-    Ok(metadata)
-}
-
 fn suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     PathBuf::from(name)
-}
-
-fn create_private_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            private_file(path)?;
-            let mut options = OpenOptions::new();
-            options.read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            }
-            options.open(path).map_err(failure)?
-        }
-        Err(error) => return Err(failure(error)),
-    };
-    let metadata = private_file(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata().map_err(failure)?;
-        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() || opened.nlink() != 1 {
-            return Err(failure("state file changed during open"));
-        }
-    }
-    Ok(file)
 }
 
 fn state_path(workspace: &Path, requested: &Path) -> Result<(PathBuf, PathBuf)> {
@@ -520,7 +465,8 @@ fn no_pending(connection: &Connection) -> Result<()> {
 impl Store {
     pub fn open(workspace: &Path, index_path: &Path) -> Result<Self> {
         let (workspace, path) = state_path(workspace, index_path)?;
-        let ownership = create_private_file(&suffix(&path, ".lock"))?;
+        let ownership =
+            private_state_file::open_or_create(&suffix(&path, ".lock")).map_err(failure)?;
         fs2::FileExt::try_lock_exclusive(&ownership).map_err(|_| {
             failure("another process owns semantic state; stop serve before using the CLI")
         })?;
@@ -528,7 +474,7 @@ impl Store {
             let file = suffix(&path, sidecar);
             match fs::symlink_metadata(&file) {
                 Ok(_) => {
-                    let metadata = private_file(&file)?;
+                    let metadata = private_state_file::inspect(&file).map_err(failure)?;
                     let limit = if sidecar == "-shm" {
                         4 * 1024 * 1024
                     } else {
@@ -542,7 +488,7 @@ impl Store {
                 Err(error) => return Err(failure(error)),
             }
         }
-        let file = create_private_file(&path)?;
+        let file = private_state_file::open_or_create(&path).map_err(failure)?;
         if file.metadata().map_err(failure)?.len() > MAX_DATABASE_BYTES {
             return Err(failure("semantic database exceeds 32 MiB"));
         }
@@ -1309,9 +1255,16 @@ mod tests {
                         socket = Some(std::os::unix::net::UnixListener::bind(&target).unwrap());
                     }
                 }
+                let error = Store::open(&workspace, index())
+                    .err()
+                    .expect("unsafe leaf accepted");
+                let expected = if kind == "hardlink" {
+                    "semantic store: state files require mode 0600 and exactly one hard link"
+                } else {
+                    "semantic store: state files must be ordinary files without symlinks"
+                };
                 assert!(
-                    Store::open(&workspace, index()).is_err(),
-                    "accepted {kind} {suffix_name}"
+                    matches!(error, JiaClawError::ToolExecution(message) if message == expected)
                 );
                 assert_eq!(fs::read_to_string(outside).unwrap(), "never touch");
                 drop(socket);
@@ -1357,7 +1310,8 @@ mod tests {
             fs::create_dir(&directory).unwrap();
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
             let sidecar =
-                create_private_file(&directory.join(format!("index.sqlite3{name}"))).unwrap();
+                private_state_file::open_or_create(&directory.join(format!("index.sqlite3{name}")))
+                    .unwrap();
             sidecar.set_len(limit + 1).unwrap();
             drop(sidecar);
             assert!(Store::open(&workspace, index()).is_err());
