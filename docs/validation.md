@@ -1054,3 +1054,21 @@ Standards/Spec两轴独立报告本批新增未解决0；历史渠道事务重�
 首轮测试直接调用unsafe libc被仓库forbid规则阻止，日志保存在 `/tmp/jiaclaw-oct10-private-state-delivery/initial-compile-unsafe-test.log`，不是生产缺陷或runtime负例。最终测试使用仓库既有安全方式。macOS开关回显另作实际探针，不以F_GETFL回显NOFOLLOW作为合同断言。同一冻结二进制 SHA256 `3d4c07bb98f6489bb5ab431dbb73e3da1c2f71a3c2cde8b4bb8346fa04df031d` 的12套实际进程、三套真实Chromium工作台与parser共16套全部通过，包含实际模型调用与embedding准入、SIGKILL/重启/未知hold/原GET不重放、schema迁移和私有状态拒绝，以及原生两轮/结果丢失、CLI/HTTP与租户JSON/预览。93编译输入与固定Git源码逐字节核对；独立Standards/Spec与本head官方CI/四候选分别验收，不能借PR105。
 
 最终独立Standards与Spec本批新增未解决均0，历史私有文件P3启发式关闭；目录形态仍有相似之处，书面Module合同将其保留在Adapter内，没有为了消除启发式合并业务策略。93编译输入、冻结二进制与16套实际日志均逐项核对。跟踪的历史Standards两项重复均已关闭，不等于全仓库无任何设计问题或完整里程碑认证。本批编译缓存已验证真实路径/Cargo标签、构建锁及打开文件后清理，可用空间实际增加约1.85GB；冻结日志/二进制/报告另存，仓库原缓存保留。
+
+## PR #106 私有状态文件最终 CI 回填
+
+PR #106 固定源码 `f0f12ec8cdf21f4acd37d8598d0418da44817417`、tree `e2d8adf7bbf6c799cfca38f16a93db22e3e0bd78`、merge `9cb7ff5cbfc02622c5aa7d2cae7351c7ca24819a` 的 [CI 38040795773](https://github.com/StateKnot/JiaClaw/actions/runs/38040795773) 与 [Release qualification 38040795786](https://github.com/StateKnot/JiaClaw/actions/runs/38040795786) 均成功。七个实际作业成功，draft发布job skipped；每份日志绑定同一merge tree/parents。该审计只属于PR #106，不借用PR #105。
+
+| 作业 | 官方ID | 固定head证据 |
+|---|---:|---|
+| container | 114180464856 | 实际容器安全、HTTP/恢复与租户空间边界验收 |
+| test (ubuntu-24.04) | 114180464990 | 399/123/706 Rust unit、40必需Python、七Chromium、容器/浏览器验收及四项私有文件合同测试 |
+| test (macos-14) | 114180465030 | 398/123/706 Rust unit、40必需Python、parser及四项私有文件合同测试 |
+| build (ubuntu-24.04, x86_64-unknown-linux-gnu) | 114180464926 | 399/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `56dcd83487ab047d08b01ba10945d264e0919230acd99d0aabbc2f4e47ddf34b` |
+| build (macos-15-intel, x86_64-apple-darwin) | 114180465078 | 398/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `3ae6dc6b8b9c3ea1b33b1f33b8efca1c298381086c1700dde3bef40c85bc7540` |
+| build (macos-14, aarch64-apple-darwin) | 114180465092 | 398/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `8ca3922981bfede5f2f5b9e23b1b83afec592a0933d2f6318bd1059b03e2d017` |
+| build (ubuntu-24.04-arm, aarch64-unknown-linux-gnu) | 114180465094 | 399/123/706 Rust unit、13项归档/安装/源码验收；归档SHA256 `561a64709d7dc27b5fea250274a28971e32d6dc6896c9945265c3557e904b402` |
+
+Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chromium。四优化候选均通过13项安装/归档/源码检查，逐项核对二进制、来源提交、tree、parents、artifact ID与上传ZIP摘要。新Module两个文件系统测试，并在模型调用和语义记忆两个实际Store各保留一组原领域状态回归。首轮unsafe测试编译失败是测试违反仓库forbid规则，修订后通过；它不是生产运行失败或生产缺陷修复。
+
+逐作业日志、上传归档身份/摘要、源码父项、merge、PR状态及双轴报告已存于 `/tmp/jiaclaw-oct10-private-state-ci-audit/evidence.json` 和 `/tmp/jiaclaw-oct10-private-state-delivery/pin.json`。公开Release未发布（draft步骤skipped）；真实供应商、物理浏览器期限、durable/stdio/外部写入恢复仍需独立认证。

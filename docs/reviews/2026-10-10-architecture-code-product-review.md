@@ -76,6 +76,8 @@ flowchart TD
 
 ## Standards
 
+后续批次独立处理的累计代码与架构审查见交付各自固定的 Standards/Spec 报告：PR #105 关闭渠道准入事务 P2 重复启发式；PR #106 通过两处实际 Store 共用私有叶文件 Module，关闭私有文件 P3 重复启发式。PR #106 的固定源码 head `f0f12ec8cdf21f4acd37d8598d0418da44817417` 已通过其七项官方 CI 作业与四平台优化候选，具体日志/归档见[最终回填](../validation.md#pr-106-私有状态文件最终-ci-回填)。以上为有固定增量与消费方的范围审查，不取代全仓库穷尽审查、上游 durable 接线或真实供应商资格。
+
 固定比较：`4b2357fc…d714a831`（three-dot）；已读完整 86 个 commit 与 206 文件清单，按资源、授权、存储和取消风险抽查，未声称逐行穷尽 112,045 新增行。未编译或运行测试。
 
 - **[P2 · 硬风险] 会话列表仍按全部历史大小占用内存。** [store.rs:353](/Users/jiawy/Documents/jiaclaw/crates/jiaclaw-host/src/store.rs:353) 的新增 hunk 为 `SELECT id,messages,accessed_ms FROM sessions ORDER BY id`，随后 `decode(...).collect()`；[main.rs:3222](/Users/jiawy/Documents/jiaclaw/crates/jiaclaw-host/src/main.rs:3222) 只需数量却加载全部正文并逐条 `touch`。违背用户 AGENTS 的“生产级可用”及明确资源边界要求：合法历史增长即可使一次 GET 的内存/写事务数随数据库增长；网关 2 MiB 响应上限发生得太晚，不能保护 512 MiB 后端。应改成 SQL 摘要查询、有界分页和明确 TTL 触达语义；OOM 尚未动态复现。
