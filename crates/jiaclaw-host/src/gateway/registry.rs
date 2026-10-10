@@ -162,6 +162,33 @@ impl std::fmt::Display for WriteAdmissionError {
 }
 impl std::error::Error for WriteAdmissionError {}
 
+/// Existing platform adapters select a closed channel and effect; callers cannot supply audit names.
+#[derive(Clone, Copy)]
+enum Channel {
+    Telegram,
+    Slack,
+    Discord,
+    Feishu,
+    Wecom,
+}
+
+impl Channel {
+    fn admission_names(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Telegram => ("Telegram", "telegram_execute", "telegram_send"),
+            Self::Slack => ("Slack", "slack_execute", "slack_send"),
+            Self::Discord => ("Discord", "discord_execute", "discord_send"),
+            Self::Feishu => ("Feishu", "feishu_execute", "feishu_send"),
+            Self::Wecom => ("WeCom", "wecom_execute", "wecom_send"),
+        }
+    }
+}
+
+enum ChannelEffect {
+    Execute,
+    Send,
+}
+
 /// A write admitted before a backend outcome was known.
 #[derive(Debug, Serialize)]
 pub struct WriteHoldSummary {
@@ -849,6 +876,61 @@ impl Registry {
         telegram_on(&self.connection()?, binding_id)
     }
 
+    /// One transaction owns the live platform lookup, shared hold, audit and commit.
+    /// The adapter must read its binding through this transaction, never a prior authorization snapshot.
+    fn admit_channel<B>(
+        &self,
+        channel: Channel,
+        binding_id: Uuid,
+        request_id: Uuid,
+        operation: &str,
+        object_id: &str,
+        authorize: impl FnOnce(&Transaction<'_>) -> Result<Option<(Uuid, B)>>,
+    ) -> Result<B> {
+        let (label, execute, send) = channel.admission_names();
+        ensure!(
+            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
+            "{label} request ID must be RFC4122 UUIDv7"
+        );
+        let effect = if operation == execute {
+            ChannelEffect::Execute
+        } else if operation == send {
+            ChannelEffect::Send
+        } else {
+            anyhow::bail!("invalid {label} admission operation");
+        };
+        let object = Uuid::parse_str(object_id)
+            .with_context(|| format!("{label} object ID must be a canonical UUID"))?;
+        ensure!(
+            !object.is_nil()
+                && object.get_variant() == uuid::Variant::RFC4122
+                && object.to_string() == object_id,
+            "{label} object ID must be a canonical non-nil RFC4122 UUID"
+        );
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (user_id, binding) = authorize(&tx)?.ok_or(WriteAdmissionError::Unauthorized)?;
+        let now = now_ms();
+        insert_hold(&tx, user_id, request_id, now)?;
+        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
+            .to_string();
+        let action = match effect {
+            ChannelEffect::Execute => execute,
+            ChannelEffect::Send => send,
+        };
+        audit(
+            &tx,
+            user_id,
+            None,
+            Some(request_id),
+            action,
+            Some(&note),
+            now,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
     /// Recheck binding/user ownership and acquire the shared write hold atomically.
     /// No prompt, event body, token or caller-selected backend is persisted here.
     pub fn admit_telegram(
@@ -858,40 +940,14 @@ impl Registry {
         operation: &str,
         object_id: &str,
     ) -> Result<TelegramBindingSummary> {
-        ensure!(
-            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
-            "Telegram request ID must be RFC4122 UUIDv7"
-        );
-        ensure!(
-            matches!(operation, "telegram_execute" | "telegram_send"),
-            "invalid Telegram admission operation"
-        );
-        let object =
-            Uuid::parse_str(object_id).context("Telegram object ID must be a canonical UUID")?;
-        ensure!(
-            !object.is_nil()
-                && object.get_variant() == uuid::Variant::RFC4122
-                && object.to_string() == object_id,
-            "Telegram object ID must be a canonical non-nil RFC4122 UUID"
-        );
-        let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let binding = telegram_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
-        let now = now_ms();
-        insert_hold(&tx, binding.user_id, request_id, now)?;
-        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
-            .to_string();
-        audit(
-            &tx,
-            binding.user_id,
-            None,
-            Some(request_id),
+        self.admit_channel(
+            Channel::Telegram,
+            binding_id,
+            request_id,
             operation,
-            Some(&note),
-            now,
-        )?;
-        tx.commit()?;
-        Ok(binding)
+            object_id,
+            |tx| Ok(telegram_on(tx, binding_id)?.map(|binding| (binding.user_id, binding))),
+        )
     }
 
     /// Bind an enabled user's dedicated backend to one permanent Slack app installation and DM.
@@ -1029,40 +1085,14 @@ impl Registry {
         operation: &str,
         object_id: &str,
     ) -> Result<SlackBindingSummary> {
-        ensure!(
-            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
-            "Slack request ID must be RFC4122 UUIDv7"
-        );
-        ensure!(
-            matches!(operation, "slack_execute" | "slack_send"),
-            "invalid Slack admission operation"
-        );
-        let object =
-            Uuid::parse_str(object_id).context("Slack object ID must be a canonical UUID")?;
-        ensure!(
-            !object.is_nil()
-                && object.get_variant() == uuid::Variant::RFC4122
-                && object.to_string() == object_id,
-            "Slack object ID must be a canonical non-nil RFC4122 UUID"
-        );
-        let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let binding = slack_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
-        let now = now_ms();
-        insert_hold(&tx, binding.user_id, request_id, now)?;
-        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
-            .to_string();
-        audit(
-            &tx,
-            binding.user_id,
-            None,
-            Some(request_id),
+        self.admit_channel(
+            Channel::Slack,
+            binding_id,
+            request_id,
             operation,
-            Some(&note),
-            now,
-        )?;
-        tx.commit()?;
-        Ok(binding)
+            object_id,
+            |tx| Ok(slack_on(tx, binding_id)?.map(|binding| (binding.user_id, binding))),
+        )
     }
 
     /// Bind an enabled user's dedicated backend to one permanent Discord application and private bot DM.
@@ -1204,40 +1234,14 @@ impl Registry {
         operation: &str,
         object_id: &str,
     ) -> Result<DiscordBindingSummary> {
-        ensure!(
-            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
-            "Discord request ID must be RFC4122 UUIDv7"
-        );
-        ensure!(
-            matches!(operation, "discord_execute" | "discord_send"),
-            "invalid Discord admission operation"
-        );
-        let object =
-            Uuid::parse_str(object_id).context("Discord object ID must be a canonical UUID")?;
-        ensure!(
-            !object.is_nil()
-                && object.get_variant() == uuid::Variant::RFC4122
-                && object.to_string() == object_id,
-            "Discord object ID must be a canonical non-nil RFC4122 UUID"
-        );
-        let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let binding = discord_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
-        let now = now_ms();
-        insert_hold(&tx, binding.user_id, request_id, now)?;
-        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
-            .to_string();
-        audit(
-            &tx,
-            binding.user_id,
-            None,
-            Some(request_id),
+        self.admit_channel(
+            Channel::Discord,
+            binding_id,
+            request_id,
             operation,
-            Some(&note),
-            now,
-        )?;
-        tx.commit()?;
-        Ok(binding)
+            object_id,
+            |tx| Ok(discord_on(tx, binding_id)?.map(|binding| (binding.user_id, binding))),
+        )
     }
 
     /// Bind an enabled user's backend to a dedicated Feishu application and private chat.
@@ -1383,40 +1387,14 @@ impl Registry {
         operation: &str,
         object_id: &str,
     ) -> Result<FeishuBindingSummary> {
-        ensure!(
-            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
-            "Feishu request ID must be RFC4122 UUIDv7"
-        );
-        ensure!(
-            matches!(operation, "feishu_execute" | "feishu_send"),
-            "invalid Feishu admission operation"
-        );
-        let object =
-            Uuid::parse_str(object_id).context("Feishu object ID must be a canonical UUID")?;
-        ensure!(
-            !object.is_nil()
-                && object.get_variant() == uuid::Variant::RFC4122
-                && object.to_string() == object_id,
-            "Feishu object ID must be a canonical non-nil RFC4122 UUID"
-        );
-        let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let binding = feishu_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
-        let now = now_ms();
-        insert_hold(&tx, binding.user_id, request_id, now)?;
-        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
-            .to_string();
-        audit(
-            &tx,
-            binding.user_id,
-            None,
-            Some(request_id),
+        self.admit_channel(
+            Channel::Feishu,
+            binding_id,
+            request_id,
             operation,
-            Some(&note),
-            now,
-        )?;
-        tx.commit()?;
-        Ok(binding)
+            object_id,
+            |tx| Ok(feishu_on(tx, binding_id)?.map(|binding| (binding.user_id, binding))),
+        )
     }
 
     /// Bind an enabled user's backend to a dedicated WeCom application and private member.
@@ -1542,40 +1520,14 @@ impl Registry {
         operation: &str,
         object_id: &str,
     ) -> Result<WecomBindingSummary> {
-        ensure!(
-            request_id.get_version_num() == 7 && request_id.get_variant() == uuid::Variant::RFC4122,
-            "WeCom request ID must be RFC4122 UUIDv7"
-        );
-        ensure!(
-            matches!(operation, "wecom_execute" | "wecom_send"),
-            "invalid WeCom admission operation"
-        );
-        let object =
-            Uuid::parse_str(object_id).context("WeCom object ID must be a canonical UUID")?;
-        ensure!(
-            !object.is_nil()
-                && object.get_variant() == uuid::Variant::RFC4122
-                && object.to_string() == object_id,
-            "WeCom object ID must be a canonical non-nil RFC4122 UUID"
-        );
-        let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let binding = wecom_on(&tx, binding_id)?.ok_or(WriteAdmissionError::Unauthorized)?;
-        let now = now_ms();
-        insert_hold(&tx, binding.user_id, request_id, now)?;
-        let note = serde_json::json!({"binding_id":binding_id.to_string(),"object_id":object_id})
-            .to_string();
-        audit(
-            &tx,
-            binding.user_id,
-            None,
-            Some(request_id),
+        self.admit_channel(
+            Channel::Wecom,
+            binding_id,
+            request_id,
             operation,
-            Some(&note),
-            now,
-        )?;
-        tx.commit()?;
-        Ok(binding)
+            object_id,
+            |tx| Ok(wecom_on(tx, binding_id)?.map(|binding| (binding.user_id, binding))),
+        )
     }
 
     /// Read live key/user state for every request. No successful-authentication cache exists.
@@ -2943,6 +2895,127 @@ mod tests {
             )
             .unwrap();
         assert_eq!(binding.agent_id, i32::MAX as u32);
+    }
+
+    #[test]
+    fn channel_admission_operations_audit_failure_and_shared_holds_are_atomic() {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let user = registry.add_user("alice").unwrap();
+        type Admit = fn(&Registry, Uuid, Uuid, &str, &str) -> Result<()>;
+        let channels: [(&str, Uuid, Admit); 5] = [
+            (
+                "telegram",
+                registry
+                    .add_telegram_binding(user.user_id, "123", "456")
+                    .unwrap()
+                    .id,
+                |r, b, i, op, o| r.admit_telegram(b, i, op, o).map(|_| ()),
+            ),
+            (
+                "slack",
+                slack_binding(registry, user.user_id, 1).id,
+                |r, b, i, op, o| r.admit_slack(b, i, op, o).map(|_| ()),
+            ),
+            (
+                "discord",
+                discord_binding(registry, user.user_id, 1).id,
+                |r, b, i, op, o| r.admit_discord(b, i, op, o).map(|_| ()),
+            ),
+            (
+                "feishu",
+                feishu_binding(registry, user.user_id, 1).id,
+                |r, b, i, op, o| r.admit_feishu(b, i, op, o).map(|_| ()),
+            ),
+            (
+                "wecom",
+                wecom_binding(registry, user.user_id, 1).id,
+                |r, b, i, op, o| r.admit_wecom(b, i, op, o).map(|_| ()),
+            ),
+        ];
+        let object = Uuid::new_v4().to_string();
+        let conn = registry.connection().unwrap();
+        for &(channel, binding, admit) in &channels {
+            let before =
+                serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap())
+                    .unwrap();
+            for &(foreign, _, _) in &channels {
+                if foreign == channel {
+                    continue;
+                }
+                for effect in ["execute", "send"] {
+                    assert!(admit(
+                        registry,
+                        binding,
+                        Uuid::now_v7(),
+                        &format!("{foreign}_{effect}"),
+                        &object
+                    )
+                    .is_err());
+                }
+            }
+            assert!(registry.list().unwrap()[0].hold.is_none());
+            assert_eq!(
+                serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap())
+                    .unwrap(),
+                before
+            );
+            for effect in ["execute", "send"] {
+                let operation = format!("{channel}_{effect}");
+                let request = Uuid::now_v7();
+                let before =
+                    serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap())
+                        .unwrap();
+                conn.execute_batch("CREATE TRIGGER fail_channel_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected channel audit failure'); END;").unwrap();
+                let error = admit(registry, binding, request, &operation, &object).unwrap_err();
+                assert!(format!("{error:#}").contains("injected channel audit failure"));
+                assert!(registry.list().unwrap()[0].hold.is_none());
+                assert_eq!(
+                    serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap())
+                        .unwrap(),
+                    before
+                );
+                conn.execute_batch("DROP TRIGGER fail_channel_audit")
+                    .unwrap();
+                admit(registry, binding, request, &operation, &object).unwrap();
+                let hold = registry.list().unwrap()[0].hold.take().unwrap();
+                assert_eq!(hold.request_id, request);
+                let audit = registry.audit_list(user.user_id, 0, 100, true).unwrap();
+                let event = audit
+                    .events
+                    .iter()
+                    .find(|e| e.request_id.as_deref() == Some(&request.to_string()))
+                    .unwrap();
+                assert_eq!(event.action, operation);
+                assert!(event.key_id.is_none());
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(event.note.as_ref().unwrap())
+                        .unwrap(),
+                    serde_json::json!({"binding_id":binding.to_string(),"object_id":object})
+                );
+                for &(other, other_binding, other_admit) in &channels {
+                    let error = other_admit(
+                        registry,
+                        other_binding,
+                        Uuid::now_v7(),
+                        &format!("{other}_send"),
+                        &object,
+                    )
+                    .unwrap_err();
+                    assert_eq!(
+                        error.downcast_ref::<WriteAdmissionError>(),
+                        Some(&WriteAdmissionError::Held)
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(registry.audit_list(user.user_id, 0, 100, true).unwrap())
+                        .unwrap(),
+                    serde_json::to_value(audit).unwrap()
+                );
+                registry.finish_write(user.user_id, request, true).unwrap();
+                assert!(registry.list().unwrap()[0].hold.is_none());
+            }
+        }
     }
 
     #[test]

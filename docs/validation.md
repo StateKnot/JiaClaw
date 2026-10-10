@@ -1002,3 +1002,31 @@ Both native CI jobs ran 40 mandatory Python suites, Rust (macOS 1224 / Linux 122
 First macOS attempt failed in existing Discord group 8: queue admission returned 503 instead of 200 while filling 1000 rows. The original fixed binary passed all nine groups locally plus four isolated real capacity trials. One same-head failed-job rerun passed without source/assertion/deadline changes. **Root cause remains unconfirmed; rerun success is not a defect fix.** Keep first failed log/diagnosis separate from this final successful qualification.
 
 Evidence: `/tmp/jiaclaw-oct10-session-catalog-ci-audit/evidence.json`; first failure `/tmp/jiaclaw-oct10-session-catalog-heartbeat0542/macos-failed.log`; diagnosis `/tmp/jiaclaw-oct10-catalog-ci-fix-delivery/diagnosis.json`. No merge/public release, durable/stdio/external-writing or real supplier qualification.
+
+## PR #104 租户预览 UI 最终 CI 回填
+
+固定 head `7fcdc5f3f17ed81b1f74e83088383de743cfffc2`、merge `3e586497167cd85ed880a9f67253da30add2c0ad`、tree `8b085bf9382cf5c456b379694916f31c94a86c10`，parents `0e1d28fe` / `7fcdc5f3`。[CI 38033903997](https://github.com/StateKnot/JiaClaw/actions/runs/38033903997) 与[四候选 38033904033](https://github.com/StateKnot/JiaClaw/actions/runs/38033904033) 成功；七项成功作业的实际日志已逐项核对，公开 draft-release job SKIPPED，PR仍draft/未合并。
+
+| 作业 | 实际 ID / 证明 |
+|---|---|
+| Linux主验收 | `114160264967`：397/123/705 Rust unit、1 doctest，40必需Python，parser、七套Chromium、真实Docker与隔离/ENOSPC |
+| macOS主验收 | `114160265110`：396/123/705 Rust unit，40必需Python、parser；平台差异独立记录 |
+| 容器 | `114160265061`：非root/只读根/命名卷恢复、真实租户ENOSPC隔离 |
+| x86_64 Linux候选 | `114160265248`；archive SHA256 `62aa8d8c5aa2c725db32492f58bd5119ece61d2983fed700927e422d0b8cb442` |
+| x86_64 macOS候选 | `114160265428`；archive SHA256 `a4064e688f1f250789e78c837a5c0630b925054a14744aca99eaa3a837a30c71` |
+| ARM macOS候选 | `114160265473`；archive SHA256 `e5b61182422947ca082bce57670272c0b5557fb67c37f91599810efabbf22d21` |
+| ARM Linux候选 | `114160265477`；archive SHA256 `65ad6db6daae24397a23c77c311d36395f375e52bb8ef4dda3c4ad8d7e5df6d8` |
+
+Linux实际 Chromium 覆盖租户预览九组（含坏 final GET / 真实响应丢失后重复200的本次选择核验）、JSON兼容十组、旧Web十二组以及其他五套真实浏览器路径。完整Rust和各候选进程验收保留原执行结果丢失、目录/TTL、原请求owner/取消/恢复测试。四实际归档均逐项核对13项安装/归档验收、干净源码、source commit/tree/parents、artifact ID和zip摘要，见 `/tmp/jiaclaw-oct10-tenant-preview-ci-audit/evidence.json`。
+
+两轴最终固定 `origin/main 4b2357f...7fcdc5f3`；本批工具核验P2经真实负例复现后共享receipt修复，最终本批未解决0，历史Standards两项重复启发式保留。初版f13失败与最终证据分别保存，不以父PR103或租户SSE API资格代替本次UI资格。前端期限注入不是物理85秒、真实供应商或代理认证；durable/stdio/外部写入及公开发布继续开放。PR103首次Mac503未确认根因亦保持独立。
+
+## 五渠道准入事务收拢
+
+本批处理架构审查的 Standards 重复代码启发式，保持既有行为：五个 `admit_*` Adapter 使用一个私有事务 Module，渠道与 execute/send 为封闭类型，审计 action 从固定目录选取。规范身份/操作检查在写事务前，live binding/用户/专属后端仍在原 IMMEDIATE 事务内；hold、UUID审计与成功提交由同一实现拥有。HTTP/定时/Key合同、存储schema和未知恢复不改变，不作为新增渠道或已存在越权问题的“修复”宣传。
+
+当前源码完整Rust `396/123/706` unit通过（1项真实Docker ignore保留）。新增矩阵跨五真实公开准入方法，核对40次错误平台操作、10次实际审计触发器失败回滚及同身份重新准入、每次成功后的五渠道共享hold阻塞和准确UUID审计。既有平台禁用/撤销/损坏身份/只读/其他入口hold与事务回滚测试一并通过。日志 `/tmp/jiaclaw-oct10-channel-admission-delivery/rust-tests.log` 保存在编译缓存之外。
+
+最终冻结二进制 SHA256 `824aad00ba3b957c2e2d5afd8f6046cd9b8509cc98259e77ab2523de867b2356` 使用92项编译输入；源码冻结后完整1225 Rust unit、format与仓库要求的Clippy通过（既有非强制style警告保留）。同一二进制的13套真实进程回归、七套Chromium浏览器与parser合同共21套全部通过；五平台原生队列、实际双后端/网关、SQLite/停机/未知hold和原租户JSON/预览合同均单独运行，日志与摘要保存在上述交付目录。
+
+Standards/Spec两轴独立报告本批新增未解决0；历史渠道事务重复P2启发式关闭，私有文件能力重复P3仍开放。固定最终Git提交和92编译输入逐字节核对，审查以 `origin/main` 的 `4b2357fc` 为累计基准。本批官方CI/四实际候选需取得新head的独立资格，不能沿用PR104。真实供应商/平台安装、durable/stdio/外部写入继续开放。
