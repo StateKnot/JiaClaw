@@ -234,6 +234,82 @@ try:
         assert Stream('bob','after-reviewed-restart').finish()['receipt']['state']=='completed'
         assert count('bob','still-reserved')==0
         print('PASS tenant SSE 6: original deadline never resets; unknown actual model retains shared capacity until idle review and restart',flush=True)
+        # Fault injection happens only after the actual native body reaches EOF:
+        # real terminal commit/current owner completion precede corrupted delivery.
+        stop(process)
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        corruption = 'model_identity'
+        class CorruptStream(BaseHTTPRequestHandler):
+            def log_message(self, *_args): pass
+            def forward(self):
+                upstream = http.client.HTTPConnection('127.0.0.1', backends['alice']['port'], timeout=15)
+                try:
+                    data = self.rfile.read(int(self.headers.get('Content-Length','0')))
+                    headers = {name:self.headers[name] for name in ('Authorization','Content-Type','x-jiaclaw-gateway-turns') if name in self.headers}
+                    upstream.request(self.command, self.path, data or None, headers)
+                    response = upstream.getresponse()
+                    raw = response.read(12*1024*1024+1)
+                    assert len(raw)<=12*1024*1024
+                    if self.command == 'PUT' and self.path.endswith('/stream') and response.status == 202:
+                        actual_hold=hold('alice')
+                        assert actual_hold and actual_hold[0]['state']=='in_flight','actual gateway admission must precede corrupted delivery'
+                        frames = raw.split(b'\n\n'); changed = False
+                        for i, frame in enumerate(frames):
+                            if corruption == 'model_identity' and frame.startswith(b'event: model_started\n'):
+                                event = json.loads(frame.split(b'\ndata: ',1)[1]); event['turn_id']=str(uuid.uuid4())
+                                frames[i]=b'event: model_started\ndata: '+json.dumps(event).encode(); changed=True; break
+                            if corruption == 'tool_authority' and frame.startswith(b'event: done\n'):
+                                event={'event':'tool_completed','round':0,'tool_call_id':'fixture-unapproved','tool_name':'file_write'}
+                                frames.insert(i,b'event: tool_completed\ndata: '+json.dumps(event).encode());changed=True;break
+                        if corruption: assert changed, 'actual original event must be corrupted'
+                        raw=b'\n\n'.join(frames)
+                    self.send_response(response.status)
+                    self.send_header('Content-Type',response.getheader('Content-Type'))
+                    self.send_header('Content-Length',str(len(raw)))
+                    self.end_headers();self.wfile.write(raw)
+                except (BrokenPipeError, ConnectionResetError): pass
+                except Exception as error:
+                    with lock: faults.append(type(error).__name__+': '+str(error))
+                finally: upstream.close()
+            do_GET=do_PUT=do_POST=forward
+        proxy=ThreadingHTTPServer(('127.0.0.1',0),CorruptStream);proxy.daemon_threads=True
+        threading.Thread(target=proxy.serve_forever,daemon=True).start()
+        for backend in gateway['backends']:
+            if backend['id']=='alice': backend['url']=f'http://127.0.0.1:{proxy.server_port}/'
+        config_path.write_text(json.dumps(gateway))
+        process=launch(['gateway','serve','--config',str(config_path)],gp,root/'gateway.log')
+        try:
+            for corruption in ('model_identity','tool_authority'):
+                prompt='committed-corrupt-'+corruption
+                stream=Stream('alice',prompt)
+                assert stream.finish()['event']=='error'
+                before_lookup=hold('alice')
+                original=complete('alice',stream.id)
+                assert original['receipt']['state']=='completed' and original['receipt']['session_committed'] and not original['active']
+                assert count('alice',prompt)==1
+                assert sql(backends['alice']['ledger'],'SELECT state FROM model_calls WHERE turn_id=?',(stream.id,))[0]['state']=='completed'
+                current=hold('alice')
+                print(json.dumps({'corruption':corruption,'original_completed':True,'native_active':False,'model_posts':count('alice',prompt),'gateway_hold_before_GET':before_lookup[0]['state'] if before_lookup else None,'gateway_hold':current[0]['state'] if current else None}),flush=True)
+                assert current and current[0]['state']=='needs_review' and current[0]['request_id']==stream.id,'rejected original SSE contract must retain review even after a completed valid GET'
+                # Original identity stays lookup-only while review blocks new writes.
+                assert api('alice','/api/turns/'+stream.id+'/stream','PUT',stream.body)['receipt']['state']=='completed'
+                api('alice','/api/turns/'+str(uuid.uuid4())+'/stream','PUT',body('blocked-corrupt-contract'),expected=409)
+                assert count('alice','blocked-corrupt-contract')==0
+                cli('review-clear','--user',users['alice']['user_id'],'--confirm-backend-idle','--note','Fixture rejected wire contract independently reviewed; original native/model owners verified idle')
+            corruption=None
+            assert Stream('alice','valid-after-corrupt-review').finish()['receipt']['state']=='completed'
+            assert not hold('alice')
+            # A valid native 200 JSON lookup predating the gateway mapping is not
+            # a failed delivery and must retain the original successful semantics.
+            native_id=str(uuid.uuid4());native_body=body('native-before-gateway-mapping')
+            assert request(backends['alice']['port'],'/api/turns/'+native_id,backends['alice']['token'],'PUT',native_body,marker=True)[0]==202
+            wait(lambda: (lambda v:v['receipt']['state']=='completed' and not v['active'])(request(backends['alice']['port'],'/api/turns/'+native_id,backends['alice']['token'],marker=True)[1]),'native existing completed identity')
+            assert api('alice','/api/turns/'+native_id+'/stream','PUT',native_body)['receipt']['state']=='completed'
+            wait(lambda: not hold('alice'),'valid JSON lookup clears matching successful hold')
+            assert count('alice','native-before-gateway-mapping')==1
+            print('PASS tenant SSE 7: actual committed native result cannot clear rejected identity/tool stream review; idle capacity releases, duplicates remain GET-only and valid native JSON lookup succeeds',flush=True)
+        finally:
+            proxy.shutdown();proxy.server_close()
 finally:
     for g in gates.values(): g['release'].set()
     for p in reversed(processes): stop(p)

@@ -88,4 +88,6 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 
 投递断线/慢读/畸形合同停止继续读取私密SSE，使native停止未来dispatch；原观察期限尚有余量时，额外以同UUID持久记录一次cancel意图，再仅GET原收据。原模型和已提交操作继续按原remote ID结算，直至原终态/active=false才允许释放执行许可。取消/失败保留审核hold；原截止到期时未能确认停止则保留全局/后端执行容量，人工核对原后端/账本、清hold且重启网关后才能回收。到期已无预算时不保证新增cancel意图已写入，更不声明实际模型立即停止。SSE的HTTP投递槽位只在实际owner消失后释放，即便执行/审核已经完成。
 
+原响应完整校验之前的取消、交付失败或异常合同保留审核hold，即使后续原GET显示completed且active=false。该停止证据允许释放实际执行容量，但不能自动免除协议异常的人工核对。有效原SSE终态或有效200 JSON lookup，再经原GET停止证明与实际gateway成功结算后，终态帧丢失不重新制造hold；客户端仍须以原ID核对结果，不创建替代执行。
+
 授权固定于原准入：撤销Key/禁用用户阻止新请求和后续GET/cancel，不撤销已提交模型或原授权工具的既有事实。客户端保留原ID及确切正文；断线后显式GET，必要时由可信管理员核对。SIGKILL/restart保留原永久索引和审核hold，不恢复预览/图/工具执行；协议升级不提供跨库原子性。真实TLS反向代理、供应商、渠道安装和完整个人Agent生产认证仍独立开放。

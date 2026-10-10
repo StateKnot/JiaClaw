@@ -130,3 +130,5 @@ PR #99 最终273004a及官方七作业/四候选完整资格已回填[validation
 ## 2026-10-10 租户 SSE API 接线
 
 PR #100 最终699adf6的1220 Rust、15相关套件、七CI/四优化归档已[回填](validation.md#pr-100-网关停机最终资格回填)。本轮基于该固定head接通[个人Key SSE API](tenant-http-turns.md#个人-key-sse-api)：配对protocol2握手、原UUID/hold、有限实际Body投递槽位、逐帧校验、断线cancel、原GET终态结算和重启不重放。双真实backend六组初验及三owner/parser Rust通过；完整冻结源码、本批draft PR与七CI/四候选另计，不能沿用PR100资格。已有租户JSON工作台继续使用原路径，租户预览UI仍开放。上游contract/release/#140/#31/#41/PR40均不变，stdio/外部写入、StateKnot durable委派、钉钉安装/WhatsApp、多模态、供应商/代理及公开发布仍分别待验收；下一轮先完成本批CI/审查并接线租户预览UI，30分钟回访保持ACTIVE，不自动合并或公开发布。
+
+用户指定 mattpocock-skills 后，本批双轴审查发现原生流式合同被拒绝却被后续成功 GET 清除审核 hold，以及 standalone 文档仍否认租户入口。冻结 22bb 字节的真实后端、网关和协议故障代理两次复现：原模型恰执行一次、已完成且 active=false，但 GET 前 hold 已消失。修订要求原响应有效且原 GET 成功才清审核，实际 idle 容量仍独立释放；身份和工具授权两类真实故障、原 GET-only 重复及有效 200 JSON lookup 反馈环已通过。新第七组纳入同一 mandatory 套件；旧 22bb 本机和候选资格不计修订最终资格，完整新 head 与七 CI、四候选另行认证。规范轴仅记录测试 setup 重复的非阻塞维护启发，不把它作为生产缺陷或擅改已验证生命周期。

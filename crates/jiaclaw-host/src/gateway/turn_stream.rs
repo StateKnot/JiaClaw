@@ -379,7 +379,8 @@ pub(super) async fn execute(
         stream_ok = true;
         Ok(())
     }.await;
-    if result.is_err() {
+    let response_valid = result.is_ok();
+    if !response_valid {
         tracing::warn!(request_id=%id, "tenant SSE delivery stopped; reconciling only the original identity");
         // Dropping native HTTP delivery stops future dispatch. Persist one cancel
         // intent when the original deadline still permits it; current model owners
@@ -438,7 +439,9 @@ pub(super) async fn execute(
                 }
                 if !envelope.active && envelope.receipt.state != "running" {
                     idle = true;
-                    success = envelope.known_success();
+                    // Idleness permits resource release; a later successful GET
+                    // cannot erase a rejected original delivery contract.
+                    success = response_valid && envelope.known_success();
                     terminal = Some(envelope.receipt);
                     break;
                 }
