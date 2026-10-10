@@ -122,6 +122,10 @@ impl WorkspaceStatTool {
 
 #[async_trait]
 impl Tool for WorkspaceStatTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "stat"
     }
@@ -160,6 +164,10 @@ impl WorkspaceTreeTool {
 
 #[async_trait]
 impl Tool for WorkspaceTreeTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "tree"
     }

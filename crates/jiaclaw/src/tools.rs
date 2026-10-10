@@ -11,6 +11,19 @@ use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// What a failed tool attempt can prove about its effects.
+///
+/// This is an implementation guarantee, not a model/MCP annotation or an error
+/// message heuristic. Unknown includes timeouts and abandoned blocking work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFailureEffect {
+    /// The implementation never performs workspace writes or external effects.
+    NoEffect,
+    /// An effect may have happened, or may still finish after cancellation.
+    Unknown,
+}
+
 /// 工具 trait
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -22,6 +35,15 @@ pub trait Tool: Send + Sync {
 
     /// 工具参数 schema（JSON Schema 格式）
     fn parameters_schema(&self) -> Value;
+
+    /// Classify errors and timeouts of this implementation conservatively.
+    ///
+    /// Only local implementations that never write workspace data, submit
+    /// external requests or otherwise perform effects may return `NoEffect`.
+    /// Custom tools and external MCP calls retain `Unknown` by default.
+    fn failure_effect(&self) -> ToolFailureEffect {
+        ToolFailureEffect::Unknown
+    }
 
     /// 执行工具
     async fn execute(&self, args: Value) -> Result<String, JiaClawError>;
@@ -134,6 +156,10 @@ impl WorkspaceListTool {
 
 #[async_trait]
 impl Tool for WorkspaceListTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "workspace_list"
     }
@@ -242,6 +268,10 @@ impl MemoryReadTool {
 
 #[async_trait]
 impl Tool for MemoryReadTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "memory_read"
     }
@@ -328,6 +358,10 @@ impl FileReadTool {
 
 #[async_trait]
 impl Tool for FileReadTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "file_read"
     }
@@ -1406,6 +1440,10 @@ impl Default for DateTimeTool {
 
 #[async_trait]
 impl Tool for DateTimeTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "datetime_now"
     }
@@ -1470,6 +1508,10 @@ impl Default for JsonQueryTool {
 
 #[async_trait]
 impl Tool for JsonQueryTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "json_query"
     }
@@ -1548,6 +1590,10 @@ impl FileListTool {
 
 #[async_trait]
 impl Tool for FileListTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "file_list"
     }

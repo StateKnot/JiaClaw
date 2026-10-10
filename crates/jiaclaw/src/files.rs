@@ -1310,6 +1310,10 @@ impl WorkspaceReadFileTool {
 
 #[async_trait]
 impl Tool for WorkspaceReadFileTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "read_file"
     }
@@ -1378,6 +1382,10 @@ impl WorkspaceListDirTool {
 
 #[async_trait]
 impl Tool for WorkspaceListDirTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "list_dir"
     }
@@ -1666,6 +1674,10 @@ impl WorkspaceGrepTool {
 
 #[async_trait]
 impl Tool for WorkspaceGrepTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "grep"
     }
@@ -1736,6 +1748,10 @@ impl WorkspaceGlobTool {
 
 #[async_trait]
 impl Tool for WorkspaceGlobTool {
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        crate::tools::ToolFailureEffect::NoEffect
+    }
+
     fn name(&self) -> &str {
         "glob"
     }

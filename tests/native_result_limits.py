@@ -21,7 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 parser = argparse.ArgumentParser()
 parser.add_argument('binary', nargs='?', default='target/debug/jiaclaw')
 parser.add_argument('--exec', action='store_true', dest='sandbox')
+parser.add_argument('--tool-errors', action='store_true', help='exercise failed attempts and known local pure errors')
+parser.add_argument('--legacy', action='store_true', help='exercise the existing development text-tool entry point')
 args = parser.parse_args()
+assert not args.legacy or args.tool_errors, '--legacy only qualifies failed-attempt behavior'
 binary = Path(args.binary).resolve()
 docker = os.environ.get('JIACLAW_TEST_DOCKER')
 image = os.environ.get('JIACLAW_TEST_EXEC_IMAGE')
@@ -43,16 +46,19 @@ def tool(call_id, name, arguments):
 
 
 def first_calls(case):
+    if case == 'pure-error':
+        return [tool('read-error', 'file_read', {'path': 'missing.txt'})]
     oversized = case != 'bounded'
     if args.sandbox:
         command = 'printf x >> effect-count; '
-        command += "head -c 300000 /dev/zero | tr '\\000' a" if oversized else 'printf ok'
+        command += ('sleep 20' if args.tool_errors else "head -c 300000 /dev/zero | tr '\\000' a") if oversized else 'printf ok'
         calls = [tool('effect', 'exec', {'command': 'fixture', 'args': ['-c', command]})]
         pending = tool('pending', 'exec', {'command': 'fixture',
                                          'args': ['-c', 'printf unexpected > pending-effect']})
     else:
         calls = [tool('effect', 'file_write', {'path': 'effect-count', 'content': 'x', 'mode': 'append'}),
-                 tool('read', 'file_read', {'path': 'output.txt'})]
+                 (tool('write-error', 'file_write', {'path': '../outside.txt', 'content': 'must not escape'})
+                  if args.tool_errors and oversized else tool('read', 'file_read', {'path': 'output.txt'}))]
         pending = tool('pending', 'file_write', {'path': 'pending-effect', 'content': 'unexpected'})
     if case in ('same-batch', 'compat-sse', 'cli'):
         calls.append(pending)
@@ -65,10 +71,11 @@ class Model(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            assert self.path == '/v1/chat/completions'
+            assert self.path == ('/chat/completions' if args.legacy else '/v1/chat/completions')
             assert self.headers['Authorization'] == 'Bearer ' + secret
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            assert body['stream'] is False
+            if not args.legacy:
+                assert body['stream'] is False
             case = next(m['content'] for m in body['messages'] if m['role'] == 'user')
             observed = posts.setdefault(case, [])
             observed.append(body)
@@ -83,7 +90,12 @@ class Model(BaseHTTPRequestHandler):
                     call['id'] += '-again'
             message = {'role': 'assistant', 'content': None if calls else 'Fixture finished.'}
             if calls:
-                message['tool_calls'] = calls
+                if args.legacy:
+                    message['content'] = '\n'.join('```tool\n' + json.dumps({
+                        'tool_name': call['function']['name'],
+                        'arguments': json.loads(call['function']['arguments'])}) + '\n```' for call in calls)
+                else:
+                    message['tool_calls'] = calls
             payload = json.dumps({'choices': [{'message': message,
                                  'finish_reason': 'tool_calls' if calls else 'stop'}]}).encode()
             self.send_response(200)
@@ -102,7 +114,10 @@ thread.start()
 env = {key: value for key, value in os.environ.items() if not key.startswith('JIACLAW_')}
 env['JIACLAW_LOG_LEVEL'] = 'info'
 try:
-    for case in ('bounded', 'same-batch', 'next-round', 'compat-sse', 'cli'):
+    cases = ('bounded', 'same-batch', 'next-round', 'compat-sse', 'cli')
+    if args.tool_errors:
+        cases += ('pure-error',)
+    for case in cases:
         process = None
         with tempfile.TemporaryDirectory(prefix='jiaclaw-result-limit-') as temporary:
             root = Path(temporary).resolve()
@@ -119,13 +134,13 @@ try:
                 'agent': {'name': 'result-limit', 'description': 'Fixture',
                           'system_instructions': 'Use authorized tools only.', 'max_turns': 10,
                           'max_tool_iterations': 4, 'workspace_path': str(workspace)},
-                'provider': {'provider_type': 'brokerrouter', 'model': 'fixture',
+                'provider': {'provider_type': 'openai_compatible' if args.legacy else 'brokerrouter', 'model': 'fixture',
                              'base_url': 'http://127.0.0.1:' + str(model.server_port), 'api_key': secret},
                 'http': {'bind': '127.0.0.1:0', 'api_token': token, 'persist': True,
                          'persist_path': '../state/sessions.sqlite3', 'shutdown_timeout_secs': 1}}
             if args.sandbox:
                 settings['tools'] = {'exec': {'enabled': True, 'docker_path': docker,
-                    'image': image, 'commands': {'fixture': '/bin/sh'}, 'timeout_secs': 30,
+                    'image': image, 'commands': {'fixture': '/bin/sh'}, 'timeout_secs': 4 if args.tool_errors else 30,
                     'max_output_bytes': 400000, 'workspace_read_only': False, 'user': '65534:65534'}}
             config.write_text(json.dumps(settings))
             log = root / 'host.log'
@@ -137,7 +152,7 @@ try:
                     assert cli.returncode == 0, cli.stderr
                     status = 'requireshumaninput' if '状态: RequiresHumanInput' in cli.stdout else 'completed'
                     count = cli.stdout.count('   • ')
-                    error = 'do not replay' in cli.stdout
+                    error = ('effect_status' in cli.stdout and 'unknown' in cli.stdout) if args.tool_errors else 'do not replay' in cli.stdout
                     prior_posts = len(posts[case])
                     exported = root / 'history.jsonl'
                     subprocess.run([str(binary), 'session', 'export', 'result-limit-cli',
@@ -165,7 +180,7 @@ try:
                     assert base, log.read_text()
                     body = {'session_id': 'result-limit-' + case,
                             'messages': [{'role': 'user', 'content': case}],
-                            'enabled_tools': ['exec'] if args.sandbox else ['file_write', 'file_read'],
+                            'enabled_tools': ['file_read'] if case == 'pure-error' else (['exec'] if args.sandbox else ['file_write', 'file_read']),
                             'stream': case == 'compat-sse'}
                     request = urllib.request.Request(base + '/api/chat', data=json.dumps(body).encode(),
                         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
@@ -178,13 +193,18 @@ try:
                         result = json.loads(next(line[6:] for line in frames[0].splitlines() if line.startswith('data: ')))
                         status = result['status']
                         count = len([frame for frame in raw.split('\n\n') if 'event: tool\n' in frame])
-                        error = 'do not replay' in raw
+                        # Compatibility SSE deliberately exposes tool summaries,
+                        # not the full result object carried by JSON/CLI.
+                        error = any('error' in json.loads(line[6:])
+                                    for frame in raw.split('\n\n') if 'event: tool\n' in frame
+                                    for line in frame.splitlines() if line.startswith('data: ')) if args.tool_errors else 'do not replay' in raw
                     else:
                         result = json.loads(raw)
                         status = result['status']
                         count = len(result['tool_calls'])
                         error = any(isinstance(call.get('result'), dict)
-                                    and 'do not replay' in call['result'].get('error', '')
+                                    and (call['result'].get('effect_status') == 'unknown' if args.tool_errors
+                                         else 'do not replay' in call['result'].get('error', ''))
                                     for call in result['tool_calls'])
                     prior_posts = len(posts[case])
                     history_request = urllib.request.Request(base + '/api/sessions/result-limit-' + case,
@@ -196,16 +216,20 @@ try:
                         assert history[-1] == result['message']
                     assert len(posts[case]) == prior_posts, 'reading committed history submitted another model request'
                 record = {'case': case, 'mode': 'exec' if args.sandbox else 'file', 'status': status,
-                          'effect_count': len((workspace / 'effect-count').read_text()),
+                          'provider': 'legacy' if args.legacy else 'native', 'failure_mode': args.tool_errors,
+                          'effect_count': len((workspace / 'effect-count').read_text()) if (workspace / 'effect-count').exists() else 0,
                           'pending_effect': (workspace / 'pending-effect').exists(),
                           'model_submissions': len(posts[case]), 'tool_records': count}
                 reports.append(record)
-                expected_records = 1 if args.sandbox else 2
-                expected_status = 'completed' if case == 'bounded' else 'requireshumaninput'
-                if not (status == expected_status and record['effect_count'] == 1
+                expected_records = 1 if args.sandbox or case == 'pure-error' else 2
+                expected_status = 'completed' if case in ('bounded', 'pure-error') else 'requireshumaninput'
+                if case == 'pure-error':
+                    assert result['tool_calls'][0]['result']['effect_status'] == 'no_effect', result
+                    assert 'error' in result['tool_calls'][0]['result'], result
+                if not (status == expected_status and record['effect_count'] == (0 if case == 'pure-error' else 1)
                         and not record['pending_effect'] and count == expected_records
-                        and len(posts[case]) == (2 if case == 'bounded' else 1)
-                        and (case == 'bounded' or error)):
+                        and len(posts[case]) == (2 if case in ('bounded', 'pure-error') else 1)
+                        and (case in ('bounded', 'pure-error') or error)):
                     failures.append(record)
                 assert not fixture_errors, fixture_errors
                 assert secret not in (log.read_text() if log.exists() else '')
@@ -223,8 +247,11 @@ try:
                     if containers:
                         subprocess.run([docker, 'rm', '-f', *containers], check=True, stdout=subprocess.DEVNULL)
     print(json.dumps({'cases': reports}, ensure_ascii=False), flush=True)
-    assert not failures, 'completed result loss continued dispatch: ' + json.dumps(failures)
-    print('PASS: bounded output completes; completed result loss stops the batch and next model round in HTTP, compatibility SSE and ordinary CLI; effect/history retained')
+    assert not failures, ('unknown failed attempt continued dispatch: ' if args.tool_errors else 'completed result loss continued dispatch: ') + json.dumps(failures)
+    if args.tool_errors:
+        print('PASS: unknown failed attempts stop batch/model dispatch in HTTP, compatibility SSE and CLI; trusted local pure errors remain recoverable')
+    else:
+        print('PASS: bounded output completes; completed result loss stops the batch and next model round in HTTP, compatibility SSE and ordinary CLI; effect/history retained')
 finally:
     model.shutdown()
     model.server_close()
