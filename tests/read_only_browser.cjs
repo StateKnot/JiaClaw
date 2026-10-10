@@ -124,7 +124,17 @@ const execFile=util.promisify(child.execFile),sleep=ms=>new Promise(resolve=>set
   await page.route('**/api/gateway/capabilities',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({scheduled_jobs:true,read_only:'false'})}));
   await page.locator('#api-token').fill(read.token);await page.getByRole('button',{name:'连接',exact:true}).click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('权限信息响应异常'));
   assert(await page.locator('#refresh').isDisabled());assert.strictEqual(await page.locator('#sessions button').count(),0);assert.strictEqual(await page.locator('#access-mode').isVisible(),false);await page.unroute('**/api/gateway/capabilities');
-  await viewer();await cli('key-revoke','--key',read.key_id);await page.locator('#refresh').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('鉴权失败'));
+  // Readonly paging goes through the real gateway allowlist and private DB.
+  await viewer();
+  const priorSessions=(await api(read.token,'/api/sessions')).body.sessions.length;
+  for(let i=0;i<53;i++)assert.strictEqual((await api(full.token,'/api/sessions','POST')).status,200);
+  await page.locator('#refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#sessions button').length===50&&!document.getElementById('session-next').disabled);
+  const listed=await page.locator('#sessions button').evaluateAll(buttons=>buttons.map(b=>b.title));
+  await page.locator('#session-next').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='已读取下一页会话');
+  const next=await page.locator('#sessions button').evaluateAll(buttons=>buttons.map(b=>b.title));assert.strictEqual(new Set([...listed,...next]).size,53+priorSessions);assert.strictEqual(next.length,53+priorSessions-50);assert(await page.locator('#session-next').isDisabled());
+  assert(await page.locator('#new-session').isDisabled());assert(await page.locator('#send').isDisabled());
+  console.log('PASS: actual readonly gateway Chromium catalog pagination, private history authority retained');
+  await cli('key-revoke','--key',read.key_id);await page.locator('#refresh').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('鉴权失败'));
   assert.strictEqual(await page.locator('#sessions button').count(),0);assert.strictEqual(await page.locator('#messages .message').count(),0);assert.strictEqual(await page.locator('#access-mode').isVisible(),false);assert(await page.locator('#new-session').isDisabled());
   await page.reload();assert(await page.locator('#refresh').isDisabled());assert.deepStrictEqual(errors,[]);
   console.log('PASS: real gateway/SQLite/Chromium read-only history and scheduled results; forced DOM sends zero mutations/models/holds; full-key switch, stale capability, malformed metadata and revocation fail closed; memory-only token/mobile layout');

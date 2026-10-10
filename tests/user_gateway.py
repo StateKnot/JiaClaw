@@ -181,8 +181,14 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-user-gateway-') as temp:
         assert connection.getresponse().status == 401
         connection.close()
         count = len(observed)
-        for path in ['/api/jobs', '/metrics', '/api/tools', '/api/sessions/%2e%2e', '/api/sessions/a%2fb', '/api/sessions/a/export?format=json&format=json', '/api/sessions?tenant=bob']:
+        for path in ['/api/jobs', '/metrics', '/api/tools', '/api/sessions/%2e%2e', '/api/sessions/a%2fb', '/api/sessions/a/export?format=json&format=json']:
             assert request(path, alice['token'])[0] == 404, path
+        # The known catalog route authenticates before rejecting an invalid query.
+        # It must not forward the tenant selector or admit a queried creation.
+        assert request('/api/sessions?tenant=bob')[0] == 401
+        assert request('/api/sessions?tenant=bob', 'invalid')[0] == 401
+        assert request('/api/sessions?tenant=bob', alice['token'])[0] == 403
+        assert request('/api/sessions?limit=1', alice['token'], 'POST')[0] == 403
         assert len(observed) == count
         assert chat(alice['token'], stream=True)[0] == 400
         assert request('/api/chat', alice['token'], 'POST', {'messages': []})[0] == 400

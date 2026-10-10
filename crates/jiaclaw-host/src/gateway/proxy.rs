@@ -73,6 +73,9 @@ fn allowed(method: &Method, uri: &Uri) -> bool {
     let Some(query) = uri.query() else {
         return true;
     };
+    if path == "/api/sessions" {
+        return method == Method::GET && crate::store::SessionPageQuery::parse(Some(query)).is_ok();
+    }
     if query.is_empty() || query.len() > 256 {
         return false;
     }
@@ -145,7 +148,15 @@ pub(super) async fn handle(
         return super::turns::handle(state, request).await;
     }
     let request_id = Uuid::new_v4();
-    if !allowed(request.method(), request.uri())
+    let route_allowed = allowed(request.method(), request.uri());
+    // A known catalog route authenticates before rejecting its query. Other
+    // unknown routes retain the existing 404 contract and URI restrictions.
+    let catalog_query_rejected = !route_allowed
+        && request.uri().path() == "/api/sessions"
+        && matches!(*request.method(), Method::GET | Method::POST)
+        && request.uri().scheme().is_none()
+        && request.uri().authority().is_none();
+    if (!route_allowed && !catalog_query_rejected)
         || (jobs_path(request.uri().path()) && !state.scheduled_jobs)
     {
         return error(StatusCode::NOT_FOUND, "route unavailable", request_id);
@@ -187,6 +198,13 @@ pub(super) async fn handle(
     // Key permissions are authority from the private registry, never request
     // metadata. Reject before reading a body, taking backend capacity or
     // persisting a hold; denied requests must not reach a tenant backend.
+    if catalog_query_rejected {
+        return error(
+            StatusCode::FORBIDDEN,
+            "invalid session page query",
+            request_id,
+        );
+    }
     if principal.read_only && request.method() != Method::GET {
         return error(StatusCode::FORBIDDEN, "read-only API key", request_id);
     }

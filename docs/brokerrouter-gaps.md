@@ -1,5 +1,7 @@
 # Brokerrouter 消费方状态
 
+2026-10-10 04:36 UTC 本批官方预检：45个附着PR58–102当前head checks SUCCESS，无代码review/thread；PR102七作业/四候选已逐项回填。StateKnot main aa11b4f/唯一alpha.1/#140 OPEN无回复、Brokerrouter main e01ecb9/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea未变化，没有新可消费durable/stdio合同。本批会话摘要、分页与TTL修复属于应用接线，不向框架重复报issue，不扩大HTTP MCP、原生Schema、供应商或恢复资格。
+
 2026-10-10 审查后修复预检：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/唯一alpha.1/#140 OPEN无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea不变。44个附着PR58–101当前head checks SUCCESS、无代码review/thread；PR101最终资格已[回填](validation.md#pr-101-租户-sse-api-最终资格回填)。本轮修复已完成工具结果超限后普通入口继续派发，属于JiaClaw应用缺陷，不向框架重复建issue、不扩大原生Schema、durable或真实供应商资格。
 
 2026-10-10 租户SSE API批次再次官方核对：StateKnot main `aa11b4f44a948aaf2e2baba4c30a297dc828ce6d`/唯一alpha.1/#140 OPEN无回复；Brokerrouter main `e01ecb94919d992eb0b74b3db00d70742820b4cc`/无release/#31 OPEN一回复/#41 OPEN无回复/PR40 draft未合并head7a7afea不变。附着PR58–100当前head检查全部SUCCESS，无代码review/thread。PR100最终七CI/四候选已[回填](validation.md#pr-100-网关停机最终资格回填)；本批[租户SSE API](tenant-http-turns.md#个人-key-sse-api)消费现成原生HTTP/模型SSE，补应用身份、授权、实际投递owner、取消和结算，不把应用接线缺失上报为框架缺陷。不增加stdio/写MCP、durable图/子Agent、原生Schema、真实供应商或代理资格，也不重复建issue。

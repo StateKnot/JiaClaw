@@ -741,7 +741,7 @@
         ],
         "summary": "列出会话",
         "operationId": "listSessions",
-        "description": "返回内存中当前未过期会话摘要（id 与 message_count）。启用 Session TTL 时会先清理过期项。落盘开启时也以内存 store 为准，与 chat/delete 一致。",
+        "description": "从权威 Memory/SQLite 存储返回有界摘要页，仅含 id 与 message_count。默认/最多 50 条，按 ID UTF-8 字节升序；has_more 为 true 时必须用 next_cursor 查询后续页。游标为末条 ID 的小写十六进制 UTF-8，after 为排他位置，不是快照。不会读取 Rust 消息正文或刷新任何 last_accessed；启用 TTL 时仍清理过期会话。网关驱动的 job: 结果在分页前排除。旧客户端必须处理新增分页字段，不能将第一页当全部。",
         "security": [
           {
             "bearerAuth": []
@@ -783,8 +783,34 @@
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "400": {
+            "description": "未知/重复参数、非规范数字、无效游标或超长查询"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 50
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2048,
+              "pattern": "^(?:[0-9a-f]{2})+$"
+            },
+            "description": "上一页的 next_cursor；必须解码为 UTF-8。"
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -3875,14 +3901,31 @@
       "ListSessionsResponse": {
         "type": "object",
         "required": [
-          "sessions"
+          "sessions",
+          "limit",
+          "has_more",
+          "next_cursor"
         ],
         "properties": {
           "sessions": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SessionSummary"
-            }
+            },
+            "maxItems": 50
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2048
           }
         }
       },
