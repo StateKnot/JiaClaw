@@ -44,7 +44,7 @@ SessionStore 的会话库以及独立用户 Telegram/Slack/Discord/飞书/企业
 - `/hooks/inbound`, `/hooks/telegram`, `/hooks/slack`, `/hooks/discord`, `/hooks/feishu`, `/hooks/wecom`, `/hooks/dingtalk`：按各平台合同验证 secret、公钥、签名或加密消息；具名渠道还要求显式安装及身份策略。企业微信同一路径支持 GET 验证和 POST 加密 XML 回调。钉钉为企业内部机器人 HTTP 私聊，timestamp/sign 不涵盖正文，依赖可信 HTTPS 入口并独立校验安装与企业成员；不消费 sessionWebhook。
 - `/health` 公开；`/metrics` 依配置鉴权。API 使用 Bearer 或 X-Api-Token。共享限流、body 上限、request ID 与优雅退出沿用现有中间件。
 
-普通 `serve` 的 API token 是实例级鉴权，不是用户身份，其个人工作区与渠道共用资源。多用户通过独立的 [gateway](gateway.md) 入口、个人 Key 和每用户专属后端实现授权与资源隔离；持久 JSON/SSE 原请求 API 已接线，工作台当前采用 JSON，租户预览 UI 仍待接线。两种部署模式须分别遵循各自合同。
+普通 `serve` 的 API token 是实例级鉴权，不是用户身份，其个人工作区与渠道共用资源。多用户通过独立的 [gateway](gateway.md) 入口、个人 Key 和每用户专属后端实现授权与资源隔离；持久 JSON/SSE 原请求 API 已接线，工作台按认证协议2使用有界预览、协议1使用JSON；本地与固定head官方资格分别记录。两种部署模式须分别遵循各自合同。
 
 ## 文件与执行边界
 

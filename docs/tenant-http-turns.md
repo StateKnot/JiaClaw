@@ -68,9 +68,9 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 
 ## 个人 Key 工作台
 
-在根页面连接自己的完整或只读 Key。工作台分别校验网关 JSON 和 standalone 流式能力；开启tracked_turns的网关不需要也不探测私密工具/技能或SSE入口。网关请求能力被拒绝403、暂不可用503或合同异常时拒绝连接，不退回旧发送路径；只有该功能明确不存在404才保持已有普通会话方式。完整Key新建原请求会话后，显式选择时间/JSON查询工具并发送。原编号只保存在当前地址fragment，密钥、提示词、授权与草稿留在内存；不使用local/sessionStorage。
+在根页面连接自己的完整或只读 Key。工作台分别校验网关能力和 standalone 流式能力；协议2采用有界预览，协议1采用下述JSON观察。开启tracked_turns的网关不需要也不探测私密工具/技能目录。网关请求能力被拒绝403、暂不可用503或合同异常时拒绝连接，不退回旧发送路径；只有该功能明确不存在404才保持已有普通会话方式。完整Key新建原请求会话后，显式选择时间/JSON查询工具并发送。原编号只保存在当前地址fragment，密钥、提示词、授权与草稿留在内存；不使用local/sessionStorage。
 
-本页从首次提交前开始最多观察30秒，后续只GET同一原编号，每次最多15秒，收据读取2MiB+20KiB、目录32KiB、能力16KiB。观察截止、刷新或关闭页面不取消已经准入的异步JSON执行。按“核对结果”查询原收据；取消按钮独立记录原停止意图。响应丢失时保留原编号/草稿，只有明确操作才以确切相同ID/正文再提交，由网关既有永久身份保证GET-only；页面不自动重连或重发。
+协议1的JSON流程从首次提交前开始最多观察30秒，后续只GET同一原编号，每次最多15秒，收据读取2MiB+20KiB、目录32KiB、能力16KiB。观察截止、刷新或关闭页面不取消已经准入的异步JSON执行。按“核对结果”查询原收据；取消按钮独立记录原停止意图。响应丢失时保留原编号/草稿，只有明确操作才以确切相同ID/正文再提交，由网关既有永久身份保证GET-only；页面不自动重连或重发。
 
 最后一次读取因剩余观察期限到期而中断时，页面显示“观察已结束”，该收据不再视为最新核对，不据此标记完成或解除跟踪；原编号、草稿与服务端占用仍保留。先命中的独立15秒RPC超时、HTTP拒绝和畸形响应仍报告未确认的请求失败。两种超时依据本页实际定时器及原预算区分，不匹配错误文案、不续期、不增加请求。
 
@@ -80,7 +80,7 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 
 ## 个人 Key SSE API
 
-`PUT /api/turns/<原UUIDv4>/stream` 与JSON使用确切同一正文/规范化哈希、永久身份和原用户write hold。新身份只发送一次私密后端stream PUT；重复身份仅GET原收据并返回200 JSON，包括已完成、当前运行、失联、重启及管理员清hold后。没有流续接、自动重连或新编号重放。普通PUT和已有Web JSON语义继续保留；本批不自动把工作台切到流式。
+`PUT /api/turns/<原UUIDv4>/stream` 与JSON使用确切同一正文/规范化哈希、永久身份和原用户write hold。新身份只发送一次私密后端stream PUT；重复身份仅GET原收据并返回200 JSON，包括已完成、当前运行、失联、重启及管理员清hold后。没有流续接、自动重连或新编号重放。普通PUT和协议1的Web JSON语义继续保留；协议2的工作台接线见下文。
 
 新SSE响应202，唯一Content-Type为 `text/event-stream; charset=utf-8`，no-store/nosniff/X-Accel-Buffering:no。事件同[持久HTTP SSE](http-streaming.md)：admitted、model_started、preview、model_completed、tool_completed、done；仅在原模型remote ID已存账本后可发预览。预览不表示保存或授权。网关逐帧校验原UUID/会话/请求hash、上下文hash/准入时间、规范model操作/remote UUID、轮次、tool名称与本次显式授权；未知字段/非法顺序/UTF-8/framing/超预算停止交付并核对原编号。最终done使用再次GET获得的原终态收据，只在后端active=false和实际gateway settlement完成后发送；原始后端done不能自行解除网关hold。
 
@@ -91,3 +91,11 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 原响应完整校验之前的取消、交付失败或异常合同保留审核hold，即使后续原GET显示completed且active=false。该停止证据允许释放实际执行容量，但不能自动免除协议异常的人工核对。有效原SSE终态或有效200 JSON lookup，再经原GET停止证明与实际gateway成功结算后，终态帧丢失不重新制造hold；客户端仍须以原ID核对结果，不创建替代执行。
 
 授权固定于原准入：撤销Key/禁用用户阻止新请求和后续GET/cancel，不撤销已提交模型或原授权工具的既有事实。客户端保留原ID及确切正文；断线后显式GET，必要时由可信管理员核对。SIGKILL/restart保留原永久索引和审核hold，不恢复预览/图/工具执行；协议升级不提供跨库原子性。真实TLS反向代理、供应商、渠道安装和完整个人Agent生产认证仍独立开放。
+
+## 个人 Key 预览工作台
+
+工作台在认证能力严格声明 gateway_protocol=2、streaming=true 与固定预算时，使用现有增量解析/显示模块发送原UUID的 `/stream` PUT。只选择本次允许的时间/JSON工具；不自动增加授权，不探测管理员工具目录。每轮临时文字独立、textContent显示，保留有限wire/帧/UTF-8/DOM预算；完整done和EOF还须原GET确认，最后的GET与交付共用原期限/取消signal。200 JSON仅表示原身份重复查证，不恢复订阅或派发。具体预算见[Web合同](web-streaming.md)。
+
+断流、刷新、pagehide或换Key关闭实际浏览器delivery，服务器仍按原owner/hold结算；与JSON的断开不取消异步执行语义分别保留。显式取消先持久原停止意图再abort交付。原编号、草稿、只有内存的权限与密钥、只读/跨用户查证和管理员独立核对沿用上文；仅GET的只读Key不会打开流式PUT，完成查看也不清管理员审核hold。
+
+本地验收使用真实嵌入资源、Chromium、两个私有后端/实际网关/SQLite/模型fixture，九组覆盖实际准入后的预结算预览、reload/只读GET、持久取消与真实owner、前端终态授权故障、真实响应丢失后的显式同ID200/GET、换Key的迟到结算和独立用户。第九组保持真实合法done/EOF，只篡改最终GET或重复200的工具名；已在初版复现错误清草稿，最终done、200、GET共享receipt的本次选择核验后全部拒绝，正确原GET才解除跟踪。两项期限用明确前端故障fixture缩短原长timer并延迟headers/final GET；真实服务器/模型/control期限不变，不宣称物理85秒、真实代理或供应商认证。原十组JSON工作台另以严格协议1能力形状的前端fixture，在当前真实JSON后端路径验证兼容，不冒充另一历史版本的实机资格。固定最终head的官方CI仍须单独验收。

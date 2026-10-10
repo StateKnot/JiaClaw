@@ -66,7 +66,7 @@
     }
     return value;
   }
-  function receipt(r, expected) {
+  function receipt(r, expected, tools = null) {
     require(object(r) && uuid.test(r.id) && typeof r.session_id === 'string' && r.session_id.startsWith('http:') && uuid.test(r.session_id.slice(5)));
     require(hash.test(r.request_hash) && hash.test(r.context_hash));
     require(Number.isSafeInteger(r.created_ms) && r.created_ms >= 0 && (r.finished_ms === null || Number.isSafeInteger(r.finished_ms)));
@@ -74,6 +74,7 @@
     require(['running','completed','needs_review'].includes(r.state) && (r.error === null || text(r.error, 512)));
     require((r.reviewed_ms === null || Number.isSafeInteger(r.reviewed_ms)) && (r.review_note === null || text(r.review_note, 1024)));
     require(r.result === null || (object(r.result) && text(r.result.reply, 2 * MiB) && text(r.result.status, 64) && Array.isArray(r.result.tool_names) && r.result.tool_names.length <= 2048 && r.result.tool_names.every(name => text(name, 128))));
+    require(!tools || !r.result || r.result.tool_names.every(name => tools.has(name)));
     require(!r.result_purged || r.result === null);
     require(r.state !== 'running' || (r.finished_ms === null && !r.session_committed && r.result === null && !r.result_purged && r.reviewed_ms === null));
     require(r.state === 'running' || (r.finished_ms !== null && r.finished_ms >= 0));
@@ -85,14 +86,14 @@
     }
     return r;
   }
-  function snapshot(value, expected) {
+  function snapshot(value, expected, tools = null) {
     require(object(value) && value.protocol === 1 && typeof value.active === 'boolean');
-    receipt(value.receipt, expected);
+    receipt(value.receipt, expected, tools);
     return value;
   }
-  function gatewaySnapshot(value, expected) {
+  function gatewaySnapshot(value, expected, tools = null) {
     require(object(value) && Object.keys(value).length === 3 && ['protocol','receipt','active'].every(k => Object.hasOwn(value,k)));
-    snapshot(value, expected);
+    snapshot(value, expected, tools);
     require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query'].includes(t)));
     return value;
   }
@@ -136,10 +137,13 @@
       const value = JSON.parse(match[2]), name = match[1];
       require(object(value) && value.event === name);
       if (name === 'admitted' || name === 'done') {
-        require(value.protocol === 1); receipt(value.receipt, this.admitted || this.expected);
+        require(value.protocol === 1); receipt(value.receipt, this.admitted || this.expected, this.tools);
         if (name === 'admitted') {
           require(!this.admitted && value.receipt.state === 'running' && bytes(match[2]) <= 16384); this.admitted = value.receipt;
-        } else { require(this.admitted && value.receipt.state !== 'running'); this.terminal = true; }
+        } else {
+          require(this.admitted && value.receipt.state !== 'running');
+          this.terminal = true;
+        }
       } else {
         require(this.admitted && bytes(match[2]) <= 8192);
         if (name === 'error') { require(value.code === 'http_stream_requires_review'); this.terminal = true; }

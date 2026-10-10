@@ -982,3 +982,23 @@ mattpocock-skills 的规范/规格双轴审查发现应用结算缺陷：原生 
 四上传ZIP摘要和固定run/head已交叉核对，归档安装按实际作业日志认证，未独立下载ZIP。最终源码/编译输入/binary/日志/review/资产/正文读回固定于本机 `/tmp/jiaclaw-oct10o-tenant-stream-review-delivery/pin.json`，不是公开资产。协议拒绝后的审核hold必须保留，实际idle容量独立释放；有效200 JSON原ID查询正常结算。租户预览UI、stdio/外部写入、durable、供应商/代理和公开发布仍未完成。
 
 该固定版本随后在累计审查中被发现普通调用的结果超限继续派发缺陷；上述CI没有覆盖此场景，不能据此声称没有缺陷。新修复及新回归以独立固定head验收。
+
+## PR #103 会话目录最终 CI 回填
+
+Fixed head `0e1d28fe5f3012e59e19fb96eadc03e1d6666c48`, merge `3238c5c12c2924cc02d4d42a2552c6a2c20edd81`, tree `7f488d1024cfb375992712f65df570e0b93a7d92`. [CI attempt 2](https://github.com/StateKnot/JiaClaw/actions/runs/38026566592/attempts/2) and [Release qualification](https://github.com/StateKnot/JiaClaw/actions/runs/38026566609) completed successfully. All seven successful job logs, the same merge tree/parents, four actual archive/source/installation records and draft-release skip were checked; these are PR #103 evidence, not inherited PR #102 qualification.
+
+Both native CI jobs ran 40 mandatory Python suites, Rust (macOS 1224 / Linux 1225 platform-dependent passes), parser contract and four actual session-catalog groups. Linux additionally ran six Chromium suites, both new pagination cases, real Docker/exec and tenant ENOSPC/container recovery. Four optimized candidates each ran the new catalog acceptance and 13 archive installation checks.
+
+| Job | ID | Archive SHA-256 |
+|---|---|---|
+| container | 114145233585 | n/a |
+| test (macos-14) | 114145232927 | n/a |
+| test (ubuntu-24.04) | 114145233741 | n/a |
+| build (macos-14, aarch64-apple-darwin) | 114138553466 | 598aec30e26c431b18df14332ce8cc9afb8b4400bd69bfa619c47d35e91c20b5 |
+| build (ubuntu-24.04, x86_64-unknown-linux-gnu) | 114138553573 | 9892ca0cc2f3942ecce1130275bcaeccd407a04e04588cbe182f7f58df2a02e1 |
+| build (ubuntu-24.04-arm, aarch64-unknown-linux-gnu) | 114138553607 | 365f0f24e5c7514fe241fd40964f4999924342fb0dc53d4b0c91148fa6c9d08c |
+| build (macos-15-intel, x86_64-apple-darwin) | 114138553615 | a88b732c42464125ea9826baa7a4dd071aff620578dcb1549eadcd5d3d71c40e |
+
+First macOS attempt failed in existing Discord group 8: queue admission returned 503 instead of 200 while filling 1000 rows. The original fixed binary passed all nine groups locally plus four isolated real capacity trials. One same-head failed-job rerun passed without source/assertion/deadline changes. **Root cause remains unconfirmed; rerun success is not a defect fix.** Keep first failed log/diagnosis separate from this final successful qualification.
+
+Evidence: `/tmp/jiaclaw-oct10-session-catalog-ci-audit/evidence.json`; first failure `/tmp/jiaclaw-oct10-session-catalog-heartbeat0542/macos-failed.log`; diagnosis `/tmp/jiaclaw-oct10-catalog-ci-fix-delivery/diagnosis.json`. No merge/public release, durable/stdio/external-writing or real supplier qualification.

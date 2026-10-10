@@ -13,6 +13,15 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
  const lookup=async id=>{await page.locator('#turn-lookup-id').fill(id);await page.locator('#turn-lookup button').click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled);};
  const terminal=async id=>until(async()=>{const v=await original(id);return v.receipt.state!=='running'&&!v.active?v:null;},'actual original terminal');
  const noStorage=async()=>assert.strictEqual(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
+ // Keep the existing JSON transport qualification. Only advertise the exact
+ // supported protocol-1 shape to this browser; all execution/registry/GETs are
+ // real current gateway routes. Raw protocol-2 UI has its own preview suite.
+ await page.context().route('**/api/turns/capabilities',async route=>{
+  const r=await route.fetch({maxRetries:0,maxRedirects:0}),j=await r.json();
+  j.gateway_protocol=1;j.streaming=false;
+  for(const name of ['stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes'])delete j[name];
+  await route.fulfill({response:r,json:j});
+ });
  try {
   await page.goto(cfg.base);await connect();assert.strictEqual(await page.locator('#new-session').isDisabled(),false);assert.strictEqual(await page.locator('#turn-catalog-filter').isVisible(),false);assert((await page.locator('#turn-mode').textContent()).includes('30 秒'));
   await page.locator('#new-session').click();await page.locator('#message').fill('permission-negative');await page.locator('#send').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('请选择本次允许'));

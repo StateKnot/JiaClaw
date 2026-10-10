@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-10 PR #103 固定 head 0e1d28fe 的七官方作业/四实际候选已逐项核对，[最终回填](validation.md#pr-103-会话目录最终-ci-回填)保留首次Mac Discord 503及同head重跑成功、根因未确认的区别。本轮在该head继续[个人Key预览工作台](tenant-http-turns.md#个人-key-预览工作台)，严格协议2接同一解析/有界显示/原编号GET，协议1保持JSON。初版双轴审查确认200/final GET遗漏本次工具选择，实际故障先复现再共享receipt核验；最终真实双后端/网关/Chromium九组预览通过，十组JSON兼容与旧浏览器复核以交付记录为准。固定提交的双轴复核和官方CI仍须验收，不借用API或PR103资格。
+
 2026-10-10 会话目录批次先完成 PR #102 的七官方作业与四候选实际日志核对，见[最终回填](validation.md#pr-102-执行结果丢失修复最终-ci-回填)。随后按审查修复[目录资源边界](session-catalog.md)：Memory/SQLite 存储侧摘要、最多50条游标页、网关只读查询接线、TTL不触达与SQL分批清理，工作台只保留当前页。新 head 的本地/双轴/官方资格分开记录；租户预览 UI 随后推进，已有 SSE API 资格不代替 UI。
 
 2026-10-09 已核对组织迁移、PR #58–#91 当前 head CI 与两框架固定合同，见[迁移与最终验收](organization-migration.md)。StateKnot #155 的未发布 Core 输出 Schema/fuzz 变更不改变当前 alpha.1 HTTP MCP 字节。现有回访按用户“恢复”指令保持启用，仍在每批完成后 30 分钟继续；下文旧暂停记录属于当时状态。此表以交付能力为准，不以文档里的设计或存根作为“完成”。
@@ -11,7 +13,7 @@
 | 2 | 受控 exec | 实现并真实 Docker 验收 | 默认禁用、白名单、固定镜像、非 root/无网络、超时/输出限制、清理；SIGKILL 边界见配置说明 |
 | 3 | SQLite 会话 | 实现并进程级验收；本批修复取消时的存储所有权 | 创建/对话/删除持久化、一次性 JSON 迁移、独占锁、并发串行、SIGKILL 后恢复；[取消合同](session-cancellation.md)覆盖排队、写锁争用、导入/删除和失败后释放 |
 | 4 | MCP 客户端 | HTTP 只读工具已接线并协议/整机 fixture 验收 | 精确 StateKnot 版本、工具白名单/描述 pin、离线 schema、鉴权/有界调用/取消；本批补齐进程四槽 Schema worker 与原始总期限，超时后容量归实际工作持有，固定提交 CI 见本批交付；[使用边界](mcp.md)。外部服务器独立认证，写入需 durable；stdio 上游 [#140](https://github.com/StateKnot/StateKnot/issues/140) |
-| 5 | Web 工作台 | standalone 流式/目录已通过 PR #97；个人 Key JSON 工作台已通过 PR #99；租户预览 UI 待接线 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥；[Web 流式](web-streaming.md)显式工具授权、原编号/取消/刷新核对与有界预览，固定 head 资格按各批交付记录 |
+| 5 | Web 工作台 | standalone 流式/目录已通过 PR #97；个人 Key JSON 工作台已通过 PR #99；租户预览 UI 本地九组通过，固定head资格待验收 | 内置同源静态资源；管理员发件箱复用现有授权和持久 outbox，支持分页、详情、未知核对与整来源取消；[权限和恢复边界](web-outbox.md)。无模型 HTML 执行、无浏览器持久密钥；[Web 流式](web-streaming.md)显式工具授权、原编号/取消/刷新核对与有界预览，固定 head 资格按各批交付记录 |
 | 5a | Brokerrouter 原生工具往返 | 实现；按本批 fixture 验收 | 原生 tools/tool_calls/role:tool、调用 ID 关联、整批权限/参数预检、正文不执行、有限调用预算；[合同与验收方法](native-tools.md)。真实供应商 #31 与 durable #41 仍开放 |
 | 6 | cron 多任务 | 实现；含 Telegram/Slack/Discord/飞书/企业微信/钉钉定时通知 | SQLite jobs/runs、鉴权增删查与暂停/恢复、明确时区/DST、原子领取/完成、配额与中断暂停；[运行边界](scheduler.md)。[定时通知](scheduled-delivery.md) 与运行/会话原子提交、目的地单独授权，无副作用自动重放 |
 | 7 | 渠道统一出站 | Telegram/Slack/Discord/飞书/企业微信/钉钉已实现；企业微信启动门槛已通过 PR #86 CI | 持久 inbox 去重、授权白名单、统一有界发送、共享 outbox/回执、429 冷却、未知结果人工核对；[合同](channels.md)。定时 Telegram/Slack/Discord/飞书/企业微信/钉钉已接入；[飞书](feishu.md)限企业自建单租户文本，[企业微信](wecom.md)限专用自建应用与精确成员文本，本批实际 serve 在 Agent/MCP/数据库/监听/worker 前校验 token、AgentID、启用状态和三类白名单的显式人员可见范围，新增六组/32 负例及无凭据停发维护通过，PR #86 最终三项 CI 已通过；[钉钉](dingtalk.md)限内部应用机器人、获准成员私聊；[Discord](discord.md) Bot 定时文字已接线；WhatsApp 及真实安装认证仍待完成 |
@@ -19,7 +21,7 @@
 | 9 | 模型路由与降级 | 按任务来源选逻辑模型已接线；网关端点降级待联合认证 | 管理员配置聊天/渠道/定时/心跳/摘要模型与有界输出策略，每轮工具循环固定选择；[路由合同](model-routing.md)。端点降级归 Brokerrouter，应用不在未知结果后换模型或重发；真实供应商 #31 仍开放 |
 | 9a | 模型调用收据 | 已接线并通过 PR #72 跨平台 CI | 显式 Brokerrouter 私有账本，持久提交身份/收据、未知 hold、已知远端 UUID 的 GET 核对与管理员解除；[恢复边界](model-calls.md)。不恢复工具循环、会话或 StateKnot durable turn |
 | 10 | 多用户与 Key 管理 | 独立用户聊天/会话入口已实现；完整里程碑未完成 | 一用户一容器/工作区/数据库/私有网络/限额卷、哈希 Key/只读权限、受限代理与持久 hold；[部署范围](gateway.md)。用户任务、[Telegram](tenant-telegram.md)、只读 Key、管理员审计、[Slack](tenant-slack.md)、[Discord](tenant-discord.md)、[飞书](tenant-feishu.md)已分别通过 PR #71/#80/#81/#82/#83/#84/#85 最终 CI。[独立用户企业微信](tenant-wecom.md) 已通过 PR #87 固定 head 的本地十组、旧21套与三项最终 CI；独立用户钉钉、WhatsApp 及真实供应商联合认证待完成；standalone 企业微信启动门槛的 PR #86 CI 不代替新私有队列/后端验收 |
-| 11 | 真正流式 | CLI/持久 HTTP/Web 已分别验收；租户 SSE API 已通过 PR #101；租户预览 UI 与真实上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)与[四平台回填](validation.md#单次-cli-真流式最终-ci-回填)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，原 `/api/chat` 兼容分块仍非 token streaming；租户 API 的[最终回填](validation.md#pr-101-租户-sse-api-最终资格回填)不代替预览 UI 与供应商认证 |
+| 11 | 真正流式 | CLI/持久 HTTP/Web 已分别验收；租户 SSE API 已通过 PR #101；租户预览 UI 本地通过/最终资格待验收，真实上游认证待完成 | [CLI 实际逐事件合同](cli-streaming.md)与[四平台回填](validation.md#单次-cli-真流式最终-ci-回填)：原始身份与模式/收据、整批工具权限、有限队列、取消后结算及重启 hold；上游 [PR #40](https://github.com/StateKnot/Brokerrouter/pull/40) 资源修复尚未合并，原 `/api/chat` 兼容分块仍非 token streaming；租户 API 的[最终回填](validation.md#pr-101-租户-sse-api-最终资格回填)不代替预览 UI 与供应商认证 |
 | 12 | 语义记忆 | 显式 Brokerrouter/SQLite 已接线并本地验收；真实模型质量待认证 | [语义记忆](semantic-memory.md)：来源/空间版本、私有索引、精确余弦、源哈希新鲜度、持久未知 hold、GET 核对与显式 CLI 刷新/重建；fixture 与真实模型质量验收分别记录 |
 | 13 | 多模态 | 待实现/上游认证 | 文本契约之外新增受限 media 输入/输出，大小/格式/权限校验，使用网关媒体任务契约与认证供应商 |
 | 14 | 打包发布 | PR #91 固定 head 四平台候选验收已通过；公开发布待审核 | [候选发布合同](release-candidates.md)：PR 与 tag 复用优化构建/真实归档安装、原生架构与完整字节比对、失败回滚、源码与资产摘要；打包去除宿主扩展属性/AppleDouble。head `4edc04c868b07096a4ebe367d5b0083988822d72` 的七项 checks 全部成功，四份实际归档/源码证据见候选合同；公开资产、ABI/真实供应商及恢复资格仍独立审核 |
