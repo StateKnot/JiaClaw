@@ -308,6 +308,23 @@ enum SkillsCommands {
         #[arg(long)]
         if_manifest_sha256: String,
     },
+    /// 确认已停用技能的新来源与原始正文摘要，不启用或通知运行服务
+    SetSource {
+        /// 已登记且停用的一级目录
+        directory: String,
+        /// 管理员审核的 HTTPS 来源，不含凭据、query 或 fragment
+        #[arg(long)]
+        repository: String,
+        /// 40或64位小写十六进制固定 Git 对象ID
+        #[arg(long)]
+        revision: String,
+        /// 完整新 SKILL.md 原字节 SHA256（包含 frontmatter）
+        #[arg(long)]
+        skill_sha256: String,
+        /// 管理员已审核的完整原锁 SHA256
+        #[arg(long)]
+        if_manifest_sha256: String,
+    },
 }
 
 /// 长期记忆子命令
@@ -470,6 +487,32 @@ async fn main() -> Result<()> {
                 let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
                     .with_lock_required(config.skill_lock_required)
                     .set_enabled(&directory, enabled, &if_manifest_sha256)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "disk_policy": policy, "runtime_applied": false
+                    }))?
+                );
+            }
+            Some(SkillsCommands::SetSource {
+                directory,
+                repository,
+                revision,
+                skill_sha256,
+                if_manifest_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+                    .with_lock_required(config.skill_lock_required)
+                    .set_source(
+                        &directory,
+                        &jiaclaw::SkillSourcePin {
+                            repository,
+                            revision,
+                            skill_sha256,
+                        },
+                        &if_manifest_sha256,
+                    )?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
@@ -12176,6 +12219,44 @@ mod tests {
             "false"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn test_cli_skill_source_requires_all_reviewed_fields() {
+        let args = [
+            "jiaclaw",
+            "skills",
+            "set-source",
+            "reviewed",
+            "--repository",
+            "https://github.com/example/skills",
+            "--revision",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--skill-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--if-manifest-sha256",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "--config",
+            "cfg.toml",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        assert!(matches!(parsed.command, Commands::Skills {
+            action: Some(SkillsCommands::SetSource { .. }), config: Some(ref path), ..
+        } if path == std::path::Path::new("cfg.toml")));
+        for flag in [
+            "--repository",
+            "--revision",
+            "--skill-sha256",
+            "--if-manifest-sha256",
+        ] {
+            let offset = args.iter().position(|arg| *arg == flag).unwrap();
+            let incomplete: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(index, arg)| (index != offset && index != offset + 1).then_some(*arg))
+                .collect();
+            assert!(Cli::try_parse_from(incomplete).is_err());
+        }
     }
 
     #[tokio::test]

@@ -170,3 +170,5 @@ Discord 定时文字必须同时配置 `discord_guild_id`、非空 `scheduled_de
 ## 持久 HTTP 请求
 
 `http.tracked_turns=false` 默认关闭新增异步请求；显式开启须认证、SQLite、Brokerrouter/model_calls 与有限工具期限，`tracked_turn_timeout_secs` 默认300、仅允许1..=300。会话 schema11 原子升级，旧二进制拒绝降级；唯一Bearer、固定UUID、结果配额与人工核对见[完整合同](http-turns.md)。启用后可通过同一身份的 `/api/turns/{id}/stream` 使用[有界事件流](http-streaming.md)，默认 JSON 入口保持异步语义。Web 仍使用旧聊天入口，租户、代理及真实供应商认证分别保留。
+
+本机管理员可在必需锁下对已登记且停用的目标执行[来源版本确认](skill-source-approval.md) `skills set-source`：全部新来源字段和原锁hash须显式审查，能力内解析并核验原始SKILL.md后才发布。目标仍停用、服务不自动应用；启用和认证重载是独立步骤，来源声明不是签名或完整安装事务。

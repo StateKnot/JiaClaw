@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Administrator-declared origin and the exact raw SKILL.md digest, not a signature.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillSourcePin {
     /// Declared HTTPS origin, without embedded credentials.
@@ -163,8 +163,56 @@ pub(super) fn set_enabled(
     enabled: bool,
     expected_hash: &str,
 ) -> Result<SkillLockPolicy, JiaClawError> {
+    edit_policy(discovery, name, expected_hash, |entry, version| {
+        if version == 2 && entry.enabled == enabled {
+            return Err(invalid("技能已处于请求状态，未提交"));
+        }
+        entry.enabled = enabled;
+        Ok(())
+    })
+}
+
+pub(super) fn set_source(
+    discovery: &super::SkillDiscovery,
+    name: &str,
+    proposed: &SkillSourcePin,
+    expected_hash: &str,
+) -> Result<SkillLockPolicy, JiaClawError> {
+    if !source(proposed) {
+        return Err(invalid("技能来源声明无效，未提交"));
+    }
+    edit_policy(discovery, name, expected_hash, |entry, _| {
+        if entry.enabled {
+            return Err(invalid("修改来源前必须明确停用已登记技能，未提交"));
+        }
+        if entry.source == *proposed {
+            return Err(invalid("技能来源没有变化，未提交"));
+        }
+        let loaded = super::Skill::read(
+            &discovery.workspace,
+            &format!("skills/{name}/SKILL.md"),
+            &discovery.skills_root.join(name),
+        )
+        .map_err(|_| invalid("新来源正文无法安全读取或解析，未提交"))?
+        .ok_or_else(|| invalid("新来源正文不存在，未提交"))?;
+        if loaded.2 != proposed.skill_sha256 {
+            return Err(invalid("新来源正文与已审核摘要不一致，未提交"));
+        }
+        entry.source = proposed.clone();
+        Ok(())
+    })
+}
+
+// Both operator edits keep captured bytes, checks and publication inside the
+// same existing workspace writer. The closure only changes the selected entry.
+fn edit_policy(
+    discovery: &super::SkillDiscovery,
+    name: &str,
+    expected_hash: &str,
+    edit: impl FnOnce(&mut SkillPolicyEntry, u32) -> Result<(), JiaClawError>,
+) -> Result<SkillLockPolicy, JiaClawError> {
     if !discovery.lock_required || !directory(name) || !valid_hash(expected_hash) {
-        return Err(invalid("技能启停写入要求必需锁、有效目录和原锁 SHA256"));
+        return Err(invalid("技能锁写入要求必需锁、有效目录和原锁 SHA256"));
     }
     crate::memory_io::update_existing_text(
         &discovery.workspace,
@@ -179,11 +227,8 @@ pub(super) fn set_enabled(
                 .by_directory
                 .get(name)
                 .copied()
-                .ok_or_else(|| invalid("技能启停目录未登记，未提交"))?;
-            if lock.policy.version == 2 && lock.policy.skills[index].enabled == enabled {
-                return Err(invalid("技能已处于请求状态，未提交"));
-            }
-            lock.policy.skills[index].enabled = enabled;
+                .ok_or_else(|| invalid("技能修改目录未登记，未提交"))?;
+            edit(&mut lock.policy.skills[index], lock.policy.version)?;
             let next = serde_json::to_string(&serde_json::json!({
                 "version": 2, "skills": lock.policy.skills
             }))
@@ -237,6 +282,93 @@ mod tests {
         serde_json::json!({"version":1,"skills":[{"directory":"reviewed","source":{
             "repository":"https://github.com/example/skills","revision":"a".repeat(40),
             "skill_sha256":format!("{:x}",sha2::Sha256::digest(raw.as_bytes()))}}]})
+    }
+
+    #[test]
+    fn source_approval_requires_disabled_matching_body_and_keeps_policy() {
+        let workspace = tempfile::tempdir().unwrap();
+        let folder = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&folder).unwrap();
+        let raw = "---\nname: reviewed\ndescription: original\n---\nbody";
+        fs::write(folder.join("SKILL.md"), raw).unwrap();
+        let file = workspace.path().join("skills.lock.json");
+        fs::write(&file, manifest(raw).to_string()).unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let first = discovery.inspect_policy().unwrap();
+        let mut proposed = first.skills[0].source.clone();
+        proposed.revision = "b".repeat(40);
+        assert!(discovery
+            .set_source("reviewed", &proposed, &first.manifest_sha256)
+            .is_err());
+        let disabled = discovery
+            .set_enabled("reviewed", false, &first.manifest_sha256)
+            .unwrap();
+        let original = fs::read(&file).unwrap();
+        let changed = raw.replace("original", "approved");
+        fs::write(folder.join("SKILL.md"), &changed).unwrap();
+        assert!(discovery
+            .set_source("reviewed", &proposed, &disabled.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        proposed.skill_sha256 = format!("{:x}", sha2::Sha256::digest(changed.as_bytes()));
+        let approved = discovery
+            .set_source("reviewed", &proposed, &disabled.manifest_sha256)
+            .unwrap();
+        assert!(!approved.skills[0].enabled);
+        assert_eq!(approved.skills[0].source, proposed);
+        assert!(discovery.discover().unwrap().is_empty());
+        let saved = fs::read(&file).unwrap();
+        assert!(discovery
+            .set_source("reviewed", &proposed, &approved.manifest_sha256)
+            .is_err());
+        assert!(discovery
+            .set_source(
+                "reviewed",
+                &first.skills[0].source,
+                &disabled.manifest_sha256
+            )
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), saved);
+        discovery
+            .set_enabled("reviewed", true, &approved.manifest_sha256)
+            .unwrap();
+        assert_eq!(discovery.discover().unwrap()[0].description, "approved");
+    }
+
+    #[test]
+    fn source_approval_rejects_invalid_declaration_and_unreadable_body() {
+        let workspace = tempfile::tempdir().unwrap();
+        let folder = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&folder).unwrap();
+        let raw = "---\nname: reviewed\ndescription: original\n---\nbody";
+        fs::write(folder.join("SKILL.md"), raw).unwrap();
+        let file = workspace.path().join("skills.lock.json");
+        fs::write(&file, manifest(raw).to_string()).unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let first = discovery.inspect_policy().unwrap();
+        let disabled = discovery
+            .set_enabled("reviewed", false, &first.manifest_sha256)
+            .unwrap();
+        let bytes = fs::read(&file).unwrap();
+        let mut proposed = first.skills[0].source.clone();
+        proposed.repository = "https://secret:password@example.test/repo".into();
+        let error = discovery
+            .set_source("reviewed", &proposed, &disabled.manifest_sha256)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("password") && !error.contains("secret"));
+        proposed = first.skills[0].source.clone();
+        proposed.revision = "b".repeat(40);
+        fs::remove_file(folder.join("SKILL.md")).unwrap();
+        assert!(discovery
+            .set_source("reviewed", &proposed, &disabled.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert!(fs::read_dir(workspace.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".jiaclaw-memory-")));
     }
 
     #[tokio::test]

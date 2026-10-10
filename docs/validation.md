@@ -1,5 +1,29 @@
 # 基础能力验收记录
 
+## 2026-10-11 写入测试的实际 owner 结算
+
+规范：[写入并发验收](writer-test-settlement.md)。累计基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `e0cf340..af0c8e1` 仅改 `memory_io.rs` 的测试模块。独立 [Standards](reviews/2026-10-11-writer-settlement-standards.md)/[Spec](reviews/2026-10-11-writer-settlement-spec.md)聚焦开放0，初审未借后续完整验收，继承累计结论而非穷尽重审。
+
+原PR116 head `10fe6c4` 的 Linux x64 优化候选 `114329525292` 在旧200×2ms轮询报 `lock did not release`；原日志为418通过/1失败/1忽略，未进入优化编译/安装验收。原日志没有持锁时间，不确定具体CI调度或fsync根因。测试内真实原owner持锁500ms触发旧夹具三次失败，修订后相同触发三次成功；诊断注入与初回调tuple编译错误分别保留，最终源码无注入。十二原调用实际结算、精确零效果拒绝、成功唯一份、容量拒绝不变等原断言保留，新真实edit owner等十一份拒绝后释放，非简单放宽轮询期限。
+
+首次默认并行完整Rust的既有 `mcp::tests::schema_startup_deadline_does_not_publish_or_release_queued_work` 另失败（permits预期3、实际4），写入回归通过。该函数随后三次独立成功；MCP代码/断言/期限未改，尚未诊断并行失败阶段，不能称为修复。按仓库官方既有 `--test-threads=1` 完整验收实际419库/123core/711host共1253通过、1忽略，测试内部真实并发保留。两份完整日志及三次独立结果分别留存。 locked build/fmt/必需Clippy correctness和suspicious通过，非强制style警告保留。重新构建二进制与原来源确认二进制逐字节相同（SHA256 `053d307ab689d23fbb40a7ed77258eec41d2f372c60840c7122644270ae74ad2`）；本轮实际另执行来源确认七组、策略编辑七组与工作区mutation六组共三套进程通过。旧十三套进程是原同一二进制/未变fixture的历史执行，没有冒称本轮重跑。
+
+受控诊断与完整日志分别在 `/tmp/jiaclaw-oct11-writer-settlement-diagnosis/`、`/tmp/jiaclaw-oct11-writer-settlement-{rust-final,rust-settled,mcp-isolated-*}.log`；交付证据留来源确认批次的pin。94编译输入只一项测试文件改变，生产 `cfg(test)` 前字节不变。新固定head须独立七官方作业、50必需Python、七Chromium、四优化候选各13安装/归档/源码与三项写入测试；原head部分成功与旧资格不借用。
+
+
+## 2026-10-11 停用技能来源版本确认
+
+规范：[来源确认](skill-source-approval.md)。固定源码 `5bc56d718191fc7169956de17a078bc5b390ae1d`，累计基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh parent `d726e910`。独立[Standards](reviews/2026-10-11-skill-source-approval-standards.md)/[Spec](reviews/2026-10-11-skill-source-approval-spec.md)聚焦新增开放0；继承历史累计结论，不声称穷尽重审。初审报告没有借用完整Rust/父CI，其资格边界按审查当时保留。
+
+冻结父二进制真实拒绝尚未实现的 `set-source`；这是应用能力缺口，未误报生产或上游缺陷。新固定二进制SHA256 `053d307ab689d23fbb40a7ed77258eec41d2f372c60840c7122644270ae74ad2`；94编译输入逐字节匹配源码。完整418库/123core/711host共1252 Rust通过，另1忽略；locked build/fmt/必需Clippy correctness与suspicious另行核验。十三套真实进程：新来源确认，以及policy_edit/activation/lock/resources/body/skills/native/e2e/doctor/workspace_files/mutations/copy全部通过。没有更改生产输入或借用父测试次数。
+
+新七组验收覆盖目标停用/条件hash/全部显式字段、来源与原始摘要/其他启用项漂移/no-op无发布、正文及锁的链接/硬链接/FIFO/缺失/容量/解析、同锁并发writer、真实OS写入限制与目录权限失败字节/inode/暂存清理、0600，以及运行服务只在另行启用和认证reload后改变表。Spec独立另执行七组实际CLI：frontmatter和64位对象ID、精确128KiB/+1、参考资源仅声明不认证、另一启用项漂移、64停用声明和缺目录、原锁空白hash、跨来源/启停同hash只一方提交。
+
+来源为管理员声明，正文hash不证明远端来源或整包引用内容；hash不是操作代次/ABA检测，post-rename目录sync错误可能已提交须先检查。未增加模型/HTTP写权限、自动启用/reload、下载/安装/文件回滚、签名或独立ACL。实际服务/模型/凭据均为本地fixture，不代表供应商或真实安装认证。
+
+日志、冻结binary与身份在 `/tmp/jiaclaw-oct11-skill-source-approval-delivery/` 和 `/tmp/jiaclaw-oct11-source-approval-*.log`，正式head另需七官方作业、50必需Python、七实际Chromium、四优化候选各13安装归档源码及新来源验收/artifact API摘要；不借PR115/本地资格。build/test前df已评估共享target约19.7GiB并复用；CARGO_INCREMENTAL=0及dev/test debug=0，未复制target/创建专用cache/清理，实际回收0，最终df留pin。
+
+
 ## 2026-10-11 管理员条件技能策略编辑
 
 规范：[条件编辑](skill-policy-edit.md)。固定生产源码 `d347a278b2dc8b520bb8abb63defdb358caa29d6`，累计审查基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh parent `3c4dde50`；继承历史审查，不声称穷尽重审。源码独立 [Standards](reviews/2026-10-11-skill-policy-edit-standards.md) 和 [Spec](reviews/2026-10-11-skill-policy-edit-spec.md)开放0；报告中仍运行的验收是审查当时快照，最终结果如下。

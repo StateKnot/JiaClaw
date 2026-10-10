@@ -1452,6 +1452,83 @@ mod tests {
         }
         result
     }
+    #[cfg(unix)]
+    fn settled_concurrent_writes<T: Send>(
+        operation: impl Fn(usize) -> Result<T, JiaClawError> + Sync,
+    ) -> Vec<(usize, Result<T, JiaClawError>)> {
+        let start = std::sync::Barrier::new(13);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for i in 0..12 {
+                let start = &start;
+                let operation = &operation;
+                handles.push(scope.spawn(move || {
+                    start.wait();
+                    (i, operation(i))
+                }));
+            }
+            start.wait();
+            // Observe actual owner completion before any explicit retry. Busy
+            // does not promise a peer's fsync will finish within a poll budget.
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_results_wait_for_the_actual_original_writer() {
+        let ws = tempfile::tempdir().unwrap();
+        write_file_bytes(ws.path(), "a", "original", false, 256).unwrap();
+        let entered = std::sync::Barrier::new(12);
+        let (rejected_tx, rejected_rx) = std::sync::mpsc::channel();
+        let rejected_rx = std::sync::Mutex::new(rejected_rx);
+        let outcomes = settled_concurrent_writes(|i| {
+            if i == 0 {
+                update_existing_text(ws.path(), "a", 256, |original| {
+                    // The editor owns the real workspace lock until all other
+                    // original callers have observed definite busy rejection.
+                    entered.wait();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    for _ in 1..12 {
+                        rejected_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(
+                                deadline.saturating_duration_since(std::time::Instant::now()),
+                            )
+                            .unwrap();
+                    }
+                    Ok((format!("{original}[00]"), original.len() + 4))
+                })
+            } else {
+                entered.wait();
+                let result = write_file_bytes(ws.path(), "a", &format!("[{i:02}]"), true, 256);
+                assert!(workspace_lock_busy(&result));
+                rejected_tx.send(()).unwrap();
+                result
+            }
+        });
+        assert_eq!(outcomes.len(), 12);
+        assert!(outcomes[0].1.is_ok());
+        assert!(outcomes[1..]
+            .iter()
+            .all(|(_, result)| workspace_lock_busy(result)));
+        assert_eq!(std::fs::read(ws.path().join("a")).unwrap(), b"original[00]");
+        for (i, result) in outcomes {
+            if result.is_err() {
+                write_file_bytes(ws.path(), "a", &format!("[{i:02}]"), true, 256).unwrap();
+            }
+        }
+        let text = std::fs::read_to_string(ws.path().join("a")).unwrap();
+        assert_eq!(text.len(), 8 + 12 * 4);
+        for i in 0..12 {
+            assert_eq!(text.matches(&format!("[{i:02}]")).count(), 1);
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_retains_capacity_until_blocking_work_completes() {
         use std::sync::{
@@ -1586,25 +1663,8 @@ mod tests {
         // All twelve original callers compete on the actual kernel lock.
         // Retry only identified busy rejections, after every original owner
         // has joined; never repeat a successful or uncertain mutation.
-        let start = std::sync::Barrier::new(13);
-        let outcomes = std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for i in 0..12 {
-                let path = ws.path();
-                let start = &start;
-                handles.push(scope.spawn(move || {
-                    start.wait();
-                    (
-                        i,
-                        write_text(path, "a", &format!("record-{i:02}"), false, 32768),
-                    )
-                }));
-            }
-            start.wait();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap())
-                .collect::<Vec<_>>()
+        let outcomes = settled_concurrent_writes(|i| {
+            write_text(ws.path(), "a", &format!("record-{i:02}"), false, 32768)
         });
         let mut pending = Vec::new();
         let committed = std::fs::read_to_string(ws.path().join("a")).unwrap();
@@ -1860,30 +1920,54 @@ mod tests {
         write_file_bytes(ws.path(), "a", "original", false, 256).unwrap();
         let root = Dir::open_ambient_dir(ws.path(), ambient_authority()).unwrap();
         let lock = writer_lock(&root).unwrap();
-        assert!(write_file_bytes(ws.path(), "a", "bad", false, 256).is_err());
-        assert!(write_file_bytes(ws.path(), "a", "bad", true, 256).is_err());
-        assert!(replace_file_text(ws.path(), "a", "original", "bad", false, 256).is_err());
-        assert!(delete_file(ws.path(), "a").is_err());
+        assert!(workspace_lock_busy(&write_file_bytes(
+            ws.path(),
+            "a",
+            "bad",
+            false,
+            256
+        )));
+        assert!(workspace_lock_busy(&write_file_bytes(
+            ws.path(),
+            "a",
+            "bad",
+            true,
+            256
+        )));
+        assert!(workspace_lock_busy(&replace_file_text(
+            ws.path(),
+            "a",
+            "original",
+            "bad",
+            false,
+            256
+        )));
+        assert!(workspace_lock_busy(&delete_file(ws.path(), "a")));
         assert_eq!(std::fs::read(ws.path().join("a")).unwrap(), b"original");
         drop(lock);
-        std::thread::scope(|scope| {
-            for i in 0..12 {
-                let path = ws.path();
-                scope.spawn(move || {
-                    let text = format!("[{i:02}]");
-                    for _ in 0..200 {
-                        match write_file_bytes(path, "a", &text, true, 256) {
-                            Ok(_) => return,
-                            Err(e) if e.to_string().contains("lock busy") => {
-                                std::thread::sleep(std::time::Duration::from_millis(2))
-                            }
-                            Err(e) => panic!("{e}"),
-                        }
-                    }
-                    panic!("lock did not release");
-                });
-            }
+
+        let outcomes = settled_concurrent_writes(|i| {
+            write_file_bytes(ws.path(), "a", &format!("[{i:02}]"), true, 256)
         });
+        let committed = std::fs::read_to_string(ws.path().join("a")).unwrap();
+        let mut pending = Vec::new();
+        for (i, outcome) in outcomes {
+            let occurrences = committed.matches(&format!("[{i:02}]")).count();
+            match outcome {
+                Ok(_) => assert_eq!(occurrences, 1),
+                Err(error) => {
+                    assert!(workspace_lock_busy(&Err::<(), _>(error)));
+                    assert_eq!(occurrences, 0);
+                    pending.push(i);
+                }
+            }
+        }
+        assert_eq!(committed.len(), 8 + (12 - pending.len()) * 4);
+        for i in pending {
+            // Only definite pre-effect lock rejections are separate requests.
+            // A successful or uncertain mutation is never replayed.
+            write_file_bytes(ws.path(), "a", &format!("[{i:02}]"), true, 256).unwrap();
+        }
         let text = std::fs::read_to_string(ws.path().join("a")).unwrap();
         assert_eq!(text.len(), 8 + 12 * 4);
         assert!(!text.contains('\n'));
@@ -1894,6 +1978,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(ws.path().join("a")).unwrap(), text);
         assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 1);
     }
+
     fn search_budget() -> SearchBudget {
         SearchBudget {
             scanned: 0,
