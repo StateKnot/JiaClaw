@@ -1,0 +1,13 @@
+# Standards initial review — actual writer settlement
+
+Open findings: **0 hard standard violations; 0 actionable Fowler judgments**.
+
+Fixed cumulative range: `4b2357fcf01f47ba08d7724edbba7accfb60972c...af0c8e160a580178e8f255873a4e8ba49ccd030e`. Read the complete cumulative commit list; inherit previously recorded architecture and source-approval delivery conclusions at `e0cf34098214c76af830742b5540839b15e8b336`. Fresh review is solely `e0cf340..af0c8e1`, `crates/jiaclaw/src/memory_io.rs` under `cfg(test)`. Not an exhaustive cumulative rereview. The separate Spec review was not consulted.
+
+Standards sources: human AGENTS production/resource/cache instructions, the inherited storage contracts, and `/tmp/jiaclaw-oct11-writer-settlement-diagnosis/spec.md`. Tooling-enforced formatting/Clippy rules remain excluded.
+
+Hard-contract check: the production prefix before `#[cfg(test)]` is byte-for-byte unchanged. `settled_concurrent_writes` retains twelve real original actors and joins their actual results before explicit new requests. In the changed mutation test, `Ok(_) => assert_eq!(occurrences, 1)` and rejected outcomes require `workspace_lock_busy(...)` plus zero occurrences. That classifier checks the precise storage-flock context and `EWOULDBLOCK` errno suffix, rather than accepting arbitrary errors. Successful and uncertain writes are not replayed. Exact original-plus-twelve-contribution bytes, one occurrence each, no newline, capacity rejection preserving bytes and no residual files remain asserted. The new held-owner test receives eleven definite rejections under one bounded five-second receive deadline before releasing actual ownership. Production lock admission, cancellation, permissions and tool deadlines are untouched.
+
+All twelve Fowler judgments were considered. The shared actor/join protocol removes repeated concurrency setup with real consumers (Duplicated Code); names express completion and rejection semantics. Captured operation data remains with each test; no actionable Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun Surgery, Divergent Change, Speculative Generality, Message Chains, Middle Man or Refused Bequest issue was found. Different append/memory assertions retain their distinct contracts.
+
+Read all three instrumented RED and three matching GREEN logs and both injection diffs. The restored source copy exactly matches pinned `af0c8e1`; diagnostic markers and 500ms injection are absent. The original official log lacks owner timing, so the reproduced poll-budget failure does not establish a specific CI scheduling cause. New full Rust/build/official qualification remain pending at review time; no old-head or parent qualification is borrowed. I ran no builds/tests or cache mutations.

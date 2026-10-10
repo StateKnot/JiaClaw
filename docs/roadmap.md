@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 修正 PR116 原 Linux x64 候选暴露的[写入并发夹具结算](writer-test-settlement.md)：十二个原调用全部实际 join 后，先核对成功一份/精确锁忙零份，再独立执行已知零效果拒绝。生产非排队 writer、权限与期限不变；真实500ms持锁旧夹具三次RED/修订三次GREEN，新增真实 owner 收据回归。固定测试源码 `af0c8e1` 按官方既有串行 harness 完整1253 Rust（另1忽略）通过；[Standards](reviews/2026-10-11-writer-settlement-standards.md)/[Spec](reviews/2026-10-11-writer-settlement-spec.md)聚焦开放0，继承累计历史。首轮默认并行的既有MCP许可断言失败、随后同函数三次独立通过分别保留，未修改MCP且不称失败已修复。原head部分候选成功不转移，新交付仍需独立官方资格；剩余产品里程碑继续开放。
+
 2026-10-11 接入[管理员确认停用技能的新来源版本](skill-source-approval.md)：本机 `skills set-source` 要求已登记且停用的目标、明确 HTTPS 来源/固定 Git 对象 ID/完整原始正文摘要，以及审查过的原锁 hash。目标能力读取、完整候选扫描和同步发布共用既有工作区 writer；成功保留停用与其他来源，只返回 `runtime_applied:false`。随后必须另行启用并认证重载原服务。固定源码 `5bc56d7` 的1252 Rust（另1忽略）、13套真实进程及七组独立 CLI 边界通过；[Standards](reviews/2026-10-11-skill-source-approval-standards.md)/[Spec](reviews/2026-10-11-skill-source-approval-spec.md)聚焦开放0，继承累计历史，不声称穷尽重审。新head的50必需Python、七Chromium和四优化候选须独立官方核对，不借父或本地。来源仍为管理员声明，整包下载/安装/撤销事务、签名、ACL及经验记忆继续开放。
 
 父 PR115 `b9bcf59` 已独立完整合格：七实际作业、49必需Python/七Chromium、四优化候选各13安装/归档/源码检查与artifact API摘要均通过。原Ubuntu首次在固定镜像拉取阶段收到 `toomanyrequests: Rate exceeded`，当时Docker命令尚未执行；同head失败作业重跑通过，不称应用代码修复、不推断账户/IP原因。最终证据只固定在PR正文/pin，不提交自引head纯文档触发资格循环。以下各批待验收文字保留为原交付时快照。

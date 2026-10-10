@@ -1,5 +1,16 @@
 # 基础能力验收记录
 
+## 2026-10-11 写入测试的实际 owner 结算
+
+规范：[写入并发验收](writer-test-settlement.md)。累计基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `e0cf340..af0c8e1` 仅改 `memory_io.rs` 的测试模块。独立 [Standards](reviews/2026-10-11-writer-settlement-standards.md)/[Spec](reviews/2026-10-11-writer-settlement-spec.md)聚焦开放0，初审未借后续完整验收，继承累计结论而非穷尽重审。
+
+原PR116 head `10fe6c4` 的 Linux x64 优化候选 `114329525292` 在旧200×2ms轮询报 `lock did not release`；原日志为418通过/1失败/1忽略，未进入优化编译/安装验收。原日志没有持锁时间，不确定具体CI调度或fsync根因。测试内真实原owner持锁500ms触发旧夹具三次失败，修订后相同触发三次成功；诊断注入与初回调tuple编译错误分别保留，最终源码无注入。十二原调用实际结算、精确零效果拒绝、成功唯一份、容量拒绝不变等原断言保留，新真实edit owner等十一份拒绝后释放，非简单放宽轮询期限。
+
+首次默认并行完整Rust的既有 `mcp::tests::schema_startup_deadline_does_not_publish_or_release_queued_work` 另失败（permits预期3、实际4），写入回归通过。该函数随后三次独立成功；MCP代码/断言/期限未改，尚未诊断并行失败阶段，不能称为修复。按仓库官方既有 `--test-threads=1` 完整验收实际419库/123core/711host共1253通过、1忽略，测试内部真实并发保留。两份完整日志及三次独立结果分别留存。 locked build/fmt/必需Clippy correctness和suspicious通过，非强制style警告保留。重新构建二进制与原来源确认二进制逐字节相同（SHA256 `053d307ab689d23fbb40a7ed77258eec41d2f372c60840c7122644270ae74ad2`）；本轮实际另执行来源确认七组、策略编辑七组与工作区mutation六组共三套进程通过。旧十三套进程是原同一二进制/未变fixture的历史执行，没有冒称本轮重跑。
+
+受控诊断与完整日志分别在 `/tmp/jiaclaw-oct11-writer-settlement-diagnosis/`、`/tmp/jiaclaw-oct11-writer-settlement-{rust-final,rust-settled,mcp-isolated-*}.log`；交付证据留来源确认批次的pin。94编译输入只一项测试文件改变，生产 `cfg(test)` 前字节不变。新固定head须独立七官方作业、50必需Python、七Chromium、四优化候选各13安装/归档/源码与三项写入测试；原head部分成功与旧资格不借用。
+
+
 ## 2026-10-11 停用技能来源版本确认
 
 规范：[来源确认](skill-source-approval.md)。固定源码 `5bc56d718191fc7169956de17a078bc5b390ae1d`，累计基准 `origin/main 4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh parent `d726e910`。独立[Standards](reviews/2026-10-11-skill-source-approval-standards.md)/[Spec](reviews/2026-10-11-skill-source-approval-spec.md)聚焦新增开放0；继承历史累计结论，不声称穷尽重审。初审报告没有借用完整Rust/父CI，其资格边界按审查当时保留。
