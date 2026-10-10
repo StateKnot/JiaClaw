@@ -32,6 +32,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
       - run: cargo build --locked -p jiaclaw-host
       - run: python3 tests/e2e.py target/debug/jiaclaw
+      - run: python3 tests/doctor.py target/debug/jiaclaw
       - run: python3 tests/mcp.py target/debug/jiaclaw
       - run: python3 tests/native_tools.py target/debug/jiaclaw
       - run: python3 tests/native_result_limits.py target/debug/jiaclaw

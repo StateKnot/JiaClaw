@@ -12,6 +12,7 @@ on:
       - 'scripts/package_release.py'
       - 'tests/installer.py'
       - 'tests/e2e.py'
+      - 'tests/doctor.py'
       - 'tests/mcp.py'
       - 'tests/native_result_limits.py'
       - 'tests/cli_stream.py'
@@ -78,6 +79,7 @@ jobs:
         run: |
           "target/$TARGET/release/jiaclaw" version
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
+          python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/mcp.py "target/$TARGET/release/jiaclaw"
           python3 tests/native_result_limits.py "target/$TARGET/release/jiaclaw"
           python3 tests/cli_stream.py "target/$TARGET/release/jiaclaw"
