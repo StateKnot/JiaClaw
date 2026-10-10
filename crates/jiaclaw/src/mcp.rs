@@ -97,25 +97,83 @@ fn authorization(
 ) -> Result<Arc<dyn McpClientAuthorizationProvider>, JiaClawError> {
     match variable {
         None => Ok(Arc::new(AnonymousMcpAuthorization)),
-        Some(name) => {
-            if name.is_empty()
-                || name.len() > 128
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-                || !name.as_bytes()[0].is_ascii_uppercase()
-            {
-                return Err(configuration(
-                    "invalid bearer token environment variable name",
-                ));
+        Some(name) => Ok(Arc::new(StaticMcpBearerAuthorization::new(bearer_token(
+            name,
+        )?))),
+    }
+}
+
+fn validate_authorization_name(name: &str) -> Result<(), JiaClawError> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        || !name.as_bytes()[0].is_ascii_uppercase()
+    {
+        return Err(configuration(
+            "invalid bearer token environment variable name",
+        ));
+    }
+    Ok(())
+}
+
+fn bearer_token(variable: &str) -> Result<ApiKey, JiaClawError> {
+    validate_authorization_name(variable)?;
+    let token = std::env::var(variable)
+        .map_err(|_| configuration("required MCP bearer credential is missing or invalid"))?;
+    ApiKey::new(token)
+        .map_err(|_| configuration("required MCP bearer credential is missing or invalid"))
+}
+
+/// Validate reviewed MCP bindings without reading credentials, opening stores or contacting servers.
+///
+/// # Errors
+/// Returns invalid policy, duplicate names or collisions with local tools.
+pub fn validate_mcp_configuration(
+    config: &McpConfig,
+    local_tool_names: &[String],
+) -> Result<(), JiaClawError> {
+    if config.servers.len() > 8 {
+        return Err(configuration("at most eight servers are allowed"));
+    }
+    let local = local_tool_names
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut names = HashSet::new();
+    let mut exposed = HashSet::new();
+    for server in &config.servers {
+        validate_server(server)?;
+        if let Some(name) = server.bearer_token_env.as_deref() {
+            validate_authorization_name(name)?;
+        }
+        if !names.insert(server.name.as_str()) {
+            return Err(configuration("duplicate server name"));
+        }
+        for tool in &server.tools {
+            let local_name = format!("mcp_{}_{}", server.name, tool.alias);
+            if local.contains(local_name.as_str()) || !exposed.insert(local_name) {
+                return Err(configuration("local tool name collision"));
             }
-            let token = std::env::var(name).map_err(|_| {
-                configuration("required MCP bearer token environment variable is missing")
-            })?;
-            let key = ApiKey::new(token).map_err(|_| configuration("invalid MCP bearer token"))?;
-            Ok(Arc::new(StaticMcpBearerAuthorization::new(key)))
         }
     }
+    Ok(())
+}
+
+/// Validate configured MCP bearer credentials without printing or retaining them.
+///
+/// This checks environment-variable values only; it never contacts a server.
+///
+/// # Errors
+/// A required credential is missing or does not satisfy the gateway header contract.
+pub fn validate_mcp_credentials(config: &McpConfig) -> Result<(), JiaClawError> {
+    for server in &config.servers {
+        if let Some(variable) = server.bearer_token_env.as_deref() {
+            let _token = bearer_token(variable)?;
+        }
+    }
+    Ok(())
 }
 
 async fn connect(server: &McpServerConfig) -> Result<McpClient, JiaClawError> {
@@ -199,24 +257,17 @@ async fn initialize_with_workers(
     registry: &mut ToolRegistry,
     workers: &SchemaWorkers,
 ) -> Result<(), JiaClawError> {
-    if config.servers.len() > 8 {
-        return Err(configuration("at most eight servers are allowed"));
-    }
-    let mut names = HashSet::new();
-    let mut local_names = HashSet::new();
+    validate_mcp_configuration(
+        config,
+        &registry
+            .list()
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )?;
     // Validate the entire local policy before making the first network request.
     for server in &config.servers {
-        validate_server(server)?;
         authorization(server.bearer_token_env.as_deref())?;
-        if !names.insert(&server.name) {
-            return Err(configuration("duplicate server name"));
-        }
-        for tool in &server.tools {
-            let local_name = format!("mcp_{}_{}", server.name, tool.alias);
-            if registry.get(&local_name).is_some() || !local_names.insert(local_name) {
-                return Err(configuration("local tool name collision"));
-            }
-        }
     }
     let mut pending: Vec<Box<dyn Tool>> = Vec::new();
     for server in &config.servers {

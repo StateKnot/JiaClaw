@@ -29,3 +29,27 @@ mod openai_compatible;
 pub use brokerrouter::BrokerrouterProvider;
 #[allow(clippy::module_name_repetitions)]
 pub use openai_compatible::OpenAICompatibleProvider;
+
+/// Validate a model provider endpoint without making a network request.
+///
+/// Provider URLs are restricted to HTTPS or literal-loopback HTTP, and may not
+/// contain user information, a query, or a fragment. The length limit matches
+/// the gateway and MCP transport contracts.
+///
+/// # Errors
+/// Returns a sanitized configuration error when the endpoint is not acceptable.
+pub fn validate_endpoint(value: &str) -> Result<(), jiaclaw_core::JiaClawError> {
+    use stateknot_integrations::ProviderEndpoint;
+
+    let endpoint = if value.starts_with("https://") {
+        ProviderEndpoint::https(value)
+    } else {
+        ProviderEndpoint::loopback_http(value)
+    };
+    if value.len() > 2048 || endpoint.is_err() {
+        return Err(jiaclaw_core::JiaClawError::Configuration(
+            "provider endpoint requires HTTPS or literal-loopback HTTP without credentials/query/fragment".into(),
+        ));
+    }
+    Ok(())
+}

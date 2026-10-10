@@ -187,11 +187,15 @@ enum Commands {
         bearer_token_env: Option<String>,
     },
 
-    /// 检查配置和连接状态
+    /// 检查本地配置；联网与持久化初始化需显式使用 --connect
     Doctor {
         /// 配置文件路径
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
+
+        /// Explicitly contact configured MCP servers and initialize private state stores.
+        #[arg(long)]
+        connect: bool,
     },
 
     /// 列出或重载技能
@@ -426,8 +430,8 @@ async fn main() -> Result<()> {
             let review = jiaclaw::inspect_mcp_server(&endpoint, bearer_token_env).await?;
             println!("{}", serde_json::to_string_pretty(&review)?);
         }
-        Commands::Doctor { config } => {
-            doctor_command(config).await?;
+        Commands::Doctor { config, connect } => {
+            doctor_command(config, connect).await?;
         }
         Commands::Skills {
             action,
@@ -2103,6 +2107,8 @@ fn validate_host_provider(config: &AgentConfig) -> Result<()> {
     match config.provider.provider_type.as_str() {
         "stub" => Ok(()),
         "brokerrouter" | "openai_compatible" => {
+            jiaclaw::validate_provider_endpoint(&config.provider.base_url)
+                .map_err(anyhow::Error::new)?;
             let key = std::env::var("JIACLAW_API_KEY")
                 .ok()
                 .or_else(|| config.provider.api_key.clone());
@@ -2112,6 +2118,21 @@ fn validate_host_provider(config: &AgentConfig) -> Result<()> {
             Ok(())
         }
         other => anyhow::bail!("未知 provider_type: {other}"),
+    }
+}
+
+fn provider_endpoint_summary(value: &str) -> String {
+    match reqwest::Url::parse(value) {
+        Ok(url) => url.host_str().map_or_else(
+            || "无效（详情已隐藏）".to_string(),
+            |host| {
+                let port = url
+                    .port()
+                    .map_or_else(String::new, |port| format!(":{port}"));
+                format!("{}://{host}{port}", url.scheme())
+            },
+        ),
+        Err(_) => "无效（详情已隐藏）".to_string(),
     }
 }
 
@@ -4729,8 +4750,13 @@ fn identity_show_command(config_path: Option<PathBuf>, kind: IdentityShowKind) -
 }
 
 #[allow(clippy::too_many_lines)]
-async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
+async fn doctor_command(config_path: Option<PathBuf>, connect: bool) -> Result<()> {
     println!("🔍 JiaClaw 配置检查\n");
+    if connect {
+        println!("⚠️  --connect 已启用：将连接配置的 MCP 服务器并打开私有持久化存储。不会发送模型请求或调用工具。\n");
+    } else {
+        println!("默认只做本地只读检查：不连接 MCP，不打开私有持久化存储。需要主动连接时使用 --connect。\n");
+    }
 
     let config = if let Some(path) = config_path {
         let path_str = path.to_string_lossy();
@@ -4897,23 +4923,58 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
 
     // 2. 检查工具系统
     println!("\n🔧 工具系统");
-    let tools_count = match JiaClawAgent::connect(config.clone()).await {
-        Ok(agent) => {
-            let tool_list = agent.tools().list();
-            let count = tool_list.len();
-            println!("   已注册工具: {count} 个");
-            for tool_name in tool_list {
-                if let Some(tool) = agent.tools().get(tool_name) {
-                    println!("      • {}: {}", tool.name(), tool.description());
-                }
+    let provider_check = validate_host_provider(&config);
+    let provider_ready = provider_check.is_ok();
+    let mut checks_ok = provider_ready;
+    let local_tools = match JiaClawAgent::inspect_local_tool_catalog(&config) {
+        Ok(tools) => {
+            println!("   本地工具: {} 个", tools.len());
+            for tool in &tools {
+                println!("      • {tool}");
             }
-            count
+            tools
         }
-        Err(e) => {
-            println!("   ⚠️  无法初始化 Agent: {e}");
-            0
+        Err(error) => {
+            checks_ok = false;
+            println!("   ❌ 本地工具配置无效: {error}");
+            Vec::new()
         }
     };
+    match jiaclaw::validate_mcp_configuration(&config.mcp, &local_tools) {
+        Ok(()) => {
+            println!(
+                "   MCP 静态策略: ✅ {} 个服务器配置有效",
+                config.mcp.servers.len()
+            );
+        }
+        Err(error) => {
+            checks_ok = false;
+            println!("   MCP 静态策略: ❌ {error}");
+        }
+    }
+    if let Err(error) = jiaclaw::validate_mcp_credentials(&config.mcp) {
+        checks_ok = false;
+        println!("   MCP 凭据: ❌ {error}（凭据内容不显示）");
+    }
+    let mut tools_count = local_tools.len();
+    if connect && checks_ok {
+        match JiaClawAgent::connect(config.clone()).await {
+            Ok(agent) => {
+                let tool_list = agent.tools().list();
+                tools_count = tool_list.len();
+                println!(
+                    "   主动连接结果: ✅ {} 个本地与已批准 MCP 工具",
+                    tools_count
+                );
+            }
+            Err(error) => {
+                checks_ok = false;
+                println!("   主动连接结果: ❌ {error}");
+            }
+        }
+    } else if !config.mcp.servers.is_empty() {
+        println!("   远程工具: 未连接（静态检查不会访问远程服务器）");
+    }
 
     let tool_timeout_secs = config.effective_tool_timeout_secs();
     if let Some(secs) = tool_timeout_secs {
@@ -5039,11 +5100,20 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
     println!("\n🔌 提供商配置");
     println!("   类型: {}", config.provider.provider_type);
     println!("   模型: {}", config.provider.model);
-    println!("   Base URL: {}", config.provider.base_url);
+    println!(
+        "   Base URL: {}（隐藏路径、查询参数、用户信息）",
+        provider_endpoint_summary(&config.provider.base_url)
+    );
 
     // 检查 API key
     let env_key = std::env::var("JIACLAW_API_KEY").ok();
-    let has_key = config.provider.api_key.is_some() || env_key.is_some();
+    let configured_key = env_key.as_deref().or(config.provider.api_key.as_deref());
+    let has_key = configured_key.is_some_and(|key| !key.trim().is_empty());
+    if let Err(error) = &provider_check {
+        println!("   提供商就绪状态: ❌ {error}");
+    } else {
+        println!("   提供商就绪状态: ✅ 可启动");
+    }
 
     if has_key {
         println!("   API Key: ✅ 已配置");
@@ -5053,17 +5123,10 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
             println!("      注意: 完整的连接测试需要有效的虚拟密钥");
             println!("      当前仅进行配置验证");
 
-            // 简单的 URL 格式检查
-            if config.provider.base_url.starts_with("http://")
-                || config.provider.base_url.starts_with("https://")
-            {
-                println!("      Base URL: ✅ 格式有效");
-            } else {
-                println!("      Base URL: ⚠️  格式可能无效（应以 http:// 或 https:// 开头）");
-            }
+            println!("      Base URL: ✅ 满足安全端点格式要求");
 
             // 检查虚拟密钥格式
-            let key = config.provider.api_key.as_deref().or(env_key.as_deref());
+            let key = env_key.as_deref().or(config.provider.api_key.as_deref());
             if let Some(k) = key {
                 if k.starts_with("brk_") {
                     println!("      Virtual Key: ✅ 格式正确（brk_ 前缀）");
@@ -5074,7 +5137,8 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
         }
     } else {
         println!("   API Key: ⚠️  未配置");
-        println!("   💡 将使用存根模式（演示功能）");
+        println!("   ❌ 当前 provider 需要 API Key；不会自动回退到 stub");
+        println!("   💡 离线验收请在配置中显式设置 provider_type = 'stub'");
         println!("   💡 设置环境变量: export JIACLAW_API_KEY=your-key");
     }
 
@@ -5435,18 +5499,22 @@ async fn doctor_command(config_path: Option<PathBuf>) -> Result<()> {
         }
     );
 
-    if !has_key {
-        println!("\n   ⚠️  运行模式: Stub（存根模式）");
-        println!("   💡 未检测到 Brokerrouter/API key，将使用演示模式");
+    if config.provider.provider_type == "stub" {
+        println!("\n   ℹ️  运行模式: 显式 stub（演示响应；不会发送模型请求）");
+    } else if !has_key {
+        println!("\n   ❌ 运行模式未就绪: 当前 provider 必须显式配置凭据");
         println!("   💡 配置 JIACLAW_API_KEY 环境变量以启用真实模型调用");
     }
 
-    if workspace_ok {
+    if workspace_ok && provider_ready && checks_ok {
         println!("\n   ✅ 配置良好，可以开始使用");
         println!("   💡 试试: jiaclaw serve");
     } else {
-        println!("\n   ⚠️  需要初始化工作空间");
-        println!("   💡 运行: jiaclaw init");
+        println!("\n   ❌ 配置尚未就绪；请先修复上面的错误");
+        if !workspace_ok {
+            println!("   💡 运行: jiaclaw init");
+        }
+        anyhow::bail!("doctor 检查未通过");
     }
 
     Ok(())
@@ -8570,6 +8638,41 @@ mod tests {
             "doctor must not print api key: {joined}"
         );
         assert!(joined.contains("已配置"), "{joined}");
+    }
+
+    #[test]
+    fn doctor_provider_endpoint_summary_omits_credentials_and_query() {
+        let summary = provider_endpoint_summary(
+            "https://user:password@example.test:8443/private/path?api_key=secret#fragment",
+        );
+        assert_eq!(summary, "https://example.test:8443");
+        for secret in [
+            "user", "password", "private", "api_key", "secret", "fragment",
+        ] {
+            assert!(
+                !summary.contains(secret),
+                "endpoint summary leaked {secret}"
+            );
+        }
+        assert_eq!(provider_endpoint_summary("not a URL"), "无效（详情已隐藏）");
+    }
+
+    #[test]
+    fn provider_endpoint_validation_matches_gateway_transport_policy() {
+        assert!(jiaclaw::validate_provider_endpoint("https://gateway.example/v1").is_ok());
+        assert!(jiaclaw::validate_provider_endpoint("http://127.0.0.1:8080/v1").is_ok());
+        for invalid in [
+            "http://gateway.example/v1",
+            "https://user:secret@gateway.example/v1",
+            "https://gateway.example/v1?token=secret",
+            "https://gateway.example/v1#fragment",
+            "not a URL",
+        ] {
+            assert!(
+                jiaclaw::validate_provider_endpoint(invalid).is_err(),
+                "{invalid}"
+            );
+        }
     }
 
     #[test]
