@@ -377,6 +377,24 @@ impl SkillDiscovery {
         Ok(policy)
     }
 
+    /// Change one declared directory's disk policy with an exact manifest precondition.
+    ///
+    /// Validation and atomic publication share workspace writer ownership. Version 1
+    /// is converted to explicit version 2. This does not reload a running registry.
+    ///
+    /// # Errors
+    /// Requires a valid required lock, current raw manifest SHA256, and a valid
+    /// complete proposed enabled catalog. An error after rename can have committed;
+    /// inspect disk state before retrying, as with other workspace file writes.
+    pub fn set_enabled(
+        &self,
+        directory: &str,
+        enabled: bool,
+        expected_manifest_sha256: &str,
+    ) -> Result<SkillLockPolicy, JiaClawError> {
+        lock::set_enabled(self, directory, enabled, expected_manifest_sha256)
+    }
+
     fn scan_locked(
         &self,
         strict: bool,

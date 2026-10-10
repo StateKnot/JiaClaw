@@ -456,6 +456,21 @@ fn edit_file<T>(
     Ok(result)
 }
 
+// The edit and its validation run under the same cooperative workspace writer
+// ownership as publication; callers never receive or reopen an ambient leaf.
+pub(crate) fn update_existing_text<T>(
+    workspace: &Path,
+    raw: &str,
+    limit: usize,
+    update: impl FnOnce(&str) -> Result<(String, T), JiaClawError>,
+) -> Result<T, JiaClawError> {
+    edit_file(workspace, raw, false, limit, |existing| {
+        let text = read_open(existing.ok_or_else(|| failure("文件不存在"))?, limit, false)?.text;
+        let (next, result) = update(&text)?;
+        Ok((next.into_bytes(), result))
+    })
+}
+
 pub(crate) fn write_file_bytes(
     workspace: &Path,
     raw: &str,

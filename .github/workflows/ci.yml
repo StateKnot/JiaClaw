@@ -38,6 +38,7 @@ jobs:
       - run: python3 tests/skill_resources.py target/debug/jiaclaw
       - run: python3 tests/skill_lock.py target/debug/jiaclaw
       - run: python3 tests/skill_activation.py target/debug/jiaclaw
+      - run: python3 tests/skill_policy_edit.py target/debug/jiaclaw
       - run: python3 tests/mcp.py target/debug/jiaclaw
       - run: python3 tests/native_tools.py target/debug/jiaclaw
       - run: python3 tests/native_result_limits.py target/debug/jiaclaw

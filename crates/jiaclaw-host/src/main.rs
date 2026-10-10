@@ -297,6 +297,17 @@ enum SkillsCommands {
     Reload,
     /// 只读验证并输出磁盘中的必需锁策略（不代表运行服务已应用）
     Policy,
+    /// 按原始锁 hash 修改一个目录的磁盘启停策略，不通知运行服务
+    SetEnabled {
+        /// 已登记的一级目录（不是模型技能名称）
+        directory: String,
+        /// 必须显式选择 true 或 false
+        #[arg(long, required = true, action = clap::ArgAction::Set)]
+        enabled: bool,
+        /// 管理员已核对的完整原锁文件 SHA256
+        #[arg(long)]
+        if_manifest_sha256: String,
+    },
 }
 
 /// 长期记忆子命令
@@ -449,6 +460,22 @@ async fn main() -> Result<()> {
                     .with_lock_required(config.skill_lock_required)
                     .inspect_policy()?;
                 println!("{}", serde_json::to_string_pretty(&policy)?);
+            }
+            Some(SkillsCommands::SetEnabled {
+                directory,
+                enabled,
+                if_manifest_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+                    .with_lock_required(config.skill_lock_required)
+                    .set_enabled(&directory, enabled, &if_manifest_sha256)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "disk_policy": policy, "runtime_applied": false
+                    }))?
+                );
             }
             None => {
                 skills_command(config, verbose)?;
@@ -12109,6 +12136,48 @@ mod tests {
             action: Some(SkillsCommands::Policy), config: Some(ref path), ..
         } if path == std::path::Path::new("cfg.toml")));
     }
+    #[test]
+    fn test_cli_skill_policy_edit_requires_explicit_bool_and_hash() {
+        let valid = [
+            "jiaclaw",
+            "skills",
+            "set-enabled",
+            "reviewed",
+            "--enabled",
+            "false",
+            "--if-manifest-sha256",
+            "abc",
+            "--config",
+            "cfg.toml",
+        ];
+        let cli = Cli::try_parse_from(valid).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Skills {
+                action: Some(SkillsCommands::SetEnabled { enabled: false, .. }),
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from([
+            "jiaclaw",
+            "skills",
+            "set-enabled",
+            "reviewed",
+            "--if-manifest-sha256",
+            "abc"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "jiaclaw",
+            "skills",
+            "set-enabled",
+            "reviewed",
+            "--enabled",
+            "false"
+        ])
+        .is_err());
+    }
+
     #[tokio::test]
     async fn sqlite_http_empty_chat_delete_and_restart() {
         let root = unique_workspace("jiaclaw-http-db");

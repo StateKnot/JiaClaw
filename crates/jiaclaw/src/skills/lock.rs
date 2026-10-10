@@ -74,9 +74,13 @@ impl CatalogLock {
             crate::memory_io::read_text(workspace, "skills.lock.json", SKILL_FILE_BYTES, false)
                 .map_err(|_| invalid("必需技能锁无法安全读取"))?
                 .ok_or_else(|| invalid("必需技能锁 skills.lock.json 不存在"))?;
+        Self::parse(&file.text)
+    }
+
+    fn parse(text: &str) -> Result<Self, JiaClawError> {
         // Do not echo parse errors or origin data, which could contain credentials.
         let manifest: Manifest =
-            serde_json::from_str(&file.text).map_err(|_| invalid("技能锁 JSON/schema 无效"))?;
+            serde_json::from_str(text).map_err(|_| invalid("技能锁 JSON/schema 无效"))?;
         if !matches!(manifest.version, 1 | 2) || manifest.skills.len() > CATALOG_SKILLS {
             return Err(invalid("技能锁要求 version=1或2，最多 64 个唯一目录"));
         }
@@ -109,7 +113,7 @@ impl CatalogLock {
         Ok(Self {
             policy: SkillLockPolicy {
                 version: manifest.version,
-                manifest_sha256: format!("{:x}", sha2::Sha256::digest(file.text.as_bytes())),
+                manifest_sha256: format!("{:x}", sha2::Sha256::digest(text.as_bytes())),
                 skills: entries,
             },
             by_directory,
@@ -151,6 +155,46 @@ impl CatalogLock {
         }
         Ok(())
     }
+}
+
+pub(super) fn set_enabled(
+    discovery: &super::SkillDiscovery,
+    name: &str,
+    enabled: bool,
+    expected_hash: &str,
+) -> Result<SkillLockPolicy, JiaClawError> {
+    if !discovery.lock_required || !directory(name) || !valid_hash(expected_hash) {
+        return Err(invalid("技能启停写入要求必需锁、有效目录和原锁 SHA256"));
+    }
+    crate::memory_io::update_existing_text(
+        &discovery.workspace,
+        "skills.lock.json",
+        SKILL_FILE_BYTES,
+        |text| {
+            let mut lock = CatalogLock::parse(text)?;
+            if lock.policy.manifest_sha256 != expected_hash {
+                return Err(invalid("技能锁版本已改变，未提交；重新核对磁盘策略"));
+            }
+            let index = lock
+                .by_directory
+                .get(name)
+                .copied()
+                .ok_or_else(|| invalid("技能启停目录未登记，未提交"))?;
+            if lock.policy.version == 2 && lock.policy.skills[index].enabled == enabled {
+                return Err(invalid("技能已处于请求状态，未提交"));
+            }
+            lock.policy.skills[index].enabled = enabled;
+            let next = serde_json::to_string(&serde_json::json!({
+                "version": 2, "skills": lock.policy.skills
+            }))
+            .map_err(|_| invalid("技能策略无法序列化"))?
+                + "\n";
+            let candidate = CatalogLock::parse(&next)?;
+            let policy = candidate.policy.clone();
+            discovery.scan_locked(true, Some(candidate))?;
+            Ok((next, policy))
+        },
+    )
 }
 
 fn directory(value: &str) -> bool {
@@ -221,6 +265,70 @@ mod tests {
         fs::remove_file(&lock).unwrap();
         assert!(registry.reload(workspace.path()).is_err());
         assert_eq!(registry.snapshot()[0].description, "after");
+    }
+
+    #[test]
+    fn policy_edit_recovers_drift_and_rejects_stale_or_invalid_enable_without_commit() {
+        let workspace = tempfile::tempdir().unwrap();
+        let folder = workspace.path().join("skills/reviewed");
+        fs::create_dir_all(&folder).unwrap();
+        let raw = "---\nname: reviewed\ndescription: tested\n---\nbody";
+        fs::write(folder.join("SKILL.md"), raw).unwrap();
+        let file = workspace.path().join("skills.lock.json");
+        let original = manifest(raw).to_string();
+        fs::write(&file, &original).unwrap();
+        let expected = format!("{:x}", sha2::Sha256::digest(original.as_bytes()));
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        fs::write(folder.join("SKILL.md"), "drift").unwrap();
+        let disabled = discovery.set_enabled("reviewed", false, &expected).unwrap();
+        assert_eq!(disabled.version, 2);
+        assert!(!disabled.skills[0].enabled);
+        let settled = fs::read(&file).unwrap();
+        assert!(discovery
+            .set_enabled("reviewed", false, &disabled.manifest_sha256)
+            .is_err());
+        assert!(discovery.set_enabled("reviewed", true, &expected).is_err());
+        assert!(discovery
+            .set_enabled("reviewed", true, &disabled.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), settled);
+        fs::write(folder.join("SKILL.md"), raw).unwrap();
+        let enabled = discovery
+            .set_enabled("reviewed", true, &disabled.manifest_sha256)
+            .unwrap();
+        assert!(enabled.skills[0].enabled);
+        assert_eq!(
+            enabled.skills[0].source.skill_sha256,
+            manifest(raw)["skills"][0]["source"]["skill_sha256"]
+        );
+        assert_eq!(
+            discovery.inspect_policy().unwrap().manifest_sha256,
+            enabled.manifest_sha256
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn policy_edit_shares_workspace_writer_owner_and_never_creates_a_missing_lock() {
+        let workspace = tempfile::tempdir().unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        assert!(discovery
+            .set_enabled("reviewed", false, &"a".repeat(64))
+            .is_err());
+        assert!(!workspace.path().join("skills.lock.json").exists());
+        let original = serde_json::json!({"version":1,"skills":[{
+            "directory":"reviewed","source":manifest("body")["skills"][0]["source"]
+        }]})
+        .to_string();
+        let file = workspace.path().join("skills.lock.json");
+        fs::write(&file, &original).unwrap();
+        let hash = format!("{:x}", sha2::Sha256::digest(original.as_bytes()));
+        let owner = std::fs::File::open(workspace.path()).unwrap();
+        fs2::FileExt::try_lock_exclusive(&owner).unwrap();
+        assert!(discovery.set_enabled("reviewed", false, &hash).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), original);
+        fs2::FileExt::unlock(&owner).unwrap();
+        assert!(discovery.set_enabled("reviewed", false, &hash).is_ok());
     }
 
     #[test]
