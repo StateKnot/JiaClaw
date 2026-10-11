@@ -91,7 +91,7 @@ fn regular(meta: &Metadata) -> Result<(), JiaClawError> {
     Ok(())
 }
 
-fn read_options(directory: bool) -> OpenOptions {
+pub(crate) fn read_options(directory: bool) -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -108,7 +108,7 @@ fn read_options(directory: bool) -> OpenOptions {
 
 // Open each parent separately with O_NOFOLLOW on supported Linux/macOS hosts.
 // cap-std additionally prevents escapes through substituted path components.
-fn parent(root: &Dir, path: &Path, create: bool) -> Result<Option<Dir>, JiaClawError> {
+pub(crate) fn parent(root: &Dir, path: &Path, create: bool) -> Result<Option<Dir>, JiaClawError> {
     descend(root, path.parent().unwrap_or_else(|| Path::new("")), create)
 }
 
@@ -144,7 +144,7 @@ fn descend(root: &Dir, path: &Path, create: bool) -> Result<Option<Dir>, JiaClaw
     Ok(Some(dir))
 }
 
-fn open_regular(dir: &Dir, name: &OsStr) -> Result<Option<File>, JiaClawError> {
+pub(crate) fn open_regular(dir: &Dir, name: &OsStr) -> Result<Option<File>, JiaClawError> {
     match dir.symlink_metadata(name) {
         Ok(meta) => regular(&meta)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -161,7 +161,11 @@ pub(crate) struct TextFile {
     pub size_bytes: u64,
 }
 
-fn read_open(file: File, limit: usize, truncate: bool) -> Result<TextFile, JiaClawError> {
+pub(crate) fn read_open(
+    file: File,
+    limit: usize,
+    truncate: bool,
+) -> Result<TextFile, JiaClawError> {
     if limit > MAX_READ_BYTES {
         return Err(failure("读取上限超过 512 KiB"));
     }
@@ -264,7 +268,7 @@ fn writer_lock(root: &Dir) -> Result<WorkspaceWriteLock, JiaClawError> {
     })
 }
 
-fn sync_dir(dir: &Dir) -> Result<(), JiaClawError> {
+pub(crate) fn sync_dir(dir: &Dir) -> Result<(), JiaClawError> {
     #[cfg(unix)]
     dir.open(".")
         .map_err(failure)?
@@ -283,7 +287,32 @@ impl Drop for Staged<'_> {
     }
 }
 
-fn publish(dir: &Dir, name: &OsStr, bytes: &[u8], overwrite: bool) -> Result<bool, JiaClawError> {
+pub(crate) fn publish(
+    dir: &Dir,
+    name: &OsStr,
+    bytes: &[u8],
+    overwrite: bool,
+) -> Result<bool, JiaClawError> {
+    publish_file(dir, name, bytes, overwrite, false)
+}
+
+// Installer journal/package leaves use atomic rename-without-replacement:
+// SIGKILL cannot leave a published snapshot hard-linked to a temporary leaf.
+pub(crate) fn publish_noreplace(
+    dir: &Dir,
+    name: &OsStr,
+    bytes: &[u8],
+) -> Result<bool, JiaClawError> {
+    publish_file(dir, name, bytes, false, true)
+}
+
+fn publish_file(
+    dir: &Dir,
+    name: &OsStr,
+    bytes: &[u8],
+    overwrite: bool,
+    rename_new: bool,
+) -> Result<bool, JiaClawError> {
     let staged = Staged {
         dir,
         name: format!(".jiaclaw-memory-{}", uuid::Uuid::new_v4()),
@@ -313,6 +342,12 @@ fn publish(dir: &Dir, name: &OsStr, bytes: &[u8], overwrite: bool) -> Result<boo
     }
     if overwrite {
         dir.rename(&staged.name, dir, name).map_err(failure)?;
+    } else if rename_new {
+        match rename_entry(dir, OsStr::new(&staged.name), dir, name, false) {
+            Ok(()) => (),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(failure(e)),
+        }
     } else {
         match dir.hard_link(&staged.name, dir, name) {
             Ok(()) => (),
@@ -504,6 +539,17 @@ pub(crate) fn create_validated_text<T>(
         return Err(failure("目标文件已存在，未创建"));
     }
     Ok(result)
+}
+
+// Compound filesystem operations use the original writer, never acquire a
+// second per-module lock or release ownership between individual publications.
+pub(crate) fn with_workspace_writer<T>(
+    workspace: &Path,
+    operation: impl FnOnce(&Dir) -> Result<T, JiaClawError>,
+) -> Result<T, JiaClawError> {
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    operation(&root)
 }
 
 pub(crate) fn write_file_bytes(
@@ -809,7 +855,7 @@ fn same_entry(left: &Metadata, right: &Metadata) -> bool {
 
 // Names must be individual validated path components. These safe OS wrappers
 // use the held parents directly; never downgrade NOREPLACE to check + rename.
-fn rename_entry(
+pub(crate) fn rename_entry(
     source: &Dir,
     source_name: &OsStr,
     destination: &Dir,

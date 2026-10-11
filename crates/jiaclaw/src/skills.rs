@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+mod install;
 mod lock;
+pub use install::{SkillInstallStatus, SkillInstaller};
 pub use lock::{SkillLockPolicy, SkillPolicyEntry, SkillSourcePin};
 
 const SKILL_FILE_BYTES: usize = 128 * 1024;
@@ -133,21 +135,28 @@ impl Skill {
         relative: &str,
         skill_dir: &Path,
     ) -> Result<Option<(Self, usize, String)>, JiaClawError> {
-        let dir_name = skill_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| invalid("技能目录需要 UTF-8 名称"))?;
         let Some(file) = crate::memory_io::read_text(workspace, relative, SKILL_FILE_BYTES, false)
             .map_err(invalid)?
         else {
             return Ok(None);
         };
-        if !identifier(dir_name) {
+        Self::parse_raw(&file.text, skill_dir).map(Some)
+    }
+
+    // Installation and discovery validate the same captured original bytes.
+    fn parse_raw(
+        raw_content: &str,
+        skill_dir: &Path,
+    ) -> Result<(Self, usize, String), JiaClawError> {
+        let dir_name = skill_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| invalid("技能目录需要 UTF-8 名称"))?;
+        if raw_content.len() > SKILL_FILE_BYTES || !identifier(dir_name) {
             return Err(invalid(
                 "技能目录名需要 1..=128 UTF-8 字节且无首尾空白/控制字符",
             ));
         }
-        let raw_content = file.text;
         let raw_bytes = raw_content.len();
 
         let (frontmatter, content) = Self::parse_frontmatter(&raw_content).map_err(invalid)?;
@@ -173,7 +182,7 @@ impl Skill {
         {
             return Err(invalid("jiaclaw_resources 最多 8 个唯一 references/ 相对路径及小写 SHA-256；路径最多 256 字节/16 组件"));
         }
-        Ok(Some((
+        Ok((
             Self {
                 name,
                 description,
@@ -185,7 +194,7 @@ impl Skill {
             },
             raw_bytes,
             format!("{:x}", sha2::Sha256::digest(raw_content.as_bytes())),
-        )))
+        ))
     }
 
     /// 解析 YAML frontmatter

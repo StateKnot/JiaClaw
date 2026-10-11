@@ -303,6 +303,25 @@ enum SessionCommands {
 /// 技能子命令
 #[derive(Subcommand)]
 enum SkillsCommands {
+    /// Install a reviewed local JSON bundle as a new disabled source; no runtime reload
+    Install {
+        #[arg(long)]
+        operation_id: String,
+        #[arg(long = "from")]
+        input: String,
+        #[arg(long)]
+        if_bundle_sha256: String,
+        #[arg(long)]
+        if_manifest_sha256: String,
+    },
+    /// Read the saved original installation; does not create state or contact providers
+    InstallStatus { operation_id: String },
+    /// Explicitly settle the captured operation after reviewing its status and intent hash
+    FinishInstall {
+        operation_id: String,
+        #[arg(long)]
+        if_intent_sha256: String,
+    },
     /// 重新扫描工作区 `skills/` 并打印结果（不通知已运行的 serve）
     Reload,
     /// 只读验证并输出磁盘中的必需锁策略（不代表运行服务已应用）
@@ -513,6 +532,46 @@ async fn main() -> Result<()> {
             config,
             verbose,
         } => match action {
+            Some(SkillsCommands::Install {
+                operation_id,
+                input,
+                if_bundle_sha256,
+                if_manifest_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt = jiaclaw::SkillInstaller::new(
+                    &config.workspace_path,
+                    config.skill_lock_required,
+                )
+                .install(
+                    &operation_id,
+                    &input,
+                    &if_bundle_sha256,
+                    &if_manifest_sha256,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::InstallStatus { operation_id }) => {
+                let config = load_agent_config(config)?;
+                let receipt = jiaclaw::SkillInstaller::new(
+                    &config.workspace_path,
+                    config.skill_lock_required,
+                )
+                .inspect(&operation_id)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::FinishInstall {
+                operation_id,
+                if_intent_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt = jiaclaw::SkillInstaller::new(
+                    &config.workspace_path,
+                    config.skill_lock_required,
+                )
+                .finish(&operation_id, &if_intent_sha256)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
             Some(SkillsCommands::Reload) => {
                 skills_reload_command(config)?;
             }

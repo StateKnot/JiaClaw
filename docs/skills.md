@@ -40,3 +40,7 @@
 新本地技能可用[条件登记](skill-registration.md) `skills register`：管理员准备并审核文件，明确来源、固定版本、正文摘要与当前锁hash，登记为停用记录。原锁必须已存在；完整候选校验与单文件发布共用writer，重复登记拒绝。启用及服务重载仍独立，登记不代表下载安装、签名认证或完整技能生态。
 
 首次进入必需锁模式可用[审阅来源锁创建](skill-lock-create.md) `skills create-lock`：从工作区普通单链接输入核对原字节hash，要求v2全停用并逐项核验现存正文，原writer内完整候选扫描后create-if-absent发布；已有锁拒绝覆盖。磁盘创建不修改运行进程的配置或加载表，须另行启用及认证重载/按配置重启，不是下载安装事务。
+
+## 审阅本地包的安装与原身份结算
+
+[本机安装模块](skill-install.md) `skills install` 从有界、审阅过的 JSON 捕获完整正文及所有声明资源，原 workspace writer 贯穿私有原 UUID 记录、停用策略和目录发布。未完成或丢失结果先 `install-status`，再按原意图摘要显式 `finish-install`；冲突保留证据。新增项停用，仍须另行启用与认证 reload；不下载、更新或卸载，不改变工具/租户权限，来源声明不等于签名。
