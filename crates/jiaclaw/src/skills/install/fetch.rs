@@ -514,6 +514,9 @@ mod tests {
                     Err(e) => panic!("{e}"),
                 }
             };
+            // macOS accept inherits the listener's nonblocking flag. The
+            // original bounded ClientHello read must actually wait for bytes.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();

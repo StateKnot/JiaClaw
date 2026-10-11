@@ -3272,6 +3272,158 @@
         },
         "description": "Strict Bearer/body/admission policy is shared with JSON PUT. Fresh202 is SSE admitted/model_started/preview/model_completed/tool_completed/done; done contains only an actually committed terminal receipt, which can require review. Missing/truncated done and error require GET of the original ID. Duplicates200 and all errors are JSON, without subscription, replay, automatic retry or Last-Event-ID. Body drop/backpressure cancels future dispatch but submitted models retain original settlement ownership. One 5s frame deadline, 8x4KiB transport queue, native8-event queue, preview2MiB/round and8MiB/turn, wire12MiB; no upstream/Web/tenant/proxy certification."
       }
+    },
+    "/api/memory/capabilities": {
+      "get": {
+        "summary": "Explicit memory_review, nonempty administrator Token and standalone required; read-only protocol1.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Explicit private capability contract; no-store, nosniff, no-referrer"
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          }
+        }
+      }
+    },
+    "/api/memory": {
+      "get": {
+        "summary": "Complete private configured raw UTF8 text, bytes and SHA256. Max32KiB; no-store. No fallback.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete configured private raw UTF8 snapshot, byte count and SHA256; no-store, nosniff, no-referrer"
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          },
+          "422": {
+            "description": "Configured memory cannot be read completely"
+          },
+          "500": {
+            "description": "Memory review worker failed"
+          },
+          "503": {
+            "description": "Shared non-queued control capacity busy"
+          }
+        }
+      }
+    },
+    "/api/memory/edit-capabilities": {
+      "get": {
+        "summary": "Separately explicit memory_edit and all review gates required. protocol1, standalone, replace, path-and-two-raw-sha256, max_bytes32768.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Explicit private capability contract; no-store, nosniff, no-referrer"
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          }
+        }
+      }
+    },
+    "/api/memory/replace": {
+      "post": {
+        "summary": "Explicit operator full-text correction under the existing workspace writer. No automatic retry; cancellation or post-rename failure can be committed. Inspect before another request. Does not delete index/history/backups or change current prompt.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Private disk receipt without candidate content; no-store, nosniff, no-referrer"
+          },
+          "400": {
+            "description": "Invalid strict replacement JSON contract"
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          },
+          "408": {
+            "description": "Five-second body capture expired; no writer started"
+          },
+          "409": {
+            "description": "Replacement unconfirmed; X-Jiaclaw-Write-Review: required. Inspect current memory before any new request; publication may already have committed"
+          },
+          "413": {
+            "description": "Configured global or 256KiB memory request body budget exceeded"
+          },
+          "415": {
+            "description": "application/json required"
+          },
+          "422": {
+            "description": "Configured path or 32KiB raw UTF8 content budget does not match"
+          },
+          "503": {
+            "description": "Shared non-queued control capacity busy"
+          },
+          "500": {
+            "description": "Resolved body budget unavailable; no writer started"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "content",
+                  "if_content_sha256",
+                  "if_replacement_sha256"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Exact configured path from reviewed snapshot"
+                  },
+                  "content": {
+                    "type": "string",
+                    "description": "Complete replacement raw UTF8, max32768bytes; empty explicitly clears"
+                  },
+                  "if_content_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "if_replacement_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

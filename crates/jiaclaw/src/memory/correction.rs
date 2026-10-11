@@ -84,19 +84,48 @@ impl MemoryEditor {
         expected: &str,
         replacement: &str,
     ) -> Result<MemoryReplacement, JiaClawError> {
+        let candidate = memory_io::relative(candidate)?;
+        self.replace_with(expected, replacement, |root| {
+            read(root, candidate).map(|(_, text)| text)
+        })
+    }
+
+    /// Publish explicitly reviewed UTF-8 text using the same writer as file inputs.
+    /// An empty string explicitly clears the current file; history and indexes remain.
+    ///
+    /// # Errors
+    /// Over-32KiB text, invalid hashes, stale or unsafe targets, no-op, contention
+    /// and I/O errors reject. A post-rename sync error can already be committed.
+    pub fn replace_text(
+        &self,
+        content: String,
+        expected: &str,
+        replacement: &str,
+    ) -> Result<MemoryReplacement, JiaClawError> {
+        if content.len() > super::MEMORY_WRITE_MAX_BYTES {
+            return Err(invalid("replacement exceeds 32KiB"));
+        }
+        self.replace_with(expected, replacement, |_| Ok(content))
+    }
+
+    fn replace_with(
+        &self,
+        expected: &str,
+        replacement: &str,
+        capture: impl FnOnce(&Dir) -> Result<String, JiaClawError>,
+    ) -> Result<MemoryReplacement, JiaClawError> {
         if !valid_hash(expected) || !valid_hash(replacement) {
             return Err(invalid(
                 "both conditions require 64 lowercase SHA256 digits",
             ));
         }
         let target = memory_io::relative(&self.configured)?;
-        let candidate = memory_io::relative(candidate)?;
         memory_io::with_workspace_writer(&self.workspace, |root| {
             let (dir, original) = read(root, target)?;
             if digest(&original) != expected {
                 return Err(invalid("original memory hash changed; review again"));
             }
-            let (_, next) = read(root, candidate)?;
+            let next = capture(root)?;
             if digest(&next) != replacement {
                 return Err(invalid("replacement hash changed; review again"));
             }
@@ -154,6 +183,59 @@ mod tests {
 
     fn hash(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn memory_text_correction_uses_raw_conditions_and_existing_target_only() {
+        let ws = tempfile::tempdir().unwrap();
+        fs::write(ws.path().join("memory"), "old\r\n").unwrap();
+        let editor = MemoryEditor::new(ws.path(), "memory");
+        let old = editor.inspect().unwrap();
+        let new = "new 茶\r\n";
+        assert!(editor
+            .replace_text(new.to_owned(), &old.content_sha256, &hash(b"different"))
+            .is_err());
+        assert_eq!(fs::read(ws.path().join("memory")).unwrap(), b"old\r\n");
+        let receipt = editor
+            .replace_text(new.to_owned(), &old.content_sha256, &hash(new.as_bytes()))
+            .unwrap();
+        assert_eq!(receipt.bytes_written, new.len());
+        assert_eq!(editor.inspect().unwrap().content, new);
+        assert!(editor
+            .replace_text("later".to_owned(), &old.content_sha256, &hash(b"later"))
+            .is_err());
+        assert!(editor
+            .replace_text(
+                new.to_owned(),
+                &receipt.content_sha256,
+                &receipt.content_sha256
+            )
+            .is_err());
+        fs::remove_file(ws.path().join("memory")).unwrap();
+        assert!(editor
+            .replace_text("new".to_owned(), &receipt.content_sha256, &hash(b"new"))
+            .is_err());
+        assert!(!ws.path().join("memory").exists());
+    }
+
+    #[test]
+    fn memory_text_correction_accepts_full_budget_and_explicit_empty_text() {
+        let ws = tempfile::tempdir().unwrap();
+        fs::write(ws.path().join("memory"), "old").unwrap();
+        let editor = MemoryEditor::new(ws.path(), "memory");
+        let text = "\0".repeat(32768);
+        assert!(editor
+            .replace_text("x".repeat(32769), &hash(b"old"), &hash(b"bad"))
+            .is_err());
+        editor
+            .replace_text(text.clone(), &hash(b"old"), &hash(text.as_bytes()))
+            .unwrap();
+        assert_eq!(editor.inspect().unwrap().bytes, 32768);
+        let receipt = editor
+            .replace_text(String::new(), &hash(text.as_bytes()), &hash(b""))
+            .unwrap();
+        assert_eq!(receipt.bytes_written, 0);
+        assert_eq!(fs::read(ws.path().join("memory")).unwrap(), b"");
     }
 
     #[test]

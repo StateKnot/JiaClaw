@@ -7,7 +7,7 @@ let identity = 0, operation = 0, scheduledJobs = false, jobList = [], selectedJo
 let jobsOffset = 0, jobsNext = null, jobsPrevious = [], runsOffset = 0, runsNext = null, runsPrevious = [];
 let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted = false;
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
-let memoryReviewEnabled = false;
+let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = null;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -44,6 +44,8 @@ function controls() {
   $('delivery-cancel').disabled ||= !deliveryFresh || !['pending','retry_wait','unknown','permanent_failed','expired'].includes(delivery?.state);
   for (const id of ['chat-tab','jobs-tab','outbox-tab','memory-tab']) $(id).disabled = !connected || busy;
   $('memory-refresh').disabled = !connected || busy || !memoryReviewEnabled;
+  for (const element of $('memory-edit-form').querySelectorAll('button,input,textarea')) element.disabled = !connected || readOnly || busy || !memoryEditEnabled || !memorySnapshot;
+  $('memory-save').disabled ||= !$('memory-reviewed').checked;
   turnControls();
 }
 function clearIdentity() {
@@ -53,7 +55,8 @@ function clearIdentity() {
   scheduledJobs = false; jobList = []; selectedJob = null; jobsMode = null; jobsHealth = null; pendingCreate = null;
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
   outboxEnabled = false; deliveries = []; delivery = null; outboxOffset = 0; outboxNext = false; deliveryFresh = false;
-  memoryReviewEnabled = false; $('memory-tab').hidden = true; clearMemoryReview();
+  memoryReviewEnabled = false; memoryEditEnabled = false; $('memory-tab').hidden = true; clearMemoryReview();
+  $('memory-edit-form').hidden = true;
   jobsOffset = 0; jobsNext = null; jobsPrevious = []; runsOffset = 0; runsNext = null; runsPrevious = [];
   $('api-token').value = ''; $('message').value = '';
   $('session-title').textContent = '开始一段对话';
@@ -195,8 +198,14 @@ $('connect-form').addEventListener('submit', event => {
       const memory = await api('/api/memory/capabilities', 'GET', undefined, [403,404], 15000, 16384);
       if (memory && (memory.protocol !== 1 || memory.scope !== 'standalone' || memory.read_only !== true || memory.max_bytes !== 32768)) throw new Error('记忆审阅权限响应异常，请联系管理员核对。');
       memoryReviewEnabled = !!memory;
+      if (memoryReviewEnabled) {
+        const edit = await api('/api/memory/edit-capabilities', 'GET', undefined, [403,404], 15000, 16384);
+        if (edit && (edit.protocol !== 1 || edit.scope !== 'standalone' || edit.operation !== 'replace' || edit.max_bytes !== 32768 || edit.conditions !== 'path-and-two-raw-sha256')) throw new Error('记忆纠错权限响应异常，请联系管理员核对。');
+        memoryEditEnabled = !!edit && !!globalThis.crypto?.subtle;
+      }
     }
     $('memory-tab').hidden = !memoryReviewEnabled;
+    $('memory-edit-form').hidden = !memoryEditEnabled;
     $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled && !memoryReviewEnabled;
     await connectTurns(capabilities !== MISSING_ROUTE);
     try { await refresh(); }
@@ -315,13 +324,24 @@ async function refreshRuns(targetOffset = runsOffset, previous = runsPrevious) {
 }
 $('chat-tab').addEventListener('click', () => showView('chat'));
 function clearMemoryReview() {
+  memorySnapshot = null;
+  $('memory-candidate').value = ''; $('memory-reviewed').checked = false;
   for (const id of ['memory-content','memory-summary','memory-state']) $(id).textContent = '';
+}
+async function memoryHash(text) {
+  const bytes = new TextEncoder().encode(text);
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2,'0')).join('');
 }
 async function reviewMemory() {
   clearMemoryReview();
+  const owner = identity;
   const value = await api('/api/memory', 'GET', undefined, false, 15000, 256 * 1024);
   const encoder = new TextEncoder();
   if (!value || typeof value.path !== 'string' || typeof value.content !== 'string' || !/^[0-9a-f]{64}$/.test(value.content_sha256) || !Number.isInteger(value.bytes) || value.bytes < 0 || value.bytes > 32768 || encoder.encode(value.content).length !== value.bytes) throw new Error('记忆快照不完整；未展示，请重新审阅。');
+  if (memoryEditEnabled && await memoryHash(value.content) !== value.content_sha256) throw new Error('记忆原文字节摘要不匹配；未展示，请重新审阅。');
+  if (owner !== identity) throw new StaleIdentity();
+  memorySnapshot = value;
+  if (memoryEditEnabled) $('memory-candidate').value = value.content;
   $('memory-content').textContent = value.content;
   $('memory-summary').textContent = `配置路径：${value.path}\n原字节 SHA256：${value.content_sha256}\n完整字节数：${value.bytes}`;
   $('memory-state').textContent = value.bytes === 0 ? '当前记忆为空。' : '已读取完整文本；这是读取时的快照。';
@@ -329,6 +349,35 @@ async function reviewMemory() {
 }
 $('memory-tab').addEventListener('click', () => task(async () => { if (!memoryReviewEnabled) return; showView('memory'); await reviewMemory(); }));
 $('memory-refresh').addEventListener('click', () => task(reviewMemory));
+$('memory-candidate').addEventListener('input', () => { $('memory-reviewed').checked = false; controls(); });
+$('memory-reviewed').addEventListener('change', controls);
+$('memory-edit-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!connected || readOnly || busy || !memoryEditEnabled || !memorySnapshot || !$('memory-reviewed').checked) return;
+  const snapshot = memorySnapshot, content = $('memory-candidate').value, owner = identity;
+  task(async () => {
+    const bytes = new TextEncoder().encode(content).length;
+    if (bytes > 32768) throw new Error('更正全文超过32KiB，未提交。');
+    const digest = await memoryHash(content);
+    if (owner !== identity) throw new StaleIdentity();
+    if (digest === snapshot.content_sha256) throw new Error('更正内容未变化，未提交。');
+    memorySnapshot = null;
+    try {
+      const receipt = await api('/api/memory/replace', 'POST', {path:snapshot.path, content, if_content_sha256:snapshot.content_sha256, if_replacement_sha256:digest}, false, 15000, 16384);
+      if (!receipt || receipt.path !== snapshot.path || receipt.previous_sha256 !== snapshot.content_sha256 || receipt.content_sha256 !== digest || receipt.bytes_written !== bytes) throw new Error('更正回执不匹配；请先重新读取核对，不要重复提交。');
+      clearMemoryReview();
+      $('memory-state').textContent = `已发布${bytes}字节更正；SHA256：${digest}。请显式重新读取核对当前内容。索引、历史和备份保留。`;
+      status('记忆更正已发布；后续轮会重新读取，当前提示不变。');
+    } catch (error) {
+      if (owner === identity) {
+        $('memory-content').textContent = ''; $('memory-summary').textContent = '';
+        $('memory-reviewed').checked = false;
+        $('memory-state').textContent = '结果未确认；先重新读取核对当前文件，勿重复提交。草稿只保留在当前页面内存。';
+      }
+      throw error;
+    }
+  });
+});
 $('jobs-tab').addEventListener('click', () => task(async () => {
   if (!scheduledJobs) return; showView('jobs');
   await refreshJobsHealth(); await refreshJobs(); status('定时任务已加载');
