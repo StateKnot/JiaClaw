@@ -1,0 +1,13 @@
+## Standards
+
+Fixed cumulative comparison: `git diff 4b2357fcf01f47ba08d7724edbba7accfb60972c...b1c7c901c91929a5ce52ff2a5cc6ffb9de3e41a7`; complete commit list read from `/tmp/jiaclaw-oct11-registration-cumulative-commits.txt`. Inherited Standards conclusions through `5c9f93f` remain scoped evidence: initialization, source approval and policy editing have zero open findings; earlier admission/private-file duplication heuristics were closed. This is not an exhaustive cumulative rereview. Fresh review is exclusively `5c9f93f68050fa92563c61ffcb0af39af63c4177...b1c7c901c91929a5ce52ff2a5cc6ffb9de3e41a7`, covering the seven assigned registration paths and existing capability/publication callees. No Spec report was read.
+
+Standards sources: user production/resource/authentication/cancellation/cache instructions; immutable README, `docs/skills.md:7–20`, `docs/memory-files.md:19,40–48`, `docs/skill-source-approval.md:3–9`, and the registration contract. No physical AGENTS/CONTRIBUTING/CODING_STANDARDS/GLOSSARY source was found by the parent. All twelve Fowler heuristics were considered as judgments; tooling-enforced rules were excluded.
+
+**Fresh documented-standard breaches: 0.** `skills/lock.rs:209–284` validates the immutable origin and bounded target body, rejects duplicate/capacity/stale-hash requests, adds an explicitly disabled declaration, reparses/sorts the complete candidate and performs strict catalog validation before publication. `memory_io.rs:445–480` retains the original nonqueueing workspace writer across captured original bytes, all validation and publication. Existing capability-relative reads, private staging and post-rename uncertainty remain with their storage owner. Other declarations retain their source and enabled values. The shared CLI handler returns only disk policy with `runtime_applied:false`; enabling and authenticated reload remain separate operations. Documentation accurately retains content-hash/ABA, administrator-root, noncooperating-editor, reference-read and selected-work boundaries.
+
+**Fresh actionable baseline smells: 0.** `SkillSourceArguments` bundles the repeated CLI fields; `verify_source_body` shares existing approval logic; `edit_policy` centralizes validation/publication without adding a competing owner or speculative interface. Public `SkillDiscovery` forwarding matches the existing API boundary.
+
+Read-only reviewer: no builds/tests, credentials, network, cache copying/deletion or Git mutations. Inspected real-process fixture and CI/release wiring; execution and revised-head official qualification require separate evidence. Parent qualification is not transferred.
+
+Standards total: **0 new hard breaches, 0 new heuristic findings; no worst issue.**

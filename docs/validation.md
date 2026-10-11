@@ -1218,3 +1218,13 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 独立 Spec 七组实际边界分别覆盖有效v1锁原身份、空v1/v2与顶层默认/force、停用FIFO、常规坏JSON/编码/超限锁与另行严格拒绝、四种不安全锁两模式、技能根/示例父链接、真实持有原目录writer时无发布拒绝及结算后独立恢复。源码 Standards/Spec 原文独立保存，各新增开放0；累计4b2357fc基准及初版历史结论继承，不声称穷尽重审。99输入及八实际fixture的最终交付身份另外核验。
 
 锁检查和单文件发布共用原实际非排队owner；常规锁存在不是内容/来源认证，不扫描受管叶、不增加权限/重载，也不是全工作区事务。新固定head必须独立核对两平台51必需Python、七真实Chromium、四候选各13安装归档源码和每平台新Rust/完整memory_io组。旧head部分成功不能借用；最终官方证据仅正文/pin回填。日志/报告/binary保存于 `/tmp/jiaclaw-oct11-init-locked-delivery`；共享target评估复用且保留，实际清理/回收0，最终df留pin。辅助原始artifact ZIP下载达到读取截止，未得到完整ZIP物理哈希证明；上传摘要资格仍仅认证API对象与日志匹配。
+
+## 2026-10-11 本机新技能条件登记
+
+规范：[登记合同](skill-registration.md)。固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `5c9f93f..b1c7c90`；继承历史审查，源码Standards/Spec各新增开放0，未声称穷尽累计重审。冻结父版真实CLI拒绝不存在的register入口，与新源码七组绿色证据分别保留，是应用能力缺口而非框架缺陷。
+
+最终冻结二进制 SHA256 `cea8a99ae3fc64185623977224cf5bd769967066d5b6ab3214c5ace986784187`；99编译输入逐字节绑定源码、构建和交付。完整官方既有串行Rust harness实际426库/123core/712host，共1261通过、1忽略；locked build、fmt与必需correctness/suspicious Clippy通过。十四套真实进程实际执行：registration、source approval、policy edit、activation、lock、resources、read、skills、memory_io、e2e、doctor、model_probe、native_tools、MCP。本批未重跑浏览器/parser或本机优化构建。
+
+新登记七组覆盖v1迁移/来源保留/停用、重复与过期hash/摘要/完整目录错误、明确参数与来源脱敏、目标链接/硬链/FIFO/无效UTF8/元数据/容量、实际held writer与相同hash两请求一提交、64记录上限与不安全/缺失原锁、实际OS写入限制/权限/暂存清理和0600、真实认证服务在独立启用及重载前保留旧表。独立Spec另七组实际CLI边界覆盖混合v2保留、其他未登记正文拒绝、目标/根链接、63到64/65项、256/257条目、精确128KiB与+1、启用目录精确2MiB与超限。初Spec缺配置字段与fallback description超限的夹具错误另存，不冒称生产缺陷。
+
+原锁hash仅为内容条件，不提供代次/ABA检测；原读取、校验与发布共用非排队writer。登记保持disabled/runtime_applied:false，不修改技能文件；后续启用和原进程认证重载须独立验证。postrename同步失败可能已提交，先检查而不自动重试。来源管理员声明并非签名/远端或整包认证；无新ACL、模型/HTTP写入、租户扩权或取消已选工作。新head的七实际官方作业、52必需Python/七Chromium、四优化候选各13安装归档源码、新登记进程/Rust和继承边界独立验收，最终只正文/pin回填。共享target评估后复用保留，清理及实际回收0，df与日志/报告在 `/tmp/jiaclaw-oct11-registration-delivery`。
