@@ -63,6 +63,7 @@ jobs:
       - run: python3 tests/memory_edit.py target/debug/jiaclaw
       - run: python3 tests/semantic_memory.py target/debug/jiaclaw
       - run: python3 tests/semantic_check.py target/debug/jiaclaw
+      - run: python3 tests/semantic_review.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw
       - run: python3 tests/cli_stream.py target/debug/jiaclaw
@@ -107,6 +108,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/read_only_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/memory_review_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/memory_edit_browser.cjs target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" node tests/semantic_review_browser.cjs target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/web_stream.py target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_http_browser.py target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_http_browser.py target/debug/jiaclaw --preview

@@ -13,3 +13,5 @@
 .turn-catalog-row{border-top:1px solid var(--line);padding:8px 0;overflow-wrap:anywhere}.turn-catalog-row p{white-space:pre-line;font-size:12px;margin:6px 0}.turn-catalog-row button{font-size:12px;padding:7px 10px}#turn-catalog-filter{min-width:0;max-width:100%;font-size:12px}
 
 #memory-view{overflow:auto;min-height:0;padding:0 2px 20px}#memory-view pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.8}#memory-summary{font-size:12px!important;color:var(--muted)}#memory-content{padding:16px;background:white;border:1px solid var(--line);border-radius:9px}
+
+#memory-state{overflow-wrap:anywhere}

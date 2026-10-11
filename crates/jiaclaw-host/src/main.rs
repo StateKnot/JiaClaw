@@ -70,6 +70,7 @@ mod memory_review;
 mod outbound;
 mod schedule;
 mod scheduler;
+mod semantic_review;
 #[cfg(test)]
 mod session_turn_tests;
 mod store;
@@ -1581,6 +1582,14 @@ fn build_router_with_body_limit(
             get(memory_review::edit_capabilities),
         )
         .route("/api/memory/replace", post(memory_review::replace))
+        .route(
+            "/api/memory/semantic-capabilities",
+            get(semantic_review::capabilities).fallback(semantic_review::method_not_allowed),
+        )
+        .route(
+            "/api/memory/semantic",
+            get(semantic_review::check).fallback(semantic_review::method_not_allowed),
+        )
         .route("/api/skills", get(skills_handler))
         .route("/api/skills/reload", post(reload_skills_handler))
         .route("/api/openapi.json", get(openapi_handler))
@@ -2573,6 +2582,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
 
     http_turns::validate_config(&config, api_token.as_deref())?;
     memory_review::validate_config(&config, api_token.as_deref())?;
+    semantic_review::validate_config(&config, api_token.as_deref())?;
     tenant_channel::validate_config(&config, api_token.as_deref())?;
     config.scheduler.validate()?;
     if config.scheduler.enabled {

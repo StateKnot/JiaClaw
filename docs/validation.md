@@ -1,5 +1,8 @@
 # 基础能力验收记录
 
+2026-10-12 管理员实时索引检查：来源spec见[semantic-review](semantic-review.md)，父129完整官方资格独立保留，不转移。新模块使用原运行Agent的同一索引owner和原控制池，七真实HTTP/OS与四真实Chromium初验通过，最终修订源码56e61fc的完整串行1298 Rust（457/123/718）+1ignored、locked build、fmt与必需correctness/suspicious Clippy实际全部通过；交付身份与独立两轴按本批固定pin分别认证。定向两公共Rust门槛原初配置api_key类型编译失败、随后不安全index在workspace内的fixture被原Store拒绝，与独立临时父目录/state修订GREEN分开；两原锁忙断言固定精确错误而不吞任意Err。父冻结新两路由404且原Agent初始化另计，不称零初始化。真实C仅测试动态库：按实际源inode在读取线程持读、不暂停整服务；断开HTTP后与三slow body竞争仍四槽满，释放exit0与SIGKILL-9分别结算，complete三表/query-only原WAL observer保持。另matching-manifest坏向量拒绝，不扩大物理断电/durable认证。初移动端保存完整SHA状态撑宽493px的实际RED/log/截图与精确#memory-state换行GREEN分开，不截断内容、不放宽断言；初RED没有完整冻结binary身份，只认当时进程/截图。局部尝试mobile grid minmax未执行浏览器验收并撤回，最终仅状态行换行。实际本机Playwright1.62.1使用已有自定义Chromium153.0.8010.12（1243），不是该包默认缺失1234分发；真实管理页通过不等于Agent浏览器/供应商或新官方head资格。py_compile写外部系统cache被sandbox拒绝后改纯compile和PYTHONDONTWRITEBYTECODE，不要求扩权限；初browser依赖缺安装、只读猜路径/格式化anchor driver错误单独记录，非应用或框架缺陷。
+
+
 ## 2026-10-12 本机语义索引新鲜度检查
 
 固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，父128本地 `c13885c`，初源码 `5d0e23c` 与修订源码 `3f265cb` 分开。原 status 只为账本/generation 元数据，原 search 已在查询 embedding 前拒绝陈旧源；本批新增无网络完整检查，不重建存储、向量库、模型工具或自动学习。[生产合同](semantic-check.md)明确 inspection 启动、原 owner、全部内容预算和 pending 保留。
@@ -1361,3 +1364,8 @@ PR127 原 head `82fc69b9ca0350b512ff8f4ba9cb33014c805080` 的 Ubuntu 作业 `114
 最终冻结b6edb73af50a16ae7d3f51271f87d19f937fbb880a4f4ea340159b3f350235e0与target逐字节一致，105编译输入固定source/delivery/current核对。完整串行1291 Rust（452/123/716）+1ignored、locked build/fmt/必需correctness+suspicious Clippy、十二实际冻结进程（memory_edit/correction/review/io/semantic/doctor/e2e/read_only_keys与四套真实Chromium）各exit0。没有本机optimized、其他五套Chromium/parser或全部历史进程重跑。独立Spec另30HTTP、2原预算、24实际边界及一组四慢正文/原五秒结算通过；独立Standards三服务复核原预算/环境/0fallback。它们不是新增供应商或物理durable资格。
 
 沙箱Rust执行在已有loopback/权限测试46处失败，与同源授权执行分开；后者继承fetch取消夹具在accepted socket读取报WouldBlock而非等满截止。临时native探针实际证实macOS继承listener的O_NONBLOCK，显式清除后原读取可等字节。最终仅cfgtest增加set_nonblocking(false)，原10秒/owner/取消断言未变，生产prefix未改；初accept探针未等待的driver失败另存，不称上游或生产缺陷。修订后最终完整RustGREEN，不以盲目重跑代替诊断。初105输入库存曾遗漏3个include_str配置文件而误列102，已按实际编译输入补核；这仅审计driver，不扩大父资格。
+
+
+独立初Spec在固定f584源码/8a3冻结binary发现P2 generation未完整校验而显示ready，以及P3错误方法405缺三私密头。独立实际probe成功复现违约不是产品GREEN；根持久回归在原binary分别实际exit1，原报告与证据不改。修订56e61fc完整校验generation空间、计数/bytes预算、freshness及current块数一致性；两个新路由的method fallback复用原授权和private响应。七generation拒绝、八错误方法、原七HTTP/四Chromium同条件GREEN；预算、截止与原断言保留。最终Standards/Spec独立关闭原缺口，不将原初报告改为0。
+
+初完整Rust在sandbox有46失败：37显式PermissionDenied及9个原Mockito server未监听断言，完整失败日志保留；授权同源完整串行执行另行实际exit0，不能说初执行通过或假定9个监听断言的唯一历史根因。最终四工具actual5986及十五冻结binary实际进程的逐套退出/来源/UTC/log SHA记录在 /tmp/jiaclaw-oct12-semantic-review-delivery。新进程为semantic_review/check/semantic_memory/memory_io/correction/edit/review/doctor/e2e/read_only_keys，五页面套为semantic_review_browser/edit_browser/review_browser/read_only_browser/browser；完整结果按process-checks-final.json核对，不将生成metadata当重跑。无本机optimized、其余五Chromium/parser或全部历史进程重跑，无paid供应商调用。新官方资格须独立七actual jobs、两平台62必需Python/Linux十实际Chromium、四候选各13唯一安装归档源码/认证artifact API摘要、新七review/两Rust/四Chromium及generation marker与全部继承合同；尚未以本机或父129取得新head官方资格。140 audit guards。

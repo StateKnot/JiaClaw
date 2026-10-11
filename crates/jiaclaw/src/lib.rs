@@ -177,6 +177,7 @@ pub struct JiaClawAgent {
     /// 可选：每次真实 tool 执行后回调（serve 的 Prometheus 计数）。
     tool_metrics: Option<ToolMetricsHook>,
     model_calls: Option<std::sync::Arc<ModelCalls>>,
+    semantic_memory: Option<std::sync::Arc<SemanticMemory>>,
     /// 测试专用：stub 每次都请求该工具，用于验证 tool loop 上限。
     #[cfg(test)]
     test_repeat_tool: Option<String>,
@@ -239,6 +240,7 @@ impl JiaClawAgent {
         agent.model_calls = model_calls;
         mcp::initialize(&agent.config.mcp, &mut agent.tools).await?;
         if let Some(semantic) = semantic {
+            agent.semantic_memory = Some(std::sync::Arc::clone(&semantic));
             agent.tools.register(Box::new(
                 MemorySearchTool::new(
                     &agent.config.workspace_path,
@@ -372,6 +374,7 @@ impl JiaClawAgent {
             tools,
             tool_metrics: None,
             model_calls: None,
+            semantic_memory: None,
             #[cfg(test)]
             test_repeat_tool: None,
         })
@@ -382,6 +385,19 @@ impl JiaClawAgent {
     pub fn with_tool_metrics_hook(mut self, hook: ToolMetricsHook) -> Self {
         self.tool_metrics = Some(hook);
         self
+    }
+
+    /// Inspect the already-open local semantic index using its original owners.
+    /// No new store, embedding request, refresh or operation reconciliation occurs.
+    ///
+    /// # Errors
+    /// Disabled semantic memory, busy owners, unsafe sources or corrupt local index.
+    pub async fn check_semantic_memory(&self) -> Result<serde_json::Value, JiaClawError> {
+        self.semantic_memory
+            .as_ref()
+            .ok_or_else(|| JiaClawError::Configuration("semantic memory is not enabled".into()))?
+            .check()
+            .await
     }
 
     fn observe_tool_call(&self, tool_name: &str, ok: bool) {

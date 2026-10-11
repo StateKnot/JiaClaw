@@ -34,6 +34,7 @@ max_tokens = 4096
 # Summary is capped at min(512, provider.max_tokens, routing.summary.max_tokens).
 
 [http]
+semantic_review = false
 bind = "127.0.0.1:8080"
 # Set JIACLAW_API_TOKEN to an independent random API token.
 # api_token = "..."

@@ -161,7 +161,7 @@ pub(super) async fn replace(State(state): State<AppState>, request: Request) -> 
     }
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+pub(super) fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     let config = state.agent.config();
     if !config.http.memory_review
         || config.http.gateway_channel_chat
@@ -224,10 +224,10 @@ pub(super) async fn inspect(State(state): State<AppState>, headers: HeaderMap) -
     }
 }
 
-fn reply(status: StatusCode, value: serde_json::Value) -> Response {
+pub(super) fn reply(status: StatusCode, value: serde_json::Value) -> Response {
     private((status, Json(value)).into_response())
 }
-fn private(mut response: Response) -> Response {
+pub(super) fn private(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
