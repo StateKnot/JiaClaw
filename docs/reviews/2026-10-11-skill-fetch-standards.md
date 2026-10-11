@@ -1,0 +1,13 @@
+## Standards
+
+Fixed source `31237b787749724fbaa21192b11de4adf12f7edb`; cumulative base `4b2357fcf01f47ba08d7724edbba7accfb60972c` resolves and remains the merge-base. Recorded `git diff 4b2357fcf01f47ba08d7724edbba7accfb60972c...31237b787749724fbaa21192b11de4adf12f7edb` and `git log 4b2357fcf01f47ba08d7724edbba7accfb60972c..31237b787749724fbaa21192b11de4adf12f7edb --oneline`. Fresh independent review covers all 12 paths in `git diff 954c010a545539643260359f622f3fd045d21b44...31237b787749724fbaa21192b11de4adf12f7edb`, commit `31237b7`. PR107–124 conclusions remain inherited within their original qualified scopes; this is not an exhaustive cumulative rereview. No Spec report was read.
+
+Sources: user AGENTS production/cache instructions; `docs/architecture.md:55–59,85`; `docs/workspace-files.md:165–171`; `docs/memory-files.md:44–48`; `docs/skill-install.md`, `docs/skill-update.md`, `docs/skill-remove.md`, and `docs/skill-fetch.md`. No repository AGENTS/CONTRIBUTING/CODING_STANDARDS was found. All twelve Fowler smells were assessed as judgments, with repository rules overriding them and tooling-enforced checks excluded.
+
+**Documented-standard breaches: 0.** `fetch.rs:108–177` retains the actual nonqueue workspace writer across DNS, identity publication, HTTPS and persistence; it uses the existing capability/private-publication helpers. `fetch.rs:208–350` validates all saved leaves and original identity before observation/finish, preserves conflicts, and never reissues GET during settlement. The install/update/remove hunks check the fourth ledger before new identity publication. `fetch.rs:353–481` validates and pins bounded resolved addresses, retains TLS hostname/root checks, rejects redirects/proxies/retries/decompression, and bounds complete captured bytes. CLI wiring only loads configuration and calls the public Module. These follow the documented ownership, unknown-effect, private-file and runtime-separation rules.
+
+**Actionable heuristic findings: 0.** Similar ledger calls/validation do not justify generic state-machine abstraction: the existing contracts deliberately retain lifecycle-specific recovery. The small fixed failure-code strings and state matching have a single bounded meaning; no current divergence or useful abstraction was identified. Names, public interfaces and shared Bundle validation match existing modules.
+
+Static independent review included every fresh implementation, test, workflow and documentation hunk and their persistence/transport context. No production edits, tests/builds, paid requests or cache changes were performed. New-head runtime/CI qualification requires separate evidence.
+
+**Total: 0 open hard breaches; 0 actionable heuristic findings; no worst issue.**

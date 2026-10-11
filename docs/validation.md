@@ -1289,3 +1289,17 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 
 新固定head官方验收需七实际作业、两平台56必需Python/七实际Chromium、四优化候选各13安装归档源码、新八卸载/四Rust和全部继承安装/更新/技能/init/probe/MCP/writer/worker/Docker/receipt/parser及artifact认证API摘要；父PR123或本机资格不可借用。原ZIP没有本机完整物理摘要，资格仅认证API/日志；最终只正文/pin回填。共享同repo/toolchain/config target约19.7GiB超过20十进制GB已评估复用保留，无专用target或清理，实际回收0，实测df与binary/log/reports在target外的本批pin。
 
+# 2026-10-11 原始技能包HTTPS捕获
+
+[合同](skill-fetch.md)，固定源码31237b787749724fbaa21192b11de4adf12f7edb，fresh父954c010a；累计4b2357fc历史独立审查继承。一个生产SkillFetcher复用原writer、严格Bundle与能力私有发布，保存原UUID/意图、原字节及receipt；status/finish只消费保存字节，不联网/安装/启用。公网默认地址规则保守；内网须显式allow-private，正常原生TLS根/hostname验证保留，环境代理/重定向/retry/解压明确关闭。
+
+最终1281 Rust（446/123/712）+1 ignored、locked build/fmt/required correctness+suspicious Clippy通过。六实际冻结binary进程fetch/install/update/remove/doctor/e2e逐套exit0，七新fetch组与五公共Rust边界全通过；最终binary SHA256 5a6ebe9e426c76ff367034a3f19eeacc456a5e4797eab55d6e01a878917a724e。103仓库输入与最终fixture逐字节核对，日志/原报告/独立身份记录在/tmp/jiaclaw-oct11-fetch-delivery。初完整1280 Rust执行早于新增取消等待边界，后续完整1281重新执行，不混为同一运行。
+
+真实本机TLS registry信任临时CA，完整pretty JSON/UTF8/raw digest及所有references核验，另用真实根拒绝/hostname不匹配拒绝；redirect/404/encoding/Content-Length和chunked超预算/UTF8/摘要/schema拒绝留稳定failure，不允许同UUID重新GET。下载后的包由另一个新UUID实际独立本地安装，disabled/runtime_applied:false、网络请求不增加。三真实sync→kernel SIGSTOP→SIGKILL阶段核验active writer、unknown不重发、captured与completed仅原hash finish；真实held GET/同UUID竞争与64份人工历史setup门槛分别留证。实际取消公共fetch future后，真实ClientHello TCP陷阱保持原writer，释放传输才保存失败收据；该陷阱不认证服务器TLS或HTTP。
+
+初header大小写夹具错误、负例/bundle路由覆盖正例夹具错误分别保留exit1；仅修测试描述/路由，原生产断言/期限不放宽。最终拒绝TLS连接产生的预期reset由测试owned handler结算；子进程/线程均结算。冻结父CLI实际exit2不认识fetch是缺能力，不误报上游。临时交付准备Python stdin编码错误仅为driver失败，未写文件或改变生产，编码根因未证明。
+
+来源是管理员声明，hash不是代次/ABA；原workspace权限可改ledger，无不可变ACL。HTTP/写盘错误可已保存意图/包/收据，先按原UUID观察；普通已返回失败仍不能复用原UUID，明确新CLI调用是新逻辑请求，非远端日志/计费exactly-once保证。不认证供应商/公网TLS/发行安装、物理断电/内核随机故障、复合下载安装事务或StateKnot durable。无本机optimized/Chromium/parser重跑或付费调用。
+
+新head官方验收独立需七实际作业、两平台57必需Python/七真实Chromium、四优化候选各13安装归档源码、新七fetch/五Rust与全部继承remove/update/install/skills/init/probe/MCP/writer/worker/Docker/parser/receipt/七关闭组及artifact API digest；不借父124/本机。原artifact ZIP未本机完整物理核对，不扩大API/作业日志资格。最终只正文/pin回填，避免自引循环。共享同repo/toolchain/config target约19.8GiB已评估复用保留，无专用target/清理、实际回收0，执行前df及最终读数留pin，日志/binary/report在target外。
+

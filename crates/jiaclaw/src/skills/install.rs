@@ -27,6 +27,9 @@ const INTENT_BYTES: usize = 4096;
 mod remove;
 pub use remove::{SkillRemoveState, SkillRemoveStatus, SkillRemover};
 
+mod fetch;
+pub use fetch::{SkillFetchState, SkillFetchStatus, SkillFetcher};
+
 mod update;
 pub use update::{SkillUpdateState, SkillUpdateStatus, SkillUpdater};
 
@@ -196,6 +199,7 @@ impl SkillInstaller {
                 return Err(invalid("技能策略已改变，未开始"));
             }
             let proposed = self.propose(&original, &bundle)?;
+            fetch::ensure_settled(root, operation_id)?;
             remove::ensure_settled(root, operation_id)?;
             update::ensure_settled(root, operation_id)?;
             let skills = directory(root, "skills", false, false)?;
