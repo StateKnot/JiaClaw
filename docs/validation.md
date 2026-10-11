@@ -1,5 +1,9 @@
 # 基础能力验收记录
 
+## 2026-10-11 网关关闭 fixture 的事件锚点
+
+[实际阶段规范](gateway-shutdown-validation.md)保留原官方Intel失败、未改四组GREEN、受控旧RED、初版迟读/旧marker及中间彩色UTC/五秒越界负例。排空期限从本次实际日志事件计算，迟读不领取新期限，重启旧回执拒绝；生产代码不变。最终本机与两轴证据另存修订pin，修订固定head的七作业、55Python/七Chromium、四候选各13安装归档源码和七个实际关闭场景仍独立待核对，不借任何旧head或本机资格。
+
 ## 2026-10-11 本地技能更新
 
 生产源码 `1bb4406476872afe718ce7be30621d6345dcd8c0` 的真实本机串行 harness 完整1272 Rust（437/123/712，另1忽略）、locked build/fmt/必需 correctness+suspicious Clippy与21实际进程套通过；新八更新组和四公共 Rust边界包含跨安装/更新已完成 UUID 两方向拒绝。101编译输入和所有21实际 fixture、共享测试C interposer绑定冻结二进制/源码/交付；本批没有本机optimized、浏览器或parser重跑，新固定head官方七作业/55必需Python/七实际Chromium/四优化候选必须独立完整验收。

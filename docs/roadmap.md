@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 PR123 Intel 候选在既有关闭 fixture 的信号相对17秒等待失败，原历史根因未证明，打包/安装尚未执行；六其他作业/三候选不构成完整资格。[关闭阶段验收](gateway-shutdown-validation.md)改为本次日志事件时间锚点，并保留五秒观察窗口、原安全断言和真实暂停/迟读负例。生产101编译输入、15秒共享期限、CI预算均未变；修订head仍需七作业/四候选独立通过，原1272Rust/21进程仅继承而非本轮重跑。先完成修订资格，再继续实际持有writer/原UUID/意图与退休目录的卸载Module及崩溃矩阵，下载、经验记忆、真实首用/浏览器/审批/durable/子Agent与租户范围继续开放。
+
 2026-10-11 接入[已审阅本地技能更新](skill-update.md)：一个 `SkillUpdater` 与安装 Module 共享原非排队 workspace writer、有界包解析和私有能力 I/O；分别保留安装与更新账本/恢复状态机。完整旧/新正文与声明参考、原/候选策略和原 UUID 捕获后，停用的新来源策略先发布，Linux/macOS EXCHANGE 交换目录，再同步与保存历史收据；旧目录保留。目录 dev/ino 识别字节相同版本，原身份显式 finish 不会重复交换。独立 Spec 初版真实复现跨安装/更新复用已完成 UUID 的 P2，修订 `1bb4406` 在同一 writer 内拒绝两个方向；初版 RED 与修订 GREEN 分开保留。[Standards](reviews/2026-10-11-skill-update-standards.md)/[Spec](reviews/2026-10-11-skill-update-spec.md)源码聚焦新增开放各0，继承4b2357fc累计历史，不称穷尽重审。
 
 最终本机1272 Rust（另1忽略）、locked build/fmt/必需Clippy、21套实际进程和八更新CLI/OS组通过，101编译输入逐字节绑定修订源码/交付。六实际sync→SIGKILL、交换后EIO、原owner互斥、相同字节、完整冲突证据保留及鉴权GET/reload均留证。新固定head独立要求七官方作业、55必需Python/七实际Chromium和四优化候选各13安装归档源码及新增四Rust/八更新组；不能借父122、初d586或本机资格。更新不自动启用/reload/回滚/启动恢复，来源仍管理员声明；远端下载/卸载、经验记忆、真实首用/浏览器/审批及StateKnot durable/子Agent/租户范围继续开放，不标完整生态或物理断电认证。
