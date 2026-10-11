@@ -16,6 +16,7 @@ import re
 import urllib.request
 import uuid
 from host_log import read_running_log
+from stopped_child import wait_stopped
 
 binary = pathlib.Path(sys.argv[1]).resolve()
 sha = lambda value: hashlib.sha256(value.encode()).hexdigest()
@@ -134,6 +135,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-skill-install-') as temporary:
             while not marker.exists() and time.monotonic() < deadline and process.poll() is None:
                 time.sleep(0.01)
             assert marker.exists(), (phase, process.poll(), process.communicate(timeout=1) if process.poll() is not None else 'no selected fsync')
+            wait_stopped(process, deadline)
             # The same owner excludes other installers and original workspace writes.
             competitor = list(f)
             competitor[5] = str(uuid.uuid4())
@@ -238,6 +240,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-skill-install-') as temporary:
         deadline = time.monotonic() + 10
         while not marker.exists() and time.monotonic() < deadline and process.poll() is None: time.sleep(.01)
         assert marker.exists(), process.poll()
+        wait_stopped(process, deadline)
         process.kill(); process.communicate(timeout=5)
         assert process.returncode == -signal.SIGKILL
     finally:
@@ -297,6 +300,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-skill-install-') as temporary:
             deadline = time.monotonic() + 10
             while not marker.exists() and time.monotonic() < deadline and owner_process.poll() is None: time.sleep(.01)
             assert marker.exists()
+            wait_stopped(owner_process, deadline)
             assert not (f[0] / 'skills/newskill').exists()
             assert request('/api/skills') == loaded
             request('/api/skills/reload', {})

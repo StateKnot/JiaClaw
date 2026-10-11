@@ -1,5 +1,20 @@
 # 基础能力验收记录
 
+## 2026-10-11 网关关闭 fixture 的事件锚点
+
+[实际阶段规范](gateway-shutdown-validation.md)保留原官方Intel失败、未改四组GREEN、受控旧RED、初版迟读/旧marker及中间彩色UTC/五秒越界负例。排空期限从本次实际日志事件计算，迟读不领取新期限，重启旧回执拒绝；生产代码不变。最终本机与两轴证据另存修订pin，修订固定head的七作业、55Python/七Chromium、四候选各13安装归档源码和七个实际关闭场景仍独立待核对，不借任何旧head或本机资格。
+
+## 2026-10-11 本地技能更新
+
+生产源码 `1bb4406476872afe718ce7be30621d6345dcd8c0` 的真实本机串行 harness 完整1272 Rust（437/123/712，另1忽略）、locked build/fmt/必需 correctness+suspicious Clippy与21实际进程套通过；新八更新组和四公共 Rust边界包含跨安装/更新已完成 UUID 两方向拒绝。101编译输入和所有21实际 fixture、共享测试C interposer绑定冻结二进制/源码/交付；本批没有本机optimized、浏览器或parser重跑，新固定head官方七作业/55必需Python/七实际Chromium/四优化候选必须独立完整验收。
+
+初版 `d586498` 独立Spec冻结二进制实际允许已完成安装UUID再次更新、已完成更新UUID再次安装；两条RED、初报告与初21套通过证据留原文件。修订1bb原负例GREEN、最终全Rust/21实际套及两轴源码复审分别记录；不借初版通过给修订资格。初次restricted环境的既有localhost/FIFO权限拒绝与允许真实OS操作后完整绿色日志分开，不称生产缺陷。独立探针中/var和/private/var路径、旧目录模式重建的driver错误只修临时脚本，未改生产合同。
+
+真实六sync→SIGKILL阶段、保存意图后删除审阅输入仍仅完成原字节、相同正文版本不再次交换、交换后已提交EIO只读核对、实际writer下并发GET/reload、私有stage/策略/目录inode冲突时保留证据均有执行日志。当前与旧备份完整字节分别核验；来源政策先发布与目录交换有序而非同时原子。完成receipt为历史，不证明当前加载；另行enable和认证reload/GET才应用。临时C库仅拦截实际OS同步，生产无故障注入开关；不认证物理断电、远端下载、发行安装、真实供应商或StateKnot durable。
+
+固定证据在 `/tmp/jiaclaw-oct11-update-delivery/pin.json` 和源码初/终[Standards](reviews/2026-10-11-skill-update-standards.md)/[Spec](reviews/2026-10-11-skill-update-spec.md)；累计比较4b2357fc，历史结论继承、本批fresh范围明确。共享target按同repo/toolchain/config复用，超过20十进制GB已评估保留，无专用cache/复制/清理，实际回收0；最终df实测在pin，日志/二进制/报告位于target外。
+
+
 ## 2026-10-11 首用模型验证与原收据
 
 规范：[model-probe](model-probe.md)。固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，本批 fresh `4862de9..0e8c036`，继承此前累计报告；[Standards](reviews/2026-10-11-model-probe-standards.md)/[Spec](reviews/2026-10-11-model-probe-spec.md)源码及两次增量新增开放各0，未宣称穷尽重审。冻结父二进制实际退出2且不识别新命令，证明能力缺失，非既有框架缺陷。
@@ -1250,3 +1265,15 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 初新夹具在会创建共享状态的serve组之后检查全局state缺失，导致错误失败；最终把无状态检查组放在serve之前，保留原断言。初hash负例未改变所核对的hash和macOS只拦截fsync却未覆盖F_FULLFSYNC也分别是夹具错误；原日志与最终绿分开。最终Rust与二十进程实际结算、格式/锁定build/必需Clippy及日志摘要见本批pin；未在本机重跑optimized/browser/parser，不借父或初版测试资格。共享同仓库/toolchain/config target评估复用保留，无任务专用target或清理，实际回收0，最终df实测留pin。
 
 新固定head官方门槛：七实际作业、两平台54必需Python/七真实Chromium、四优化候选各13安装归档源码、新十一实际安装组/五公共Rust边界和继承技能/init/probe/MCP阶段/writer/worker/Docker/receipt/parser、artifact认证API摘要。只有全部独立成功才回填PR正文/pin，不能借父121或本机资格；原artifact ZIP未本机物理核验，不扩大摘要范围。不再提交纯自引head文档造成资格循环。
+
+## 2026-10-11 安装/更新真实停止收据修订
+
+修订前 ARM 候选114423878178在更新第7组单次 SIGCONT 后原15秒 communicate 超时；优化构建和其他七组通过，发行打包/发行归档/发行安装尚未执行，原日志无实际停止收据或owner阶段，历史原因未确认。原官方日志/API单独保留；不将新本机GREEN当该head资格，不盲目重跑。
+
+冻结生产 SHA256 `0a3a4547977ecd690ac5af9139658cdb763da8078cf8503f085e6c1ecfb538f2` 的原八更新组本机通过。相同真实CLI/鉴权HTTP loop仅把测试库标记→SIGSTOP延迟400毫秒：旧fixture在实际state S时发SIGCONT，随后state T触发原15秒超时；修订先消费真实SIGSTOP后state T才继续，同一受控案例GREEN。修订最终八更新组含正常/400毫秒两种第7组、十一安装组均实际exit0，Python无cache语法检查通过。原controlled RED、driver导入/缩进错误、最终GREEN分开保存于 `/tmp/jiaclaw-oct11-update-stop-delivery` 的pin及日志引用。
+
+本批只有fixture/qualification触发/doc变更；101编译输入与冻结binary不变，原source1bb的1272Rust/build/fmt/必需Clippy/21进程证据仅继承，不冒称本批重跑。本机未执行优化/browser/parser或供应商/发行安装/StateKnot durable认证。实际停止收据共用原安装10秒/更新15秒marker截止，无新超时预算，原恢复后结算等待保留，所有测试自有child由原finally结算；临时C动态库不进入生产。共享helper变更实际触发四候选资格。
+
+累计审查基准固定 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，历史结论继承；本批源码/触发接线与最终交付文档两轴独立，聚焦范围明确，不称穷尽累计重审。新head须七实际作业、两平台55必需Python/七真实Chromium、四优化候选各13安装归档源码、新实际停止回归及全部继承安装/更新/worker/Docker/parser/receipt独立核对；任何旧head/父/本机资格不可转移。原始artifact ZIP未本机完整物理摘要，资格仍仅认证API摘要/作业日志；最终只正文/pin回填，不再自引文档触发CI。
+
+共享同仓库/toolchain/config target约19.7GiB已评估保留，没有本批Rust编译cache/专用target/清理，实际回收0；测试动态库仅任务临时目录，df在测试前实测，最终读数留pin，日志/binary/reports在target外，不以APFS du累计计算回收。

@@ -22,11 +22,36 @@ static int equal_files(const char *left, const char *right) {
     do { x = fgetc(a); y = fgetc(b); if (x != y) { same = 0; break; } } while (x != EOF);
     fclose(a); fclose(b); return same;
 }
+static int update_selected(const char *path) {
+    const char *workspace = getenv("JIACLAW_TEST_UPDATE_WORKSPACE");
+    const char *id = getenv("JIACLAW_TEST_UPDATE_ID");
+    const char *phase = getenv("JIACLAW_TEST_UPDATE_PHASE");
+    const char *old_ino = getenv("JIACLAW_TEST_UPDATE_OLD_INO");
+    if (!workspace || !id || !phase || !old_ino) return 0;
+    char op[4096], intent[4096], stage[4096], receipt[4096], policy[4096], proposed[4096], installed[4096], skills[4096];
+    snprintf(op, sizeof op, "%s/.jiaclaw-skill-updates/%s", workspace, id);
+    snprintf(intent, sizeof intent, "%s/intent.json", op);
+    snprintf(stage, sizeof stage, "%s/stage", op);
+    snprintf(receipt, sizeof receipt, "%s/receipt.json", op);
+    snprintf(policy, sizeof policy, "%s/skills.lock.json", workspace);
+    snprintf(proposed, sizeof proposed, "%s/proposed-policy.json", op);
+    snprintf(skills, sizeof skills, "%s/skills", workspace);
+    snprintf(installed, sizeof installed, "%s/newskill", skills);
+    struct stat current;
+    int exchanged = lstat(installed, &current) == 0 && current.st_ino != (ino_t)strtoull(old_ino, NULL, 10);
+    if (!strcmp(phase, "preparing")) return !strcmp(path, op) && !exists(intent);
+    if (!strcmp(phase, "stage-temp")) return !exists(intent) && !strncmp(path, stage, strlen(stage)) && strstr(path + strlen(stage), ".jiaclaw-memory-");
+    if (!exists(intent)) return 0;
+    if (!strcmp(phase, "intent")) return !strcmp(path, op) && !exchanged && !equal_files(policy, proposed);
+    if (!strcmp(phase, "policy")) return !strcmp(path, workspace) && !exchanged && equal_files(policy, proposed);
+    if (!strcmp(phase, "files")) return !strcmp(path, installed) && exchanged;
+    if (!strcmp(phase, "receipt")) return !strcmp(path, op) && exists(receipt);
+    return 0;
+}
 static int selected(int fd) {
     const char *workspace = getenv("JIACLAW_TEST_INSTALL_WORKSPACE");
     const char *id = getenv("JIACLAW_TEST_INSTALL_ID");
     const char *phase = getenv("JIACLAW_TEST_INSTALL_PHASE");
-    if (!workspace || !id || !phase) return 0;
     char path[4096], op[4096], intent[4096], stage[4096], receipt[4096], policy[4096], proposed[4096], skills[4096], installed[4096];
 #ifdef __APPLE__
     if (fcntl(fd, F_GETPATH, path) != 0) return 0;
@@ -34,6 +59,8 @@ static int selected(int fd) {
     char link[64]; snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     ssize_t length = readlink(link, path, sizeof path - 1); if (length < 0) return 0; path[length] = 0;
 #endif
+    if (update_selected(path)) return 1;
+    if (!workspace || !id || !phase) return 0;
     snprintf(op, sizeof op, "%s/.jiaclaw-skill-installs/%s", workspace, id);
     snprintf(intent, sizeof intent, "%s/intent.json", op);
     snprintf(stage, sizeof stage, "%s/stage", op);
@@ -54,10 +81,16 @@ static int selected(int fd) {
 }
 static int after_sync(int fd, int result) {
     if (result == 0 && selected(fd)) {
-        const char *mode = getenv("JIACLAW_TEST_INSTALL_MODE");
+        const char *mode = getenv("JIACLAW_TEST_UPDATE_MODE");
+        if (!mode) mode = getenv("JIACLAW_TEST_INSTALL_MODE");
         if (mode && !strcmp(mode, "error")) { errno = EIO; return -1; }
-        const char *marker = getenv("JIACLAW_TEST_INSTALL_MARKER");
+        const char *marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
+        if (!marker) marker = getenv("JIACLAW_TEST_INSTALL_MARKER");
         if (marker) { int out = open(marker, O_CREAT | O_WRONLY | O_EXCL, 0600); if (out >= 0) { write(out, "held\n", 5); close(out); } }
+        /* A visible marker can precede the kernel stop. Tests deliberately
+         * enlarge that window; this library is never part of production. */
+        const char *delay = getenv("JIACLAW_TEST_SYNC_STOP_DELAY_US");
+        if (delay) usleep((useconds_t)strtoul(delay, NULL, 10));
         raise(SIGSTOP);
     }
     return result;

@@ -7,16 +7,20 @@ No native model, vendor effect, OS-stuck filesystem or tenant SSE qualification.
 The production 10s request timeout + 5s shared grace is never extended.
 """
 import argparse
+from datetime import datetime
 import http.client
 import json
 import os
 from pathlib import Path
+import re
+import signal
 import socket
 import subprocess
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from host_log import read_running_log
 
 parser = argparse.ArgumentParser()
 parser.add_argument('binary', nargs='?', default='target/debug/jiaclaw')
@@ -162,13 +166,50 @@ class Fixture:
             # Leave the real response body unread; OS send buffers must drain.
 
     def stop_signal(self):
+        previous = read_running_log(self.log)
         start = time.monotonic()
+        wall_start = time.time()
+        self.signal_sent = start
         self.process.terminate()
-        until(lambda: 'shared shutdown grace started' in self.log.read_text())
+        # The real shared deadline starts when shutdown() is handled, not when
+        # Python sends the signal. Signal observation has its own existing 5s
+        # barrier; only the slow-response test measures drain from this phase.
+        receipt = []
+        def closing_receipt():
+            current = read_running_log(self.log)
+            assert time.monotonic() - start <= 5, 'shutdown receipt observation deadline exceeded'
+            assert current.startswith(previous), 'fixture log changed before shutdown receipt'
+            lines = [line for line in current[len(previous):].splitlines()
+                     if 'shared shutdown grace started' in line]
+            if not lines:
+                return False
+            assert len(lines) == 1, 'multiple shutdown receipts for this signal'
+            receipt.append(lines[0])
+            return True
+        until(closing_receipt)
+        self.grace_observed = time.monotonic()
+        # Use the event's UTC time from the same host, paired with the signal's
+        # monotonic clock. A delayed read must not grant a fresh drain budget.
+        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', receipt[0])
+        stamp = datetime.fromisoformat(plain.split()[0].replace('Z', '+00:00'))
+        assert stamp.tzinfo is not None, 'shutdown receipt must have an explicit timezone'
+        self.grace_started = start + (stamp.timestamp() - wall_start)
+        assert start <= self.grace_started <= self.grace_observed, 'inconsistent shutdown clocks'
         return start
 
     def stopped(self, start, bounded=17):
-        self.process.wait(timeout=max(.1, bounded - (time.monotonic() - start)))
+        try:
+            self.process.wait(timeout=max(.1, bounded - (time.monotonic() - start)))
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError({
+                'phase_elapsed_seconds': time.monotonic() - start,
+                'phase_bound_seconds': bounded,
+                'signal_to_grace_seconds': getattr(self, 'grace_observed', start)
+                    - getattr(self, 'signal_sent', start),
+                'receipt_read_delay_seconds': getattr(self, 'grace_observed', start)
+                    - getattr(self, 'grace_started', start),
+                'settled': self.process.poll() is not None,
+            }) from error
         elapsed = time.monotonic() - start
         assert self.process.returncode == 0, self.log.read_text()
         assert elapsed <= bounded, elapsed
@@ -200,13 +241,12 @@ class Fixture:
 
 with Fixture() as f:
     f.slow_downloads()
-    start = time.monotonic()
-    # Baseline binary has no new log barrier. The external bound is identical.
-    f.process.terminate()
-    elapsed = f.stopped(start)
+    f.stop_signal()
+    elapsed = f.stopped(f.grace_started)
     assert 'shutdown grace exhausted' in f.log.read_text(), f.log.read_text()
     assert f.hold() is None and not f.server.requests
-    print(f'1/4 slow TCP downloads share the original 15s grace: {elapsed:.3f}s', flush=True)
+    print(f'1/4 slow TCP downloads share the original 15s grace: {elapsed:.3f}s; '
+          f'signal observation: {f.grace_observed - f.signal_sent:.3f}s', flush=True)
 
 if not args.only_slow:
     with Fixture() as f:
@@ -288,3 +328,93 @@ if not args.only_slow:
         f.stopped(start, 5)
         assert f.hold() is None and not f.server.requests
         print('4/4 pre-signal partial body cannot acquire durable admission after close', flush=True)
+
+    with Fixture() as f:
+        f.stopped(f.stop_signal(), 5)
+        f.start()  # Keep the prior shutdown marker in the append-only log.
+        f.slow_downloads()
+        # Suspend only this fixture's child before it can observe SIGTERM.
+        # This reproduces the old mixed-clock assertion; it does not identify
+        # a historical CI scheduling cause or certify physical signal latency.
+        os.kill(f.process.pid, signal.SIGSTOP)
+        resume = threading.Timer(2.3, lambda: os.kill(f.process.pid, signal.SIGCONT))
+        resume.start()
+        try:
+            f.stop_signal()
+            assert 2 <= f.grace_started - f.signal_sent < 5
+            elapsed = f.stopped(f.grace_started)
+            assert 'shutdown grace exhausted' in f.log.read_text(), f.log.read_text()
+            assert f.hold() is None and not f.server.requests
+            print(f'5/5 delayed signal observation retains the original 15s shared grace: '
+                  f'{elapsed:.3f}s; no admission/effect or new production deadline', flush=True)
+        finally:
+            resume.join(timeout=5)
+            assert not resume.is_alive()
+
+    with Fixture() as f:
+        f.slow_downloads()
+        original_read = read_running_log
+        resume = None
+        def delayed_receipt(path):
+            global resume
+            value = original_read(path)
+            if 'shared shutdown grace started' in value and resume is None:
+                # Hold only this child across the drain allowance. Reading the
+                # receipt late must not let the same event pass as a fresh timer.
+                os.kill(f.process.pid, signal.SIGSTOP)
+                resume = threading.Timer(18, lambda: os.kill(f.process.pid, signal.SIGCONT))
+                resume.start()
+                time.sleep(3)
+            return value
+        read_running_log = delayed_receipt
+        try:
+            f.stop_signal()
+            assert f.grace_observed - f.grace_started >= 3
+            try:
+                f.stopped(f.grace_started)
+            except AssertionError as error:
+                assert isinstance(error.__cause__, subprocess.TimeoutExpired), repr(error)
+                assert f.process.poll() is None, 'controlled child settled before its timer'
+            else:
+                raise AssertionError('delayed receipt incorrectly granted a new drain allowance')
+            resume.join(timeout=5)
+            assert not resume.is_alive()
+            assert f.process.wait(timeout=5) == 0, f.log.read_text()
+            assert 'shutdown grace exhausted' in f.log.read_text(), f.log.read_text()
+            assert f.hold() is None and not f.server.requests
+            print('6/6 delayed log receipt cannot reset the original drain allowance; '
+                  'controlled child settles without admission/effect', flush=True)
+        finally:
+            read_running_log = original_read
+            if resume is not None:
+                resume.cancel()
+                if f.process.poll() is None:
+                    os.kill(f.process.pid, signal.SIGCONT)
+                resume.join(timeout=5)
+                assert not resume.is_alive()
+
+    with Fixture() as f:
+        original_read = read_running_log
+        delayed = False
+        def expired_receipt(path):
+            global delayed
+            value = original_read(path)
+            if 'shared shutdown grace started' in value and not delayed:
+                delayed = True
+                time.sleep(6)  # Return a valid receipt after its original 5s observation window.
+            return value
+        read_running_log = expired_receipt
+        try:
+            try:
+                f.stop_signal()
+            except AssertionError as error:
+                assert str(error) == 'shutdown receipt observation deadline exceeded', repr(error)
+                assert delayed
+            else:
+                raise AssertionError('late receipt bypassed the original observation deadline')
+            assert f.process.wait(timeout=5) == 0, f.log.read_text()
+            assert f.hold() is None and not f.server.requests
+            print('7/7 a late log read cannot bypass the original signal observation deadline; '
+                  'controlled child settles without admission/effect', flush=True)
+        finally:
+            read_running_log = original_read

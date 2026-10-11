@@ -24,7 +24,10 @@ const BUNDLE_BYTES: usize = 512 * 1024;
 const OPERATIONS: usize = 64;
 const INTENT_BYTES: usize = 4096;
 
-#[derive(Deserialize)]
+mod update;
+pub use update::{SkillUpdateState, SkillUpdateStatus, SkillUpdater};
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Bundle {
     version: u32,
@@ -33,7 +36,7 @@ struct Bundle {
     files: Vec<BundleFile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BundleFile {
     path: String,
@@ -41,6 +44,12 @@ struct BundleFile {
 }
 
 impl Bundle {
+    fn file_text(&self) -> BTreeMap<&str, &str> {
+        self.files
+            .iter()
+            .map(|file| (file.path.as_str(), file.text.as_str()))
+            .collect()
+    }
     fn proposed_policy(&self, original: &str) -> Result<String, JiaClawError> {
         let mut policy = lock::CatalogLock::parse(original)?.policy;
         if policy
@@ -79,11 +88,7 @@ impl Bundle {
                 "安装要求 version=1、有效目录/来源、最多9份有界 UTF8 文件",
             ));
         }
-        let files: BTreeMap<_, _> = bundle
-            .files
-            .iter()
-            .map(|file| (file.path.as_str(), file.text.as_str()))
-            .collect();
+        let files = bundle.file_text();
         if files.len() != bundle.files.len()
             || bundle
                 .files
@@ -188,6 +193,7 @@ impl SkillInstaller {
                 return Err(invalid("技能策略已改变，未开始"));
             }
             let proposed = self.propose(&original, &bundle)?;
+            update::ensure_settled(root, operation_id)?;
             let skills = directory(root, "skills", false, false)?;
             if let Some(skills) = &skills {
                 absent(skills, &bundle.directory)?;

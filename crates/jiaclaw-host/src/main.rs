@@ -303,6 +303,27 @@ enum SessionCommands {
 /// 技能子命令
 #[derive(Subcommand)]
 enum SkillsCommands {
+    /// Replace a reviewed disabled local package; preserve the old version and original UUID
+    Update {
+        #[arg(long)]
+        operation_id: String,
+        #[arg(long = "from")]
+        input: String,
+        #[arg(long)]
+        if_bundle_sha256: String,
+        #[arg(long)]
+        if_manifest_sha256: String,
+        #[arg(long)]
+        if_current_skill_sha256: String,
+    },
+    /// Read the original update without replaying the directory exchange
+    UpdateStatus { operation_id: String },
+    /// Settle only the saved original update after inspecting its intent hash
+    FinishUpdate {
+        operation_id: String,
+        #[arg(long)]
+        if_intent_sha256: String,
+    },
     /// Install a reviewed local JSON bundle as a new disabled source; no runtime reload
     Install {
         #[arg(long)]
@@ -532,6 +553,42 @@ async fn main() -> Result<()> {
             config,
             verbose,
         } => match action {
+            Some(SkillsCommands::Update {
+                operation_id,
+                input,
+                if_bundle_sha256,
+                if_manifest_sha256,
+                if_current_skill_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillUpdater::new(&config.workspace_path, config.skill_lock_required)
+                        .update(
+                            &operation_id,
+                            &input,
+                            &if_bundle_sha256,
+                            &if_manifest_sha256,
+                            &if_current_skill_sha256,
+                        )?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::UpdateStatus { operation_id }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillUpdater::new(&config.workspace_path, config.skill_lock_required)
+                        .inspect(&operation_id)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::FinishUpdate {
+                operation_id,
+                if_intent_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillUpdater::new(&config.workspace_path, config.skill_lock_required)
+                        .finish(&operation_id, &if_intent_sha256)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
             Some(SkillsCommands::Install {
                 operation_id,
                 input,
