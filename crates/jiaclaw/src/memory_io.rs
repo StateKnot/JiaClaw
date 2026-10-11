@@ -480,6 +480,32 @@ pub(crate) fn update_existing_text<T>(
     })
 }
 
+// Capture and validate the proposed text while the original workspace writer
+// is held; the final hard-link publication also refuses a newly appeared leaf.
+pub(crate) fn create_validated_text<T>(
+    workspace: &Path,
+    raw: &str,
+    limit: usize,
+    prepare: impl FnOnce() -> Result<(String, T), JiaClawError>,
+) -> Result<T, JiaClawError> {
+    let path = relative(raw)?;
+    let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
+    let _lock = writer_lock(&root)?;
+    let dir = parent(&root, path, false)?.ok_or_else(|| failure("文件父目录不存在"))?;
+    let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
+    if open_regular(&dir, name)?.is_some() {
+        return Err(failure("目标文件已存在，未创建"));
+    }
+    let (text, result) = prepare()?;
+    if text.len() > limit.min(FILE_LIMIT) {
+        return Err(failure("待创建文件超过上限"));
+    }
+    if !publish(&dir, name, text.as_bytes(), false)? {
+        return Err(failure("目标文件已存在，未创建"));
+    }
+    Ok(result)
+}
+
 pub(crate) fn write_file_bytes(
     workspace: &Path,
     raw: &str,

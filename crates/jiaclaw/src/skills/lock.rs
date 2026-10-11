@@ -232,11 +232,65 @@ pub(super) fn register(
     })
 }
 
+pub(super) fn create(
+    discovery: &super::SkillDiscovery,
+    input_path: &str,
+    expected_hash: &str,
+) -> Result<SkillLockPolicy, JiaClawError> {
+    if !discovery.lock_required || !valid_hash(expected_hash) {
+        return Err(invalid("创建技能锁要求必需策略和已审阅输入 SHA256"));
+    }
+    crate::memory_io::create_validated_text(
+        &discovery.workspace,
+        "skills.lock.json",
+        SKILL_FILE_BYTES,
+        || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let text = crate::memory_io::read_text(
+                &discovery.workspace,
+                input_path,
+                SKILL_FILE_BYTES,
+                false,
+            )
+            .map_err(|_| invalid("审阅输入无法安全读取，未创建"))?
+            .ok_or_else(|| invalid("审阅输入不存在，未创建"))?
+            .text;
+            let candidate = CatalogLock::parse(&text)?;
+            if candidate.policy.manifest_sha256 != expected_hash
+                || candidate.policy.version != 2
+                || candidate.policy.skills.iter().any(|entry| entry.enabled)
+            {
+                return Err(invalid("创建要求已审阅原字节和 version=2 全部停用策略"));
+            }
+            let mut bytes = 0usize;
+            for entry in &candidate.policy.skills {
+                if std::time::Instant::now() >= deadline {
+                    return Err(invalid("技能锁创建验证超时，未创建"));
+                }
+                bytes = bytes.saturating_add(verify_source_body(
+                    discovery,
+                    &entry.directory,
+                    &entry.source,
+                )?);
+                if bytes > super::CATALOG_BYTES {
+                    return Err(invalid("技能锁创建正文合计超过2MiB，未创建"));
+                }
+            }
+            let policy = candidate.policy.clone();
+            discovery.scan_locked(true, Some(candidate))?;
+            if std::time::Instant::now() >= deadline {
+                return Err(invalid("技能锁创建验证超时，未创建"));
+            }
+            Ok((text, policy))
+        },
+    )
+}
+
 fn verify_source_body(
     discovery: &super::SkillDiscovery,
     name: &str,
     proposed: &SkillSourcePin,
-) -> Result<(), JiaClawError> {
+) -> Result<usize, JiaClawError> {
     let loaded = super::Skill::read(
         &discovery.workspace,
         &format!("skills/{name}/SKILL.md"),
@@ -247,7 +301,7 @@ fn verify_source_body(
     if loaded.2 != proposed.skill_sha256 {
         return Err(invalid("新来源正文与已审核摘要不一致，未提交"));
     }
-    Ok(())
+    Ok(loaded.1)
 }
 
 // All operator edits keep captured bytes, checks and publication inside the
@@ -324,6 +378,71 @@ mod tests {
         serde_json::json!({"version":1,"skills":[{"directory":"reviewed","source":{
             "repository":"https://github.com/example/skills","revision":"a".repeat(40),
             "skill_sha256":format!("{:x}",sha2::Sha256::digest(raw.as_bytes()))}}]})
+    }
+
+    #[test]
+    fn create_lock_preserves_reviewed_bytes_and_requires_explicit_activation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let raw = "---\nname: reviewed\ndescription: original\n---\nbody";
+        fs::create_dir_all(workspace.path().join("skills/reviewed")).unwrap();
+        fs::write(workspace.path().join("skills/reviewed/SKILL.md"), raw).unwrap();
+        let mut input = manifest(raw);
+        input["version"] = serde_json::json!(2);
+        input["skills"][0]["enabled"] = serde_json::json!(false);
+        let text = serde_json::to_string_pretty(&input).unwrap() + "\n";
+        let hash = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
+        fs::write(workspace.path().join("reviewed.json"), &text).unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let policy = discovery.create_lock("reviewed.json", &hash).unwrap();
+        assert_eq!(policy.manifest_sha256, hash);
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("skills.lock.json")).unwrap(),
+            text
+        );
+        assert!(discovery.discover_strict().unwrap().is_empty());
+        assert!(discovery.create_lock("reviewed.json", &hash).is_err());
+        discovery.set_enabled("reviewed", true, &hash).unwrap();
+        assert_eq!(discovery.discover_strict().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_lock_rejects_unreviewed_enabled_missing_or_drifted_sources_before_publication() {
+        let workspace = tempfile::tempdir().unwrap();
+        let raw = "---\nname: reviewed\ndescription: original\n---\nbody";
+        fs::create_dir_all(workspace.path().join("skills/reviewed")).unwrap();
+        fs::write(workspace.path().join("skills/reviewed/SKILL.md"), raw).unwrap();
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let mut input = manifest(raw);
+        input["version"] = serde_json::json!(2);
+        input["skills"][0]["enabled"] = serde_json::json!(false);
+        for change in ["hash", "enabled", "version", "body", "missing"] {
+            let mut proposed = input.clone();
+            match change {
+                "enabled" => proposed["skills"][0]["enabled"] = serde_json::json!(true),
+                "version" => proposed["version"] = serde_json::json!(1),
+                "body" => fs::write(
+                    workspace.path().join("skills/reviewed/SKILL.md"),
+                    raw.to_owned() + "drift",
+                )
+                .unwrap(),
+                "missing" => {
+                    fs::remove_file(workspace.path().join("skills/reviewed/SKILL.md")).unwrap()
+                }
+                _ => (),
+            }
+            let text = proposed.to_string();
+            fs::write(workspace.path().join("reviewed.json"), &text).unwrap();
+            let hash = if change == "hash" {
+                "0".repeat(64)
+            } else {
+                format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
+            };
+            assert!(
+                discovery.create_lock("reviewed.json", &hash).is_err(),
+                "{change}"
+            );
+            assert!(!workspace.path().join("skills.lock.json").exists());
+        }
     }
 
     #[test]

@@ -1228,3 +1228,13 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 新登记七组覆盖v1迁移/来源保留/停用、重复与过期hash/摘要/完整目录错误、明确参数与来源脱敏、目标链接/硬链/FIFO/无效UTF8/元数据/容量、实际held writer与相同hash两请求一提交、64记录上限与不安全/缺失原锁、实际OS写入限制/权限/暂存清理和0600、真实认证服务在独立启用及重载前保留旧表。独立Spec另七组实际CLI边界覆盖混合v2保留、其他未登记正文拒绝、目标/根链接、63到64/65项、256/257条目、精确128KiB与+1、启用目录精确2MiB与超限。初Spec缺配置字段与fallback description超限的夹具错误另存，不冒称生产缺陷。
 
 原锁hash仅为内容条件，不提供代次/ABA检测；原读取、校验与发布共用非排队writer。登记保持disabled/runtime_applied:false，不修改技能文件；后续启用和原进程认证重载须独立验证。postrename同步失败可能已提交，先检查而不自动重试。来源管理员声明并非签名/远端或整包认证；无新ACL、模型/HTTP写入、租户扩权或取消已选工作。新head的七实际官方作业、52必需Python/七Chromium、四优化候选各13安装归档源码、新登记进程/Rust和继承边界独立验收，最终只正文/pin回填。共享target评估后复用保留，清理及实际回收0，df与日志/报告在 `/tmp/jiaclaw-oct11-registration-delivery`。
+
+## 2026-10-11 审阅初始技能锁创建
+
+规范：[初始锁创建合同](skill-lock-create.md)。累计固定基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `ea992611..8138f10`；历史累计结论继承，Standards/Spec源码聚焦各0开放，不声称穷尽重审。冻结父120实际CLI不认识create-lock，原七组fixture在成功创建断言处失败；最终同入口通过，这是应用能力缺口，不是框架缺陷。父版失败发生于子命令解析，未执行早期配置草稿；最终fixture使用完整真实配置。
+
+最终本机串行harness实际428库/123core/712host共1263 Rust通过、1忽略；locked build、fmt和必需correctness/suspicious Clippy通过。十五实际进程套：lock create、registration、source approval、policy edit、activation、lock、resource、read、skills、memory_io、e2e、doctor、model_probe、native_tools、MCP；本批没有本机优化构建、浏览器或parser重跑。新七组覆盖审阅完整字节、明确全停用、hash/JSON/配置拒绝及模型/MCP/索引陷阱；输入/正文/目标链接/硬链接/FIFO/穿越/漂移/未登记、128KiB/2MiB/256项预算、实际held writer/两请求一提交、实际OS文件大小限制与权限失败、0600和普通失败暂存清理、原认证服务保持旧表直到独立reload。独立Spec另四组CLI覆盖精确输入128KiB/+1、严格JSON、64声明精确2MiB/+1、256/257实际目录项、缺正文/skills根/目录链接及空v2政策，不是四种供应商能力。
+
+冻结binary SHA256 `337f45547ec592afac7781d378afa7369e9e36503731b33142deae1de3185fd8`；最终重建target逐字节相同。99编译输入和十五实际fixture绑定source/compiled/delivery；日志和独立原报告在 `/tmp/jiaclaw-oct11-lock-create-delivery`。不将本机假网关、OS限制或协作2秒预算认证为供应商、物理硬截止、下载安装或durable。原writer贯穿prepare与缺失目标发布，现存锁与同输入重复拒绝；提交前失败不创建，hard-link发布后的清理/目录同步失败可能已提交，必须按原摘要核对而不自动重发。来源为管理员声明，hash为内容条件；无签名、独立ACL、模型/HTTP写入、租户扩权、自动启用/reload或运行配置更改。共享target评估复用保留，无专用cache/清理，实际回收0，df实测留pin。
+
+新固定head须独立七实际作业、两平台53必需Python/七真实Chromium、四优化候选各13安装归档源码、新七锁创建/两Rust与原登记/技能/MCP/writer/worker/Docker/receipt/parser和artifact API摘要全部核验，不能借父120或本机资格。最终官方证据只PR正文/pin回填，避免纯自引head文档资格循环。原artifact ZIP没有本机物理验证，不扩大API摘要/作业日志资格。

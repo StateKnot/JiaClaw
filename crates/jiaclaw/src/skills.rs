@@ -431,6 +431,24 @@ impl SkillDiscovery {
         lock::register(self, directory, source, expected_manifest_sha256)
     }
 
+    /// Create an absent source lock from reviewed workspace-relative bytes.
+    ///
+    /// Requires version 2 with every declaration disabled. Capture, complete
+    /// body/candidate validation and create-only publication share the writer.
+    /// This does not change a running registry's captured policy or install files.
+    ///
+    /// # Errors
+    /// Rejects existing/unsafe targets, unreviewed or invalid input and bodies.
+    /// A publication synchronization error can already have created the file;
+    /// inspect its exact bytes before deciding whether to issue a new request.
+    pub fn create_lock(
+        &self,
+        input_path: &str,
+        expected_source_sha256: &str,
+    ) -> Result<SkillLockPolicy, JiaClawError> {
+        lock::create(self, input_path, expected_source_sha256)
+    }
+
     fn scan_locked(
         &self,
         strict: bool,
