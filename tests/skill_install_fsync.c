@@ -80,6 +80,13 @@ static int selected(int fd) {
     char link[64]; snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     ssize_t length = readlink(link, path, sizeof path - 1); if (length < 0) return 0; path[length] = 0;
 #endif
+    const char *memory_dir = getenv("JIACLAW_TEST_MEMORY_DIR");
+    const char *memory_phase = getenv("JIACLAW_TEST_MEMORY_PHASE");
+    if (memory_dir && memory_phase) {
+        if (!strcmp(memory_phase, "temporary") && !strncmp(path, memory_dir, strlen(memory_dir)) &&
+            path[strlen(memory_dir)] == '/' && strstr(path + strlen(memory_dir), ".jiaclaw-memory-") != NULL) return 1;
+        if (!strcmp(memory_phase, "published") && !strcmp(path, memory_dir)) return 1;
+    }
     const char *fetch_workspace = getenv("JIACLAW_TEST_FETCH_WORKSPACE");
     const char *fetch_id = getenv("JIACLAW_TEST_FETCH_ID");
     const char *fetch_phase = getenv("JIACLAW_TEST_FETCH_PHASE");
@@ -117,12 +124,14 @@ static int selected(int fd) {
 }
 static int after_sync(int fd, int result) {
     if (result == 0 && selected(fd)) {
-        const char *mode = getenv("JIACLAW_TEST_FETCH_MODE");
+        const char *mode = getenv("JIACLAW_TEST_MEMORY_MODE");
+        if (!mode) mode = getenv("JIACLAW_TEST_FETCH_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_REMOVE_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_UPDATE_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_INSTALL_MODE");
         if (mode && !strcmp(mode, "error")) { errno = EIO; return -1; }
-        const char *marker = getenv("JIACLAW_TEST_FETCH_MARKER");
+        const char *marker = getenv("JIACLAW_TEST_MEMORY_MARKER");
+        if (!marker) marker = getenv("JIACLAW_TEST_FETCH_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_REMOVE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_INSTALL_MARKER");

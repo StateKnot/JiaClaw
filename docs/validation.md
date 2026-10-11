@@ -1333,3 +1333,17 @@ PR127 原 head `82fc69b9ca0350b512ff8f4ba9cb33014c805080` 的 Ubuntu 作业 `114
 
 本批只修夹具与记录，105编译输入、冻结 binary SHA256 `a6ee8eed90a803e9f6d5e255e95b626e6efbafdc3b3cbf0f15b4911230968c69` 和生产源码逐字节不变。原1287 Rust、build/fmt/必需Clippy及浏览器资格按原源码范围继承，本批未重跑，不当新官方资格。累计固定4b2357fc历史范围继承，fresh修订的 Standards/Spec 独立核验；新 head 仍须独立七实际作业、两平台59必需Python/Linux八Chromium、四候选各13安装归档源码、新增解析标记与全部继承边界及artifact认证API摘要，最终仅正文/pin回填。
 
+# 2026-10-12 工作台管理员记忆纠错
+
+本批规格见[memory-edit](memory-edit.md)，使用 Matt Pocock 的深 Module 设计和独立 Standards/Spec。累计基准仍为4b2357fc，源码与交付 fresh 仅本批纠错 Interface、默认关闭的管理员 HTTP 权限、页面和验收接线，原源/交付历史继承，不声称穷尽累计重审。
+
+冻结父a6ee8eed二进制实际两个新增入口404且原文件不变；新的七HTTP/OS组验证双摘要/raw文本/原writer、原身份权限、stale与不安全源拒绝、竞写、完整32KiB/明确清空、HTTP waiter断开后实际停止owner继续持有writer及post-rename fsync EIO。后者实际409但文件已改变，必须先inspect，不称无效果或exactly-once。四真实Chromium管理页组通过勾选/条件提交、stale后手动读取、真实提交后受控坏收据/迟到身份清理、默认关闭及网关/read-only零探查；这不是Agent浏览器工具或供应商资格。
+
+原初fixture在空原文时把任何响应都当泄漏，exit1发生在已通过前四组之后；只修正空文本条件，不当生产缺陷。C interposer只在测试动态库中，生产无故障注入开关，不认证物理断电、内核随机失败或StateKnot durable。完整Rust/build/fmt/必需Clippy和继承实际进程与浏览器最终结果按外部固定pin记录，不把旧父执行转移。新官方固定head需独立七作业、每平台60必需Python、Linux九Chromium、四候选各13安装归档源码、四新Rust/七HTTP/四Browser组及原继承合同，尚未因此获得官方资格。原artifact ZIP边界保持，仅认证API摘要/实际日志。
+
+
+独立初审对 source410c35a 的真实配置512 chunked请求复现P2：同正文Content-Length413但chunked200发布；修订19737f6关闭原配置案例后，环境变量512仍实际200，另P2保留。最终source36084fd消费启动时同一解析预算，两个原条件与配置0fallback独立GREEN；OpenAPI误复用响应表的P3也关闭。两初Standards原样报告、实际RED、部分修订GREEN与最终两轴0分开。初Spec代理已保存实际30条HTTP与两预算证据，但报告发送被内容过滤拒绝，未冒称有原样报告；最终由另一独立Spec重审完整fresh范围并保存原样报告。
+
+最终冻结b6edb73af50a16ae7d3f51271f87d19f937fbb880a4f4ea340159b3f350235e0与target逐字节一致，105编译输入固定source/delivery/current核对。完整串行1291 Rust（452/123/716）+1ignored、locked build/fmt/必需correctness+suspicious Clippy、十二实际冻结进程（memory_edit/correction/review/io/semantic/doctor/e2e/read_only_keys与四套真实Chromium）各exit0。没有本机optimized、其他五套Chromium/parser或全部历史进程重跑。独立Spec另30HTTP、2原预算、24实际边界及一组四慢正文/原五秒结算通过；独立Standards三服务复核原预算/环境/0fallback。它们不是新增供应商或物理durable资格。
+
+沙箱Rust执行在已有loopback/权限测试46处失败，与同源授权执行分开；后者继承fetch取消夹具在accepted socket读取报WouldBlock而非等满截止。临时native探针实际证实macOS继承listener的O_NONBLOCK，显式清除后原读取可等字节。最终仅cfgtest增加set_nonblocking(false)，原10秒/owner/取消断言未变，生产prefix未改；初accept探针未等待的driver失败另存，不称上游或生产缺陷。修订后最终完整RustGREEN，不以盲目重跑代替诊断。初105输入库存曾遗漏3个include_str配置文件而误列102，已按实际编译输入补核；这仅审计driver，不扩大父资格。

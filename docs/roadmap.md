@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-12 接通[工作台管理员记忆纠错](memory-edit.md)：独立默认关闭的 memory_edit 需既有 memory_review、非空管理 Token 与 standalone，原四槽非排队控制 owner 和 MemoryEditor writer 贯穿完整路径/原文/候选双摘要核验与原发布。浏览器显式审阅/勾选后单次提交，陈旧/同值拒绝；未知响应或 post-rename 同步失败先只读核对，不自动重发。原审阅 GET 合同保持，网关/只读权限不扩大，不另造存储、模型工具或账本，不称自动学习/经验质量、索引或全面隐私删除。冻结父原两个新入口不存在的真实负例已保留；本机七真实 HTTP/OS 和四 Chromium 管理页组通过。新源码完整 Rust/required Clippy、继承回归与独立两轴，以及新固定 head 的七官方作业/两平台60必需Python/Linux九Chromium/四候选各13安装归档源码必须分别验收，不借父127资格。其他首用、真实 Agent 浏览器、审批/StateKnot durable/子Agent和租户范围继续开放。
+
 2026-10-11 接入[本机记忆审阅与条件纠错](memory-correction.md)：复用已有记忆能力与非排队 workspace writer，完整配置路径快照和原/候选双摘要核对后私有 sync+rename；陈旧、同值、链接、特殊文件、超限和缺失拒绝。空候选可明确清空当前记忆，同一运行服务的后续轮提示实际重读；不删除历史/索引/备份、不增加模型/HTTP写入口或自动学习。固定源码 `ac0dca6` 实际1285Rust（450/123/712，另1忽略）、locked build/fmt/必需Clippy和七套相关冻结二进制进程全部通过，新七组与独立Spec37次CLI留证。初Rust测试unsafe lint编译失败与安全fs2修订通过分别保留；生产prefix不变。新固定head需独立七官方作业、58必需Python/七Chromium、四优化候选各13安装归档源码及四新公共Rust/七纠错组，不能借父125或本机结果。下一步仍为实际经验复用/首用质量、真实浏览器、审批/StateKnot durable/子Agent与租户范围；本批不认证供应商、学习正确性或全面隐私删除。
 
 2026-10-11 PR123 Intel 候选在既有关闭 fixture 的信号相对17秒等待失败，原历史根因未证明，打包/安装尚未执行；六其他作业/三候选不构成完整资格。[关闭阶段验收](gateway-shutdown-validation.md)改为本次日志事件时间锚点，并保留五秒观察窗口、原安全断言和真实暂停/迟读负例。生产101编译输入、15秒共享期限、CI预算均未变；修订head仍需七作业/四候选独立通过，原1272Rust/21进程仅继承而非本轮重跑。先完成修订资格，再继续实际持有writer/原UUID/意图与退休目录的卸载Module及崩溃矩阵，下载、经验记忆、真实首用/浏览器/审批/durable/子Agent与租户范围继续开放。

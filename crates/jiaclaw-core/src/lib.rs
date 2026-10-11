@@ -1414,6 +1414,9 @@ pub struct HttpConfig {
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
+    /// Separately opt-in administrator memory replacement; requires memory_review.
+    #[serde(default)]
+    pub memory_edit: bool,
     /// Opt-in standalone durable HTTP turns; requires Brokerrouter, model_calls, persistence and authentication.
     #[serde(default)]
     pub tracked_turns: bool,
@@ -1576,6 +1579,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             memory_review: false,
+            memory_edit: false,
             tracked_turns: false,
             tracked_turn_timeout_secs: default_tracked_turn_timeout(),
             gateway_channel_chat: false,

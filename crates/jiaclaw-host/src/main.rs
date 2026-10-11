@@ -1314,10 +1314,14 @@ fn max_body_bytes_usize(limit: u64) -> usize {
     usize::try_from(limit).unwrap_or(usize::MAX)
 }
 
+/// The router's resolved budget, shared with handlers that consume raw Body.
+#[derive(Clone, Copy)]
+struct RequestBodyBudget(usize);
+
 /// 超限时在读取 body 之前返回 413 JSON，避免把超大请求缓冲进内存。
 async fn max_body_bytes_middleware(
     State(limit): State<usize>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_owned();
@@ -1332,6 +1336,7 @@ async fn max_body_bytes_middleware(
         }
     }
 
+    request.extensions_mut().insert(RequestBodyBudget(limit));
     next.run(request).await
 }
 
@@ -1569,6 +1574,11 @@ fn build_router_with_body_limit(
         .route("/api/tools", get(tools_handler))
         .route("/api/memory/capabilities", get(memory_review::capabilities))
         .route("/api/memory", get(memory_review::inspect))
+        .route(
+            "/api/memory/edit-capabilities",
+            get(memory_review::edit_capabilities),
+        )
+        .route("/api/memory/replace", post(memory_review::replace))
         .route("/api/skills", get(skills_handler))
         .route("/api/skills/reload", post(reload_skills_handler))
         .route("/api/openapi.json", get(openapi_handler))
