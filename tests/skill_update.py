@@ -10,6 +10,7 @@ import pathlib
 import re
 import urllib.request
 from host_log import read_running_log
+from stopped_child import wait_stopped
 import signal
 import subprocess
 import sys
@@ -164,6 +165,7 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-skill-update-') as temporary:
             deadline = time.monotonic() + 15
             while not marker.exists() and child.poll() is None and time.monotonic() < deadline: time.sleep(0.01)
             assert marker.exists(), (phase, child.poll(), child.communicate(timeout=1) if child.poll() is not None else 'no observed sync')
+            wait_stopped(child, deadline)
             competing = dict(f, id=str(uuid.uuid4()))
             rejected = update(competing)
             assert rejected.returncode != 0 and 'lock' in rejected.stderr, rejected
@@ -260,62 +262,66 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-skill-update-') as temporary:
     assert (f['work'] / 'skills.lock.json').read_text() == current_policy
     print('PASS skill update 8: completed install/update UUIDs cannot start another kind of operation; original policy and namespaces unchanged')
 
-    f = fixture('runtime')
-    token = 'disposable-local-update-bearer'
-    settings = json.loads(f['config'].read_text())
-    settings['provider'] = {'provider_type': 'stub'}
-    settings.pop('model_calls'); settings.pop('memory')
-    settings['http'] = {'bind': '127.0.0.1:0', 'api_token': token}
-    f['config'].write_text(json.dumps(settings))
-    log = root / 'serve.log'
-    service = None
-    try:
-        with log.open('wb') as output:
-            service = subprocess.Popen([str(binary), 'serve', '--config', str(f['config'])], env=env, stdout=output, stderr=output)
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            assert service.poll() is None, read_running_log(log)
-            match = re.search(r'HTTP .+ (http://127\.0\.0\.1:[1-9][0-9]*)', read_running_log(log))
-            if match: base = match.group(1); break
-            time.sleep(.05)
-        else: raise AssertionError(read_running_log(log))
-        def request(path, payload=None):
-            data = None if payload is None else json.dumps(payload).encode()
-            with urllib.request.urlopen(urllib.request.Request(base + path, data=data,
-                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}), timeout=10) as response:
-                return json.load(response)
-        empty = request('/api/skills')
-        assert empty['skills'] == []
-        child_env, marker = injected(f, 'policy')
-        child = subprocess.Popen(command(f, 'update', *update_args(f)), stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, env=child_env)
+    for stop_delay in (0, 400000):
+        f = fixture('runtime-' + str(stop_delay))
+        token = 'disposable-local-update-bearer'
+        settings = json.loads(f['config'].read_text())
+        settings['provider'] = {'provider_type': 'stub'}
+        settings.pop('model_calls'); settings.pop('memory')
+        settings['http'] = {'bind': '127.0.0.1:0', 'api_token': token}
+        f['config'].write_text(json.dumps(settings))
+        log = root / 'serve.log'
+        service = None
         try:
-            deadline = time.monotonic() + 15
-            while not marker.exists() and child.poll() is None and time.monotonic() < deadline: time.sleep(.01)
-            assert marker.exists()
-            assert (f['work'] / 'skills/newskill').stat().st_ino == f['old_ino']
+            with log.open('wb') as output:
+                service = subprocess.Popen([str(binary), 'serve', '--config', str(f['config'])], env=env, stdout=output, stderr=output)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                assert service.poll() is None, read_running_log(log)
+                match = re.search(r'HTTP .+ (http://127\.0\.0\.1:[1-9][0-9]*)', read_running_log(log))
+                if match: base = match.group(1); break
+                time.sleep(.05)
+            else: raise AssertionError(read_running_log(log))
+            def request(path, payload=None):
+                data = None if payload is None else json.dumps(payload).encode()
+                with urllib.request.urlopen(urllib.request.Request(base + path, data=data,
+                    headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}), timeout=10) as response:
+                    return json.load(response)
+            empty = request('/api/skills')
+            assert empty['skills'] == []
+            child_env, marker = injected(f, 'policy')
+            child_env['JIACLAW_TEST_SYNC_STOP_DELAY_US'] = str(stop_delay)
+            child = subprocess.Popen(command(f, 'update', *update_args(f)), stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, env=child_env)
+            try:
+                deadline = time.monotonic() + 15
+                while not marker.exists() and child.poll() is None and time.monotonic() < deadline: time.sleep(.01)
+                assert marker.exists()
+                wait_stopped(child, deadline)
+                assert (f['work'] / 'skills/newskill').stat().st_ino == f['old_ino']
+                assert request('/api/skills') == empty
+                request('/api/skills/reload', {})
+                assert request('/api/skills') == empty
+                child.send_signal(signal.SIGCONT)
+                stdout, stderr = child.communicate(timeout=15)
+                assert child.returncode == 0, (stdout, stderr)
+            finally:
+                if child.poll() is None: child.kill(); child.communicate(timeout=5)
             assert request('/api/skills') == empty
             request('/api/skills/reload', {})
             assert request('/api/skills') == empty
-            child.send_signal(signal.SIGCONT)
-            stdout, stderr = child.communicate(timeout=15)
-            assert child.returncode == 0, (stdout, stderr)
+            enabled = run(f, 'set-enabled', 'newskill', '--enabled', 'true',
+                          '--if-manifest-sha256', sha((f['work'] / 'skills.lock.json').read_text()))
+            assert enabled.returncode == 0 and json.loads(enabled.stdout)['runtime_applied'] is False
+            assert request('/api/skills') == empty
+            request('/api/skills/reload', {})
+            loaded = request('/api/skills')['skills'][0]
+            assert loaded['name'] == 'newskill' and loaded['source'] == f['new']['source'], loaded
         finally:
-            if child.poll() is None: child.kill(); child.communicate(timeout=5)
-        assert request('/api/skills') == empty
-        request('/api/skills/reload', {})
-        assert request('/api/skills') == empty
-        enabled = run(f, 'set-enabled', 'newskill', '--enabled', 'true',
-                      '--if-manifest-sha256', sha((f['work'] / 'skills.lock.json').read_text()))
-        assert enabled.returncode == 0 and json.loads(enabled.stdout)['runtime_applied'] is False
-        assert request('/api/skills') == empty
-        request('/api/skills/reload', {})
-        loaded = request('/api/skills')['skills'][0]
-        assert loaded['name'] == 'newskill' and loaded['source'] == f['new']['source'], loaded
-    finally:
-        if service is not None:
-            service.terminate()
-            try: service.wait(timeout=10)
-            except subprocess.TimeoutExpired: service.kill(); service.wait(timeout=5)
-            assert 'panicked at' not in log.read_text()
+            if service is not None:
+                service.terminate()
+                try: service.wait(timeout=10)
+                except subprocess.TimeoutExpired: service.kill(); service.wait(timeout=5)
+                assert 'panicked at' not in log.read_text()
+        print(f'PASS skill update stop: actual SIGSTOP observed before one SIGCONT; marker delay {stop_delay}us')
     print('PASS skill update 7: authenticated concurrent GET/reload keeps disabled registry; independent enable/reload applies the captured new source')

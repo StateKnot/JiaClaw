@@ -87,6 +87,10 @@ static int after_sync(int fd, int result) {
         const char *marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_INSTALL_MARKER");
         if (marker) { int out = open(marker, O_CREAT | O_WRONLY | O_EXCL, 0600); if (out >= 0) { write(out, "held\n", 5); close(out); } }
+        /* A visible marker can precede the kernel stop. Tests deliberately
+         * enlarge that window; this library is never part of production. */
+        const char *delay = getenv("JIACLAW_TEST_SYNC_STOP_DELAY_US");
+        if (delay) usleep((useconds_t)strtoul(delay, NULL, 10));
         raise(SIGSTOP);
     }
     return result;

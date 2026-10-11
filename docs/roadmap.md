@@ -206,3 +206,11 @@ PR #100 最终699adf6的1220 Rust、15相关套件、七CI/四优化归档已[�
 PR #101 最终 d714a831 的1223本机Rust/22相关套件、七官方作业/四优化候选已[回填](validation.md#pr-101-租户-sse-api-最终资格回填)，PR仍draft/未合并。用户指定的[架构、累计代码与业务审查](reviews/2026-10-10-architecture-code-product-review.md)已完成；本轮先修复确认的 P1：已完成工具的结果超过256KiB后，普通入口仍继续同批/下一轮派发。冻结旧binary的真实文件与非root/无网络Docker回归均失败；新binary十组通过，小输出对照仍完成，超限只执行一次、保留记录/历史并立即要求人工核查。当前 schema11、standalone/gateway 和租户 JSON/SSE API/UI 文档已同步；完整Rust/相关回归与本批draft PR最终CI资格另计，不能沿用PR101。
 
 下一步先完成本批CI/审查，再将会话列表改为存储侧摘要与有限分页，明确TTL触达；随后接线租户预览UI。通用工具错误/超时的效果确定性需独立合同和真实证据，不由本次确定结果丢失修复代替。StateKnot aa11b4f/alpha.1、Brokerrouter e01ecb9/无release、#140/#31/#41与未合并PR40无变化；stdio/外部写入、durable/委派、独立钉钉/WhatsApp、多模态/真实供应商与公开发布仍开放。30分钟回访保持ACTIVE，不自动合并或发布。
+
+## 2026-10-11 安装/更新暂停收据验收修订
+
+PR123 修订前 macOS ARM 优化候选在更新第7组单次 SIGCONT 后的原15秒等待失败；其他七组通过，但发行归档/发行安装未执行。原日志没有停止状态，历史根因仍未确认。冻结生产binary原八组本机通过；仅在测试动态库把标记→SIGSTOP延迟400毫秒，旧夹具真实呈现先SIGCONT后停止并超时，修订取得内核SIGSTOP收据后同一负例通过。见[同步暂停验收](skill-sync-validation.md)。
+
+安装/更新共用真实直接child停止收据，标记与收据共享原10/15秒绝对截止，原owner、SIGKILL、EIO、权限与内容身份断言保留；更新第7组持久覆盖正常和400毫秒延迟两情况。原八更新/十一安装实际进程套通过，生产101编译输入与冻结binary不变，本轮未重跑Rust/优化构建/浏览器/parser。新共享helper加入四候选资格触发范围；新固定head仍待七实际作业、55必需Python/七Chromium及四候选各13安装归档源码独立通过，不借父/旧head/本机资格。历史原Intel关闭失败及阶段修订分别保留，最终证据只正文/pin回填。
+
+资格完成后实现真实SkillRemover：同一原workspace writer贯穿完整内容/原UUID与intent、私有退休目录、策略发布及历史receipt/显式结算，独立实际SIGKILL/fsync/并发读恢复；手工顺序观察不当卸载资格。随后继续下载/经验记忆、首用实测、浏览器、审批/StateKnot durable/子Agent与租户范围。StateKnot/Brokerrouter本轮无新可消费合同；供应商/发行安装/业务试用需要明确授权凭据，其他未认证项仍开放。

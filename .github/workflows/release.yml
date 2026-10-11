@@ -27,6 +27,7 @@ on:
       - 'tests/skill_install.py'
       - 'tests/skill_update.py'
       - 'tests/skill_install_fsync.c'
+      - 'tests/stopped_child.py'
       - 'tests/host_log.py'
       - 'tests/mcp.py'
       - 'tests/native_result_limits.py'
