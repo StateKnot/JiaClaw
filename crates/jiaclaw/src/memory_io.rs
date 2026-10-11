@@ -372,10 +372,11 @@ pub(crate) fn write_text(
     Ok((workspace.join(path), contents.len()))
 }
 
-pub(crate) fn create_text_if_missing(
+pub(crate) fn initialize_workspace_file(
     workspace: &Path,
     configured: &str,
     content: &str,
+    overwrite: bool,
 ) -> Result<bool, JiaClawError> {
     if content.len() > jiaclaw_core::MEMORY_PROMPT_MAX_BYTES {
         return Err(failure("初始文件超过 32 KiB"));
@@ -383,12 +384,20 @@ pub(crate) fn create_text_if_missing(
     let path = relative(configured)?;
     let root = Dir::open_ambient_dir(workspace, ambient_authority()).map_err(failure)?;
     let _lock = writer_lock(&root)?;
-    let dir = parent(&root, path, true)?.ok_or_else(|| failure("缺少父目录"))?;
-    let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
-    if open_regular(&dir, name)?.is_some() {
+    // Policy presence and publication share the actual nonqueueing writer.
+    // Initialization does not parse, rewrite or bypass an operator source lock.
+    if path.starts_with("skills") && open_regular(&root, OsStr::new("skills.lock.json"))?.is_some()
+    {
+        // Preserve parent-link refusal, without opening any managed skill leaf.
+        parent(&root, path, false)?;
         return Ok(false);
     }
-    publish(&dir, name, content.as_bytes(), false)
+    let dir = parent(&root, path, true)?.ok_or_else(|| failure("缺少父目录"))?;
+    let name = path.file_name().ok_or_else(|| failure("无效文件名"))?;
+    if open_regular(&dir, name)?.is_some() && !overwrite {
+        return Ok(false);
+    }
+    publish(&dir, name, content.as_bytes(), overwrite)
 }
 
 // General file tools share the directory capabilities and writer lock with
@@ -1591,7 +1600,7 @@ mod tests {
             std::fs::read_to_string(ws.path().join("nested/a")).unwrap(),
             "original"
         );
-        assert!(!create_text_if_missing(ws.path(), "nested/a", "other").unwrap());
+        assert!(!initialize_workspace_file(ws.path(), "nested/a", "other", false).unwrap());
         assert!(write_text(ws.path(), "huge", &"x".repeat(32769), true, usize::MAX).is_err());
         assert!(!ws.path().join("huge").exists());
     }

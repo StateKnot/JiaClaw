@@ -5,6 +5,7 @@ Runs on the supported Linux/macOS hosts. Files, links, flock contention, tokens
 and process state are disposable. Does not certify semantic search or a vendor.
 """
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -196,6 +197,19 @@ try:
         before = {name: (initialized / name).read_bytes() for name in names}
         assert run('init', '--path', initialized).returncode == 0
         assert {name: (initialized / name).read_bytes() for name in names} == before
+        # Restart initialization after a partial setup without forcing operator edits away.
+        for name in ['MEMORY.md', 'skills/search/SKILL.md']:
+            (initialized / name).unlink()
+        result = run('init', '--path', initialized)
+        assert result.returncode == 0, result.stderr
+        assert (initialized / 'MEMORY.md').read_bytes() == defaults['MEMORY.md']
+        assert (initialized / 'skills/search/SKILL.md').read_bytes() == defaults['skills/search/SKILL.md']
+        assert all((initialized / name).read_bytes() == before[name]
+                   for name in names if name not in ['MEMORY.md', 'skills/search/SKILL.md'])
+        invalid_root = root / 'ordinary-file-root'
+        invalid_root.write_text('operator root sentinel')
+        assert run('init', '--path', invalid_root).returncode != 0
+        assert invalid_root.read_text() == 'operator root sentinel'
         result = run('init', '--path', initialized, '--force')
         assert result.returncode == 0, result.stderr
         assert {name: (initialized / name).read_bytes() for name in names} == defaults
@@ -207,15 +221,62 @@ try:
         sentinel_bytes = sentinel.read_bytes()
         (initialized / 'MEMORY.md').unlink()
         (initialized / 'MEMORY.md').symlink_to(sentinel)
+        assert run('init', '--path', initialized).returncode != 0
         assert run('init', '--path', initialized, '--force').returncode != 0
         assert sentinel.read_bytes() == sentinel_bytes
         (initialized / 'MEMORY.md').unlink()
         (initialized / 'MEMORY.md').write_bytes(defaults['MEMORY.md'])
         (initialized / 'skills').rename(initialized / 'skills-saved')
         (initialized / 'skills').symlink_to(outside, target_is_directory=True)
+        assert run('init', '--path', initialized).returncode != 0
         assert run('init', '--path', initialized, '--force').returncode != 0
         assert sorted(path.name for path in outside.iterdir()) == ['sentinel']
-        print('PASS: CLI init preserves existing files; explicit force safely replaces ordinary files and refuses file/skill-parent links')
+        # Initialization must not introduce unapproved example skills or change pinned bodies.
+        managed = root / 'managed'
+        (managed / 'skills/search').mkdir(parents=True)
+        raw = '---\nname: reviewed\ndescription: Approved\ntriggers: []\n---\nOperator skill body'
+        leaf = managed / 'skills/search/SKILL.md'
+        leaf.write_text(raw)
+        policy = managed / 'skills.lock.json'
+        policy.write_text(json.dumps({'version': 2, 'skills': [
+            {'directory': 'search', 'enabled': True, 'source': {
+                'repository': 'https://github.com/example/reviewed', 'revision': 'a' * 40,
+                'skill_sha256': hashlib.sha256(raw.encode()).hexdigest()}},
+            {'directory': 'calculator', 'enabled': False, 'source': {
+                'repository': 'https://github.com/example/reviewed', 'revision': 'a' * 40,
+                'skill_sha256': hashlib.sha256(b'Disabled unavailable body').hexdigest()}}]}))
+        managed_config = root / 'managed.json'
+        managed_config.write_text(json.dumps({'agent': {'name': 'managed-init', 'description': 'Fixture',
+            'system_instructions': '', 'max_turns': 10, 'max_tool_iterations': 2,
+            'workspace_path': str(managed), 'skill_lock_required': True},
+            'provider': {'provider_type': 'stub'}}))
+        assert run('skills', '--config', managed_config).returncode == 0
+        protected = {p: (p.read_bytes(), p.stat().st_ino) for p in [policy, leaf]}
+        for force in [[], ['--force']]:
+            result = run('init', '--path', managed, *force)
+            assert result.returncode == 0, result.stderr
+            assert {p: (p.read_bytes(), p.stat().st_ino) for p in [policy, leaf]} == protected
+            assert sorted(p.name for p in (managed / 'skills').iterdir()) == ['search']
+            assert run('skills', '--config', managed_config).returncode == 0
+            assert all((managed / name).is_file() for name in names[:4])
+        # A lock with unsafe identity cannot suppress checks by being followed or opened as a FIFO.
+        for kind in ['symlink', 'hardlink', 'fifo', 'directory']:
+            unsafe = root / ('unsafe-policy-' + kind)
+            unsafe.mkdir()
+            guard = unsafe / 'skills.lock.json'
+            if kind == 'symlink':
+                guard.symlink_to(sentinel)
+            elif kind == 'hardlink':
+                os.link(sentinel, guard)
+            elif kind == 'fifo':
+                os.mkfifo(guard)
+            else:
+                guard.mkdir()
+            for force in [[], ['--force']]:
+                assert run('init', '--path', unsafe, *force).returncode != 0
+                assert not (unsafe / 'skills').exists()
+                assert sentinel.read_bytes() == sentinel_bytes
+        print('PASS: CLI init resumes missing defaults, preserves operator edits and locked skill catalogs, rejects invalid roots and links; explicit force safely replaces unmanaged ordinary files')
 
         active = root / 'active'
         config = config_for(active, memory={'path': 'notes/custom.md'},

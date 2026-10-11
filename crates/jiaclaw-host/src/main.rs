@@ -598,19 +598,14 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
 
     tracing::info!("初始化工作空间: {}", workspace_path.display());
 
-    // 检查是否已存在
-    if workspace_path.exists() && !force {
-        tracing::warn!("工作空间已存在。使用 --force 强制覆盖。");
-        println!("\n❌ 工作空间已存在: {}", workspace_path.display());
-        println!("   使用 --force 标志强制覆盖现有文件。");
-        return Ok(());
-    }
-
-    // 初始化工作空间
+    // 默认补齐缺失文件并保留已有常规文件；同一安全路径也检查已有工作区。
     Workspace::init_with_overwrite(&workspace_path, force).context("初始化工作空间失败")?;
 
-    println!("\n✅ 工作空间已初始化: {}", workspace_path.display());
-    println!("\n📁 已创建文件:");
+    println!("\n✅ 工作空间初始化已完成: {}", workspace_path.display());
+    if !force {
+        println!("   已保留现有常规文件，并补齐缺失的默认文件。");
+    }
+    println!("\n📁 默认文件与示例技能:");
     println!("   • AGENTS.md  - Agent 配置和元数据");
     println!("   • SOUL.md    - Agent 性格和指令");
     println!("   • USER.md    - 用户信息和偏好");
@@ -618,13 +613,16 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
     println!("   • skills/    - 技能目录");
     println!("     ├── search/SKILL.md");
     println!("     └── calculator/SKILL.md");
+    println!("   已有来源锁时，两种模式均保留技能目录，不补种或覆盖示例；请另行严格扫描。");
 
     println!("\n📝 下一步:");
     println!("   1. 编辑工作空间文件以个性化你的 Agent");
-    println!("   2. 配置 Brokerrouter 虚拟 API key:");
+    println!("   2. 检查配置中的 agent.workspace_path 与此目录一致，并配置网关 URL 和逻辑模型");
+    println!("   3. 配置 Brokerrouter 虚拟 API key:");
     println!("      export JIACLAW_API_KEY=your-key-here");
-    println!("   3. 开始聊天:");
-    println!("      jiaclaw chat \"你好\"");
+    println!("   4. 用同一配置检查并开始聊天（将 FILE 替换为实际配置路径）:");
+    println!("      jiaclaw doctor --config FILE");
+    println!("      jiaclaw chat --config FILE \"你好\"");
 
     println!("\n💡 提示:");
     println!("   • 离线验收需显式配置 provider_type = stub");
