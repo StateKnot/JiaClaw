@@ -33,6 +33,7 @@ jobs:
       - run: cargo build --locked -p jiaclaw-host
       - run: python3 tests/e2e.py target/debug/jiaclaw
       - run: python3 tests/doctor.py target/debug/jiaclaw
+      - run: python3 tests/model_probe.py target/debug/jiaclaw
       - run: python3 tests/skills.py target/debug/jiaclaw
       - run: python3 tests/skill_read.py target/debug/jiaclaw
       - run: python3 tests/skill_resources.py target/debug/jiaclaw

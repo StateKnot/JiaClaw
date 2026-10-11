@@ -80,6 +80,7 @@ mod wecom_outbound;
 use store::SessionStore;
 
 mod metrics;
+mod model_probe;
 use metrics::{classify_http_path, Metrics, PROMETHEUS_CONTENT_TYPE};
 
 /// 进程内全局（非按 IP）速率限制器，oneshot 测试无需 `ConnectInfo`。
@@ -196,6 +197,15 @@ enum Commands {
         /// Explicitly contact configured MCP servers and initialize private state stores.
         #[arg(long)]
         connect: bool,
+    },
+
+    /// Verify one real Brokerrouter model response; may incur billing, requires private receipts
+    ModelProbe {
+        #[arg(short, long, value_name = "FILE")]
+        config: PathBuf,
+        /// Explicitly consent to one potentially billed diagnostic request
+        #[arg(long, required = true)]
+        confirm_billing: bool,
     },
 
     /// 列出或重载技能
@@ -417,8 +427,11 @@ async fn main() -> Result<()> {
     // serve 在加载配置后再初始化 subscriber，以便 `[logging] format=json` 生效。
     // 其它命令只读环境变量 / 默认 text，行为与原先 `fmt()` + EnvFilter 一致。
     if !matches!(cli.command, Commands::Serve { .. }) {
-        if matches!(cli.command, Commands::Chat { stream: true, .. }) {
-            init_stream_tracing();
+        if matches!(
+            cli.command,
+            Commands::Chat { stream: true, .. } | Commands::ModelProbe { .. }
+        ) {
+            init_json_output_tracing();
         } else {
             init_tracing_from(&LoggingConfig::default());
         }
@@ -462,6 +475,13 @@ async fn main() -> Result<()> {
         }
         Commands::Doctor { config, connect } => {
             doctor_command(config, connect).await?;
+        }
+        Commands::ModelProbe {
+            config,
+            confirm_billing,
+        } => {
+            anyhow::ensure!(confirm_billing, "explicit --confirm-billing is required");
+            model_probe::command(config).await?;
         }
         Commands::Skills {
             action,
@@ -1479,7 +1499,7 @@ fn init_tracing_from(logging: &LoggingConfig) {
     }
 }
 
-fn init_stream_tracing() {
+fn init_json_output_tracing() {
     let logging = LoggingConfig::default();
     let filter = env_filter_from_logging(&logging);
     // stdout is exclusively JSON-lines, including warning/error paths and default info logging.

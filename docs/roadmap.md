@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[首用模型验证](model-probe.md)：明确配置与计费确认后，只提交一次固定两条消息的无工具 Chat 请求，输出预算最多128，复用私有模型账本的原身份、字节摘要、持久收据、未知 hold 和 GET-only 恢复。配置/key/端点/完整出站 prepare 在状态打开前拒绝；不加载已启用的 MCP、语义库、技能或会话。实际 SIGTERM 收到后保留 owner 到结算；SIGKILL 后保留原身份且不重发。初版取消 stdout 含86字节通用日志的真实负例已修正为共用 stderr 初始化，实际七组最终绿色证据与夹具/单测前置条件失败分别保留。[Standards](reviews/2026-10-11-model-probe-standards.md)/[Spec](reviews/2026-10-11-model-probe-spec.md)源码与补审新增开放各0，累计历史继承，不声称穷尽重审。本批新固定 head 的完整官方 CI/四优化候选另行验收；本机假网关不能代替真实供应商、计费、TLS/代理、渠道和首用工具任务认证。
+
+PR117 最终 `3201ff9d` 的七实际作业、两平台50必需Python/七Chromium、四优化候选各13安装归档源码、两MCP阶段/三个writer结算测试和 artifact API 摘要已独立通过，证据仅回填PR正文/pin，避免自引head纯文档资格循环。下方“待核对”是原批次阶段记录；原始 artifact ZIP 未本机下载，不扩大摘要资格。
+
 2026-10-11 补强[MCP 启动阶段验收](mcp-startup-validation.md)：实际发现尚未完成时无 Schema 准入；实际 Schema 已准入时超时不提前释放 worker。两个独立负例均在真实阶段观察后推进原截止，实际工作/迟到响应结算后另行启动恢复，不发布失败初始化工具、不提交远端工具调用。三次受控发现延迟复现旧3/4许可断言，历史原失败没有阶段日志，不确定其具体触发路径。固定源码 `5de3e5e` 仅改测试模块，生产前缀逐字节一致；六次阶段回归、完整默认并行1254 Rust（另1忽略）及真实 MCP/doctor/e2e通过，串行/构建与交付证据另见[验收记录](validation.md)。[Standards](reviews/2026-10-11-mcp-startup-standards.md)/[Spec](reviews/2026-10-11-mcp-startup-spec.md)本批源码聚焦开放0，继承累计历史。虚拟时钟不等于物理一秒冷启动认证；新固定head官方资格独立，不借父PR116或本地结果。产品里程碑、供应商/stdio/OAuth/durable仍开放。
 
 2026-10-11 修正 PR116 原 Linux x64 候选暴露的[写入并发夹具结算](writer-test-settlement.md)：十二个原调用全部实际 join 后，先核对成功一份/精确锁忙零份，再独立执行已知零效果拒绝。生产非排队 writer、权限与期限不变；真实500ms持锁旧夹具三次RED/修订三次GREEN，新增真实 owner 收据回归。固定测试源码 `af0c8e1` 按官方既有串行 harness 完整1253 Rust（另1忽略）通过；[Standards](reviews/2026-10-11-writer-settlement-standards.md)/[Spec](reviews/2026-10-11-writer-settlement-spec.md)聚焦开放0，继承累计历史。首轮默认并行的既有MCP许可断言失败、随后同函数三次独立通过分别保留，未修改MCP且不称失败已修复。原head部分候选成功不转移，新交付仍需独立官方资格；剩余产品里程碑继续开放。

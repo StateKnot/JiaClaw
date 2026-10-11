@@ -13,6 +13,7 @@ on:
       - 'tests/installer.py'
       - 'tests/e2e.py'
       - 'tests/doctor.py'
+      - 'tests/model_probe.py'
       - 'tests/skills.py'
       - 'tests/skill_read.py'
       - 'tests/skill_resources.py'
@@ -90,6 +91,7 @@ jobs:
           "target/$TARGET/release/jiaclaw" version
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
+          python3 tests/model_probe.py "target/$TARGET/release/jiaclaw"
           python3 tests/skills.py "target/$TARGET/release/jiaclaw"
           python3 tests/skill_read.py "target/$TARGET/release/jiaclaw"
           python3 tests/skill_resources.py "target/$TARGET/release/jiaclaw"
