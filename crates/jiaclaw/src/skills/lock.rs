@@ -86,7 +86,7 @@ impl CatalogLock {
         Self::parse(&file.text)
     }
 
-    fn parse(text: &str) -> Result<Self, JiaClawError> {
+    pub(super) fn parse(text: &str) -> Result<Self, JiaClawError> {
         // Do not echo parse errors or origin data, which could contain credentials.
         let manifest: Manifest =
             serde_json::from_str(text).map_err(|_| invalid("技能锁 JSON/schema 无效"))?;
@@ -338,7 +338,7 @@ fn edit_policy(
     )
 }
 
-fn directory(value: &str) -> bool {
+pub(super) fn directory(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && !matches!(value, "." | "..")
@@ -346,7 +346,7 @@ fn directory(value: &str) -> bool {
         && !value.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-fn source(pin: &SkillSourcePin) -> bool {
+pub(super) fn source(pin: &SkillSourcePin) -> bool {
     let revision = &pin.revision;
     let revision_valid = matches!(revision.len(), 40 | 64)
         && revision

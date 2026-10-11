@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 真实接入[审阅本地技能包安装](skill-install.md)：一个 `SkillInstaller` 持有原非排队 workspace writer，贯穿有界源捕获、私有暂存、原 UUID/意图持久化、停用策略及 NOREPLACE 目录发布、收据与显式结算。包完整覆盖正文/声明参考并核对原字节，新增项停用；中断查询只读，完成只消费保存身份/字节，冲突保留证据。初版 `2ef1c95` 独立 Spec 复现两项 P2：不安全已知状态项被查询接受、冲突前删原暂存叶；修订 `9f37022` 的原实际负例均关闭，初/最终报告和日志分开保留。原身份/fsync/SIGKILL/并发读为真实本机证据，未认证物理断电或远端安装。新固定 head 的七官方作业、54必需Python/七Chromium和四优化候选独立验收，不借父121或本地资格。下一步仍为下载/更新/卸载事务、经验记忆、真实首用/浏览器/审批与 StateKnot durable/子Agent、租户范围；此批不是完整技能生态。
+
+PR121 `ed884c25` 已独立七作业、两平台53必需Python/七Chromium、四优化候选各13安装归档源码/artifact认证API摘要全通过，正文/pin exact读回。首次 macOS Discord 503 根因未确认，同head重跑成功不称修复；Ubuntu/container是同head保留成功，未冒称重新执行。原始ZIP没有本机完整物理摘要，不扩大API/日志资格。后续历史“待验收”文字保留为交付快照，不为自引 head 重提纯文档。
+
 2026-10-11 补齐[第一份审阅技能来源锁](skill-lock-create.md)：本机 `skills create-lock` 要求显式必需锁配置、工作区普通单链接输入、审阅过的原JSON摘要和严格v2全部停用。原非排队writer持有输入/正文捕获核验、完整目录扫描与私有create-if-absent发布；现存锁/同输入重复拒绝，两个竞争最多一份提交，保留审阅原字节与runtime_applied:false，不自动初始化模型/MCP/索引或加载技能。固定source `8138f10` 实际1263 Rust（另1忽略）、十五进程套、新七组和独立Spec四组边界通过；99编译输入/十五实际fixture逐字节绑定源码与交付。[Standards](reviews/2026-10-11-skill-lock-create-standards.md)/[Spec](reviews/2026-10-11-skill-lock-create-spec.md)聚焦新增各0，继承4b2357fc累计历史，不声称穷尽重审。新head独立要求七官方作业、53必需Python/七Chromium和四优化候选，不能借父120或本机资格。来源锁创建只发布一份政策文件；下载/安装更新撤销事务、经验记忆与供应商/真实首用/浏览器/durable等里程碑继续开放。
 
 PR120 `445f057e` 的七实际作业、两平台52必需Python/七Chromium、四优化候选各13安装归档源码与登记/继承边界、artifact认证API摘要已独立完整核对，正文/pin exact读回。本机未取得完整原始artifact ZIP物理摘要，资格仅为API摘要和作业日志；下方各批“待核对”保留为交付快照，不为自引head再提交纯文档。

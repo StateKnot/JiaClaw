@@ -24,6 +24,8 @@ chmod 600 "$HOME/.jiaclaw/config.toml"
 
 `init` 可在部分初始化的工作区继续补齐缺失默认文件，并保留已有编辑；已有来源锁时，两种模式均保留技能目录，不补种或覆盖示例。不安全文件或无效目录以非零退出。`init --path` 不改模型配置，须使配置的 `agent.workspace_path` 指向同一目录。恢复与显式 `--force` 边界见[初始化合同](docs/init-resume.md)。
 
+管理员可用 [`skills install / install-status / finish-install`](docs/skill-install.md) 安装审阅过的本地正文与参考包：同一 workspace writer 持有持久原 UUID、私有暂存、停用策略/目录发布和收据；中断后先查询，再明确完成原操作。需现存来源锁，安装不自动启用或重载。
+
 管理员可通过 [`skills create-lock`](docs/skill-lock-create.md) 从审阅过的工作区 JSON 安全创建第一份来源锁：全部技能明确停用，现存正文完整核验，已有锁拒绝覆盖。已启用必需来源锁后，可通过 [`skills register`](docs/skill-registration.md) 条件登记已审查的本地新技能。新记录保持停用，另行启用并重载服务才应用；命令不下载或安装包。
 
 ```sh

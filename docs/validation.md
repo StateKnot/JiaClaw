@@ -1238,3 +1238,15 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 冻结binary SHA256 `337f45547ec592afac7781d378afa7369e9e36503731b33142deae1de3185fd8`；最终重建target逐字节相同。99编译输入和十五实际fixture绑定source/compiled/delivery；日志和独立原报告在 `/tmp/jiaclaw-oct11-lock-create-delivery`。不将本机假网关、OS限制或协作2秒预算认证为供应商、物理硬截止、下载安装或durable。原writer贯穿prepare与缺失目标发布，现存锁与同输入重复拒绝；提交前失败不创建，hard-link发布后的清理/目录同步失败可能已提交，必须按原摘要核对而不自动重发。来源为管理员声明，hash为内容条件；无签名、独立ACL、模型/HTTP写入、租户扩权、自动启用/reload或运行配置更改。共享target评估复用保留，无专用cache/清理，实际回收0，df实测留pin。
 
 新固定head须独立七实际作业、两平台53必需Python/七真实Chromium、四优化候选各13安装归档源码、新七锁创建/两Rust与原登记/技能/MCP/writer/worker/Docker/receipt/parser和artifact API摘要全部核验，不能借父120或本机资格。最终官方证据只PR正文/pin回填，避免纯自引head文档资格循环。原artifact ZIP没有本机物理验证，不扩大API摘要/作业日志资格。
+
+## 2026-10-11 本机审阅包安装与原身份完成
+
+规范：[安装合同](skill-install.md)。canonical累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh父 `6a8da1fb` 到初版 `2ef1c95`，修复 `2ef1c95..9f37022`；历史累计结论继承，未穷尽重审。初版 Standards 开放0；独立 Spec 两个实际 P2（不安全已知状态被查询接受、冲突前删除原暂存叶）保留[初始报告](reviews/2026-10-11-skill-install-spec-initial.md)，修复后独立实际负例全绿、两项关闭，最终 [Standards](reviews/2026-10-11-skill-install-standards.md)/[Spec](reviews/2026-10-11-skill-install-spec.md)聚焦新增开放各0。父121不认识install的真实CLI缺能力负例不是框架缺陷。
+
+固定生产源码 `9f37022`，冻结SHA256 `eb49adb790995060486a5daed22cd31b23e8ed31297b87fab0c197a16b651eb8`；100编译输入逐字节绑定源码，夹具顺序修订 `3493d01` 未改生产输入。新十一组实际CLI/OS/鉴权服务覆盖完整body/参考与disabled发布、预写入拒绝、实际链接/硬链/FIFO、原held writer/竞争、六个真实sync→SIGKILL阶段（意图、暂存目录、实际暂存叶、策略、目录、收据）、可能已提交的错误、策略/目录冲突与原证据保留、64记录容量、并发GET/reload及另行enable/reload。测试C动态库仅临时进程加载，先真实sync再暂停或返回受控EIO，生产无故障注入开关；不是内核随机I/O故障或物理断电认证。
+
+独立Spec另外实际复测完整intent+linked stage、五类不安全未完成记录、原同步临时叶冲突与明确操作员解决、v1保留原启用来源迁移、合法参考名称像临时叶而不被删除、原目标保留与历史收据不重放。本地假网关和临时服务不认证远端来源、真实供应商、计费/TLS/代理、渠道首用、安装发行包或 StateKnot durable。来源管理员声明与现有workspace写权限边界保持；包安装不自动启用/reload/模型初始化，未实现下载/更新/卸载/签名/独立ACL/完整技能生态。
+
+初新夹具在会创建共享状态的serve组之后检查全局state缺失，导致错误失败；最终把无状态检查组放在serve之前，保留原断言。初hash负例未改变所核对的hash和macOS只拦截fsync却未覆盖F_FULLFSYNC也分别是夹具错误；原日志与最终绿分开。最终Rust与二十进程实际结算、格式/锁定build/必需Clippy及日志摘要见本批pin；未在本机重跑optimized/browser/parser，不借父或初版测试资格。共享同仓库/toolchain/config target评估复用保留，无任务专用target或清理，实际回收0，最终df实测留pin。
+
+新固定head官方门槛：七实际作业、两平台54必需Python/七真实Chromium、四优化候选各13安装归档源码、新十一实际安装组/五公共Rust边界和继承技能/init/probe/MCP阶段/writer/worker/Docker/receipt/parser、artifact认证API摘要。只有全部独立成功才回填PR正文/pin，不能借父121或本机资格；原artifact ZIP未本机物理核验，不扩大摘要范围。不再提交纯自引head文档造成资格循环。
