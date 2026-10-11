@@ -303,6 +303,24 @@ enum SessionCommands {
 /// 技能子命令
 #[derive(Subcommand)]
 enum SkillsCommands {
+    /// Retire a reviewed disabled local package and remove its declaration; retain files
+    Uninstall {
+        directory: String,
+        #[arg(long)]
+        operation_id: String,
+        #[arg(long)]
+        if_manifest_sha256: String,
+        #[arg(long)]
+        if_current_skill_sha256: String,
+    },
+    /// Read the original removal identity without changing policy or files
+    RemoveStatus { operation_id: String },
+    /// Settle only captured removal after inspecting the original intent
+    FinishRemove {
+        operation_id: String,
+        #[arg(long)]
+        if_intent_sha256: String,
+    },
     /// Replace a reviewed disabled local package; preserve the old version and original UUID
     Update {
         #[arg(long)]
@@ -553,6 +571,40 @@ async fn main() -> Result<()> {
             config,
             verbose,
         } => match action {
+            Some(SkillsCommands::Uninstall {
+                directory,
+                operation_id,
+                if_manifest_sha256,
+                if_current_skill_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillRemover::new(&config.workspace_path, config.skill_lock_required)
+                        .uninstall(
+                            &operation_id,
+                            &directory,
+                            &if_manifest_sha256,
+                            &if_current_skill_sha256,
+                        )?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::RemoveStatus { operation_id }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillRemover::new(&config.workspace_path, config.skill_lock_required)
+                        .inspect(&operation_id)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::FinishRemove {
+                operation_id,
+                if_intent_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillRemover::new(&config.workspace_path, config.skill_lock_required)
+                        .finish(&operation_id, &if_intent_sha256)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
             Some(SkillsCommands::Update {
                 operation_id,
                 input,

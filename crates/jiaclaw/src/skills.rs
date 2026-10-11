@@ -12,7 +12,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 mod install;
 mod lock;
 pub use install::{
-    SkillInstallStatus, SkillInstaller, SkillUpdateState, SkillUpdateStatus, SkillUpdater,
+    SkillInstallStatus, SkillInstaller, SkillRemoveState, SkillRemoveStatus, SkillRemover,
+    SkillUpdateState, SkillUpdateStatus, SkillUpdater,
 };
 pub use lock::{SkillLockPolicy, SkillPolicyEntry, SkillSourcePin};
 

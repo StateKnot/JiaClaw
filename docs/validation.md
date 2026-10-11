@@ -1277,3 +1277,15 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 累计审查基准固定 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，历史结论继承；本批源码/触发接线与最终交付文档两轴独立，聚焦范围明确，不称穷尽累计重审。新head须七实际作业、两平台55必需Python/七真实Chromium、四优化候选各13安装归档源码、新实际停止回归及全部继承安装/更新/worker/Docker/parser/receipt独立核对；任何旧head/父/本机资格不可转移。原始artifact ZIP未本机完整物理摘要，资格仍仅认证API摘要/作业日志；最终只正文/pin回填，不再自引文档触发CI。
 
 共享同仓库/toolchain/config target约19.7GiB已评估保留，没有本批Rust编译cache/专用target/清理，实际回收0；测试动态库仅任务临时目录，df在测试前实测，最终读数留pin，日志/binary/reports在target外，不以APFS du累计计算回收。
+# 2026-10-11 本机卸载与原身份结算
+
+规范：[卸载合同](skill-remove.md)。源码 `53c6432964e226ac4815b6d137dd0f7574cee574`，累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `b4022a8..53c6432`。历史累计审查继承，独立 [Standards](reviews/2026-10-11-skill-remove-standards.md)/[Spec](reviews/2026-10-11-skill-remove-spec.md)各新增开放0，未称穷尽累计重审。冻结父PR123真实CLI exit2不认识uninstall是缺能力负例，非上游缺陷。
+
+冻结binary SHA256 `d9e569653463d34c5b43733628d5714631cee9fe71edfb259e0563914d994cd8`，initial/final/target逐字节一致；102编译输入源码/交付另核。本机实际串行1276 Rust（441/123/712）通过、1忽略，locked build/fmt与必需correctness+suspicious Clippy通过，其他既有lint警告不宣称全清。五实际进程套 remove/install/update/doctor/e2e 的独立exit0和日志摘要在 `/tmp/jiaclaw-oct11-remove-delivery/process-checks.json`；初回归只有整体exit0与各PASS，后续五套另行实际执行捕捉逐套exit，不将整体退出码冒称逐套收据。本批无本机optimized/Chromium/parser或真实付费供应商调用。
+
+八卸载组覆盖原inode/全部body和references/旧打开目录能力、完整发布前拒绝、六sync→SIGKILL阶段、原身份显式恢复、unsafe和策略/目录/原暂存叶冲突保留、退休/策略/收据post-sync EIO、真实root flock和竞争UUID、跨三账本身份/未结算门槛、正常与400ms停止收据的鉴权GET/reload。动态库只用于测试，生产无fault hook；并发原服务GET保留旧表直到独立reload。独立Spec另外五CLI探测通过，合成恢复状态与真实崩溃资格分开。
+
+首轮HTTP夹具在serve正常创建状态后误检查不存在而exit1；最终仅区分pre-service和已启动阶段，保留所有产品断言/期限，八组及五套实际GREEN独立保存。Spec首自建探测缺description的失败另保留。来源是管理员声明、hash不是代次/ABA、workspace原权限可改journal，无独立ACL；政策与退休目录有序而非同时原子，receipt是历史。未知先原身份status，不新UUID重发；不自动rollback/启用/reload/启动恢复，不认证物理断电、内核随机故障、供应商、发行安装或StateKnot durable。
+
+新固定head官方验收需七实际作业、两平台56必需Python/七实际Chromium、四优化候选各13安装归档源码、新八卸载/四Rust和全部继承安装/更新/技能/init/probe/MCP/writer/worker/Docker/receipt/parser及artifact认证API摘要；父PR123或本机资格不可借用。原ZIP没有本机完整物理摘要，资格仅认证API/日志；最终只正文/pin回填。共享同repo/toolchain/config target约19.7GiB超过20十进制GB已评估复用保留，无专用target或清理，实际回收0，实测df与binary/log/reports在target外的本批pin。
+
