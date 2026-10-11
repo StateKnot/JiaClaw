@@ -1325,3 +1325,11 @@ HTTP验证完整配置文本/摘要、鉴权与no-store、空文本/精确32KiB�
 
 共享同repo/toolchain/config target约19.8GiB超过20十进制GB已评估复用保留，普通Rust incremental/dev/test debug=0，没有专用target、复制或清理；实际回收0，执行前df和末次读数留pin。冻结binary/log/report均在target外。
 
+## 2026-10-11 私密记忆 HTTP 验收响应头修订
+
+PR127 原 head `82fc69b9ca0350b512ff8f4ba9cb33014c805080` 的 Ubuntu 作业 `114503152491` 在已通过 HTTP200 与完整正文断言后，因 `headers['Cache-Control']` 抛出 KeyError 而失败。原日志没有响应头收据，不能据此声称服务漏发隐私头或证明历史 wire 大小写；原官方 API/日志保留于 `/tmp/jiaclaw-oct11-memory-review-headers-delivery/initial-official-header-keyerror`。原 head 部分成功不能转移到修订 head。
+
+在真实 socketpair 字节流经标准库 HTTPResponse 解析、原 request helper 执行的最小反馈环中，小写响应头存在且值正确，转成普通 dict 后复现同一 KeyError；保留响应头对象后同案例通过。持久回归通过六份大小写变体的200/401响应，并拒绝十二份缺失/错误隐私头；只替换测试 transport，不认证公网/供应商或历史 CI 唯一触发原因。本机两个运行时的原完整四组曾通过，修订后的原四组另外实际执行通过，原值断言与截止不变。
+
+本批只修夹具与记录，105编译输入、冻结 binary SHA256 `a6ee8eed90a803e9f6d5e255e95b626e6efbafdc3b3cbf0f15b4911230968c69` 和生产源码逐字节不变。原1287 Rust、build/fmt/必需Clippy及浏览器资格按原源码范围继承，本批未重跑，不当新官方资格。累计固定4b2357fc历史范围继承，fresh修订的 Standards/Spec 独立核验；新 head 仍须独立七实际作业、两平台59必需Python/Linux八Chromium、四候选各13安装归档源码、新增解析标记与全部继承边界及artifact认证API摘要，最终仅正文/pin回填。
+

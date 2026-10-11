@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Actual standalone HTTP review; disposable credentials, no model calls."""
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -12,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from unittest.mock import patch
 from host_log import read_running_log
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/jiaclaw').resolve()
@@ -69,8 +72,50 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-memory-review-') as raw_root:
         except urllib.error.HTTPError as error:
             response = error
         with response:
-            return response.status, dict(response.headers), response.read()
+            return response.status, response.headers, response.read()
 
+    def header_case_regression():
+        required = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                    'Referrer-Policy': 'no-referrer'}
+
+        def receive(fields, status):
+            client, peer = socket.socketpair()
+            try:
+                client.settimeout(5); peer.settimeout(5)
+                wire = 'HTTP/1.1 ' + str(status) + ' Test\r\n'
+                wire += ''.join(name + ': ' + value + '\r\n' for name, value in fields.items())
+                peer.sendall((wire + 'Content-Length: 2\r\nConnection: close\r\n\r\n{}').encode('ascii'))
+                peer.shutdown(socket.SHUT_WR)
+                response = http.client.HTTPResponse(client)
+                response.begin()
+                options = {'return_value': response} if status == 200 else {
+                    'side_effect': urllib.error.HTTPError('http://127.0.0.1/api/memory',
+                                                         status, 'Test', response.headers, response)}
+                with patch.object(urllib.request, 'urlopen', **options):
+                    actual_status, headers, body = request('http://127.0.0.1', key=None)
+                assert actual_status == status and body == b'{}'
+                return headers
+            finally:
+                client.close(); peer.close()
+
+        for status in [200, 401]:
+            for case in [str.lower, str.title, str.swapcase]:
+                headers = receive({case(name): value for name, value in required.items()}, status)
+                assert all(headers[name] == value for name, value in required.items())
+            for name in required:
+                for value in [None, 'wrong']:
+                    fields = {key.lower(): item for key, item in required.items() if key != name}
+                    if value is not None: fields[name.lower()] = value
+                    headers = receive(fields, status)
+                    try:
+                        assert all(headers[key] == item for key, item in required.items())
+                    except AssertionError:
+                        pass
+                    else:
+                        raise AssertionError('missing/wrong privacy header accepted')
+        print('PASS memory review header casing: actual HTTP parser accepts lower/title/mixed-case 200/401; missing/wrong privacy values reject')
+
+    header_case_regression()
     process, log, base = start(config)
     try:
         status, headers, raw = request(base)
