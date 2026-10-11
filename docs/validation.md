@@ -1208,3 +1208,13 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 
 本机 df 每次构建/回归前读取；共享同仓库/toolchain/config target约19.7GiB，超过20十进制GB已评估复用，未复制或清理，实际回收0。冻结binary/日志/报告在 `/tmp/jiaclaw-oct11-init-delivery` 的缓存外，最终df记pin。四候选现在实际执行 memory_io，并将其文件变更加入qualification触发；新固定head需七官方作业、两平台51必需Python/七Chromium、四优化候选各13安装归档源码、初始化/全部记忆边界及原模型/技能/MCP/worker/Docker验收独立通过。原始artifact ZIP未本机下载，不扩大摘要资格；最终官方证据只回填PR正文/pin，不提交自引head文档触发CI循环。
 
+
+## 2026-10-11 初始化保护来源锁修订
+
+初版 PR119 冻结 binary `36f1ae2c…003abb` 在同一真实 CLI 循环呈现 baseline skills exit0 → init exit0 → skills exit1；原锁字节不变，calculator/search 未登记示例被补入。新增 memory_io 夹具对旧 binary 也实际失败。初次重现缺完整 agent 配置的 fixture 错误与这两份生产 RED 分开保留。
+
+最终源码 `0f0ecab5ab29cad00c300bab9c1d9db68ca03e48` 冻结 binary SHA256 `af8f9ca5fbef3934dd25622ec8b46e5beea556ed3523a633c9f7acd998478be6`：同一 CLI 循环全部 exit0，八套实际 memory_io/e2e/doctor/model_probe/skill_lock/skill_activation/skill_policy_edit/skill_source_approval 均通过；初版原三组初始化负例在新 binary 再跑全部 GREEN。完整仓库既有串行 Rust harness 424/123/712 共1259通过、1忽略，locked build/fmt与 correctness/suspicious 必需Clippy通过；本批未重跑浏览器/parser或本机优化构建。
+
+独立 Spec 七组实际边界分别覆盖有效v1锁原身份、空v1/v2与顶层默认/force、停用FIFO、常规坏JSON/编码/超限锁与另行严格拒绝、四种不安全锁两模式、技能根/示例父链接、真实持有原目录writer时无发布拒绝及结算后独立恢复。源码 Standards/Spec 原文独立保存，各新增开放0；累计4b2357fc基准及初版历史结论继承，不声称穷尽重审。99输入及八实际fixture的最终交付身份另外核验。
+
+锁检查和单文件发布共用原实际非排队owner；常规锁存在不是内容/来源认证，不扫描受管叶、不增加权限/重载，也不是全工作区事务。新固定head必须独立核对两平台51必需Python、七真实Chromium、四候选各13安装归档源码和每平台新Rust/完整memory_io组。旧head部分成功不能借用；最终官方证据仅正文/pin回填。日志/报告/binary保存于 `/tmp/jiaclaw-oct11-init-locked-delivery`；共享target评估复用且保留，实际清理/回收0，最终df留pin。辅助原始artifact ZIP下载达到读取截止，未得到完整ZIP物理哈希证明；上传摘要资格仍仅认证API对象与日志匹配。

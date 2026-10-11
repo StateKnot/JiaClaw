@@ -1,0 +1,11 @@
+# Spec — source-locked initialization repair
+
+Fixed cumulative command: `git diff 4b2357fcf01f47ba08d7724edbba7accfb60972c...0f0ecab5ab29cad00c300bab9c1d9db68ca03e48`; cumulative commit list read. Historical cumulative and initialization conclusions are inherited. Fresh review covers the seven-path diff `3561da9ee8831d140afd459c965d17ea0a2951d8...0f0ecab5ab29cad00c300bab9c1d9db68ca03e48`, not exhaustive cumulative rereview. No Standards report was read.
+
+**Open findings: 0.** No missing requirement, incorrect implementation or unrequested scope was found in this focused repair.
+
+`docs/init-resume.md:15` requires “两种模式都不补种或覆盖示例技能，也不创建其缺失父目录”. The original same CLI sequence establishes a valid locked catalog before demonstrating the old initialization regression; the new frozen binary preserves it. Both modes now guard ordinary single-link policy presence under the original actual writer before creating skill parents or opening managed leaves. Top-level defaults retain their existing preserve/force semantics.
+
+`docs/init-resume.md:17` requires unsafe policy identities to produce nonzero exit, and says ordinary presence “不认证其内容或发布者”. The capability checks reject linked, hardlinked, directory and FIFO sentinels. No JSON parsing, content certification, schema change, ACL, automatic reload or whole-workspace transaction was added. Parent-link refusal and per-file partial publication remain consistent with lines 5–7 and the source-lock/activation contracts.
+
+Independent actual CLI verification used frozen SHA256 `af8f9ca5fbef3934dd25622ec8b46e5beea556ed3523a633c9f7acd998478be6`, after `df` reported 276872148 KiB available. Seven groups passed: valid v1 catalog/body/lock identity; empty v1/v2 with top-level preserve/force; disabled FIFO; malformed/encoding/oversized regular policies with separate strict-scan rejection; four unsafe policy types; skill-root/example-parent links; actual held nonqueueing writer rejection and later independent resume. Evidence: `/tmp/jiaclaw-oct11-init-locked-spec-boundaries.{py,log,json}`. Fixtures remain in `/tmp`; no builds, supplier calls or cache cleanup occurred. These checks do not certify full Rust, browser, optimized candidate, official CI, supplier or durable qualification.

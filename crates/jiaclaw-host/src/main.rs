@@ -613,6 +613,7 @@ fn init_command(path: Option<PathBuf>, force: bool) -> Result<()> {
     println!("   • skills/    - 技能目录");
     println!("     ├── search/SKILL.md");
     println!("     └── calculator/SKILL.md");
+    println!("   已有来源锁时，两种模式均保留技能目录，不补种或覆盖示例；请另行严格扫描。");
 
     println!("\n📝 下一步:");
     println!("   1. 编辑工作空间文件以个性化你的 Agent");

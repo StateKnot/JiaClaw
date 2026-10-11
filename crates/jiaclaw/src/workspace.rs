@@ -3,7 +3,7 @@
 
 //! 工作空间管理
 
-use crate::memory_io::{create_text_if_missing, read_text, write_text};
+use crate::memory_io::{initialize_workspace_file, read_text};
 use jiaclaw_core::{JiaClawError, MEMORY_PROMPT_MAX_BYTES};
 use std::path::{Path, PathBuf};
 
@@ -62,6 +62,7 @@ impl Workspace {
     ///
     /// 顶层默认文件与两个示例技能使用相同的受限路径和原子写入规则。
     /// 初始化中断后可以重试，默认保留已经创建或用户编辑的文件。
+    /// 已有普通单链接 skills.lock.json 时，两种模式都不修改或补种示例技能。
     ///
     /// # Errors
     ///
@@ -83,11 +84,7 @@ impl Workspace {
             ),
         ];
         for (relative_path, content) in defaults {
-            if overwrite {
-                write_text(path, relative_path, content, true, MEMORY_PROMPT_MAX_BYTES)?;
-            } else {
-                create_text_if_missing(path, relative_path, content)?;
-            }
+            initialize_workspace_file(path, relative_path, content, overwrite)?;
         }
 
         Self::load(path)
@@ -439,6 +436,48 @@ mod tests {
             fs::read_to_string(root.join(DEFAULT_FILES[5])).unwrap(),
             Workspace::calculator_skill_content()
         );
+    }
+
+    #[test]
+    fn workspace_init_preserves_locked_skills_in_both_modes() {
+        use sha2::Digest;
+        for overwrite in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            fs::create_dir_all(root.join("skills/search")).unwrap();
+            let raw =
+                "---\nname: reviewed\ndescription: Approved\ntriggers: []\n---\nOperator body";
+            fs::write(root.join("skills/search/SKILL.md"), raw).unwrap();
+            let lock = serde_json::to_string(&serde_json::json!({"version":2,"skills":[{
+                "directory":"search","enabled":true,"source":{
+                    "repository":"https://github.com/example/reviewed","revision":"a".repeat(40),
+                    "skill_sha256":format!("{:x}",sha2::Sha256::digest(raw.as_bytes()))
+                }
+            }]}))
+            .unwrap();
+            fs::write(root.join("skills.lock.json"), &lock).unwrap();
+            Workspace::init_with_overwrite(root, overwrite).unwrap();
+            assert_eq!(
+                fs::read_to_string(root.join("skills.lock.json")).unwrap(),
+                lock
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("skills/search/SKILL.md")).unwrap(),
+                raw
+            );
+            assert!(!root.join("skills/calculator").exists());
+            assert_eq!(
+                crate::SkillDiscovery::new(root)
+                    .with_lock_required(true)
+                    .discover()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            for relative in &DEFAULT_FILES[..4] {
+                assert!(root.join(relative).is_file());
+            }
+        }
     }
 
     #[test]
