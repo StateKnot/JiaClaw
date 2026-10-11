@@ -42,13 +42,13 @@ pub struct SkillUpdateStatus {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct DirectoryIdentity {
+pub(super) struct DirectoryIdentity {
     dev: u64,
     ino: u64,
 }
 
 impl DirectoryIdentity {
-    fn read(dir: &Dir) -> Result<Self, JiaClawError> {
+    pub(super) fn read(dir: &Dir) -> Result<Self, JiaClawError> {
         let meta = dir.dir_metadata().map_err(invalid)?;
         private(&meta, true)?;
         Ok(Self {
@@ -142,6 +142,7 @@ impl SkillUpdater {
             let old = capture_old(&installed, entry)?;
             let proposed = proposed_policy(&original, &old, &new)?;
             self.scan(&proposed)?;
+            super::remove::ensure_settled(root, operation_id)?;
             ensure_installs_settled(root, operation_id)?;
             ensure_settled(root, operation_id)?;
             let journal =
@@ -313,7 +314,7 @@ fn exchange(from: &Dir, name: &OsStr, to: &Dir, target: &OsStr) -> io::Result<()
     }
 }
 
-fn capture_old(dir: &Dir, entry: &SkillPolicyEntry) -> Result<Bundle, JiaClawError> {
+pub(super) fn capture_old(dir: &Dir, entry: &SkillPolicyEntry) -> Result<Bundle, JiaClawError> {
     let body = required(dir, "SKILL.md", SKILL_FILE_BYTES)?;
     let (skill, _, _) = Skill::parse_raw(&body, Path::new(&entry.directory))?;
     let mut files = vec![BundleFile {
@@ -454,7 +455,7 @@ fn capture_update(op: &Dir, id: &str) -> Result<Option<UpdateCapture>, JiaClawEr
     }))
 }
 
-fn verify_identity(dir: &Dir, expected: &DirectoryIdentity) -> Result<(), JiaClawError> {
+pub(super) fn verify_identity(dir: &Dir, expected: &DirectoryIdentity) -> Result<(), JiaClawError> {
     if DirectoryIdentity::read(dir)? != *expected {
         return Err(invalid("更新目录dev/ino身份冲突"));
     }
@@ -544,7 +545,7 @@ pub(super) fn ensure_settled(root: &Dir, new_id: &str) -> Result<(), JiaClawErro
     Ok(())
 }
 
-fn ensure_installs_settled(root: &Dir, new_id: &str) -> Result<(), JiaClawError> {
+pub(super) fn ensure_installs_settled(root: &Dir, new_id: &str) -> Result<(), JiaClawError> {
     if let Some(journal) = directory(root, super::JOURNAL, false, true)? {
         for id in operation_ids(&journal)? {
             if id == new_id {

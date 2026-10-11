@@ -214,3 +214,11 @@ PR123 修订前 macOS ARM 优化候选在更新第7组单次 SIGCONT 后的原15
 安装/更新共用真实直接child停止收据，标记与收据共享原10/15秒绝对截止，原owner、SIGKILL、EIO、权限与内容身份断言保留；更新第7组持久覆盖正常和400毫秒延迟两情况。原八更新/十一安装实际进程套通过，生产101编译输入与冻结binary不变，本轮未重跑Rust/优化构建/浏览器/parser。新共享helper加入四候选资格触发范围；新固定head仍待七实际作业、55必需Python/七Chromium及四候选各13安装归档源码独立通过，不借父/旧head/本机资格。历史原Intel关闭失败及阶段修订分别保留，最终证据只正文/pin回填。
 
 资格完成后实现真实SkillRemover：同一原workspace writer贯穿完整内容/原UUID与intent、私有退休目录、策略发布及历史receipt/显式结算，独立实际SIGKILL/fsync/并发读恢复；手工顺序观察不当卸载资格。随后继续下载/经验记忆、首用实测、浏览器、审批/StateKnot durable/子Agent与租户范围。StateKnot/Brokerrouter本轮无新可消费合同；供应商/发行安装/业务试用需要明确授权凭据，其他未认证项仍开放。
+# 2026-10-11 本机审阅技能卸载
+
+新增 [SkillRemover](skill-remove.md)：一个原非排队 workspace writer 贯穿完整包和原目录身份捕获、原 UUID/意图、私有退休目录、停用声明删除与历史收据。原文件保留；未知结果先只读原身份，显式 finish 只消费保存字节，不重复退休。安装/更新/卸载跨账本拒绝 UUID 复用和未结算记录，成功保持 `runtime_applied:false`，另行认证 reload/GET 才应用。
+
+固定源码 `53c6432964e226ac4815b6d137dd0f7574cee574` 的本机1276 Rust（441/123/712）通过、1忽略，locked build/fmt/必需Clippy与五实际进程套通过。新八卸载组覆盖六sync→SIGKILL阶段、EIO、冲突证据/旧inode保留、真实writer及鉴权并发读取；独立Spec补探五组通过。累计固定4b2357fc基准的历史结论继承，本批fresh 11文件Standards/Spec各0开放，不称穷尽累计重审。初HTTP夹具在服务已创建状态后误检查状态不存在，修正检查时机，原失败保留；不是生产或框架缺陷。
+
+本批新head仍须独立七官方作业、两平台56必需Python/七Chromium及四优化候选各13安装归档源码验收；本机或父PR123已完整合格不能替代新head资格。最终只正文/pin回填，避免自引文档循环。卸载是保留文件的有序发布，非同时原子或物理断电/供应商/发行安装/StateKnot durable认证。后续继续下载、经验记忆、首用实测、真实浏览器、审批/durable/子Agent和租户范围；DingTalk完整身份和真实凭据门槛保留，不将本地生命周期称完整技能生态。
+

@@ -48,6 +48,27 @@ static int update_selected(const char *path) {
     if (!strcmp(phase, "receipt")) return !strcmp(path, op) && exists(receipt);
     return 0;
 }
+static int remove_selected(const char *path) {
+    const char *workspace = getenv("JIACLAW_TEST_REMOVE_WORKSPACE");
+    const char *id = getenv("JIACLAW_TEST_REMOVE_ID");
+    const char *phase = getenv("JIACLAW_TEST_REMOVE_PHASE");
+    if (!workspace || !id || !phase) return 0;
+    char op[4096], intent[4096], retired[4096], receipt[4096], policy[4096], proposed[4096];
+    snprintf(op, sizeof op, "%s/.jiaclaw-skill-removals/%s", workspace, id);
+    snprintf(intent, sizeof intent, "%s/intent.json", op);
+    snprintf(retired, sizeof retired, "%s/retired", op);
+    snprintf(receipt, sizeof receipt, "%s/receipt.json", op);
+    snprintf(policy, sizeof policy, "%s/skills.lock.json", workspace);
+    snprintf(proposed, sizeof proposed, "%s/proposed-policy.json", op);
+    if (!strcmp(phase, "preparing")) return !strcmp(path, op) && !exists(intent);
+    if (!strcmp(phase, "snapshot-temp")) return !exists(intent) && !strncmp(path, op, strlen(op)) && strstr(path + strlen(op), ".jiaclaw-memory-");
+    if (!exists(intent)) return 0;
+    if (!strcmp(phase, "intent")) return !strcmp(path, op) && !exists(retired);
+    if (!strcmp(phase, "retired")) return !strcmp(path, retired);
+    if (!strcmp(phase, "policy")) return !strcmp(path, workspace) && exists(retired) && equal_files(policy, proposed);
+    if (!strcmp(phase, "receipt")) return !strcmp(path, op) && exists(receipt);
+    return 0;
+}
 static int selected(int fd) {
     const char *workspace = getenv("JIACLAW_TEST_INSTALL_WORKSPACE");
     const char *id = getenv("JIACLAW_TEST_INSTALL_ID");
@@ -59,7 +80,7 @@ static int selected(int fd) {
     char link[64]; snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     ssize_t length = readlink(link, path, sizeof path - 1); if (length < 0) return 0; path[length] = 0;
 #endif
-    if (update_selected(path)) return 1;
+    if (remove_selected(path) || update_selected(path)) return 1;
     if (!workspace || !id || !phase) return 0;
     snprintf(op, sizeof op, "%s/.jiaclaw-skill-installs/%s", workspace, id);
     snprintf(intent, sizeof intent, "%s/intent.json", op);
@@ -81,10 +102,12 @@ static int selected(int fd) {
 }
 static int after_sync(int fd, int result) {
     if (result == 0 && selected(fd)) {
-        const char *mode = getenv("JIACLAW_TEST_UPDATE_MODE");
+        const char *mode = getenv("JIACLAW_TEST_REMOVE_MODE");
+        if (!mode) mode = getenv("JIACLAW_TEST_UPDATE_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_INSTALL_MODE");
         if (mode && !strcmp(mode, "error")) { errno = EIO; return -1; }
-        const char *marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
+        const char *marker = getenv("JIACLAW_TEST_REMOVE_MARKER");
+        if (!marker) marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_INSTALL_MARKER");
         if (marker) { int out = open(marker, O_CREAT | O_WRONLY | O_EXCL, 0600); if (out >= 0) { write(out, "held\n", 5); close(out); } }
         /* A visible marker can precede the kernel stop. Tests deliberately

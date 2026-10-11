@@ -24,6 +24,9 @@ const BUNDLE_BYTES: usize = 512 * 1024;
 const OPERATIONS: usize = 64;
 const INTENT_BYTES: usize = 4096;
 
+mod remove;
+pub use remove::{SkillRemoveState, SkillRemoveStatus, SkillRemover};
+
 mod update;
 pub use update::{SkillUpdateState, SkillUpdateStatus, SkillUpdater};
 
@@ -193,6 +196,7 @@ impl SkillInstaller {
                 return Err(invalid("技能策略已改变，未开始"));
             }
             let proposed = self.propose(&original, &bundle)?;
+            remove::ensure_settled(root, operation_id)?;
             update::ensure_settled(root, operation_id)?;
             let skills = directory(root, "skills", false, false)?;
             if let Some(skills) = &skills {
