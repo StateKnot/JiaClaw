@@ -69,6 +69,15 @@ pub(super) struct CatalogLock {
 }
 
 impl CatalogLock {
+    fn entry_mut(&mut self, name: &str) -> Result<&mut SkillPolicyEntry, JiaClawError> {
+        let index = self
+            .by_directory
+            .get(name)
+            .copied()
+            .ok_or_else(|| invalid("技能修改目录未登记，未提交"))?;
+        Ok(&mut self.policy.skills[index])
+    }
+
     pub(super) fn read(workspace: &Path) -> Result<Self, JiaClawError> {
         let file =
             crate::memory_io::read_text(workspace, "skills.lock.json", SKILL_FILE_BYTES, false)
@@ -163,7 +172,9 @@ pub(super) fn set_enabled(
     enabled: bool,
     expected_hash: &str,
 ) -> Result<SkillLockPolicy, JiaClawError> {
-    edit_policy(discovery, name, expected_hash, |entry, version| {
+    edit_policy(discovery, name, expected_hash, |lock| {
+        let version = lock.policy.version;
+        let entry = lock.entry_mut(name)?;
         if version == 2 && entry.enabled == enabled {
             return Err(invalid("技能已处于请求状态，未提交"));
         }
@@ -181,35 +192,71 @@ pub(super) fn set_source(
     if !source(proposed) {
         return Err(invalid("技能来源声明无效，未提交"));
     }
-    edit_policy(discovery, name, expected_hash, |entry, _| {
+    edit_policy(discovery, name, expected_hash, |lock| {
+        let entry = lock.entry_mut(name)?;
         if entry.enabled {
             return Err(invalid("修改来源前必须明确停用已登记技能，未提交"));
         }
         if entry.source == *proposed {
             return Err(invalid("技能来源没有变化，未提交"));
         }
-        let loaded = super::Skill::read(
-            &discovery.workspace,
-            &format!("skills/{name}/SKILL.md"),
-            &discovery.skills_root.join(name),
-        )
-        .map_err(|_| invalid("新来源正文无法安全读取或解析，未提交"))?
-        .ok_or_else(|| invalid("新来源正文不存在，未提交"))?;
-        if loaded.2 != proposed.skill_sha256 {
-            return Err(invalid("新来源正文与已审核摘要不一致，未提交"));
-        }
+        verify_source_body(discovery, name, proposed)?;
         entry.source = proposed.clone();
         Ok(())
     })
 }
 
-// Both operator edits keep captured bytes, checks and publication inside the
-// same existing workspace writer. The closure only changes the selected entry.
+pub(super) fn register(
+    discovery: &super::SkillDiscovery,
+    name: &str,
+    proposed: &SkillSourcePin,
+    expected_hash: &str,
+) -> Result<SkillLockPolicy, JiaClawError> {
+    if !source(proposed) {
+        return Err(invalid("技能来源声明无效，未提交"));
+    }
+    edit_policy(discovery, name, expected_hash, |lock| {
+        if lock.by_directory.contains_key(name) {
+            return Err(invalid("技能目录已登记，未提交"));
+        }
+        if lock.policy.skills.len() >= CATALOG_SKILLS {
+            return Err(invalid("技能锁最多64项，未提交"));
+        }
+        verify_source_body(discovery, name, proposed)?;
+        lock.policy.skills.push(SkillPolicyEntry {
+            directory: name.to_owned(),
+            enabled: false,
+            source: proposed.clone(),
+        });
+        Ok(())
+    })
+}
+
+fn verify_source_body(
+    discovery: &super::SkillDiscovery,
+    name: &str,
+    proposed: &SkillSourcePin,
+) -> Result<(), JiaClawError> {
+    let loaded = super::Skill::read(
+        &discovery.workspace,
+        &format!("skills/{name}/SKILL.md"),
+        &discovery.skills_root.join(name),
+    )
+    .map_err(|_| invalid("新来源正文无法安全读取或解析，未提交"))?
+    .ok_or_else(|| invalid("新来源正文不存在，未提交"))?;
+    if loaded.2 != proposed.skill_sha256 {
+        return Err(invalid("新来源正文与已审核摘要不一致，未提交"));
+    }
+    Ok(())
+}
+
+// All operator edits keep captured bytes, checks and publication inside the
+// same existing workspace writer. No disk mutation precedes full validation.
 fn edit_policy(
     discovery: &super::SkillDiscovery,
     name: &str,
     expected_hash: &str,
-    edit: impl FnOnce(&mut SkillPolicyEntry, u32) -> Result<(), JiaClawError>,
+    edit: impl FnOnce(&mut CatalogLock) -> Result<(), JiaClawError>,
 ) -> Result<SkillLockPolicy, JiaClawError> {
     if !discovery.lock_required || !directory(name) || !valid_hash(expected_hash) {
         return Err(invalid("技能锁写入要求必需锁、有效目录和原锁 SHA256"));
@@ -223,12 +270,7 @@ fn edit_policy(
             if lock.policy.manifest_sha256 != expected_hash {
                 return Err(invalid("技能锁版本已改变，未提交；重新核对磁盘策略"));
             }
-            let index = lock
-                .by_directory
-                .get(name)
-                .copied()
-                .ok_or_else(|| invalid("技能修改目录未登记，未提交"))?;
-            edit(&mut lock.policy.skills[index], lock.policy.version)?;
+            edit(&mut lock)?;
             let next = serde_json::to_string(&serde_json::json!({
                 "version": 2, "skills": lock.policy.skills
             }))
@@ -282,6 +324,102 @@ mod tests {
         serde_json::json!({"version":1,"skills":[{"directory":"reviewed","source":{
             "repository":"https://github.com/example/skills","revision":"a".repeat(40),
             "skill_sha256":format!("{:x}",sha2::Sha256::digest(raw.as_bytes()))}}]})
+    }
+
+    #[test]
+    fn registration_preserves_existing_origins_and_requires_separate_activation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let old = "---\nname: reviewed\ndescription: original\n---\nold";
+        let new = "---\nname: model-name\ndescription: new\n---\nnew";
+        for (name, raw) in [("reviewed", old), ("added", new)] {
+            fs::create_dir_all(workspace.path().join("skills").join(name)).unwrap();
+            fs::write(
+                workspace.path().join("skills").join(name).join("SKILL.md"),
+                raw,
+            )
+            .unwrap();
+        }
+        let file = workspace.path().join("skills.lock.json");
+        fs::write(&file, manifest(old).to_string()).unwrap();
+        let original = CatalogLock::read(workspace.path()).unwrap().policy;
+        let pin = SkillSourcePin {
+            skill_sha256: format!("{:x}", sha2::Sha256::digest(new.as_bytes())),
+            ..original.skills[0].source.clone()
+        };
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        assert!(discovery.discover().is_err());
+        let registered = discovery
+            .register("added", &pin, &original.manifest_sha256)
+            .unwrap();
+        assert_eq!(registered.version, 2);
+        assert_eq!(registered.skills[0].directory, "added");
+        assert!(!registered.skills[0].enabled);
+        assert_eq!(registered.skills[0].source, pin);
+        assert!(registered.skills[1].enabled);
+        assert_eq!(registered.skills[1].source, original.skills[0].source);
+        assert_eq!(discovery.discover().unwrap().len(), 1);
+        let saved = fs::read(&file).unwrap();
+        assert!(discovery
+            .register("added", &pin, &registered.manifest_sha256)
+            .is_err());
+        assert!(discovery
+            .register("missing", &pin, &original.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), saved);
+        discovery
+            .set_enabled("added", true, &registered.manifest_sha256)
+            .unwrap();
+        assert_eq!(discovery.discover().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn registration_rejects_drift_missing_body_and_full_catalog_without_publication() {
+        let workspace = tempfile::tempdir().unwrap();
+        let raw = "---\nname: reviewed\ndescription: original\n---\nbody";
+        let file = workspace.path().join("skills.lock.json");
+        fs::create_dir_all(workspace.path().join("skills/reviewed")).unwrap();
+        fs::write(workspace.path().join("skills/reviewed/SKILL.md"), raw).unwrap();
+        fs::create_dir_all(workspace.path().join("skills/new")).unwrap();
+        fs::write(workspace.path().join("skills/new/SKILL.md"), raw).unwrap();
+        fs::write(&file, manifest(raw).to_string()).unwrap();
+        let original = CatalogLock::read(workspace.path()).unwrap().policy;
+        let discovery = SkillDiscovery::new(workspace.path()).with_lock_required(true);
+        let saved = fs::read(&file).unwrap();
+        let pin = &original.skills[0].source;
+        fs::write(workspace.path().join("skills/reviewed/SKILL.md"), "drift").unwrap();
+        assert!(discovery
+            .register("new", pin, &original.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), saved);
+        fs::write(workspace.path().join("skills/reviewed/SKILL.md"), raw).unwrap();
+        fs::remove_file(workspace.path().join("skills/new/SKILL.md")).unwrap();
+        assert!(discovery
+            .register("new", pin, &original.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), saved);
+        let entries: Vec<_> = (0..64)
+            .map(|i| {
+                serde_json::json!({
+                    "directory": format!("item-{i}"), "enabled": false, "source": pin
+                })
+            })
+            .collect();
+        fs::write(
+            &file,
+            serde_json::json!({"version":2,"skills":entries}).to_string(),
+        )
+        .unwrap();
+        let policy = CatalogLock::read(workspace.path()).unwrap().policy;
+        let saved = fs::read(&file).unwrap();
+        assert!(discovery
+            .register("new", pin, &policy.manifest_sha256)
+            .is_err());
+        assert_eq!(fs::read(&file).unwrap(), saved);
+        assert!(!fs::read_dir(workspace.path()).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".jiaclaw-memory-")));
     }
 
     #[test]

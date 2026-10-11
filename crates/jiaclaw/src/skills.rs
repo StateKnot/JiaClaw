@@ -413,6 +413,24 @@ impl SkillDiscovery {
         lock::set_source(self, directory, source, expected_manifest_sha256)
     }
 
+    /// Register a reviewed existing local skill, retaining a disabled declaration.
+    ///
+    /// Validation and publication share the existing workspace writer. This does
+    /// not create a lock, install files, enable a skill or reload a registry.
+    ///
+    /// # Errors
+    /// Requires a current required lock, an unregistered valid directory, a
+    /// matching safely readable body and a complete valid proposed catalog.
+    /// An error after rename can have committed; inspect disk before retrying.
+    pub fn register(
+        &self,
+        directory: &str,
+        source: &SkillSourcePin,
+        expected_manifest_sha256: &str,
+    ) -> Result<SkillLockPolicy, JiaClawError> {
+        lock::register(self, directory, source, expected_manifest_sha256)
+    }
+
     fn scan_locked(
         &self,
         strict: bool,

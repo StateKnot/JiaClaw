@@ -320,21 +320,37 @@ enum SkillsCommands {
     },
     /// 确认已停用技能的新来源与原始正文摘要，不启用或通知运行服务
     SetSource {
-        /// 已登记且停用的一级目录
-        directory: String,
-        /// 管理员审核的 HTTPS 来源，不含凭据、query 或 fragment
-        #[arg(long)]
-        repository: String,
-        /// 40或64位小写十六进制固定 Git 对象ID
-        #[arg(long)]
-        revision: String,
-        /// 完整新 SKILL.md 原字节 SHA256（包含 frontmatter）
-        #[arg(long)]
-        skill_sha256: String,
-        /// 管理员已审核的完整原锁 SHA256
-        #[arg(long)]
-        if_manifest_sha256: String,
+        #[command(flatten)]
+        source: SkillSourceArguments,
     },
+    /// 登记已审核本地技能并保持停用，不安装、启用或通知运行服务
+    Register {
+        #[command(flatten)]
+        source: SkillSourceArguments,
+    },
+}
+
+#[derive(clap::Args)]
+struct SkillSourceArguments {
+    /// 工作区 skills 下的一级目录，不是模型技能名称
+    directory: String,
+    /// 管理员审核的 HTTPS 来源，不含凭据、query 或 fragment
+    #[arg(long)]
+    repository: String,
+    /// 40或64位小写十六进制固定 Git 对象ID
+    #[arg(long)]
+    revision: String,
+    /// 完整 SKILL.md 原字节 SHA256（包含 frontmatter）
+    #[arg(long)]
+    skill_sha256: String,
+    /// 管理员已审核的完整原锁 SHA256
+    #[arg(long)]
+    if_manifest_sha256: String,
+}
+
+enum SkillSourceAction {
+    Register,
+    ReplaceDisabled,
 }
 
 /// 长期记忆子命令
@@ -514,31 +530,11 @@ async fn main() -> Result<()> {
                     }))?
                 );
             }
-            Some(SkillsCommands::SetSource {
-                directory,
-                repository,
-                revision,
-                skill_sha256,
-                if_manifest_sha256,
-            }) => {
-                let config = load_agent_config(config)?;
-                let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
-                    .with_lock_required(config.skill_lock_required)
-                    .set_source(
-                        &directory,
-                        &jiaclaw::SkillSourcePin {
-                            repository,
-                            revision,
-                            skill_sha256,
-                        },
-                        &if_manifest_sha256,
-                    )?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "disk_policy": policy, "runtime_applied": false
-                    }))?
-                );
+            Some(SkillsCommands::SetSource { source }) => {
+                skill_source_command(config, source, SkillSourceAction::ReplaceDisabled)?;
+            }
+            Some(SkillsCommands::Register { source }) => {
+                skill_source_command(config, source, SkillSourceAction::Register)?;
             }
             None => {
                 skills_command(config, verbose)?;
@@ -4445,6 +4441,36 @@ fn version_command() {
 }
 
 #[allow(clippy::too_many_lines)]
+fn skill_source_command(
+    config_path: Option<PathBuf>,
+    args: SkillSourceArguments,
+    action: SkillSourceAction,
+) -> Result<()> {
+    let config = load_agent_config(config_path)?;
+    let discovery = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+        .with_lock_required(config.skill_lock_required);
+    let source = jiaclaw::SkillSourcePin {
+        repository: args.repository,
+        revision: args.revision,
+        skill_sha256: args.skill_sha256,
+    };
+    let policy = match action {
+        SkillSourceAction::Register => {
+            discovery.register(&args.directory, &source, &args.if_manifest_sha256)?
+        }
+        SkillSourceAction::ReplaceDisabled => {
+            discovery.set_source(&args.directory, &source, &args.if_manifest_sha256)?
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "disk_policy": policy, "runtime_applied": false
+        }))?
+    );
+    Ok(())
+}
+
 fn skills_command(config_path: Option<PathBuf>, verbose: bool) -> Result<()> {
     let config = if let Some(path) = config_path {
         let path_str = path.to_string_lossy();
@@ -12257,23 +12283,29 @@ mod tests {
             "--config",
             "cfg.toml",
         ];
-        let parsed = Cli::try_parse_from(args).unwrap();
-        assert!(matches!(parsed.command, Commands::Skills {
-            action: Some(SkillsCommands::SetSource { .. }), config: Some(ref path), ..
-        } if path == std::path::Path::new("cfg.toml")));
-        for flag in [
-            "--repository",
-            "--revision",
-            "--skill-sha256",
-            "--if-manifest-sha256",
-        ] {
-            let offset = args.iter().position(|arg| *arg == flag).unwrap();
-            let incomplete: Vec<_> = args
-                .iter()
-                .enumerate()
-                .filter_map(|(index, arg)| (index != offset && index != offset + 1).then_some(*arg))
-                .collect();
-            assert!(Cli::try_parse_from(incomplete).is_err());
+        for command in ["set-source", "register"] {
+            let mut args = args;
+            args[2] = command;
+            let parsed = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(parsed.command, Commands::Skills {
+                action: Some(SkillsCommands::SetSource { .. } | SkillsCommands::Register { .. }), config: Some(ref path), ..
+            } if path == std::path::Path::new("cfg.toml")));
+            for flag in [
+                "--repository",
+                "--revision",
+                "--skill-sha256",
+                "--if-manifest-sha256",
+            ] {
+                let offset = args.iter().position(|arg| *arg == flag).unwrap();
+                let incomplete: Vec<_> = args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, arg)| {
+                        (index != offset && index != offset + 1).then_some(*arg)
+                    })
+                    .collect();
+                assert!(Cli::try_parse_from(incomplete).is_err());
+            }
         }
     }
 
