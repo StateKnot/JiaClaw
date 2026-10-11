@@ -1,5 +1,17 @@
 # 基础能力验收记录
 
+## 2026-10-11 首用模型验证与原收据
+
+规范：[model-probe](model-probe.md)。固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，本批 fresh `4862de9..0e8c036`，继承此前累计报告；[Standards](reviews/2026-10-11-model-probe-standards.md)/[Spec](reviews/2026-10-11-model-probe-spec.md)源码及两次增量新增开放各0，未宣称穷尽重审。冻结父二进制实际退出2且不识别新命令，证明能力缺失，非既有框架缺陷。
+
+初版实际 SIGTERM 在已观察取消处理后，命令退出1却向 stdout 写入86字节通用退出日志，破坏仅元数据输出合同；原负例保留 `probe-output-negative.log`。生产修订与旧流式 CLI 共用 stderr subscriber，修订后二进制七组实际模型验证全部通过：明确计费/静态门槛、精确 Chat 路由与64/128两预算、原请求字节摘要和持久收据、错验证码 completed/false、HTTP/身份/模型/工具/2MiB错误后 unknown 且零重发、真实准入 audit 回滚前零 POST、实际收到 SIGTERM 后原 owner 结算和 SIGKILL 重启原 GET-only 恢复。实际启用 MCP/semantic 配置并布置端点/数据库陷阱，保留 FIFO 技能及私有内容、会话库检查，七组再次通过。
+
+完整既有串行 harness 实际423库/123core/712host，共1258 Rust通过、1忽略，含三个库侧 probe 边界及一个 CLI 确认门槛。初版新单测因没有建立工作区而在 Store 打开前失败（422通过/1失败），不能证明对象一次尝试；修订后真实传输失败、unknown hold及同对象禁止重用均通过。初缺JSON字段、端点重复 `/v1`、路由预算违规和只发送信号尚未观察处理的夹具失败分别保存，没有修改生产准入/期限/锁以迎合测试。
+
+冻结二进制 SHA256 `57f4954a37409a80da465e53bb9769666c3c3e230222135c6c40fa7245ca2c60`。99仓库输入（原97加两个 Module）绑定最终测试源码 `0e8c036`；初编译生产 `4616ab3` 后仅 cfg(test) 前置与测试/文档变化，生产前缀未变，最终重建和交付输入逐字节核对。八实际进程套（probe、doctor、模型账本、路由、MCP、native工具、e2e、旧CLI stream）与parser通过。日志、原始双轴报告与 pin 位于 `/tmp/jiaclaw-oct11-model-probe-delivery/`，缓存复用原同仓库/toolchain/config target，未复制/清理共享目录，实际回收0；df均在执行前另记。
+
+新固定 head 官方资格独立要求七实际作业、51必需Python、七实际Chromium、四优化候选各13安装/归档/源码检查，四新Rust和七实际probe组；最终证据仅在PR正文/pin回填，不提交自引head文档。假网关不等于真实供应商/账务、TLS/代理、物理截止、渠道首用、实际工具任务或 durable认证。128是输出请求预算，非费用上限。
+
 ## 2026-10-11 MCP 启动的实际阶段结算
 
 规范：[MCP 启动阶段验收](mcp-startup-validation.md)。累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，fresh `6e338ad..5de3e5e` 仅改 `mcp.rs` 的 `cfg(test)`。独立[Standards](reviews/2026-10-11-mcp-startup-standards.md)/[Spec](reviews/2026-10-11-mcp-startup-spec.md)源码聚焦开放0，继承累计历史；初审未借后续全量或官方资格。
