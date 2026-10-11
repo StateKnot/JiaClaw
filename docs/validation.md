@@ -1,5 +1,13 @@
 # 基础能力验收记录
 
+## 2026-10-11 本机记忆条件纠错
+
+[实际合同](memory-correction.md)只增加操作员完整 inspect 与双摘要 replace，复用现有非排队 writer、有界能力读取和私有同步发布。固定源码 `ac0dca6bce5f79927ee869d53645ed3fcb9953e6` 的1285Rust（450/123/712，另1忽略）、locked build/fmt/required correctness+suspicious Clippy全部实际exit0。冻结二进制SHA256 `22cf4c63e9e87abd07f3ce724ebf5d71111a3350af3cebd74dc53a5918893c33` 与最终target逐字节一致，104编译输入绑定源码；七相关真实进程 memory_correction/memory_io/semantic_memory/model_probe/doctor/e2e/skills 每套独立exit0，新七组核对双摘要、原字节/inode、实际OS拒绝与竞争、配置依赖不初始化、同一服务后续轮提示。独立Spec37次公共CLI（8成功/29已知拒绝）另留证，不是37种供应商能力。
+
+冻结父PR125真实CLI不认识新命令，原记忆bytes/inode不变的缺能力负例与最终GREEN分别保留。初新增Rust测试直接unsafe flock违反仓库forbid lint，在编译阶段exit101；修订仅cfg(test)使用原fs2安全接口，生产prefix未变，最终完整串行harness另行执行，不把编译失败称作功能RED。两次临时文档patch锚点不完整导致拒绝，修正完整锚点后生成正确文档，无生产改变或产品/框架缺陷。
+
+本机模型协议fixture只认证配置字节与下一轮提示接线，不认证自动经验学习、真实任务复用、供应商或全面隐私删除；清空当前源不删索引、历史或备份。新固定head还需独立七官方作业、两平台58必需Python/Linux七Chromium、四优化候选各13安装归档源码、四新公共Rust及七纠错组和全部继承合同/artifact认证API摘要；父125/本机结果不转移为新官方资格。源码与交付Standards/Spec明确fresh与累计4b2357fc历史继承，不称穷尽累计重审。
+
 ## 2026-10-11 网关关闭 fixture 的事件锚点
 
 [实际阶段规范](gateway-shutdown-validation.md)保留原官方Intel失败、未改四组GREEN、受控旧RED、初版迟读/旧marker及中间彩色UTC/五秒越界负例。排空期限从本次实际日志事件计算，迟读不领取新期限，重启旧回执拒绝；生产代码不变。最终本机与两轴证据另存修订pin，修订固定head的七作业、55Python/七Chromium、四候选各13安装归档源码和七个实际关闭场景仍独立待核对，不借任何旧head或本机资格。

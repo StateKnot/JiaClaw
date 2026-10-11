@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[本机记忆审阅与条件纠错](memory-correction.md)：复用已有记忆能力与非排队 workspace writer，完整配置路径快照和原/候选双摘要核对后私有 sync+rename；陈旧、同值、链接、特殊文件、超限和缺失拒绝。空候选可明确清空当前记忆，同一运行服务的后续轮提示实际重读；不删除历史/索引/备份、不增加模型/HTTP写入口或自动学习。固定源码 `ac0dca6` 实际1285Rust（450/123/712，另1忽略）、locked build/fmt/必需Clippy和七套相关冻结二进制进程全部通过，新七组与独立Spec37次CLI留证。初Rust测试unsafe lint编译失败与安全fs2修订通过分别保留；生产prefix不变。新固定head需独立七官方作业、58必需Python/七Chromium、四优化候选各13安装归档源码及四新公共Rust/七纠错组，不能借父125或本机结果。下一步仍为实际经验复用/首用质量、真实浏览器、审批/StateKnot durable/子Agent与租户范围；本批不认证供应商、学习正确性或全面隐私删除。
+
 2026-10-11 PR123 Intel 候选在既有关闭 fixture 的信号相对17秒等待失败，原历史根因未证明，打包/安装尚未执行；六其他作业/三候选不构成完整资格。[关闭阶段验收](gateway-shutdown-validation.md)改为本次日志事件时间锚点，并保留五秒观察窗口、原安全断言和真实暂停/迟读负例。生产101编译输入、15秒共享期限、CI预算均未变；修订head仍需七作业/四候选独立通过，原1272Rust/21进程仅继承而非本轮重跑。先完成修订资格，再继续实际持有writer/原UUID/意图与退休目录的卸载Module及崩溃矩阵，下载、经验记忆、真实首用/浏览器/审批/durable/子Agent与租户范围继续开放。
 
 2026-10-11 接入[已审阅本地技能更新](skill-update.md)：一个 `SkillUpdater` 与安装 Module 共享原非排队 workspace writer、有界包解析和私有能力 I/O；分别保留安装与更新账本/恢复状态机。完整旧/新正文与声明参考、原/候选策略和原 UUID 捕获后，停用的新来源策略先发布，Linux/macOS EXCHANGE 交换目录，再同步与保存历史收据；旧目录保留。目录 dev/ino 识别字节相同版本，原身份显式 finish 不会重复交换。独立 Spec 初版真实复现跨安装/更新复用已完成 UUID 的 P2，修订 `1bb4406` 在同一 writer 内拒绝两个方向；初版 RED 与修订 GREEN 分开保留。[Standards](reviews/2026-10-11-skill-update-standards.md)/[Spec](reviews/2026-10-11-skill-update-spec.md)源码聚焦新增开放各0，继承4b2357fc累计历史，不称穷尽重审。

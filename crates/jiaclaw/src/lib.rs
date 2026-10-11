@@ -83,9 +83,10 @@ pub use memory::{
     load_memory_for_prompt, load_prompt_file, parse_memory_search_args, parse_memory_write_args,
     resolve_memory_path, resolve_workspace_relative_path, search_memory_windows, write_memory,
     write_memory_with_limit, write_workspace_file, write_workspace_file_with_limit,
-    MemoryAppendTool, MemoryFileStatus, MemorySearchHit, MemorySearchTool, MemoryWriteMode,
-    MemoryWriteTool, MEMORY_SEARCH_DEFAULT_MAX_RESULTS, MEMORY_SEARCH_FILE_MAX_BYTES,
-    MEMORY_SEARCH_LINE_RADIUS, MEMORY_SEARCH_MAX_RESULTS, MEMORY_WRITE_MAX_BYTES,
+    MemoryAppendTool, MemoryEditor, MemoryFileStatus, MemoryReplacement, MemorySearchHit,
+    MemorySearchTool, MemorySnapshot, MemoryWriteMode, MemoryWriteTool,
+    MEMORY_SEARCH_DEFAULT_MAX_RESULTS, MEMORY_SEARCH_FILE_MAX_BYTES, MEMORY_SEARCH_LINE_RADIUS,
+    MEMORY_SEARCH_MAX_RESULTS, MEMORY_WRITE_MAX_BYTES,
 };
 use provider::{BrokerrouterProvider, OpenAICompatibleProvider};
 pub use session::{
