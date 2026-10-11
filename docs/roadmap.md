@@ -1,5 +1,9 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 补齐[第一份审阅技能来源锁](skill-lock-create.md)：本机 `skills create-lock` 要求显式必需锁配置、工作区普通单链接输入、审阅过的原JSON摘要和严格v2全部停用。原非排队writer持有输入/正文捕获核验、完整目录扫描与私有create-if-absent发布；现存锁/同输入重复拒绝，两个竞争最多一份提交，保留审阅原字节与runtime_applied:false，不自动初始化模型/MCP/索引或加载技能。固定source `8138f10` 实际1263 Rust（另1忽略）、十五进程套、新七组和独立Spec四组边界通过；99编译输入/十五实际fixture逐字节绑定源码与交付。[Standards](reviews/2026-10-11-skill-lock-create-standards.md)/[Spec](reviews/2026-10-11-skill-lock-create-spec.md)聚焦新增各0，继承4b2357fc累计历史，不声称穷尽重审。新head独立要求七官方作业、53必需Python/七Chromium和四优化候选，不能借父120或本机资格。来源锁创建只发布一份政策文件；下载/安装更新撤销事务、经验记忆与供应商/真实首用/浏览器/durable等里程碑继续开放。
+
+PR120 `445f057e` 的七实际作业、两平台52必需Python/七Chromium、四优化候选各13安装归档源码与登记/继承边界、artifact认证API摘要已独立完整核对，正文/pin exact读回。本机未取得完整原始artifact ZIP物理摘要，资格仅为API摘要和作业日志；下方各批“待核对”保留为交付快照，不为自引head再提交纯文档。
+
 2026-10-11 接入[本机管理员条件登记新技能](skill-registration.md)：已有必需来源锁下，明确未登记目录、已审查来源/固定版本/完整正文摘要与原锁hash，原能力读取/解析、完整候选扫描与原子单文件发布共用workspace writer。新记录保持停用，v1启用语义与其他来源保留；不自动启用或重载，不下载/安装包。固定源码 `b1c7c90` 的1261 Rust（另1忽略）、十四套真实进程、登记七组与独立Spec七组边界通过，99编译输入逐字节绑定源码与交付。[Standards](reviews/2026-10-11-skill-registration-standards.md)/[Spec](reviews/2026-10-11-skill-registration-spec.md)聚焦新增开放各0，累计4b2357fc基准及历史结论继承，不声称穷尽重审。新固定head独立要求七官方作业、52必需Python/七Chromium和四优化候选，不借父119或本机资格。下一步仍为下载/安装更新撤销事务、经验记忆与真实首用任务；来源登记不标完整生态、供应商或durable认证。
 
 2026-10-11 修订[初始化的来源锁边界](init-resume.md#已有技能来源锁)：PR119 初版冻结 binary 的有效锁目录原本可加载，init 返回0却补入两个未登记示例，随后严格技能加载返回1。新源码 `0f0ecab` 在同一原非排队 writer 内识别常规单链接来源锁；默认/force 均不补种、覆盖或打开受管技能叶，也不创建其缺失父目录，顶层默认文件与未受管 force 合同保持。普通锁存在只保护命名空间，不认证 JSON/来源；不安全锁身份与原父目录链接继续拒绝，单文件部分提交语义不变。最终同 CLI 循环、八实际进程、独立七组边界及完整串行1259 Rust/1忽略、locked build/fmt/必需Clippy通过；99编译输入与最终交付逐字节核对。[Standards](reviews/2026-10-11-init-locked-standards.md)/[Spec](reviews/2026-10-11-init-locked-spec.md)各新增开放0，继承累计历史并明确本批聚焦。修订 PR119 新固定 head 的七官方作业/四优化候选必须独立验收，不借初版或父118资格。下一步先完成此资格，再继续安装更新撤销事务、经验记忆与首用实际任务；浏览器、durable/审批/子Agent与供应商等剩余认证保持开放。

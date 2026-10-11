@@ -307,6 +307,15 @@ enum SkillsCommands {
     Reload,
     /// 只读验证并输出磁盘中的必需锁策略（不代表运行服务已应用）
     Policy,
+    /// 从已审阅的本地全停用策略创建第一份来源锁，不覆盖或加载
+    CreateLock {
+        /// 工作区相对 JSON 路径
+        #[arg(long = "from")]
+        input: String,
+        /// 已审阅输入完整原字节 SHA256
+        #[arg(long)]
+        if_source_sha256: String,
+    },
     /// 按原始锁 hash 修改一个目录的磁盘启停策略，不通知运行服务
     SetEnabled {
         /// 已登记的一级目录（不是模型技能名称）
@@ -513,6 +522,21 @@ async fn main() -> Result<()> {
                     .with_lock_required(config.skill_lock_required)
                     .inspect_policy()?;
                 println!("{}", serde_json::to_string_pretty(&policy)?);
+            }
+            Some(SkillsCommands::CreateLock {
+                input,
+                if_source_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let policy = jiaclaw::SkillDiscovery::new(&config.workspace_path)
+                    .with_lock_required(config.skill_lock_required)
+                    .create_lock(&input, &if_source_sha256)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "disk_policy": policy, "runtime_applied": false
+                    }))?
+                );
             }
             Some(SkillsCommands::SetEnabled {
                 directory,
