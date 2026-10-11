@@ -96,7 +96,7 @@ pub use session::{
 };
 pub use skills::{
     Skill, SkillDiscovery, SkillInstallStatus, SkillInstaller, SkillLockPolicy, SkillPolicyEntry,
-    SkillRegistry, SkillSourcePin,
+    SkillRegistry, SkillSourcePin, SkillUpdateState, SkillUpdateStatus, SkillUpdater,
 };
 pub use tools::{
     clamp_web_fetch_max_chars, clamp_web_search_max_results, html_to_readable_text,

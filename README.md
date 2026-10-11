@@ -26,6 +26,8 @@ chmod 600 "$HOME/.jiaclaw/config.toml"
 
 管理员可用 [`skills install / install-status / finish-install`](docs/skill-install.md) 安装审阅过的本地正文与参考包：同一 workspace writer 持有持久原 UUID、私有暂存、停用策略/目录发布和收据；中断后先查询，再明确完成原操作。需现存来源锁，安装不自动启用或重载。
 
+已安装且停用的技能可用 [`skills update / update-status / finish-update`](docs/skill-update.md) 更新：审查原/新内容与策略摘要，同一 writer 保存原 UUID、目录身份和旧版本，交换后未知结果先查询原操作；更新保持停用，另行启用与认证重载才应用。
+
 管理员可通过 [`skills create-lock`](docs/skill-lock-create.md) 从审阅过的工作区 JSON 安全创建第一份来源锁：全部技能明确停用，现存正文完整核验，已有锁拒绝覆盖。已启用必需来源锁后，可通过 [`skills register`](docs/skill-registration.md) 条件登记已审查的本地新技能。新记录保持停用，另行启用并重载服务才应用；命令不下载或安装包。
 
 ```sh

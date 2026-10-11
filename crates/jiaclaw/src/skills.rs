@@ -11,7 +11,9 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod install;
 mod lock;
-pub use install::{SkillInstallStatus, SkillInstaller};
+pub use install::{
+    SkillInstallStatus, SkillInstaller, SkillUpdateState, SkillUpdateStatus, SkillUpdater,
+};
 pub use lock::{SkillLockPolicy, SkillPolicyEntry, SkillSourcePin};
 
 const SKILL_FILE_BYTES: usize = 128 * 1024;

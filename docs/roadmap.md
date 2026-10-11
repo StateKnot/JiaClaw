@@ -1,5 +1,11 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 接入[已审阅本地技能更新](skill-update.md)：一个 `SkillUpdater` 与安装 Module 共享原非排队 workspace writer、有界包解析和私有能力 I/O；分别保留安装与更新账本/恢复状态机。完整旧/新正文与声明参考、原/候选策略和原 UUID 捕获后，停用的新来源策略先发布，Linux/macOS EXCHANGE 交换目录，再同步与保存历史收据；旧目录保留。目录 dev/ino 识别字节相同版本，原身份显式 finish 不会重复交换。独立 Spec 初版真实复现跨安装/更新复用已完成 UUID 的 P2，修订 `1bb4406` 在同一 writer 内拒绝两个方向；初版 RED 与修订 GREEN 分开保留。[Standards](reviews/2026-10-11-skill-update-standards.md)/[Spec](reviews/2026-10-11-skill-update-spec.md)源码聚焦新增开放各0，继承4b2357fc累计历史，不称穷尽重审。
+
+最终本机1272 Rust（另1忽略）、locked build/fmt/必需Clippy、21套实际进程和八更新CLI/OS组通过，101编译输入逐字节绑定修订源码/交付。六实际sync→SIGKILL、交换后EIO、原owner互斥、相同字节、完整冲突证据保留及鉴权GET/reload均留证。新固定head独立要求七官方作业、55必需Python/七实际Chromium和四优化候选各13安装归档源码及新增四Rust/八更新组；不能借父122、初d586或本机资格。更新不自动启用/reload/回滚/启动恢复，来源仍管理员声明；远端下载/卸载、经验记忆、真实首用/浏览器/审批及StateKnot durable/子Agent/租户范围继续开放，不标完整生态或物理断电认证。
+
+PR122 `fdf3eeb2` 的七实际作业、两平台54必需Python/七Chromium、四优化候选各13安装归档源码/11安装组/五公共Rust及认证artifact API摘要已独立完整通过，正文/pin exact读回；原始ZIP没有本机完整物理摘要。历史“待验收”文字保持原批次快照，不提交自引head纯文档制造CI循环。
+
 2026-10-11 真实接入[审阅本地技能包安装](skill-install.md)：一个 `SkillInstaller` 持有原非排队 workspace writer，贯穿有界源捕获、私有暂存、原 UUID/意图持久化、停用策略及 NOREPLACE 目录发布、收据与显式结算。包完整覆盖正文/声明参考并核对原字节，新增项停用；中断查询只读，完成只消费保存身份/字节，冲突保留证据。初版 `2ef1c95` 独立 Spec 复现两项 P2：不安全已知状态项被查询接受、冲突前删原暂存叶；修订 `9f37022` 的原实际负例均关闭，初/最终报告和日志分开保留。原身份/fsync/SIGKILL/并发读为真实本机证据，未认证物理断电或远端安装。新固定 head 的七官方作业、54必需Python/七Chromium和四优化候选独立验收，不借父121或本地资格。下一步仍为下载/更新/卸载事务、经验记忆、真实首用/浏览器/审批与 StateKnot durable/子Agent、租户范围；此批不是完整技能生态。
 
 PR121 `ed884c25` 已独立七作业、两平台53必需Python/七Chromium、四优化候选各13安装归档源码/artifact认证API摘要全通过，正文/pin exact读回。首次 macOS Discord 503 根因未确认，同head重跑成功不称修复；Ubuntu/container是同head保留成功，未冒称重新执行。原始ZIP没有本机完整物理摘要，不扩大API/日志资格。后续历史“待验收”文字保留为交付快照，不为自引 head 重提纯文档。

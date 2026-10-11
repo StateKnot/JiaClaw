@@ -1,5 +1,16 @@
 # 基础能力验收记录
 
+## 2026-10-11 本地技能更新
+
+生产源码 `1bb4406476872afe718ce7be30621d6345dcd8c0` 的真实本机串行 harness 完整1272 Rust（437/123/712，另1忽略）、locked build/fmt/必需 correctness+suspicious Clippy与21实际进程套通过；新八更新组和四公共 Rust边界包含跨安装/更新已完成 UUID 两方向拒绝。101编译输入和所有21实际 fixture、共享测试C interposer绑定冻结二进制/源码/交付；本批没有本机optimized、浏览器或parser重跑，新固定head官方七作业/55必需Python/七实际Chromium/四优化候选必须独立完整验收。
+
+初版 `d586498` 独立Spec冻结二进制实际允许已完成安装UUID再次更新、已完成更新UUID再次安装；两条RED、初报告与初21套通过证据留原文件。修订1bb原负例GREEN、最终全Rust/21实际套及两轴源码复审分别记录；不借初版通过给修订资格。初次restricted环境的既有localhost/FIFO权限拒绝与允许真实OS操作后完整绿色日志分开，不称生产缺陷。独立探针中/var和/private/var路径、旧目录模式重建的driver错误只修临时脚本，未改生产合同。
+
+真实六sync→SIGKILL阶段、保存意图后删除审阅输入仍仅完成原字节、相同正文版本不再次交换、交换后已提交EIO只读核对、实际writer下并发GET/reload、私有stage/策略/目录inode冲突时保留证据均有执行日志。当前与旧备份完整字节分别核验；来源政策先发布与目录交换有序而非同时原子。完成receipt为历史，不证明当前加载；另行enable和认证reload/GET才应用。临时C库仅拦截实际OS同步，生产无故障注入开关；不认证物理断电、远端下载、发行安装、真实供应商或StateKnot durable。
+
+固定证据在 `/tmp/jiaclaw-oct11-update-delivery/pin.json` 和源码初/终[Standards](reviews/2026-10-11-skill-update-standards.md)/[Spec](reviews/2026-10-11-skill-update-spec.md)；累计比较4b2357fc，历史结论继承、本批fresh范围明确。共享target按同repo/toolchain/config复用，超过20十进制GB已评估保留，无专用cache/复制/清理，实际回收0；最终df实测在pin，日志/二进制/报告位于target外。
+
+
 ## 2026-10-11 首用模型验证与原收据
 
 规范：[model-probe](model-probe.md)。固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，本批 fresh `4862de9..0e8c036`，继承此前累计报告；[Standards](reviews/2026-10-11-model-probe-standards.md)/[Spec](reviews/2026-10-11-model-probe-spec.md)源码及两次增量新增开放各0，未宣称穷尽重审。冻结父二进制实际退出2且不识别新命令，证明能力缺失，非既有框架缺陷。
