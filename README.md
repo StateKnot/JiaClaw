@@ -39,6 +39,8 @@ jiaclaw serve --config "$HOME/.jiaclaw/config.toml"
 
 操作员可通过 [`memory inspect / memory replace`](docs/memory-correction.md) 审阅、纠正或清空配置的长期记忆。替换同时核对原文本和候选文本摘要，拒绝陈旧编辑及无变化发布；同一运行服务的后续轮次会按原路径重读。历史与语义索引另行维护。
 
+Standalone 管理员可显式启用[私密记忆审阅工作台](docs/memory-review.md)，查看完整配置文本、路径和原字节摘要。入口默认关闭，要求非空管理 Token；页面只读，更正或清空继续使用上述 CLI。
+
 CLI 也支持持久化多轮对话：
 
 ```sh

@@ -14,6 +14,8 @@ on:
       - 'tests/e2e.py'
       - 'tests/memory_io.py'
       - 'tests/memory_correction.py'
+      - 'tests/memory_review.py'
+      - 'tests/memory_review_browser.cjs'
       - 'tests/doctor.py'
       - 'tests/model_probe.py'
       - 'tests/skills.py'
@@ -102,6 +104,7 @@ jobs:
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
           python3 tests/memory_io.py "target/$TARGET/release/jiaclaw"
           python3 tests/memory_correction.py "target/$TARGET/release/jiaclaw"
+          python3 tests/memory_review.py "target/$TARGET/release/jiaclaw"
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/model_probe.py "target/$TARGET/release/jiaclaw"
           python3 tests/skills.py "target/$TARGET/release/jiaclaw"

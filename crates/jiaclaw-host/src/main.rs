@@ -66,6 +66,7 @@ mod http_turn_cli;
 mod http_turn_store;
 mod http_turns;
 mod jobs;
+mod memory_review;
 mod outbound;
 mod schedule;
 mod scheduler;
@@ -1566,6 +1567,8 @@ fn build_router_with_body_limit(
         )
         .route("/api/sessions/:id/export", get(export_session_handler))
         .route("/api/tools", get(tools_handler))
+        .route("/api/memory/capabilities", get(memory_review::capabilities))
+        .route("/api/memory", get(memory_review::inspect))
         .route("/api/skills", get(skills_handler))
         .route("/api/skills/reload", post(reload_skills_handler))
         .route("/api/openapi.json", get(openapi_handler))
@@ -2557,6 +2560,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
     }
 
     http_turns::validate_config(&config, api_token.as_deref())?;
+    memory_review::validate_config(&config, api_token.as_deref())?;
     tenant_channel::validate_config(&config, api_token.as_deref())?;
     config.scheduler.validate()?;
     if config.scheduler.enabled {
