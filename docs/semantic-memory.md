@@ -46,9 +46,12 @@ timeout_secs = 30
 
 ```sh
 jiaclaw memory semantic status --config config.toml
+jiaclaw memory semantic check --config config.toml
 jiaclaw memory semantic refresh --config config.toml
 jiaclaw memory semantic search "用户喜欢什么热饮" --max-results 5 --config config.toml
 ```
+
+`status` 是账本和 generation 元数据，不证明索引当前新鲜度。更新记忆后可用独立的[本机新鲜度核对](semantic-check.md)：完整来源与同一索引核验，不调用 embedding 或结果 GET；不改变 generation/回执/hold。其结论仅对本次捕获有效，后续刷新仍须明确执行。
 
 `refresh` 显式读取允许的源文件并建立索引，每次 POST 最多 8 个文本块，可能产生 embedding 费用。相同请求内容和空间仍保留经验证的成功回执时可复用；失败不会自动再 POST。每次刷新使用 5 分钟的新请求入场预算：每批发送前为配置的 `timeout_secs` 留出时间，预算不足就停止，并保留已确认批次；显式再次 `refresh` 可以继续。这不是对阻塞操作系统 I/O 的硬截止。CLI 成功输出 JSON，出错返回非零退出码。
 

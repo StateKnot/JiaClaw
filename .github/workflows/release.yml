@@ -16,6 +16,8 @@ on:
       - 'tests/memory_correction.py'
       - 'tests/memory_review.py'
       - 'tests/memory_edit.py'
+      - 'tests/semantic_check.py'
+      - 'tests/semantic_check_read.c'
       - 'tests/memory_edit_browser.cjs'
       - 'tests/memory_review_browser.cjs'
       - 'tests/doctor.py'
@@ -108,6 +110,7 @@ jobs:
           python3 tests/memory_correction.py "target/$TARGET/release/jiaclaw"
           python3 tests/memory_review.py "target/$TARGET/release/jiaclaw"
           python3 tests/memory_edit.py "target/$TARGET/release/jiaclaw"
+          python3 tests/semantic_check.py "target/$TARGET/release/jiaclaw"
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/model_probe.py "target/$TARGET/release/jiaclaw"
           python3 tests/skills.py "target/$TARGET/release/jiaclaw"

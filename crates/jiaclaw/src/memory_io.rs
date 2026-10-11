@@ -208,13 +208,25 @@ pub(crate) fn read_text(
     limit: usize,
     truncate: bool,
 ) -> Result<Option<TextFile>, JiaClawError> {
-    let path = relative(configured)?;
+    relative(configured)?;
     let root = match Dir::open_ambient_dir(workspace, ambient_authority()) {
         Ok(root) => root,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(failure(e)),
     };
-    let Some(dir) = parent(&root, path, false)? else {
+    read_text_at(&root, configured, limit, truncate)
+}
+
+// Compound readers retain their original root capability and cooperative
+// writer throughout capture; never reopen it through an ambient path.
+pub(crate) fn read_text_at(
+    root: &Dir,
+    configured: &str,
+    limit: usize,
+    truncate: bool,
+) -> Result<Option<TextFile>, JiaClawError> {
+    let path = relative(configured)?;
+    let Some(dir) = parent(root, path, false)? else {
         return Ok(None);
     };
     open_regular(&dir, path.file_name().ok_or_else(|| failure("无效文件名"))?)?

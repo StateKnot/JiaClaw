@@ -62,6 +62,7 @@ jobs:
       - run: python3 tests/memory_review.py target/debug/jiaclaw
       - run: python3 tests/memory_edit.py target/debug/jiaclaw
       - run: python3 tests/semantic_memory.py target/debug/jiaclaw
+      - run: python3 tests/semantic_check.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw
       - run: python3 tests/cli_stream.py target/debug/jiaclaw

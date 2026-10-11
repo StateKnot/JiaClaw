@@ -74,6 +74,11 @@ pub struct Store {
     _ownership: File,
 }
 
+pub(super) enum OpenPurpose {
+    Operations,
+    Inspection,
+}
+
 fn failure(message: impl std::fmt::Display) -> JiaClawError {
     JiaClawError::ToolExecution(format!("semantic store: {message}"))
 }
@@ -464,6 +469,14 @@ fn no_pending(connection: &Connection) -> Result<()> {
 
 impl Store {
     pub fn open(workspace: &Path, index_path: &Path) -> Result<Self> {
+        Self::open_for(workspace, index_path, OpenPurpose::Operations)
+    }
+
+    pub(super) fn open_for(
+        workspace: &Path,
+        index_path: &Path,
+        purpose: OpenPurpose,
+    ) -> Result<Self> {
         let (workspace, path) = state_path(workspace, index_path)?;
         let ownership =
             private_state_file::open_or_create(&suffix(&path, ".lock")).map_err(failure)?;
@@ -623,13 +636,16 @@ impl Store {
         connection
             .execute_batch("PRAGMA wal_autocheckpoint=64; PRAGMA journal_size_limit=33554432;")
             .map_err(failure)?;
-        // The old process may have sent the request. Never infer not_sent from a restart.
-        connection
-            .execute(
-                "UPDATE operations SET state='unknown' WHERE state='pending'",
-                [],
-            )
-            .map_err(failure)?;
+        // Operational restart must not infer not_sent. An inspection keeps the
+        // original pending row and identity; check cannot reconcile or replay it.
+        if matches!(purpose, OpenPurpose::Operations) {
+            connection
+                .execute(
+                    "UPDATE operations SET state='unknown' WHERE state='pending'",
+                    [],
+                )
+                .map_err(failure)?;
+        }
         #[cfg(unix)]
         File::open(
             path.parent()

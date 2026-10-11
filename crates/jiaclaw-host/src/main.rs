@@ -500,6 +500,8 @@ enum ModelCallCommands {
 enum SemanticMemoryCommands {
     /// 显示本地索引和待核对操作状态，不请求模型
     Status,
+    /// 核对完整来源与索引新鲜度，不联网；必须显式 --config
+    Check,
     /// 为当前允许的源文件建立索引；可能产生 embedding 费用，不自动重试
     Refresh,
     /// 检索已同步的索引；查询 embedding 也会持久记录
@@ -5027,6 +5029,12 @@ async fn semantic_memory_command(
     config_path: Option<PathBuf>,
     action: SemanticMemoryCommands,
 ) -> Result<()> {
+    if matches!(action, SemanticMemoryCommands::Check) {
+        anyhow::ensure!(
+            config_path.is_some(),
+            "semantic check requires explicit --config"
+        );
+    }
     if let SemanticMemoryCommands::ReviewClear {
         confirm_reconciled,
         note,
@@ -5043,20 +5051,27 @@ async fn semantic_memory_command(
         );
     }
     let config = load_agent_config(config_path)?;
-    let memory = jiaclaw::SemanticMemory::open(&config)
-        .await?
-        .context("semantic_memory_disabled: explicitly enable [memory.semantic] first")?;
-    let output = match action {
-        SemanticMemoryCommands::Status => memory.status().await?,
-        SemanticMemoryCommands::Refresh => memory.refresh().await?,
-        SemanticMemoryCommands::Search { query, max_results } => {
-            memory.search(query, usize::from(max_results), None).await?
+    let output = if matches!(action, SemanticMemoryCommands::Check) {
+        jiaclaw::SemanticMemory::check_config(&config).await?
+    } else {
+        let memory = jiaclaw::SemanticMemory::open(&config)
+            .await?
+            .context("semantic_memory_disabled: explicitly enable [memory.semantic] first")?;
+        match action {
+            SemanticMemoryCommands::Status => memory.status().await?,
+            SemanticMemoryCommands::Check => unreachable!("check uses inspection startup"),
+            SemanticMemoryCommands::Refresh => memory.refresh().await?,
+            SemanticMemoryCommands::Search { query, max_results } => {
+                memory.search(query, usize::from(max_results), None).await?
+            }
+            SemanticMemoryCommands::Recover { operation_id } => {
+                memory.recover(operation_id).await?
+            }
+            SemanticMemoryCommands::ReviewClear {
+                operation_id, note, ..
+            } => memory.review_clear(operation_id, note).await?,
+            SemanticMemoryCommands::Rebuild => memory.rebuild().await?,
         }
-        SemanticMemoryCommands::Recover { operation_id } => memory.recover(operation_id).await?,
-        SemanticMemoryCommands::ReviewClear {
-            operation_id, note, ..
-        } => memory.review_clear(operation_id, note).await?,
-        SemanticMemoryCommands::Rebuild => memory.rebuild().await?,
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())

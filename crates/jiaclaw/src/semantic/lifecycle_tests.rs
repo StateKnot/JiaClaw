@@ -62,6 +62,201 @@ async fn begin(service: &SemanticMemory) -> String {
         .unwrap()
 }
 
+fn current_generation(service: &SemanticMemory) -> Generation {
+    let mut current = snapshot(&service.workspace, &service.sources).unwrap();
+    for chunk in &mut current.chunks {
+        chunk.vector = vec![1.0, 0.0];
+    }
+    Generation {
+        space: service.space.clone(),
+        manifest: current.manifest,
+        chunks: current.chunks,
+    }
+}
+
+#[tokio::test]
+async fn check_config_preserves_interrupted_pending_while_operations_normalize() {
+    let (_temporary, service) = service();
+    std::fs::write(service.workspace.join("MEMORY.md"), "tea\n").unwrap();
+    let id = begin(&service).await;
+    let workspace = service.workspace.clone();
+    drop(service);
+    let mut config = AgentConfig::default();
+    config.workspace_path = workspace.clone();
+    config.provider.provider_type = "brokerrouter".into();
+    config.provider.base_url = "http://127.0.0.1:9".into();
+    config.provider.api_key = Some("fixture-only-no-network".into());
+    config.memory.semantic = SemanticMemoryConfig {
+        enabled: true,
+        model: "local-fixture".into(),
+        space_revision: "test-v1".into(),
+        dimensions: 2,
+        ..SemanticMemoryConfig::default()
+    };
+    let result = SemanticMemory::check_config(&config).await.unwrap();
+    assert_eq!(result["pending"]["id"], id);
+    assert_eq!(result["pending"]["state"], "pending");
+    assert_eq!(result["next_action"], "reconcile_pending");
+    assert_eq!(result["search_ready_at_capture"], false);
+    let original = Store::open_for(
+        &workspace,
+        &config.memory.semantic.index_path,
+        store::OpenPurpose::Inspection,
+    )
+    .unwrap();
+    assert_eq!(original.pending().unwrap().unwrap().state, "pending");
+    assert!(original.receipt(&id).unwrap().is_none());
+    drop(original);
+    let operational = SemanticMemory::open(&config).await.unwrap().unwrap();
+    let pending = operational.store.pending().unwrap().unwrap();
+    assert_eq!(pending.id, id);
+    assert_eq!(pending.state, "unknown");
+}
+
+#[tokio::test]
+async fn check_complete_generation_and_search_share_corruption_validation() {
+    let (_temporary, service) = service();
+    let source = service.workspace.join("MEMORY.md");
+    std::fs::write(&source, "private tea preference\n").unwrap();
+    let missing = service.check().await.unwrap();
+    assert_eq!(missing["freshness"], "missing");
+    assert_eq!(missing["search_ready_at_capture"], false);
+    let generation = current_generation(&service);
+    service.store.publish_generation(&generation).unwrap();
+    let status = service.store.status().unwrap();
+    let result = service.check().await.unwrap();
+    assert_eq!(result["freshness"], "current");
+    assert_eq!(result["search_ready_at_capture"], true);
+    assert!(!result.to_string().contains("private tea preference"));
+    assert_eq!(service.store.status().unwrap(), status);
+    assert_eq!(
+        service.store.load_generation(&service.space).unwrap(),
+        Some(generation.clone())
+    );
+    std::fs::write(&source, "private new preference\n").unwrap();
+    assert_eq!(service.check().await.unwrap()["freshness"], "stale");
+    let mut wrong_space = generation;
+    wrong_space.space = "b".repeat(64);
+    service.store.publish_generation(&wrong_space).unwrap();
+    assert_eq!(
+        service.check().await.unwrap()["freshness"],
+        "space_mismatch"
+    );
+    let mut corrupt = current_generation(&service);
+    corrupt.chunks[0].vector = vec![0.25, 0.75];
+    service.store.publish_generation(&corrupt).unwrap();
+    assert!(service
+        .check()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("index_corrupt"));
+    assert!(service
+        .search("tea".into(), 1, None)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("index_corrupt"));
+    assert_eq!(
+        service.store.load_generation(&service.space).unwrap(),
+        Some(corrupt)
+    );
+}
+
+#[tokio::test]
+async fn check_preserves_the_original_unknown_operation_and_generation() {
+    let (_temporary, service) = service();
+    std::fs::write(service.workspace.join("MEMORY.md"), "tea\n").unwrap();
+    let generation = current_generation(&service);
+    service.store.publish_generation(&generation).unwrap();
+    let id = begin(&service).await;
+    service.store.mark_unknown(&id, Some(REMOTE_ID)).unwrap();
+    let pending = service.store.pending().unwrap();
+    let status = service.store.status().unwrap();
+    let result = service.check().await.unwrap();
+    assert_eq!(result["freshness"], "current");
+    assert_eq!(result["search_ready_at_capture"], false);
+    assert_eq!(result["next_action"], "reconcile_pending");
+    assert_eq!(result["pending"]["id"], id);
+    assert_eq!(service.store.pending().unwrap(), pending);
+    assert_eq!(service.store.status().unwrap(), status);
+    assert_eq!(
+        service.store.load_generation(&service.space).unwrap(),
+        Some(generation)
+    );
+    assert!(service.store.receipt(&id).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn check_rejects_the_actual_workspace_writer_without_changing_sources() {
+    use fs2::FileExt;
+    let (_temporary, service) = service();
+    let source = service.workspace.join("MEMORY.md");
+    std::fs::write(&source, "tea\n").unwrap();
+    let owner = std::fs::File::open(&service.workspace).unwrap();
+    owner.try_lock_exclusive().unwrap();
+    let result = service.check().await;
+    assert!(result.unwrap_err().to_string().contains("busy"));
+    assert_eq!(std::fs::read(&source).unwrap(), b"tea\n");
+    fs2::FileExt::unlock(&owner).unwrap();
+    assert_eq!(service.check().await.unwrap()["freshness"], "missing");
+}
+
+#[tokio::test]
+async fn cancelled_check_waiter_keeps_original_admission_and_store_owner() {
+    let (_temporary, service) = service();
+    std::fs::write(service.workspace.join("MEMORY.md"), "tea\n").unwrap();
+    let persistence = Arc::clone(&service.persistence)
+        .acquire_owned()
+        .await
+        .unwrap();
+    let worker_service = Arc::clone(&service);
+    let waiter = tokio::spawn(async move { worker_service.check().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.admission.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    assert!(service
+        .check()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("busy"));
+    let workspace = service.workspace.clone();
+    let index_path = SemanticMemoryConfig::default().index_path;
+    let weak = Arc::downgrade(&service);
+    drop(service);
+    assert!(weak.upgrade().is_some());
+    assert!(Store::open(&workspace, &index_path).is_err());
+    drop(persistence);
+    let reopened = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match Store::open(&workspace, &index_path) {
+                Ok(store) => break store,
+                Err(error) => {
+                    assert!(
+                        matches!(&error, JiaClawError::ToolExecution(message)
+                            if message == "semantic store: another process owns semantic state; stop serve before using the CLI"),
+                        "unexpected semantic store reopen failure: {error}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(weak.upgrade().is_none());
+    assert!(reopened.pending().unwrap().is_none());
+    assert!(reopened.load_generation(&"a".repeat(64)).unwrap().is_none());
+}
+
 #[tokio::test]
 async fn cancelled_waiter_keeps_admission_and_store_ownership_until_worker_finishes() {
     let (_temporary, service) = service();
