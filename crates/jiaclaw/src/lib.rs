@@ -95,9 +95,10 @@ pub use session::{
     SESSION_SUMMARY_PROMPT, SESSION_SUMMARY_TEMPERATURE,
 };
 pub use skills::{
-    Skill, SkillDiscovery, SkillInstallStatus, SkillInstaller, SkillLockPolicy, SkillPolicyEntry,
-    SkillRegistry, SkillRemoveState, SkillRemoveStatus, SkillRemover, SkillSourcePin,
-    SkillUpdateState, SkillUpdateStatus, SkillUpdater,
+    Skill, SkillDiscovery, SkillFetchState, SkillFetchStatus, SkillFetcher, SkillInstallStatus,
+    SkillInstaller, SkillLockPolicy, SkillPolicyEntry, SkillRegistry, SkillRemoveState,
+    SkillRemoveStatus, SkillRemover, SkillSourcePin, SkillUpdateState, SkillUpdateStatus,
+    SkillUpdater,
 };
 pub use tools::{
     clamp_web_fetch_max_chars, clamp_web_search_max_results, html_to_readable_text,

@@ -143,6 +143,7 @@ impl SkillUpdater {
             let proposed = proposed_policy(&original, &old, &new)?;
             self.scan(&proposed)?;
             super::remove::ensure_settled(root, operation_id)?;
+            super::fetch::ensure_settled(root, operation_id)?;
             ensure_installs_settled(root, operation_id)?;
             ensure_settled(root, operation_id)?;
             let journal =

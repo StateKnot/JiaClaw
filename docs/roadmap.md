@@ -222,3 +222,13 @@ PR123 修订前 macOS ARM 优化候选在更新第7组单次 SIGCONT 后的原15
 
 本批新head仍须独立七官方作业、两平台56必需Python/七Chromium及四优化候选各13安装归档源码验收；本机或父PR123已完整合格不能替代新head资格。最终只正文/pin回填，避免自引文档循环。卸载是保留文件的有序发布，非同时原子或物理断电/供应商/发行安装/StateKnot durable认证。后续继续下载、经验记忆、首用实测、真实浏览器、审批/durable/子Agent和租户范围；DingTalk完整身份和真实凭据门槛保留，不将本地生命周期称完整技能生态。
 
+# 2026-10-11 已审阅原始技能包下载
+
+PR124固定head666e1c3已独立完成七实际官方作业、两平台56必需Python、七Chromium、四优化候选各13安装归档源码及artifact认证API摘要；最终证据只回填原正文/pin，未再造自引head提交。
+
+新增[SkillFetcher](skill-fetch.md)：原非排队workspace writer贯穿一次固定地址HTTPS GET、原UUID/意图、512KiB完整审阅包捕获与历史收据。只读status与原意图hash条件finish不联网；原UUID跨fetch/install/update/remove复用拒绝，未结算记录阻新账本操作。默认拒绝内网，显式allow-private仍核验TLS；不使用环境代理、重定向、自动重试/解压，不扩大模型/HTTP/租户写入权限。下载只保存原包，须另行审阅、本地install、启用及认证reload/GET。
+
+本机1281 Rust（446/123/712）通过、1忽略，locked build/fmt/必需Clippy和六冻结binary实际进程套通过。七新TLS/CLI/OS组覆盖完整UTF8/全部参考、真实根与主机名拒绝、原byte预算/摘要/schema失败、三sync→SIGKILL、同UUID竞争/64记录门槛与GET-free finish；五Rust含实际取消等待后原transport owner结算。来源管理员声明、hash内容条件、现有workspace权限可改账本，无独立ACL；不标供应商、下载并安装事务、物理断电或StateKnot durable/完整技能生态认证。
+
+累计基准4b2357fc历史审查继承，fresh源与交付两轴独立；新head须独立七作业、两平台57必需Python/七Chromium及四优化候选各13安装归档源码验收，父124与本机结果不转移。后续经验记忆/首用/真实浏览器/审批/durable/子Agent/租户里程碑和真实凭据门槛保留。
+

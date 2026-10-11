@@ -114,6 +114,7 @@ impl SkillRemover {
             let bundle = capture_old(&installed, entry)?;
             let proposed = proposed_policy(&original, &bundle)?;
             self.scan(&original)?;
+            super::fetch::ensure_settled(root, operation_id)?;
             update::ensure_installs_settled(root, operation_id)?;
             update::ensure_settled(root, operation_id)?;
             ensure_settled(root, operation_id)?;

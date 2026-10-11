@@ -303,6 +303,25 @@ enum SessionCommands {
 /// 技能子命令
 #[derive(Subcommand)]
 enum SkillsCommands {
+    /// Capture one exact reviewed HTTPS JSON bundle; does not install or reload
+    Fetch {
+        url: String,
+        #[arg(long)]
+        operation_id: String,
+        #[arg(long)]
+        if_bundle_sha256: String,
+        /// Explicitly allow an internal HTTPS registry; TLS verification remains required
+        #[arg(long)]
+        allow_private: bool,
+    },
+    /// Read original download identity without contacting the origin
+    FetchStatus { operation_id: String },
+    /// Complete only saved verified bytes; never starts another HTTP request
+    FinishFetch {
+        operation_id: String,
+        #[arg(long)]
+        if_intent_sha256: String,
+    },
     /// Retire a reviewed disabled local package and remove its declaration; retain files
     Uninstall {
         directory: String,
@@ -571,6 +590,36 @@ async fn main() -> Result<()> {
             config,
             verbose,
         } => match action {
+            Some(SkillsCommands::Fetch {
+                url,
+                operation_id,
+                if_bundle_sha256,
+                allow_private,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillFetcher::new(&config.workspace_path, config.skill_lock_required)
+                        .fetch(&operation_id, &url, &if_bundle_sha256, allow_private)
+                        .await?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::FetchStatus { operation_id }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillFetcher::new(&config.workspace_path, config.skill_lock_required)
+                        .inspect(&operation_id)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
+            Some(SkillsCommands::FinishFetch {
+                operation_id,
+                if_intent_sha256,
+            }) => {
+                let config = load_agent_config(config)?;
+                let receipt =
+                    jiaclaw::SkillFetcher::new(&config.workspace_path, config.skill_lock_required)
+                        .finish(&operation_id, &if_intent_sha256)?;
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            }
             Some(SkillsCommands::Uninstall {
                 directory,
                 operation_id,

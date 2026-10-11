@@ -80,6 +80,21 @@ static int selected(int fd) {
     char link[64]; snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     ssize_t length = readlink(link, path, sizeof path - 1); if (length < 0) return 0; path[length] = 0;
 #endif
+    const char *fetch_workspace = getenv("JIACLAW_TEST_FETCH_WORKSPACE");
+    const char *fetch_id = getenv("JIACLAW_TEST_FETCH_ID");
+    const char *fetch_phase = getenv("JIACLAW_TEST_FETCH_PHASE");
+    if (fetch_workspace && fetch_id && fetch_phase) {
+        char fetch_op[4096], capture[4096], fetch_intent[4096], fetch_receipt[4096];
+        snprintf(fetch_op, sizeof fetch_op, "%s/.jiaclaw-skill-fetches/%s", fetch_workspace, fetch_id);
+        snprintf(capture, sizeof capture, "%s/bundle.json", fetch_op);
+        snprintf(fetch_intent, sizeof fetch_intent, "%s/intent.json", fetch_op);
+        snprintf(fetch_receipt, sizeof fetch_receipt, "%s/receipt.json", fetch_op);
+        if (!strcmp(path, fetch_op)) {
+            if (!strcmp(fetch_phase, "intent") && exists(fetch_intent) && !exists(capture)) return 1;
+            if (!strcmp(fetch_phase, "bundle") && exists(capture) && !exists(fetch_receipt)) return 1;
+            if (!strcmp(fetch_phase, "receipt") && exists(fetch_receipt)) return 1;
+        }
+    }
     if (remove_selected(path) || update_selected(path)) return 1;
     if (!workspace || !id || !phase) return 0;
     snprintf(op, sizeof op, "%s/.jiaclaw-skill-installs/%s", workspace, id);
@@ -102,11 +117,13 @@ static int selected(int fd) {
 }
 static int after_sync(int fd, int result) {
     if (result == 0 && selected(fd)) {
-        const char *mode = getenv("JIACLAW_TEST_REMOVE_MODE");
+        const char *mode = getenv("JIACLAW_TEST_FETCH_MODE");
+        if (!mode) mode = getenv("JIACLAW_TEST_REMOVE_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_UPDATE_MODE");
         if (!mode) mode = getenv("JIACLAW_TEST_INSTALL_MODE");
         if (mode && !strcmp(mode, "error")) { errno = EIO; return -1; }
-        const char *marker = getenv("JIACLAW_TEST_REMOVE_MARKER");
+        const char *marker = getenv("JIACLAW_TEST_FETCH_MARKER");
+        if (!marker) marker = getenv("JIACLAW_TEST_REMOVE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_UPDATE_MARKER");
         if (!marker) marker = getenv("JIACLAW_TEST_INSTALL_MARKER");
         if (marker) { int out = open(marker, O_CREAT | O_WRONLY | O_EXCL, 0600); if (out >= 0) { write(out, "held\n", 5); close(out); } }
