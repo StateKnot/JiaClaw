@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-11 修复[首用可继续初始化](init-resume.md)：冻结父 PR118 二进制在部分目录、普通文件根和链接默认文件三组实际返回0却未完成初始化。CLI 现统一进入原安全初始化 Module，默认补缺并保留用户编辑，错误非零；原显式 force、单文件部分提交、权限/容量/锁边界不变，不改模型配置。固定源码 `1e357f3` 的真实三组重验、四套相关进程、六组独立 Spec 边界及 locked build/fmt/必需Clippy 通过；本批未重跑全 Rust 或本机优化构建。[Standards](reviews/2026-10-11-init-resume-standards.md)/[Spec](reviews/2026-10-11-init-resume-spec.md)分别开放0，继承累计历史且聚焦本批。四优化候选新增同一实际 memory_io 回归与路径触发，新固定 head 官方资格另计；父 PR118 仍独立验收，不借父或本机资格。不将此工作标作完整供应商首用、安装/技能生态或 durable 完成。
+
 2026-10-11 接入[首用模型验证](model-probe.md)：明确配置与计费确认后，只提交一次固定两条消息的无工具 Chat 请求，输出预算最多128，复用私有模型账本的原身份、字节摘要、持久收据、未知 hold 和 GET-only 恢复。配置/key/端点/完整出站 prepare 在状态打开前拒绝；不加载已启用的 MCP、语义库、技能或会话。实际 SIGTERM 收到后保留 owner 到结算；SIGKILL 后保留原身份且不重发。初版取消 stdout 含86字节通用日志的真实负例已修正为共用 stderr 初始化，实际七组最终绿色证据与夹具/单测前置条件失败分别保留。[Standards](reviews/2026-10-11-model-probe-standards.md)/[Spec](reviews/2026-10-11-model-probe-spec.md)源码与补审新增开放各0，累计历史继承，不声称穷尽重审。本批新固定 head 的完整官方 CI/四优化候选另行验收；本机假网关不能代替真实供应商、计费、TLS/代理、渠道和首用工具任务认证。
 
 PR117 最终 `3201ff9d` 的七实际作业、两平台50必需Python/七Chromium、四优化候选各13安装归档源码、两MCP阶段/三个writer结算测试和 artifact API 摘要已独立通过，证据仅回填PR正文/pin，避免自引head纯文档资格循环。下方“待核对”是原批次阶段记录；原始 artifact ZIP 未本机下载，不扩大摘要资格。

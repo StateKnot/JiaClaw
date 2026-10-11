@@ -22,6 +22,8 @@ chmod 600 "$HOME/.jiaclaw/config.toml"
 
 将 `~/.local/bin` 加入 PATH。修改配置的网关 URL、逻辑模型 ID，再通过 Secret 管理或终端环境注入 `JIACLAW_API_KEY`（网关虚拟 Key）与 `JIACLAW_API_TOKEN`（JiaClaw 自身 API Token）。两者用途不同。
 
+`init` 可在部分初始化的工作区继续补齐缺失默认文件，并保留已有编辑；不安全文件或无效目录以非零退出。`init --path` 不改模型配置，须使配置的 `agent.workspace_path` 指向同一目录。恢复与显式 `--force` 边界见[初始化合同](docs/init-resume.md)。
+
 ```sh
 jiaclaw doctor --config "$HOME/.jiaclaw/config.toml"
 jiaclaw serve --config "$HOME/.jiaclaw/config.toml"

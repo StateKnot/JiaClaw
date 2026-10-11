@@ -196,6 +196,19 @@ try:
         before = {name: (initialized / name).read_bytes() for name in names}
         assert run('init', '--path', initialized).returncode == 0
         assert {name: (initialized / name).read_bytes() for name in names} == before
+        # Restart initialization after a partial setup without forcing operator edits away.
+        for name in ['MEMORY.md', 'skills/search/SKILL.md']:
+            (initialized / name).unlink()
+        result = run('init', '--path', initialized)
+        assert result.returncode == 0, result.stderr
+        assert (initialized / 'MEMORY.md').read_bytes() == defaults['MEMORY.md']
+        assert (initialized / 'skills/search/SKILL.md').read_bytes() == defaults['skills/search/SKILL.md']
+        assert all((initialized / name).read_bytes() == before[name]
+                   for name in names if name not in ['MEMORY.md', 'skills/search/SKILL.md'])
+        invalid_root = root / 'ordinary-file-root'
+        invalid_root.write_text('operator root sentinel')
+        assert run('init', '--path', invalid_root).returncode != 0
+        assert invalid_root.read_text() == 'operator root sentinel'
         result = run('init', '--path', initialized, '--force')
         assert result.returncode == 0, result.stderr
         assert {name: (initialized / name).read_bytes() for name in names} == defaults
@@ -207,15 +220,17 @@ try:
         sentinel_bytes = sentinel.read_bytes()
         (initialized / 'MEMORY.md').unlink()
         (initialized / 'MEMORY.md').symlink_to(sentinel)
+        assert run('init', '--path', initialized).returncode != 0
         assert run('init', '--path', initialized, '--force').returncode != 0
         assert sentinel.read_bytes() == sentinel_bytes
         (initialized / 'MEMORY.md').unlink()
         (initialized / 'MEMORY.md').write_bytes(defaults['MEMORY.md'])
         (initialized / 'skills').rename(initialized / 'skills-saved')
         (initialized / 'skills').symlink_to(outside, target_is_directory=True)
+        assert run('init', '--path', initialized).returncode != 0
         assert run('init', '--path', initialized, '--force').returncode != 0
         assert sorted(path.name for path in outside.iterdir()) == ['sentinel']
-        print('PASS: CLI init preserves existing files; explicit force safely replaces ordinary files and refuses file/skill-parent links')
+        print('PASS: CLI init resumes missing defaults, preserves operator edits, rejects invalid roots and links; explicit force safely replaces ordinary files')
 
         active = root / 'active'
         config = config_for(active, memory={'path': 'notes/custom.md'},

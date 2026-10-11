@@ -12,6 +12,7 @@ on:
       - 'scripts/package_release.py'
       - 'tests/installer.py'
       - 'tests/e2e.py'
+      - 'tests/memory_io.py'
       - 'tests/doctor.py'
       - 'tests/model_probe.py'
       - 'tests/skills.py'
@@ -90,6 +91,7 @@ jobs:
         run: |
           "target/$TARGET/release/jiaclaw" version
           python3 tests/e2e.py "target/$TARGET/release/jiaclaw"
+          python3 tests/memory_io.py "target/$TARGET/release/jiaclaw"
           python3 tests/doctor.py "target/$TARGET/release/jiaclaw"
           python3 tests/model_probe.py "target/$TARGET/release/jiaclaw"
           python3 tests/skills.py "target/$TARGET/release/jiaclaw"
