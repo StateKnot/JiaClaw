@@ -13,6 +13,9 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+mod correction;
+pub use correction::{MemoryEditor, MemoryReplacement, MemorySnapshot};
+
 /// 工作区约定文件在磁盘上的状态（MEMORY / SOUL / USER，供 `doctor` / CLI 使用）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryFileStatus {

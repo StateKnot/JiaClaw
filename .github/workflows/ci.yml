@@ -58,6 +58,7 @@ jobs:
       - run: python3 tests/workspace_copy.py target/debug/jiaclaw
       - run: python3 tests/filesystem_info.py target/debug/jiaclaw
       - run: python3 tests/memory_io.py target/debug/jiaclaw
+      - run: python3 tests/memory_correction.py target/debug/jiaclaw
       - run: python3 tests/semantic_memory.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw

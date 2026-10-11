@@ -4,6 +4,8 @@ MEMORY、SOUL、USER 与 HEARTBEAT 仍是工作区中的 UTF-8 文本文件。�
 
 ## 配置与授权
 
+本机操作员可[审阅完整记忆并条件纠错](memory-correction.md)，使用原/候选两个摘要替换配置的 MEMORY。该入口复用原 writer，不扩展模型或 HTTP 权限；语义索引、历史和备份须另行维护。
+
 ```toml
 [memory]
 path = "notes/MEMORY.md"

@@ -442,6 +442,23 @@ enum SkillSourceAction {
 /// 长期记忆子命令
 #[derive(Subcommand)]
 enum MemoryCommands {
+    /// 读取完整有界记忆与原字节摘要，供本机操作员审阅
+    Inspect {
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+    },
+    /// 双摘要条件替换配置的记忆；空候选可明确清空全文
+    Replace {
+        /// 工作区相对的审阅候选文件
+        #[arg(long = "from", value_name = "WORKSPACE_FILE")]
+        candidate: String,
+        #[arg(long)]
+        if_content_sha256: String,
+        #[arg(long)]
+        if_replacement_sha256: String,
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+    },
     /// 显示约定 MEMORY 文件内容
     Show {
         /// 配置文件路径
@@ -782,6 +799,23 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Memory { action } => match action {
+            MemoryCommands::Inspect { config } => {
+                let config = load_agent_config(Some(config))?;
+                let editor = jiaclaw::MemoryEditor::new(&config.workspace_path, config.memory.path);
+                println!("{}", serde_json::to_string_pretty(&editor.inspect()?)?);
+            }
+            MemoryCommands::Replace {
+                candidate,
+                if_content_sha256,
+                if_replacement_sha256,
+                config,
+            } => {
+                let config = load_agent_config(Some(config))?;
+                let editor = jiaclaw::MemoryEditor::new(&config.workspace_path, config.memory.path);
+                let result =
+                    editor.replace_from(&candidate, &if_content_sha256, &if_replacement_sha256)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
             MemoryCommands::Show { config } => {
                 memory_show_command(config)?;
             }
