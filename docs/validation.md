@@ -1,5 +1,19 @@
 # 基础能力验收记录
 
+## 2026-10-12 本机语义索引新鲜度检查
+
+固定累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c`，父128本地 `c13885c`，初源码 `5d0e23c` 与修订源码 `3f265cb` 分开。原 status 只为账本/generation 元数据，原 search 已在查询 embedding 前拒绝陈旧源；本批新增无网络完整检查，不重建存储、向量库、模型工具或自动学习。[生产合同](semantic-check.md)明确 inspection 启动、原 owner、全部内容预算和 pending 保留。
+
+初源码独立 Spec 真实收到第二 refresh POST 后 SIGKILL（exit−9），原三表快照中 state=pending；初 check 会经普通 Store 启动将同一行变成 unknown，P2 RED 已保留。修订的明确 inspection 入口消费原完整 Store 核验，check 前后三表逐字段/完整 BLOB 相同；随后另行普通 status 仍将同原 UUID 规范化 unknown，不削弱操作恢复安全。[初 Spec](reviews/2026-10-12-semantic-check-initial-spec.md)、[最终 Spec](reviews/2026-10-12-semantic-check-spec.md)原样保存，独立原负例 GREEN 为21公共CLI、两个仅 setup POST、check 网络请求0；不是供应商或经验质量认证。初 Standards 和最终 Standards 也分别保留；本批 fresh 两轴开放各0，历史累计继承而非穷尽重审。
+
+修订冻结 SHA `3b2e39bce1d3c7529c2fad079226eea0bebe1d34b5ce12932be4c6c4b1f88551`，105编译输入与固定源码一致。实际完整本机1296Rust（457/123/716，另1忽略）、locked host build、fmt、required correctness+suspicious Clippy通过；八套真实冻结进程 semantic_check/semantic_memory/memory_io/memory_correction/memory_edit/memory_review/doctor/e2e 各exit0。七新组覆盖全部原始来源/UTF8/预算、相同size+mtime变化、三来源与512块、unsafe源、原writer/index竞争、unknown/pending两种原hold和匹配manifest下的损坏向量拒绝。原读操作测试动态库取得真实kernel SIGSTOP收据，恢复exit0/SIGKILL exit−9后均结算并可重开，暂停期间原root/store锁实际仍拒绝第二owner。C仅测试动态库，无生产fault hook，不认证OS随机故障、物理断电或StateKnot durable。
+
+父冻结binary在最终有效fixture配置下新check命令仍exit2、无state/network；初1295Rust/八套旧进程不转移修订资格。准备期缺必需config字段、MCP误用未知enabled字段、SQLite observer错误和512字节行被原1024块合并的负例setup错误分别保留；改为原独立query-only WAL observer和真实超512块输入后原断言/截止不变。它们是fixture/driver问题，不报应用或框架缺陷。独立Spec实际pending RED是本批真实产品缺口，已单独关闭。
+
+最终本机证据在 `/tmp/jiaclaw-oct11-semantic-check-inspection-delivery/`，初源码证据在 `/tmp/jiaclaw-oct11-semantic-check-delivery/` 和独立probe原路径。源/交付身份、原样报告、实际exit和日志摘要须单独核对；新固定head官方仍须七实际作业、两平台61Python/Linux九Chromium、四候选各13唯一安装归档源码/API摘要、七新组/五Rust和两个实际owner/pending marker。不能借父128、初5d或本机资格；全绿后仅正文/pin回填，原ZIP未取得本机完整物理摘要时只称认证API/日志资格。本批本机没有optimized/browser/parser重跑或paid调用。
+
+编译前实际df高于50GB，共享repo/toolchain/config target约19.8GiB超过20十进制GB已评估复用保留，使用 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`，未复制target或建立专用cache。binary/log/report在target外，未清理、实际回收0；末次实际df/UTC/raw在外部pin，不将APFS du累计当释放量。供应商、发行安装、经验质量和全部个人Agent里程碑仍开放，30分钟回访保持ACTIVE。
+
 ## 2026-10-11 本机记忆条件纠错
 
 [实际合同](memory-correction.md)只增加操作员完整 inspect 与双摘要 replace，复用现有非排队 writer、有界能力读取和私有同步发布。固定源码 `ac0dca6bce5f79927ee869d53645ed3fcb9953e6` 的1285Rust（450/123/712，另1忽略）、locked build/fmt/required correctness+suspicious Clippy全部实际exit0。冻结二进制SHA256 `22cf4c63e9e87abd07f3ce724ebf5d71111a3350af3cebd74dc53a5918893c33` 与最终target逐字节一致，104编译输入绑定源码；七相关真实进程 memory_correction/memory_io/semantic_memory/model_probe/doctor/e2e/skills 每套独立exit0，新七组核对双摘要、原字节/inode、实际OS拒绝与竞争、配置依赖不初始化、同一服务后续轮提示。独立Spec37次公共CLI（8成功/29已知拒绝）另留证，不是37种供应商能力。

@@ -54,10 +54,19 @@ struct Snapshot {
 }
 
 fn snapshot(workspace: &Path, sources: &[String]) -> Result<Snapshot, JiaClawError> {
+    capture(sources, |path| {
+        memory_io::read_text(workspace, path, FILE_BYTES, false)
+    })
+}
+
+fn capture(
+    sources: &[String],
+    mut read: impl FnMut(&str) -> Result<Option<memory_io::TextFile>, JiaClawError>,
+) -> Result<Snapshot, JiaClawError> {
     let mut entries = Vec::new();
     let mut chunks = Vec::new();
     for path in sources {
-        let file = memory_io::read_text(workspace, path, FILE_BYTES, false)?;
+        let file = read(path)?;
         entries.push((path, file.as_ref().map(|f| digest(f.text.as_bytes()))));
         let Some(file) = file else { continue };
         let mut offset = 0;
@@ -103,6 +112,37 @@ fn valid_vector(vector: &[f32], dimensions: usize) -> bool {
     (0.999..=1.001).contains(&norm)
 }
 
+// Search and local inspection agree on complete source/chunk/vector validity.
+// A different manifest is stale; an apparently matching corrupt generation
+// must never be described as current or used for a query.
+fn generation_current(
+    current: &Snapshot,
+    stored: &Generation,
+    dimensions: usize,
+) -> Result<bool, JiaClawError> {
+    if stored.manifest != current.manifest {
+        return Ok(false);
+    }
+    if stored.chunks.len() != current.chunks.len()
+        || stored
+            .chunks
+            .iter()
+            .zip(&current.chunks)
+            .any(|(saved, now)| {
+                saved.path != now.path
+                    || saved.line != now.line
+                    || saved.text != now.text
+                    || saved.hash != now.hash
+                    || !valid_vector(&saved.vector, dimensions)
+            })
+    {
+        return Err(error(
+            "index_corrupt: generation does not match current source snapshots",
+        ));
+    }
+    Ok(true)
+}
+
 /// An opt-in, exclusively owned semantic index and billable-operation ledger.
 /// No background indexing or model calls happen during construction.
 pub struct SemanticMemory {
@@ -125,6 +165,29 @@ impl SemanticMemory {
     /// # Errors
     /// Invalid configuration, private-path/ownership failures or database errors.
     pub async fn open(config: &AgentConfig) -> Result<Option<Arc<Self>>, JiaClawError> {
+        Self::open_for(config, store::OpenPurpose::Operations).await
+    }
+
+    /// Open the configured local index for a complete no-network inspection.
+    /// The original pending row survives this startup; ordinary operational
+    /// startup still normalizes interrupted pending requests to unknown.
+    ///
+    /// # Errors
+    /// Disabled/invalid configuration, owner/path/source or database failures.
+    pub async fn check_config(config: &AgentConfig) -> Result<Value, JiaClawError> {
+        Self::open_for(config, store::OpenPurpose::Inspection)
+            .await?
+            .ok_or_else(|| {
+                error("semantic_memory_disabled: explicitly enable [memory.semantic] first")
+            })?
+            .check()
+            .await
+    }
+
+    async fn open_for(
+        config: &AgentConfig,
+        purpose: store::OpenPurpose,
+    ) -> Result<Option<Arc<Self>>, JiaClawError> {
         let semantic = &config.memory.semantic;
         semantic.validate()?;
         if !semantic.enabled {
@@ -166,8 +229,10 @@ impl SemanticMemory {
         }
         let workspace = config.workspace_path.clone();
         let index_path = semantic.index_path.clone();
-        let store =
-            Arc::new(memory_io::run_blocking(move || Store::open(&workspace, &index_path)).await?);
+        let store = Arc::new(
+            memory_io::run_blocking(move || Store::open_for(&workspace, &index_path, purpose))
+                .await?,
+        );
         Ok(Some(Arc::new(Self {
             workspace: config.workspace_path.clone(),
             sources,
@@ -413,26 +478,9 @@ impl SemanticMemory {
             .database(move |store| store.load_generation(&space))
             .await?
             .ok_or_else(|| error("stale_index: run local memory semantic refresh"))?;
-        if stored.manifest != current.manifest {
+        if !generation_current(&current, &stored, self.dimensions)? {
             return Err(error(
                 "stale_index: source bytes or allowlist changed; refresh before querying",
-            ));
-        }
-        if stored.chunks.len() != current.chunks.len()
-            || stored
-                .chunks
-                .iter()
-                .zip(&current.chunks)
-                .any(|(saved, now)| {
-                    saved.path != now.path
-                        || saved.line != now.line
-                        || saved.text != now.text
-                        || saved.hash != now.hash
-                        || !valid_vector(&saved.vector, self.dimensions)
-                })
-        {
-            return Err(error(
-                "index_corrupt: generation does not match current source snapshots",
             ));
         }
         let mut ranked = Vec::new();
@@ -492,6 +540,55 @@ impl SemanticMemory {
         status["active_space"] = json!(self.space);
         status["sources"] = json!(self.sources);
         Ok(status)
+    }
+
+    /// Compare complete allowed source bytes with the active local generation.
+    /// No embedding/result request, refresh, receipt or hold mutation occurs.
+    /// The original index admission, store owner and workspace writer remain
+    /// held by actual work even if its waiting caller is cancelled. The result
+    /// describes this capture, not a later search or noncooperating edits.
+    ///
+    /// # Errors
+    /// Busy owner, unsafe/oversized/invalid source, corrupt index or local IO.
+    pub async fn check(self: &Arc<Self>) -> Result<Value, JiaClawError> {
+        self.admitted(|service| async move {
+            let workspace = service.workspace.clone();
+            let sources = service.sources.clone();
+            let space = service.space.clone();
+            let dimensions = service.dimensions;
+            service
+                .database(move |store| {
+                    memory_io::with_workspace_writer(&workspace, |root| {
+                        let current = capture(&sources, |path| {
+                            memory_io::read_text_at(root, path, FILE_BYTES, false)
+                        })?;
+                        let status = store.status()?;
+                        let stored = store.load_generation(&space)?;
+                        let freshness = match &stored {
+                            Some(stored) if generation_current(&current, stored, dimensions)? => {
+                                "current"
+                            }
+                            Some(_) => "stale",
+                            None if status["generation"].is_null() => "missing",
+                            None => "space_mismatch",
+                        };
+                        let pending = &status["pending"];
+                        let ready = freshness == "current" && pending.is_null();
+                        Ok(json!({
+                            "protocol_version":1, "freshness":freshness,
+                            "search_ready_at_capture":ready, "active_space":space,
+                            "sources":sources, "manifest":current.manifest,
+                            "source_chunks":current.chunks.len(),
+                            "generation":status["generation"], "pending":pending,
+                            "next_action": if !pending.is_null() { "reconcile_pending" }
+                                else if ready { "none" } else { "explicit_refresh" },
+                            "local_only":true, "runtime_applied":false
+                        }))
+                    })
+                })
+                .await
+        })
+        .await
     }
     /// Recover a saved remote result through GET only. This records its vectors
     /// but does not publish an old source generation or replay a request.
