@@ -1311,3 +1311,17 @@ Linux/macOS测试作业各运行40项必需Python，Linux实际运行七套Chrom
 
 新head官方验收独立需七实际作业、两平台57必需Python/七真实Chromium、四优化候选各13安装归档源码、新七fetch/五Rust与全部继承remove/update/install/skills/init/probe/MCP/writer/worker/Docker/parser/receipt/七关闭组及artifact API digest；不借父124/本机。原artifact ZIP未本机完整物理核对，不扩大API/作业日志资格。最终只正文/pin回填，避免自引循环。共享同repo/toolchain/config target约19.8GiB已评估复用保留，无专用target/清理、实际回收0，执行前df及最终读数留pin，日志/binary/report在target外。
 
+# 2026-10-11 私密记忆审阅入口
+
+[合同](memory-review.md)，固定编译源码 `daa95ee3f5bd081fc610b4a73a128bfd2ed24747`，fresh父 `0e0a3fae0fdbdcdadfe6940c09595323e293c1c2`。累计基准 `4b2357fcf01f47ba08d7724edbba7accfb60972c` 的历史审查继承，本批源码与交付 Standards/Spec 独立，范围分别记录，不称穷尽累计重审。冻结父PR126在同一真实HTTP脚本首个新GET返回404而预期200，是缺能力负例。
+
+冻结binary SHA256 `a6ee8eed90a803e9f6d5e255e95b626e6efbafdc3b3cbf0f15b4911230968c69`，最终target与独立Spec冻结副本逐字节一致；105编译输入 source/delivery/current另核。完整串行1287 Rust（450/123/714）+1 ignored、locked build、fmt与必需correctness+suspicious Clippy通过；其他既有lint警告不声称全清。真实HTTP四组、真实Chromium四组、原工作台Chromium、原只读网关Chromium和原记忆纠正七组各实际exit0，记录在 `/tmp/jiaclaw-oct11-memory-review-delivery`。本批没有本机优化构建、其余五套浏览器、parser或全部历史进程重跑。
+
+HTTP验证完整配置文本/摘要、鉴权与no-store、空文本/精确32KiB及最坏JSON转义、写方法405、链接/特殊/缺失/非法UTF8/超限完整拒绝和默认关闭/非空Token/standalone启动门槛。Chromium验证真实原文textContent、零XSS/storage、手机布局、失败清旧、身份切换及迟到旧响应隔离；模拟gateway/readOnly/畸形合同边界与真实standalone正例分别记录。独立Spec另27实际HTTP请求和三组Chromium边界通过：三个运行服务正常exit0，四个启动门槛拒绝预期exit1，所有自有进程结算；不冒称额外供应商能力。
+
+初生产编译把既有bool鉴权返回值误作Result，改正确适配后最终build通过；初cfgtest引用未声明tempfile而编译失败，改原std/UUID模式后完整重跑。Sandbox完整测试受本机bind权限拒绝，原命令经授权在同断言下全绿，环境失败单独保留。初浏览器路径无对应已装Chromium及模拟网关继承standalone turn合同造成等待失败，分别使用已有Chromium和准确模拟scope后最终GREEN；没有放宽生产期限或原验收断言，均不误报上游。
+
+入口只读，快照不证明当前提示、历史/备份/索引清除或自动学习/真实任务经验质量；取消等待不提前释放blocking owner，文件预算不认证阻塞OS硬截止。新head需独立七作业、两平台59必需Python/Linux八实际Chromium、四优化候选各13安装归档源码、四新HTTP/四新浏览器/两Rust与全部继承合同和artifact认证API摘要；父126/本机不可借用。原ZIP无本机完整物理摘要，资格仍仅认证API/日志，最终只正文/pin回填。
+
+共享同repo/toolchain/config target约19.8GiB超过20十进制GB已评估复用保留，普通Rust incremental/dev/test debug=0，没有专用target、复制或清理；实际回收0，执行前df和末次读数留pin。冻结binary/log/report均在target外。
+

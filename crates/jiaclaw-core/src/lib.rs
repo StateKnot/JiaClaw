@@ -1411,6 +1411,9 @@ fn default_channel_timeout() -> u64 {
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
+    /// Opt-in private memory review for authenticated standalone operators.
+    #[serde(default)]
+    pub memory_review: bool,
     /// Opt-in standalone durable HTTP turns; requires Brokerrouter, model_calls, persistence and authentication.
     #[serde(default)]
     pub tracked_turns: bool,
@@ -1572,6 +1575,7 @@ fn default_max_body_bytes() -> u64 {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
+            memory_review: false,
             tracked_turns: false,
             tracked_turn_timeout_secs: default_tracked_turn_timeout(),
             gateway_channel_chat: false,

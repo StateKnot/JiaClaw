@@ -1,0 +1,13 @@
+## Standards
+
+Fixed source `daa95ee3f5bd081fc610b4a73a128bfd2ed24747`; fresh command `git diff 0e0a3fae0fdbdcdadfe6940c09595323e293c1c2...daa95ee3f5bd081fc610b4a73a128bfd2ed24747`. Commit range contains `daa95ee feat(memory): add opt-in private review console`. Reviewed all 11 fresh paths: configuration, host routing/module, three UI assets, contract, two process/browser fixtures and two workflows. Cumulative history against `4b2357fcf01f47ba08d7724edbba7accfb60972c` and earlier source/delivery judgments remain inherited within their recorded scopes; this is not an exhaustive cumulative rereview. No Spec judgment was read.
+
+**Documented breaches: 0.** Read session/local `/Users/jiawy/.codex/AGENTS.md`, workspace lint policy, architecture and README. No repository AGENTS, CONTRIBUTING or CODING_STANDARDS found. Tooling-enforced checks are excluded. Architecture lines3/44/49/55 and README's private-token, memory-maintenance and certification boundaries govern ownership, rendering, authorization and file access; `docs/memory-review.md` supplies this slice's scope.
+
+`memory_review.rs:16–43` defaults closed and rejects empty credentials or gateway scope at startup and request admission, then reuses original authentication. Lines65–80 use `try_acquire_owned()` and move `_permit` into the real blocking `MemoryEditor.inspect()` owner, retaining bounded capacity through settlement. The module adds neither storage nor a writing tool/endpoint; existing complete, configured, capability-based reading remains the data owner. All explicit responses receive private cache/content/referrer headers.
+
+`app.js:56,194–200,317–331` clears private DOM on identity changes and before rereading, requires the standalone permission contract, and validates complete UTF8 byte counts before `textContent` rendering. Existing identity checks guard late responses. UI/body budgets accommodate worst-case escaped 32KiB JSON; no browser storage or automatic polling is introduced. Contract retains snapshots, external-edit/OS-blocking limits and separate index/history/correction maintenance.
+
+**Actionable heuristic smells: 0.** All twelve Fowler heuristics considered. The adapter has distinct authorization/response ownership; its delegation to the established editor is appropriate. Startup/request scope checks protect separate boundaries; no useful shared abstraction or domain type is justified by these hunks.
+
+Reviewed fixture assertions and workflow wiring; did not execute tests/builds or modify repository/cache. Local Rust/HTTP/Chromium evidence was still being collected; no PR126 or supplier/durable qualification is transferred. Diff preserved outside cache. **Total open findings: 0; no worst issue.**

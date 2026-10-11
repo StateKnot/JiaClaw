@@ -7,6 +7,7 @@ let identity = 0, operation = 0, scheduledJobs = false, jobList = [], selectedJo
 let jobsOffset = 0, jobsNext = null, jobsPrevious = [], runsOffset = 0, runsNext = null, runsPrevious = [];
 let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted = false;
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
+let memoryReviewEnabled = false;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -41,7 +42,8 @@ function controls() {
   $('delivery-evidence').disabled ||= !delivery;
   $('delivery-resolve').disabled ||= !deliveryFresh || delivery?.state !== 'unknown';
   $('delivery-cancel').disabled ||= !deliveryFresh || !['pending','retry_wait','unknown','permanent_failed','expired'].includes(delivery?.state);
-  for (const id of ['chat-tab','jobs-tab','outbox-tab']) $(id).disabled = !connected || busy;
+  for (const id of ['chat-tab','jobs-tab','outbox-tab','memory-tab']) $(id).disabled = !connected || busy;
+  $('memory-refresh').disabled = !connected || busy || !memoryReviewEnabled;
   turnControls();
 }
 function clearIdentity() {
@@ -51,6 +53,7 @@ function clearIdentity() {
   scheduledJobs = false; jobList = []; selectedJob = null; jobsMode = null; jobsHealth = null; pendingCreate = null;
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
   outboxEnabled = false; deliveries = []; delivery = null; outboxOffset = 0; outboxNext = false; deliveryFresh = false;
+  memoryReviewEnabled = false; $('memory-tab').hidden = true; clearMemoryReview();
   jobsOffset = 0; jobsNext = null; jobsPrevious = []; runsOffset = 0; runsNext = null; runsPrevious = [];
   $('api-token').value = ''; $('message').value = '';
   $('session-title').textContent = '开始一段对话';
@@ -114,7 +117,7 @@ async function boundedJson(response, maximum, owner) {
 }
 const jobsApi = (path, method = 'GET', body, optional = false) => api(path, method, body, optional, 30000, 2 * 1024 * 1024);
 function showView(view) {
-  for (const name of ['chat','jobs','outbox']) { $(name+'-view').hidden = name !== view; $(name+'-tab').setAttribute('aria-pressed', String(name === view)); }
+  for (const name of ['chat','jobs','outbox','memory']) { $(name+'-view').hidden = name !== view; $(name+'-tab').setAttribute('aria-pressed', String(name === view)); }
 }
 function renderSessions() {
   $('sessions').replaceChildren();
@@ -186,7 +189,15 @@ $('connect-form').addEventListener('submit', event => {
     // Only the authenticated administrator endpoint grants this capability. Gateways deny it.
     const channelStatus = token && !readOnly ? await api('/api/channels/status', 'GET', undefined, [403,404], 30000) : null;
     outboxEnabled = channelStatus && ['running','failed','stopping','disabled'].includes(channelStatus.state);
-    $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled;
+    // Only a real standalone permission contract may expose private memory.
+    // Gateway/read-only identities must never probe the backend's capability.
+    if (capabilities === MISSING_ROUTE && token && !readOnly) {
+      const memory = await api('/api/memory/capabilities', 'GET', undefined, [403,404], 15000, 16384);
+      if (memory && (memory.protocol !== 1 || memory.scope !== 'standalone' || memory.read_only !== true || memory.max_bytes !== 32768)) throw new Error('记忆审阅权限响应异常，请联系管理员核对。');
+      memoryReviewEnabled = !!memory;
+    }
+    $('memory-tab').hidden = !memoryReviewEnabled;
+    $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled && !memoryReviewEnabled;
     await connectTurns(capabilities !== MISSING_ROUTE);
     try { await refresh(); }
     catch (error) {
@@ -303,6 +314,21 @@ async function refreshRuns(targetOffset = runsOffset, previous = runsPrevious) {
   controls();
 }
 $('chat-tab').addEventListener('click', () => showView('chat'));
+function clearMemoryReview() {
+  for (const id of ['memory-content','memory-summary','memory-state']) $(id).textContent = '';
+}
+async function reviewMemory() {
+  clearMemoryReview();
+  const value = await api('/api/memory', 'GET', undefined, false, 15000, 256 * 1024);
+  const encoder = new TextEncoder();
+  if (!value || typeof value.path !== 'string' || typeof value.content !== 'string' || !/^[0-9a-f]{64}$/.test(value.content_sha256) || !Number.isInteger(value.bytes) || value.bytes < 0 || value.bytes > 32768 || encoder.encode(value.content).length !== value.bytes) throw new Error('记忆快照不完整；未展示，请重新审阅。');
+  $('memory-content').textContent = value.content;
+  $('memory-summary').textContent = `配置路径：${value.path}\n原字节 SHA256：${value.content_sha256}\n完整字节数：${value.bytes}`;
+  $('memory-state').textContent = value.bytes === 0 ? '当前记忆为空。' : '已读取完整文本；这是读取时的快照。';
+  status('记忆审阅完成');
+}
+$('memory-tab').addEventListener('click', () => task(async () => { if (!memoryReviewEnabled) return; showView('memory'); await reviewMemory(); }));
+$('memory-refresh').addEventListener('click', () => task(reviewMemory));
 $('jobs-tab').addEventListener('click', () => task(async () => {
   if (!scheduledJobs) return; showView('jobs');
   await refreshJobsHealth(); await refreshJobs(); status('定时任务已加载');
