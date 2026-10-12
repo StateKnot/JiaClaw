@@ -25,6 +25,9 @@ env['JIACLAW_LOG_LEVEL'] = 'info'
 keys = {who: 'fixture-model-' + uuid.uuid4().hex for who in ('alice', 'bob')}
 lock = threading.Lock()
 posts, results, gates, faults, processes = [], {}, {}, [], []
+# Only explicitly configured file-task fixtures request tools; legacy fixtures
+# retain their original one-model-round contract.
+tool_plans = {}
 
 
 def wait(check, label, seconds=15):
@@ -107,12 +110,20 @@ class Model(BaseHTTPRequestHandler):
             prompt = next(m['content'] for m in reversed(body['messages']) if m['role'] == 'user')
             remote = str(uuid.uuid4())
             answer = who + ': ' + prompt
+            plan = tool_plans.get((who, prompt))
+            tool_reply = next((m['content'] for m in reversed(body['messages']) if m['role'] == 'tool'), None)
+            calls = plan if plan and tool_reply is None else None
+            if tool_reply is not None and plan:
+                answer = who + ': ' + tool_reply
             receipt = {'id': 'fixture', 'object': 'chat.completion', 'created': 1, 'model': body['model'],
                 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': answer}, 'finish_reason': 'stop'}],
                 'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5}}
+            if calls:
+                receipt['choices'][0]['message'] = {'role':'assistant','content':None,'tool_calls':calls}
+                receipt['choices'][0]['finish_reason'] = 'tool_calls'
             with lock:
                 assert not any(p['operation'] == operation for p in posts), 'model dispatch replayed'
-                posts.append({'who': who, 'prompt': prompt, 'operation': operation, 'remote': remote})
+                posts.append({'who': who, 'prompt': prompt, 'operation': operation, 'remote': remote, 'body':body})
                 results[remote] = (who, receipt)
                 gate = gates.get((who, prompt))
             self.send_response(200)
@@ -127,11 +138,16 @@ class Model(BaseHTTPRequestHandler):
                          'choices': [] if usage else [{'index': 0, 'delta': delta, 'finish_reason': finish}], 'usage': usage}
                 self.wfile.write(('data: ' + json.dumps(value) + '\r\n\r\n').encode())
                 self.wfile.flush()
-            send({'role': 'assistant', 'content': who + ': '})
+            send({'role': 'assistant'} if plan else {'role':'assistant','content':who + ': '})
             if gate:
                 gate['ready'].set()
                 assert gate['release'].wait(20), 'fixture model gate expired'
-            send({'content': prompt}, 'stop')
+            if calls:
+                for i, call in enumerate(calls):
+                    send({'tool_calls':[dict(call, index=i)]})
+                send({}, 'tool_calls')
+            else:
+                send({'content': answer if plan else prompt}, 'stop')
             send({}, usage={'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5})
             self.wfile.write(b'data: [DONE]\r\n\r\n')
             self.wfile.flush()
@@ -154,9 +170,9 @@ def stop(p, kill=False):
             assert code == 0, code
 
 
-def launch(args, number, log):
+def launch(args, number, log, environment=None):
     with log.open('ab') as output:
-        p = subprocess.Popen([str(binary), *args], env=env, stdout=output, stderr=output)
+        p = subprocess.Popen([str(binary), *args], env=env if environment is None else environment, stdout=output, stderr=output)
     processes.append(p)
     def healthy():
         assert p.poll() is None, log.read_text()

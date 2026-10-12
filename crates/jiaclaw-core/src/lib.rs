@@ -1408,9 +1408,51 @@ fn default_channel_timeout() -> u64 {
     120
 }
 
+/// Administrator-approved exact tenant document paths, sorted without aliases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantFileReadPolicy {
+    /// 1..=32 canonical relative files under tenant-documents/, no recursive grants.
+    pub paths: Vec<String>,
+}
+
+impl TenantFileReadPolicy {
+    /// Validate the bounded, canonical path permission without opening any files.
+    ///
+    /// # Errors
+    /// Empty, unsorted, duplicate, hidden, ambiguous or out-of-scope paths.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        let valid = (1..=32).contains(&self.paths.len())
+            && self.paths.windows(2).all(|pair| pair[0] < pair[1])
+            && self.paths.iter().all(|path| {
+                path.len() <= 256
+                    && path.starts_with("tenant-documents/")
+                    && !path.contains('\\')
+                    && !path.chars().any(char::is_control)
+                    && path.split('/').all(|part| {
+                        !part.is_empty()
+                            && part.trim() == part
+                            && !part.starts_with('.')
+                            && !part.starts_with('\u{feff}')
+                            && !part.ends_with('\u{feff}')
+                    })
+                    && path.split('/').count() <= 16
+            });
+        if !valid {
+            return Err(JiaClawError::Configuration(
+                "tenant file grant requires 1..32 sorted unique canonical tenant-documents/ files (256 bytes/16 components); hidden, control and alias paths forbidden".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
+    /// Explicit tenant HTTP file grant. Omission leaves the two-tool contract unchanged.
+    #[serde(default)]
+    pub tenant_file_read: Option<TenantFileReadPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1581,6 +1623,7 @@ fn default_max_body_bytes() -> u64 {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
+            tenant_file_read: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

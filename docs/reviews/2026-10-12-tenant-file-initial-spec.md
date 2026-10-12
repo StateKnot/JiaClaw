@@ -1,0 +1,11 @@
+# Spec review: initial tenant document scope
+
+One open finding (documentation). Fresh static review is pinned `93849d8e5134cd817c1c1324910810925a122fc2` after `0b9fa041`; cumulative4b/source56/qualified PR130 remain inherited. No Standards findings were read.
+
+[P3] Correct the timeout claim in docs/tenant-file-read.md:95. The spec says “tool timeout/abandonment is classified unknown and stops future dispatch.” Restricted file_read delegates the original reader's NoEffect contract. The independent real held-reader observation returned a completed receipt with error “Tool timed out after 2s”, effect_status:no_effect, and a second corrective model POST before releasing the blocked read. Describing that as unknown/future-dispatch refusal promises a behavior the original pure-reader mechanism does not provide. Explicit cancellation is a separate path. Correct the documentation while retaining the existing effect and owner semantics.
+
+Static seams otherwise preserve paired exact permission before new admission, request fingerprint binding, complete native batch preflight, bounded capability-root reading and original blocking I/O ownership. Granted files are explicit canonical names; no directory, unrelated tools, channels or cron expansion is introduced.
+
+Actual28238 exited0 on disposable loopback users: two model/file tasks, sixteen pre-effect authority refusals, five whole-batch path rejections, eleven invalid-grant startup exits, readonly/crossuser/revoked checks, live handshake mismatch before registry identity and paired withdrawal without replay. The real held-reader case settled after2.758s through NoEffect correction. All eight service processes exited0; only a test dynamic library intercepted its exact fixture inode.
+
+This public run has an identity limitation: target changed from bd61 to ed64 during execution. Its observations/logs remain preserved as mixed-target supporting evidence, not complete qualification of938. No per-launch immutable binary identity was captured. A stable frozen candidate is required for a bounded final review; the known doc defect is independently corroborated by the pinned source contract. No production hooks, Rust compilation, browser run, real workspace or paid credentials were used. No supplier, business-quality, release-installation or durable qualification is claimed.

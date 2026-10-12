@@ -63,7 +63,7 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 
 可信管理员须独立检查原后端 active、HTTP 收据、模型账本和外部资源，再按[网关审核流程](gateway.md)执行 `review-clear --confirm-backend-idle --note ...`。若后端原会话也阻断，分别在后端执行既有显式收据维护；两个数据库不构成跨库原子事务。清hold不移除永久请求、不授权重放原UUID；已经保留的进程内容量不随CLI修改自动释放。管理员确认全部相关后端空闲、清hold后，**重启网关**才能重新领取容量。正常观察到终态/本机owner停止的请求可直接释放执行容量，但失败hold仍须显式审核。普通会话管理 API 不开放 `http:` 命名空间；JSON 客户端以原收据获取结果，工作台仅展示该原请求收据中的回复，完整租户 HTTP 会话历史接线仍开放。
 
-本功能未扩大 MCP/文件/exec/技能或外部发送权限，不提供 StateKnot durable 图、工具自动恢复、供应商/代理认证。真实进程与跨平台证据见[验收记录](validation.md#独立用户-http-原请求批次)。
+默认两工具范围未扩大 MCP/exec/技能或外部发送权限；文件任务须单独按[明确的租户文件合同](tenant-file-read.md)双端启用，不提供 StateKnot durable 图、工具自动恢复、供应商/代理认证。真实进程与跨平台证据见[验收记录](validation.md#独立用户-http-原请求批次)。
 
 
 ## 个人 Key 工作台

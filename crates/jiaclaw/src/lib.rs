@@ -54,7 +54,9 @@ mod semantic;
 mod session;
 pub use semantic::SemanticMemory;
 mod skills;
+mod tenant_files;
 mod tools;
+pub use tenant_files::TenantFileReadCapability;
 mod workspace;
 
 pub use files::{
@@ -121,11 +123,19 @@ pub use workspace::Workspace;
 pub type ToolMetricsHook = std::sync::Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// 按配置注册可选工作区文件工具（`read_file` / `list_dir` / `write_file` / `delete_file` / `str_replace` / `grep` / `glob` / `mkdir` / `move` / `stat` / `tree`）。
-fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &AgentConfig) {
+fn register_optional_workspace_file_tools(
+    tools: &mut ToolRegistry,
+    config: &AgentConfig,
+) -> Result<(), JiaClawError> {
     let workspace = &config.workspace_path;
     if config.tools.read_file.enabled {
         tools.register(Box::new(WorkspaceReadFileTool::new(workspace)));
-        tools.register(Box::new(FileReadTool::new(workspace)));
+        let tool = if let Some(policy) = &config.http.tenant_file_read {
+            FileReadTool::restricted(workspace, policy)?
+        } else {
+            FileReadTool::new(workspace)
+        };
+        tools.register(Box::new(tool));
     }
     if config.tools.list_dir.enabled {
         tools.register(Box::new(WorkspaceListDirTool::new(workspace)));
@@ -164,6 +174,7 @@ fn register_optional_workspace_file_tools(tools: &mut ToolRegistry, config: &Age
         tools.register(Box::new(WorkspaceCopyTool::new(workspace)));
         tools.register(Box::new(WorkspaceCopyTool::legacy(workspace)));
     }
+    Ok(())
 }
 
 /// `JiaClaw` Agent 包装器
@@ -328,7 +339,7 @@ impl JiaClawAgent {
                 config.memory.path.clone(),
             )));
         }
-        register_optional_workspace_file_tools(&mut tools, &config);
+        register_optional_workspace_file_tools(&mut tools, &config)?;
         tools.register(Box::new(IdentityWriteTool::soul(
             &config.workspace_path,
             config.identity.soul_path.clone(),

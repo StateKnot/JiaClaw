@@ -1,5 +1,11 @@
 # JiaClaw 里程碑与验收
 
+2026-10-12 PR131原6de964a的Linux ARM优化候选在第二文件组的gateway hold结算断言失败，后续打包/安装未执行，原head不完整合格。受控真实loopback receipt relay在GET重叠时503，能让原夹具看到completed但原gateway正确保留审核hold；历史唯一根因仍未知。修订只将成功用例的原15秒hold核对移到额外client GET之前，并保持返回前绝对截止/全部结果、权限与八read owner断言；Alice受控relay/Bob直连通过后先结算与退役relay，再原HTTP/Chromium矩阵。107生产inputs与ed64 frozen/target不变，本批不重跑Rust/build或扩大供应商/Agentbrowser/durable资格。[结算回归与边界](tenant-file-settlement.md)。新fixed head仍须七actual/两平台63Python/Linux十一Chromium/四候选各13唯一安装归档源码/API digest与149guards，不能借旧失败head、父或本机。
+
+2026-10-12 接入[明确授权的租户文件任务](tenant-file-read.md)：默认关闭、双端同一精确路径 policy，仅 personal tracked HTTP；复用原 file_read/root/八槽 I/O/native整批预检/原身份与hold，不开放 read_file/写入/exec/MCP/技能/渠道或 cron 文件权限。完整来源先限256KiB，再按原行参数读取；原policy摘要绑定新请求，撤权后旧UUID仍GET-only事实。固定最终107inputs/ed64冻结binary，完整1302Rust+1ignored、七新实际进程/四Chromium和六冻结父套各exit0；原普通并发MCP初始化5秒失败与隔离/控制并发完整通过分开，根因未证明。新官方须七作业/两平台63Python/Linux十一Chromium/四候选各13唯一归档安装/API摘要和148 guards，不借父或本机。管理员页面不是Agent浏览器，fixture不认证真实供应商或业务经验质量。[本批证据与边界](tenant-file-validation.md)。
+
+PR130 的新固定87dbf280已经独立七实际作业/四候选/两平台62Python/Linux十Chromium及143guards完整通过，fresh官方两轴0与正文/pin API exact在外部官方证据保留；下方原ARM失败与修订初期pending措辞是历史，不能转移旧head资格或宣称其唯一根因已证明。
+
 2026-10-12 管理员索引检查的官方 ARM 候选验收失败已单独保留：原 PR130 bcb1929 的第4组未取得实际竞争请求准入回执，历史唯一根因未确认，其六成功作业/三候选不转移资格。受控真实代理延迟三份请求，原夹具能在仍持有原owner、稍后实际503且完整SQL不变时误判；修订使用三份原生100 Continue和第五份直接503核准入，并覆盖正常/400ms送达×释放/SIGKILL。独立Spec另复现观察进程在最后recv暂停后越过2秒仍接收的夹具缺口，最终67cbe4b在返回前重复原绝对截止检查，原2秒观察、5秒body、8秒结算不变。fresh仅夹具/docs和对应实际进程/审查；106生产输入、f9冻结binary、source56的1298Rust/15进程/页面浏览器均继承，无本批Rust/build/browser重跑。新固定head仍需独立七作业、两平台62Python/Linux十Chromium、四候选各13唯一安装归档源码/API摘要及143 guards；不能借原失败head或本机资格。
 
 2026-10-12 接入[运行中Agent的管理员索引检查](semantic-review.md)：默认关闭的 semantic_review 需 memory_review、semantic enabled、非空管理Token及standalone；GET和工作台显式按钮消费同一原Arc/Store/admission/persistence/root writer，不另开数据库或模型工具。来源/索引完整核验不发provider请求、不刷新或结算；控制许可持有到实际worker结束，断开不提前释放。七真实HTTP/OS及四真实Chromium页面组已通过：完整128KiB×3、原表/unknown身份保持、实际线程持读与HTTP断开/四槽竞争/释放或SIGKILL结算、坏向量拒绝、显式更正后stale和gateway/readOnly零探查。保存SHA状态行移动端溢出真实RED已以完整换行关闭，原断言保留。本批修订源码完整1298 Rust与required Clippy已通过；实际进程及独立两轴以本批固定pin为准。新固定head官方七作业/两平台62Python/Linux十Chromium/四候选各13安装归档源码必须独立完成，不借父129或本机资格。运行Agent仍原Operational初始化，CLI维护须先停止服务释放索引。检查/管理员维护不认证自动学习、经验质量、供应商、Agent浏览器或全部个人Agent里程碑。

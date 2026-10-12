@@ -60,6 +60,9 @@ pub struct BackendConfig {
     pub id: String,
     pub url: String,
     pub token_file: PathBuf,
+    /// Explicit file permission; must exactly match the private tracked backend.
+    #[serde(default)]
+    pub tenant_file_read: Option<jiaclaw_core::TenantFileReadPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -414,6 +417,13 @@ impl Config {
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
+            if let Some(policy) = &backend.tenant_file_read {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant file grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             ensure!(
                 !backend.id.is_empty()
                     && backend.id.len() <= 64
@@ -548,6 +558,7 @@ mod tests {
             id: "bob".into(),
             url: "http://127.0.0.1:9001/".into(),
             token_file: "/tmp/bob.token".into(),
+            tenant_file_read: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

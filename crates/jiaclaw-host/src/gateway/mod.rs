@@ -43,6 +43,7 @@ struct Backend {
     permit: Arc<Semaphore>,
     control: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    file_read: Option<jiaclaw::TenantFileReadCapability>,
 }
 struct State {
     registry: Registry,
@@ -276,7 +277,12 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 .map_err(|()| anyhow::anyhow!("backend scheduler contract mismatch"))?;
         }
         if config.tracked_turns {
-            turns::check_backend(&client, &url, &token, &backend.id).await?;
+            let permission = backend
+                .tenant_file_read
+                .as_ref()
+                .map(jiaclaw::TenantFileReadCapability::capture)
+                .transpose()?;
+            turns::check_backend(&client, &url, &token, &backend.id, permission.as_ref()).await?;
         }
         backends.insert(
             backend.id.clone(),
@@ -286,6 +292,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 permit: Arc::new(Semaphore::new(usize::from(!reserved.contains(&backend.id)))),
                 control: Arc::new(Semaphore::new(2)),
                 streams: Arc::new(tokio::sync::Semaphore::new(2)),
+                file_read: backend
+                    .tenant_file_read
+                    .as_ref()
+                    .map(jiaclaw::TenantFileReadCapability::capture)
+                    .transpose()?,
             },
         );
     }

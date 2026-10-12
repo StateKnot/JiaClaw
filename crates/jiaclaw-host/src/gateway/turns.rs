@@ -53,6 +53,8 @@ struct Capability {
     max_stream_wire_bytes: usize,
     max_preview_round_bytes: usize,
     max_preview_total_bytes: usize,
+    #[serde(default)]
+    file_read: Option<jiaclaw::TenantFileReadCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -60,6 +62,7 @@ pub(super) async fn check_backend(
     url: &reqwest::Url,
     token: &HeaderValue,
     identity: &str,
+    file_read: Option<&jiaclaw::TenantFileReadCapability>,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
         let response = client
@@ -73,7 +76,7 @@ pub(super) async fn check_backend(
             response.status() == StatusCode::OK && json_content(response.headers()),
             "backend HTTP turn handshake rejected"
         );
-        let bytes = super::proxy::read_response(response, 4096)
+        let bytes = super::proxy::read_response(response, 32 * 1024)
             .await
             .map_err(|()| anyhow::anyhow!("invalid backend HTTP turn handshake"))?;
         let c: Capability = serde_json::from_slice(&bytes)?;
@@ -90,6 +93,10 @@ pub(super) async fn check_backend(
                 && c.max_preview_round_bytes == crate::http_turns::delivery::ROUND_BYTES
                 && c.max_preview_total_bytes == crate::http_turns::delivery::PREVIEW_BYTES,
             "backend HTTP turn contract mismatch"
+        );
+        ensure!(
+            c.file_read.as_ref() == file_read,
+            "backend file permission contract mismatch"
         );
         Ok(c.enabled)
     })
@@ -167,12 +174,26 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=2).contains(&s.enabled_tools.len())
+        && (1..=3).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools
             .iter()
-            .all(|t| matches!(t.as_str(), "datetime_now" | "json_query"))
-        && (s.enabled_tools.len() == 1 || s.enabled_tools[0] != s.enabled_tools[1])
+            .all(|t| matches!(t.as_str(), "datetime_now" | "json_query" | "file_read"))
+        && s.enabled_tools
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == s.enabled_tools.len()
+        && if s.enabled_tools.iter().any(|t| t == "file_read") {
+            s.file_read_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.file_read_policy_sha256.is_none()
+        }
 }
 
 // An abandoned waiter must not free capacity still used by a blocking DB call.
@@ -381,12 +402,14 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
     control._backend = Some(backend_control);
     let control = Arc::new(control);
     match route {
-        Route::Capabilities => response(
-            Json(
-                json!({"protocol":1,"gateway_protocol":2,"enabled":true,"streaming":true,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"],"stream_suffix":"/stream","turn_budget_secs":state.timeout.as_secs(),"max_stream_wire_bytes":crate::http_turns::delivery::WIRE_BYTES,"max_preview_round_bytes":crate::http_turns::delivery::ROUND_BYTES,"max_preview_total_bytes":crate::http_turns::delivery::PREVIEW_BYTES}),
-            ),
-            request_id,
-        ),
+        Route::Capabilities => {
+            let mut value = json!({"protocol":1,"gateway_protocol":2,"enabled":true,"streaming":true,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"],"stream_suffix":"/stream","turn_budget_secs":state.timeout.as_secs(),"max_stream_wire_bytes":crate::http_turns::delivery::WIRE_BYTES,"max_preview_round_bytes":crate::http_turns::delivery::ROUND_BYTES,"max_preview_total_bytes":crate::http_turns::delivery::PREVIEW_BYTES});
+            if let Some(permission) = &backend.file_read {
+                value["enabled_tools"] = json!(["datetime_now", "json_query", "file_read"]);
+                value["file_read"] = json!(permission);
+            }
+            response(Json(value), request_id)
+        }
         Route::Catalog(limit, offset) => {
             let principal = p.clone();
             match db(state.registry.clone(), control, move |r| {
@@ -589,10 +612,30 @@ async fn execute(
     delivery: Option<Arc<stream::Delivery>>,
 ) -> bool {
     let backend = &state.backends[&p.backend_id];
+    // Old identities never enter this new-admission path. Their original body and
+    // receipt remain lookup-only even after the operator withdraws a file grant.
+    if body.enabled_tools.iter().any(|tool| tool == "file_read")
+        && !backend.file_read.as_ref().is_some_and(|permission| {
+            body.file_read_policy_sha256.as_deref() == Some(permission.policy_sha256.as_str())
+        })
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant file permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
-            check_backend(&state.client, &backend.url, &backend.token, &p.backend_id)
+            check_backend(
+                &state.client,
+                &backend.url,
+                &backend.token,
+                &p.backend_id,
+                backend.file_read.as_ref()
+            )
         )
         .await,
         Ok(Ok(true))

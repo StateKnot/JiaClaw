@@ -21,11 +21,31 @@
   function gatewayCapabilities(c) {
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
+    if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
     if (c.gateway_protocol === 2) require(c.stream_suffix === '/stream' && Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 10 && c.turn_budget_secs <= 300 && c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
-    require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === 2 && new Set(c.enabled_tools).size === 2 && c.enabled_tools.every(t => ['datetime_now','json_query'].includes(t)));
+    const allowed = ['datetime_now','json_query'];
+    if (c.file_read !== undefined) {
+      const f = c.file_read;
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === 4 && ['protocol','paths','max_bytes','policy_sha256'].every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.max_bytes === 262144 && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.paths) && f.paths.length >= 1 && f.paths.length <= 32);
+      let previous = null;
+      for (const path of f.paths) {
+        require(typeof path === 'string' && bytes(path) <= 256 && path.startsWith('tenant-documents/') && !/[\\\u0000-\u001f\u007f-\u009f]/.test(path));
+        const parts = path.split('/');
+        require(parts.length <= 16 && parts.every(p => p && p.trim() === p && !p.startsWith('.')));
+        const encoded = encoder.encode(path);
+        if (previous) {
+          let i = 0; while (i < Math.min(previous.length, encoded.length) && previous[i] === encoded[i]) i++;
+          require(i === previous.length ? i < encoded.length : i < encoded.length && previous[i] < encoded[i]);
+        }
+        previous = encoded;
+      }
+      allowed.push('file_read');
+    }
+    require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
   }
   function gatewayCatalog(value, expected) {
@@ -94,7 +114,9 @@
   function gatewaySnapshot(value, expected, tools = null) {
     require(object(value) && Object.keys(value).length === 3 && ['protocol','receipt','active'].every(k => Object.hasOwn(value,k)));
     snapshot(value, expected, tools);
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query'].includes(t)));
+    // Historical file receipts remain readable after the operator withdraws a
+    // grant. This validates facts, while captured attempt tools validate authority.
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read'].includes(t)));
     return value;
   }
   class Parser {
