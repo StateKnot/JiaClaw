@@ -149,6 +149,31 @@ def checked(base, token, freshness=None, ready=None, status=200):
         assert not {'text', 'excerpt', 'vectors', 'credential', 'request_body'} & value.keys()
     return value
 
+def read_control_header(contender, deadline):
+    """Read one bounded wire header, consuming the existing absolute deadline."""
+    reply = b''
+    while not reply.endswith(b'\r\n\r\n'):
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, 'memory body contender admission exceeded original observation deadline'
+        contender.settimeout(remaining)
+        try:
+            part = contender.recv(1)
+        except socket.timeout as error:
+            raise AssertionError('memory body contender admission exceeded original observation deadline') from error
+        assert part, 'memory body contender closed before admission receipt'
+        reply += part
+        assert len(reply) <= 4096, 'memory body contender response exceeded header budget'
+    assert time.monotonic() < deadline, 'memory body contender admission exceeded original observation deadline'
+    return reply
+
+def expect_body_admission(contender, deadline):
+    """Native Hyper Continue follows Body polling, after the control permit.
+
+    Headers sent is not admission evidence. The fifth-request refusal below
+    additionally proves this marker cannot be obtained without a permit.
+    """
+    assert read_control_header(contender, deadline) == b'HTTP/1.1 100 Continue\r\n\r\n', 'memory body contender was refused before admission'
+
 with tempfile.TemporaryDirectory(prefix='jiaclaw-semantic-review-') as temporary:
     root = Path(temporary).resolve()
     def fixture(name):
@@ -220,9 +245,9 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-semantic-review-') as temporary
         if sys.platform == 'darwin': command.insert(1,'-dynamiclib')
         else: command.extend(['-fPIC','-ldl'])
         subprocess.run(command, check=True, capture_output=True, timeout=30)
-        receipts = []
-        for killed in [False, True]:
-            suffix = str(killed); arm=root/('arm-'+suffix); marker=root/('read-'+suffix); release=root/('release-'+suffix)
+        receipts, contender_receipts = [], []
+        for delay_ms, killed in [(0, False), (0, True), (400, False), (400, True)]:
+            suffix = str(killed)+'-'+str(delay_ms); arm=root/('arm-'+suffix); marker=root/('read-'+suffix); release=root/('release-'+suffix)
             injected = dict(env); injected.update(JIACLAW_TEST_REVIEW_SOURCE=str(held[1]/'MEMORY.md'),
                 JIACLAW_TEST_REVIEW_ARM=str(arm),JIACLAW_TEST_REVIEW_MARKER=str(marker),JIACLAW_TEST_REVIEW_RELEASE=str(release))
             injected['DYLD_INSERT_LIBRARIES' if sys.platform == 'darwin' else 'LD_PRELOAD'] = str(lib)
@@ -234,15 +259,28 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-semantic-review-') as temporary
             assert marker.exists(), 'actual source read was not reached'
             caller.close()
             cli(held,'check',fail='another process owns semantic state')
-            slow=[]
+            slow, senders, send_errors = [], [], []
+            deadline=time.monotonic()+2
+            headers=('POST /api/memory/replace HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer '+held[4]+'\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n').encode()
+            def send_headers(contender):
+                try:
+                    time.sleep(delay_ms / 1000)
+                    contender.sendall(headers)
+                except OSError as error:
+                    send_errors.append(type(error).__name__)
             for _ in range(3):
                 s=socket.create_connection(('127.0.0.1',port),timeout=5); slow.append(s)
-                s.sendall(('POST /api/memory/replace HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer '+held[4]+'\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{\r\n').encode())
-            deadline=time.monotonic()+2
+                sender=threading.Thread(target=send_headers,args=(s,),daemon=True); sender.start(); senders.append(sender)
+            for contender in slow: expect_body_admission(contender, deadline)
+            for sender in senders: sender.join(max(0,deadline-time.monotonic()))
+            assert not send_errors and all(not sender.is_alive() for sender in senders), send_errors
             while time.monotonic()<deadline:
                 if request(base,held[4],'/api/memory')[0] == 503: break
                 time.sleep(.01)
             else: raise AssertionError('disconnected read owner released control capacity before actual settlement')
+            with socket.create_connection(('127.0.0.1',port),timeout=5) as fifth:
+                fifth.sendall(headers)
+                assert read_control_header(fifth,deadline).startswith(b'HTTP/1.1 503 '), 'busy contender received a body-poll receipt without a permit'
             assert rows(held)==before
             for s in slow: s.sendall(b'0\r\n\r\n'); s.close()
             if killed:
@@ -255,8 +293,11 @@ with tempfile.TemporaryDirectory(prefix='jiaclaw-semantic-review-') as temporary
                     assert code in [422,503]; time.sleep(.02)
                 else: raise AssertionError('actual held owner did not settle')
                 assert rows(held)==before; stop(child,log)
-            receipts.append({'actual_source_read_held':True,'http_client_disconnected':True,'kill':killed,'exit':child.returncode})
+            receipt={'actual_source_read_held':True,'http_client_disconnected':True,'kill':killed,'exit':child.returncode}
+            if delay_ms == 0: receipts.append(receipt)
+            contender_receipts.append({'delay_ms':delay_ms,'kill':killed,'native_body_poll_receipts':3,'exhausted_controls':True,'fifth_refused_before_body_poll':True,'exit':child.returncode})
         print('ACTUAL semantic review read owner receipts '+json.dumps(receipts))
+        print('ACTUAL semantic review contender admission receipts '+json.dumps(contender_receipts))
         print('PASS semantic review 4: actual thread-held read, disconnected HTTP and three held body owners keep all four controls; release/SIGKILL settlement')
 
         pending = fixture('pending'); behavior='hold'; hold_post.clear(); release_post.clear()
