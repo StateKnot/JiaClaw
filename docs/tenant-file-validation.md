@@ -1,5 +1,13 @@
 # Scoped tenant file task qualification
 
+The original PR131 Linux ARM optimized job failed in its group2 gateway hold
+assertion; that fixed head is not fully qualified. A test-only observation
+revision is documented in [gateway settlement](tenant-file-settlement.md).
+It preserves107 production inputs/the ed64 binary, all original success/owner
+assertions and budgets; its new fixed head requires149 audit sites and its own
+seven jobs/four candidates. The initial148-site qualification below is historical
+and does not transfer from the failed head or local execution.
+
 This batch extends an actual user task beyond datetime_now/json_query by consuming
 the existing file_read implementation. Contract: [tenant-file-read](tenant-file-read.md).
 The source baseline is local PR130 delivery `0b9fa0410a2734873b3898b3735ff197deb87e9d`,

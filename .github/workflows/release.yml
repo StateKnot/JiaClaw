@@ -50,6 +50,7 @@ on:
       - 'tests/session_catalog.py'
       - 'tests/http_turn_cli.py'
       - 'tests/tenant_file_read.py'
+      - 'tests/tenant_file_gateway.py'
       - 'tests/tenant_file_read_hold.c'
       - 'tests/tenant_file_read_browser.cjs'
       - 'tests/tenant_http_turns.py'

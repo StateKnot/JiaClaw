@@ -14,6 +14,9 @@ import time
 import uuid
 from tenant_http_fixture import (binary, env, keys, lock, posts, gates, faults, processes,
     tool_plans, wait, port, sql, request, model, stop, launch)
+from tenant_file_gateway import ReceiptRelay
+
+relay = None
 
 def call(path, **extra):
     return {'id':'read-' + uuid.uuid4().hex, 'type':'function',
@@ -68,6 +71,10 @@ try:
         b['process'] = launch(['serve','--config',str(path)],number,b['log'])
         gateway['backends'].append({'id':who,'url':f'http://127.0.0.1:{number}/',
             'token_file':str(token_file),'tenant_file_read':policy})
+    # A real local relay makes competing receipt reads fail closed. The success
+    # fixture must observe the gateway's own settlement before adding a reader.
+    relay = ReceiptRelay(backends['alice']['port'])
+    gateway['backends'][0]['url'] = relay.url
     config_path.write_text(json.dumps(gateway))
     users = {who:cli(config_path,'user-add','--backend',who) for who in ('alice','bob')}
     readonly = cli(config_path,'key-add','--user',users['alice']['user_id'],'--read-only')
@@ -89,14 +96,30 @@ try:
     def complete(who,identity,native=False):
         return wait(lambda: (lambda v:v if v['receipt']['state']!='running' and not v['active'] else None)(
             api(who,'/api/turns/'+identity,native=native)),'actual terminal file receipt')
-    def submit(who,prompt,path,native=False,**extra):
+    def submit(who,prompt,path,native=False,settle_gateway=False,**extra):
         identity=str(uuid.uuid4());planned(who,prompt,path,**extra)
         original=body(who,prompt)
         api(who,'/api/turns/'+identity,'PUT',original,202,native=native)
+        if settle_gateway:
+            assert not native
+            gateway_settled(who)
         result=complete(who,identity,native)
         return identity,original,result
     def count(prompt):
         with lock:return len([p for p in posts if p['prompt']==prompt])
+    settlement_checks=[]
+    def gateway_settled(who):
+        deadline=time.monotonic()+15
+        try:
+            wait(lambda:not sql(registry,'SELECT * FROM write_holds WHERE user_id=?',(users[who]['user_id'],)),
+                 'gateway actual settlement')
+            assert time.monotonic()<deadline, 'gateway actual settlement exceeded original observation deadline'
+        except Exception:
+            print('ACTUAL tenant file settlement failure ' + json.dumps({
+                'holds':sql(registry,'SELECT state,reason FROM write_holds WHERE user_id=?',(users[who]['user_id'],)),
+                'private_get_receipts':relay.snapshot()}),flush=True)
+            raise
+        settlement_checks.append({'user':who,'hold_empty':True,'before_client_receipt':True,'within_original_15s':True})
     # Paired capability, disabled legacy backend, and mismatched startup.
     assert caps['alice']['file_read']['paths']==gateway['backends'][0]['tenant_file_read']['paths']
     assert caps['bob']['file_read']['paths']==['tenant-documents/notes.txt']
@@ -111,11 +134,10 @@ try:
     # Full-source read and model result on two real isolated users.
     identities={}
     for who in backends:
-        identity,original,value=submit(who,'success-'+who,'tenant-documents/notes.txt')
+        identity,original,value=submit(who,'success-'+who,'tenant-documents/notes.txt',settle_gateway=True)
         assert value['receipt']['state']=='completed' and value['receipt']['result']['tool_names']==['file_read'],value
         reply=value['receipt']['result']['reply'];assert who+'-PRIVATE-source' in reply
         assert ('bob' if who=='alice' else 'alice')+'-PRIVATE-source' not in reply
-        wait(lambda:not sql(registry,'SELECT * FROM write_holds WHERE user_id=?',(users[who]['user_id'],)),'gateway actual settlement')
         assert count('success-'+who)==2
         identities[who]=(identity,original,value)
         first=next(p for p in posts if p['prompt']=='success-'+who)
@@ -123,6 +145,18 @@ try:
         assert definitions[0]['function']['parameters']['properties']['path']['enum']==caps[who]['file_read']['paths']
     api('bob','/api/turns/'+identities['alice'][0],expected=404)
     api('alice','/api/turns/'+identities['alice'][0],token=readonly['token'])
+    private_gets=relay.snapshot()
+    assert private_gets and all(row=={'status':200,'overlap':False} for row in private_gets),private_gets
+    print('ACTUAL tenant file gateway settlement receipts ' + json.dumps({
+        'settlement_checks':settlement_checks,'private_get_receipts':private_gets,
+        'relay_overlap_refusal_configured':True}),flush=True)
+    # Retire the controlled relay before the other HTTP/browser/owner matrices;
+    # the unchanged native endpoint remains the gateway's configured target.
+    stop(process)
+    gateway['backends'][0]['url'] = f"http://127.0.0.1:{backends['alice']['port']}/"
+    config_path.write_text(json.dumps(gateway))
+    relay.close();relay = None
+    process = launch(['gateway','serve','--config',str(config_path)],gp,root/'gateway.log')
     print('PASS tenant file 2: actual model/tool/source/receipt reuse, exact advertised enum, two users and read-only historical GET',flush=True)
     # Refusals precede provider submission and permanent registry identity.
     before=len(posts)
@@ -241,4 +275,5 @@ try:
 finally:
     for gate in gates.values():gate['release'].set()
     for p in processes:stop(p)
+    if relay:relay.close()
     model.shutdown();model.server_close()
