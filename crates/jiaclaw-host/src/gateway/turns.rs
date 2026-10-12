@@ -57,6 +57,8 @@ struct Capability {
     file_read: Option<jiaclaw::TenantFileReadCapability>,
     #[serde(default)]
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
+    #[serde(default)]
+    memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -66,6 +68,7 @@ pub(super) async fn check_backend(
     identity: &str,
     file_read: Option<&jiaclaw::TenantFileReadCapability>,
     skill_read: Option<&jiaclaw::TenantSkillReadCapability>,
+    memory_search: Option<&jiaclaw::TenantMemorySearchCapability>,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
         let response = client
@@ -98,7 +101,9 @@ pub(super) async fn check_backend(
             "backend HTTP turn contract mismatch"
         );
         ensure!(
-            c.file_read.as_ref() == file_read && c.skill_read.as_ref() == skill_read,
+            c.file_read.as_ref() == file_read
+                && c.skill_read.as_ref() == skill_read
+                && c.memory_search.as_ref() == memory_search,
             "backend exact tenant permission contract mismatch"
         );
         Ok(c.enabled)
@@ -177,12 +182,12 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=4).contains(&s.enabled_tools.len())
+        && (1..=5).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools.iter().all(|t| {
             matches!(
                 t.as_str(),
-                "datetime_now" | "json_query" | "file_read" | "skill_read"
+                "datetime_now" | "json_query" | "file_read" | "skill_read" | "memory_search"
             )
         })
         && s.enabled_tools
@@ -209,6 +214,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.skill_read_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "memory_search") {
+            s.memory_search_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.memory_search_policy_sha256.is_none()
         }
 }
 
@@ -430,6 +445,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                     .expect("static tool list")
                     .push(json!("skill_read"));
                 value["skill_read"] = json!(permission);
+            }
+            if let Some(permission) = &backend.memory_search {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("memory_search"));
+                value["memory_search"] = json!(permission);
             }
             response(Json(value), request_id)
         }
@@ -661,6 +683,21 @@ async fn execute(
         ));
         return true;
     }
+    if body
+        .enabled_tools
+        .iter()
+        .any(|tool| tool == "memory_search")
+        && !backend.memory_search.as_ref().is_some_and(|permission| {
+            body.memory_search_policy_sha256.as_deref() == Some(permission.policy_sha256.as_str())
+        })
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant memory permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
@@ -670,7 +707,8 @@ async fn execute(
                 &backend.token,
                 &p.backend_id,
                 backend.file_read.as_ref(),
-                backend.skill_read.as_ref()
+                backend.skill_read.as_ref(),
+                backend.memory_search.as_ref()
             )
         )
         .await,

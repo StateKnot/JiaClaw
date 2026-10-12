@@ -23,6 +23,7 @@
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
     if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
     if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
+    if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
@@ -62,6 +63,26 @@
         previous = encoded;
       }
       allowed.push('skill_read');
+    }
+    if (c.memory_search !== undefined) {
+      const f = c.memory_search;
+      const keys = ['protocol','paths','mode','max_source_bytes','max_total_bytes','max_query_bytes','max_results','max_excerpt_bytes','max_result_bytes','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.mode === 'keyword' && f.max_source_bytes === 524288 && f.max_total_bytes === 1572864 && f.max_query_bytes === 1024 && f.max_results === 20 && f.max_excerpt_bytes === 1024 && f.max_result_bytes === 65536);
+      require(typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.paths) && f.paths.length >= 1 && f.paths.length <= 3);
+      let previous = null;
+      for (const path of f.paths) {
+        require(typeof path === 'string' && bytes(path) <= 256 && !/[\\\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(path));
+        const parts = path.split('/');
+        require(parts.length <= 16 && parts.every(p => p && p.trim() === p && !p.startsWith('.')));
+        const encoded = encoder.encode(path);
+        if (previous) {
+          let i = 0; while (i < Math.min(previous.length, encoded.length) && previous[i] === encoded[i]) i++;
+          require(i === previous.length ? i < encoded.length : i < encoded.length && previous[i] < encoded[i]);
+        }
+        previous = encoded;
+      }
+      allowed.push('memory_search');
     }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
@@ -134,7 +155,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','skill_read'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','skill_read','memory_search'].includes(t)));
     return value;
   }
   class Parser {

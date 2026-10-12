@@ -120,3 +120,19 @@ skills = [{ name = "reviewed", content_sha256 = "<完整 loaded body SHA256>" }]
 对应 gateway backend JSON 中增加 `"tenant_skill_read":{"skills":[{"name":"reviewed","content_sha256":"<同一 SHA256>"}]}`。先用管理员认证的 `GET /api/skills` 取得原 loaded 版本，审核正文与来源锁，再停机配置双端。该管理员列表不向个人 Key 开放。目录名与名称是不同合同，正文 SHA 不替代 source lock 原完整文件 hash 或来源认证。
 
 新请求选 `"enabled_tools":["skill_read"]`、空 enabled_skills，并携带认证 capability 的 skill_read_policy_sha256；未选时必须省略。旧请求 None 不改变原 hash。只有原 UUID facts 可在撤权后继续查询，重复 PUT只GET原事实；unknown hold仍需原离线核对，不自动清除。成功 reload 改变授权正文后新请求拒绝，旧版本读取 NoEffect，绝不读新版本；config撤权须停机重启双端。见[完整版本与权限边界](tenant-skill-read.md)。
+
+
+## Explicit keyword memory search
+
+Both `http.tenant_memory_search` and the gateway backend permission are omitted by default. Enable only a sorted exact subset of that agent's configured MEMORY/SOUL/USER paths, after reviewing the sources. For example, add to the already configured tracked tenant backend:
+
+```toml
+[tools.memory_search]
+enabled = true
+[http.tenant_memory_search]
+paths = ["MEMORY.md"]
+```
+
+Add `"tenant_memory_search":{"paths":["MEMORY.md"]}` to the matching gateway backend JSON and stop/restart both endpoints. The original tracked tenant authentication, persistence, model ledger and timeout requirements still apply. SSE stays protocol2; the separate complete keyword permission protocol is1. The workbench verifies the descriptor/hash and starts unchecked. Explicitly selected memory_search requests require captured `memory_search_policy_sha256`; omit it when unselected. The tool accepts query and optional max_results only; no path/mode override. Old UUIDs remain factual after withdrawal without redispatch or clearing unknown holds.
+
+All selected sources must be complete safe UTF8, at most512KiB each; later missing/unsafe/oversized sources reject the entire search even if earlier matches filled the result limit. The original nonqueued IO owner, root capability and cooperative writer remain responsible for settlement after cancellation. Unrestricted standalone keyword/semantic behavior and channel/cron two-tool limits remain. SOUL/USER/MEMORY are independently read into the original per-turn prompt; withholding explicit search does not remove ambient memory. This feature does not certify experience quality or automatic learning. [Complete scope, canonical hash, budgets and acceptance boundaries](tenant-memory-search.md).

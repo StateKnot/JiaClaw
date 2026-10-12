@@ -1914,6 +1914,9 @@ fn memory_search_status_line(config: &AgentConfig) -> String {
     if !config.tools.memory_search.enabled {
         return "已关闭（[tools.memory_search] enabled = false，未注册）".to_string();
     }
+    if let Some(permission) = &config.http.tenant_memory_search {
+        return format!("已配置 tenant keyword（{} 个精确源；完整读取每源512KiB；不证明当前源可用，原每轮记忆提示独立保留）", permission.paths.len());
+    }
     "已启用（默认扫描 MEMORY / SOUL / USER；子串检索，无向量库）".to_string()
 }
 
@@ -2840,7 +2843,7 @@ async fn serve_command(config_path: Option<PathBuf>, bind: Option<String>) -> Re
         tracing::info!("   • web_fetch: 已关闭（未注册）");
     }
     if config.tools.memory_search.enabled {
-        tracing::info!("   • memory_search: 已启用（默认扫描 MEMORY / SOUL / USER）");
+        tracing::info!("   • memory_search: {}", memory_search_status_line(&config));
     } else {
         tracing::info!("   • memory_search: 已关闭（未注册）");
     }

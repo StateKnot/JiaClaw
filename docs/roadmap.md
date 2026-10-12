@@ -264,3 +264,8 @@ PR127 原 Ubuntu HTTP 验收在完整200正文后因响应头普通字典查找�
 
 
 本批租户skill_read最终source1593/生产e90本机1306Rust+1ignored、requiredtools、十三实际进程/parser及新七HTTP/四Chromium通过，独立source两轴各0；Spec另独立exact-pair和迟到身份第五Chromium通过。源码与交付/发布身份/新fixed head官方资格分离，官方完成前维持unqualified；见[固定源码与范围](tenant-skill-read.md#本批固定源码与资格边界)。原PR131 fixed464完整资格仅历史继承，不重新制造自引head资格提交。
+# Explicit tenant keyword memory reuse (2026-10-12)
+
+The next production slice consumes the original MemorySearchTool and MemoryIO rather than adding an engine. Native and gateway grants are separately default-off and authenticate complete exact configured source subsets; explicit requests capture the permission hash. The restricted tool accepts keyword query/max_results only, captures every source under the original IO owner/root/writer, and rejects missing, unsafe or over-budget trailing sources before returning matches. Standalone search keeps its existing override/truncation/semantic behavior. The workbench shows and verifies complete permission with unchecked selection and identity-bound WebCrypto.
+
+SOUL/USER/MEMORY ambient prompt reads remain independent of explicit search authorization. Keyword reuse does not certify learning, usefulness of experience, real supplier service, Agent browser tools, independent ACL, power-loss durability or StateKnot durable execution. PR132 qualification is inherited and complete; this new slice needs its own source/delivery/publication reviews and seven fixed-head actual jobs/four optimized candidates. See [tenant-memory-search.md](tenant-memory-search.md) for the contract and already authorized public acceptance seams.

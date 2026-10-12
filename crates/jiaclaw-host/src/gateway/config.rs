@@ -66,6 +66,9 @@ pub struct BackendConfig {
     /// Explicit exact loaded skill permission, matched against the private backend.
     #[serde(default)]
     pub tenant_skill_read: Option<jiaclaw_core::TenantSkillReadPolicy>,
+    /// Explicit configured keyword memory permission, matched in full.
+    #[serde(default)]
+    pub tenant_memory_search: Option<jiaclaw_core::TenantMemorySearchPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -427,6 +430,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_memory_search {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant memory grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_skill_read {
                 ensure!(
                     self.tracked_turns,
@@ -570,6 +580,7 @@ mod tests {
             token_file: "/tmp/bob.token".into(),
             tenant_file_read: None,
             tenant_skill_read: None,
+            tenant_memory_search: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

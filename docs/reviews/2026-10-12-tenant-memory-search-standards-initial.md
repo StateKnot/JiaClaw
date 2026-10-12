@@ -1,0 +1,11 @@
+# Standards - initial immutable source review
+
+Fixed base `7fbfe68779ce4f32da94e7f2b010ff23363237ba`; candidate `d3adc272952b9f1e34781f48bb1ea540dd30053e`, tree `bc60d9eb5721cab72eb98f417463798dc5e00318`. Fresh review: `git diff 7fbfe68779ce4f32da94e7f2b010ff23363237ba...d3adc272952b9f1e34781f48bb1ea540dd30053e`; one feature commit, 21 changed paths. Cumulative origin/main `4b2357f` and parent qualification remain inherited, not exhaustively rereviewed.
+
+**Open findings: 1 P3 documentation contract mismatch; hard code violations: 0; actionable smell heuristics: 0.**
+
+**[P3] Update the canonical failure-effects guidance.** `docs/tool-failure-effects.md:7` says: "Keyword/semantic memory search shares one implementation and therefore remains unknown even for a keyword-mode error." The changed `crates/jiaclaw/src/memory.rs:817` instead returns `ToolFailureEffect::NoEffect` when `self.restricted`. The restricted path is pure bounded local reading, so that classification follows the preceding trusted-local-tool rule; the unconditional documentation statement is stale. Qualify the sentence: unrestricted keyword/semantic instances retain Unknown, while restricted tenant keyword instances guarantee NoEffect. This is documentation drift, not evidence of a production dispatch defect.
+
+Standards inspected: user/global AGENTS production-quality and execution-hygiene rules, README, architecture/native-tools, private-state-files, workspace-files, HTTP/gateway contracts, tenant file/skill/memory contracts and relevant prior Standards reports. No tracked CODING_STANDARDS, CONTRIBUTING or nested AGENTS file exists. All twelve Fowler heuristics were considered; repo conventions override heuristics and tooling-enforced style was excluded. The shared checked memory-search factory avoids divergent registration behavior. New permission metadata stays on its owner; search consumes the original root/writer/IO path rather than another reader or store.
+
+This axis reviewed fixed source and fixture code only. No product tests, build, browser, official CI or supplier calls were executed; root runtime evidence was not borrowed. The initial binary predates the candidate factory refactor and is not certification of this fixed candidate. Spec-agent findings were not read. No source/Git/GitHub mutation occurred.

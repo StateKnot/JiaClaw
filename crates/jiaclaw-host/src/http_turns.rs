@@ -46,6 +46,13 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
             && config.skill_lock_required && !config.tools.skill_read.resources_enabled,
             "tenant_skill_read requires tracked tenant HTTP, mandatory source lock and body-only skill_read");
     }
+    if let Some(policy) = &config.http.tenant_memory_search {
+        policy.validate()?;
+        ensure!(
+            config.http.tracked_turns && tenant_mode(config) && config.tools.memory_search.enabled,
+            "tenant_memory_search requires tracked tenant HTTP and memory_search enabled"
+        );
+    }
     if !config.http.tracked_turns {
         return Ok(());
     }
@@ -167,16 +174,22 @@ pub(super) struct Submission {
     pub(super) file_read_policy_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) skill_read_policy_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) memory_search_policy_sha256: Option<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
         if tenant_mode(state.agent.config()) {
-            if !(1..=4).contains(&self.enabled_tools.len())
+            if !(1..=5).contains(&self.enabled_tools.len())
                 || !self.enabled_skills.is_empty()
                 || self.enabled_tools.iter().any(|name| {
                     !matches!(
                         name.as_str(),
-                        "datetime_now" | "json_query" | "file_read" | "skill_read"
+                        "datetime_now"
+                            | "json_query"
+                            | "file_read"
+                            | "skill_read"
+                            | "memory_search"
                     )
                 })
             {
@@ -218,6 +231,26 @@ impl Submission {
             }
         } else if self.skill_read_policy_sha256.is_some() {
             return Err(AppError::BadRequest("unexpected_skill_read_policy".into()));
+        }
+        let selected = tenant_mode(state.agent.config())
+            && self.enabled_tools.iter().any(|t| t == "memory_search");
+        if selected {
+            let permission = state
+                .agent
+                .tenant_memory_search_capability()
+                .map_err(|_| AppError::HttpTurnUnavailable)?
+                .ok_or_else(|| AppError::BadRequest("tenant_memory_search_disabled".into()))?;
+            if self.memory_search_policy_sha256.as_deref()
+                != Some(permission.policy_sha256.as_str())
+            {
+                return Err(AppError::BadRequest(
+                    "tenant_memory_search_policy_changed".into(),
+                ));
+            }
+        } else if self.memory_search_policy_sha256.is_some() {
+            return Err(AppError::BadRequest(
+                "unexpected_memory_search_policy".into(),
+            ));
         }
         let session_uuid = self.session_id.strip_prefix("http:").unwrap_or_default();
         if !super::jobs::valid_creation_id(session_uuid)
@@ -359,6 +392,14 @@ pub(super) async fn capabilities(
         .map_err(|_| AppError::HttpTurnUnavailable)?
     {
         value["skill_read"] =
+            serde_json::to_value(permission).map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
+    if let Some(permission) = state
+        .agent
+        .tenant_memory_search_capability()
+        .map_err(|_| AppError::HttpTurnUnavailable)?
+    {
+        value["memory_search"] =
             serde_json::to_value(permission).map_err(|_| AppError::HttpTurnUnavailable)?;
     }
     Ok(Json(value))
@@ -1012,6 +1053,12 @@ mod tests {
         let submission: Submission = serde_json::from_value(body.clone()).unwrap();
         assert_eq!(serde_json::to_value(&submission).unwrap(), body);
         let mut skill = serde_json::from_value::<Submission>(body.clone()).unwrap();
+        let mut memory = skill.clone();
+        memory.memory_search_policy_sha256 = Some("c".repeat(64));
+        assert_ne!(
+            memory.fingerprint().unwrap(),
+            submission.fingerprint().unwrap()
+        );
         skill.skill_read_policy_sha256 = Some("b".repeat(64));
         assert_ne!(
             skill.fingerprint().unwrap(),

@@ -86,3 +86,12 @@ const skillResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResu
 assert.doesNotThrow(()=>gatewaySnapshot(skillResult,initial,new Set(['skill_read'])));
 assert.throws(()=>gatewaySnapshot(skillResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 11: complete exact tenant skill body-version grant, bounded metadata and captured historical tool authority');
+
+const memoryPermission={protocol:1,paths:['MEMORY.md'],mode:'keyword',max_source_bytes:524288,max_total_bytes:1572864,max_query_bytes:1024,max_results:20,max_excerpt_bytes:1024,max_result_bytes:65536,policy_sha256:'d'.repeat(64)};
+const memoryGateway={...streamGateway,enabled_tools:['datetime_now','json_query','memory_search'],memory_search:memoryPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(memoryGateway));
+for(const change of [{protocol:2},{mode:'semantic'},{max_source_bytes:524289},{max_total_bytes:1572865},{max_query_bytes:1025},{max_results:21},{max_excerpt_bytes:1025},{max_result_bytes:65537},{paths:[]},{paths:['./MEMORY.md']},{paths:['/MEMORY.md']},{paths:['a//b']},{paths:['MEMORY.md','MEMORY.md']},{paths:['USER.md','MEMORY.md']},{paths:['a','b','c','d']},{paths:['a\\b']},{paths:['a\nb']},{paths:['a'.repeat(257)]},{body:'private'}])assert.throws(()=>gatewayCapabilities({...memoryGateway,memory_search:{...memoryPermission,...change}}));
+const memoryResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['memory_search']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(memoryResult,initial,new Set(['memory_search'])));
+assert.throws(()=>gatewaySnapshot(memoryResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 12: complete exact keyword memory grant and bounds, source aliases refuse, historical facts retain captured tool authority');

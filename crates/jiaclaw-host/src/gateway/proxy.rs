@@ -835,6 +835,7 @@ mod tests {
             streams: Arc::new(tokio::sync::Semaphore::new(2)),
             file_read: None,
             skill_read: None,
+            memory_search: None,
         };
         let state = Arc::new(State {
             registry,
