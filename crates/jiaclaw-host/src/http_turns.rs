@@ -33,6 +33,13 @@ pub(super) fn reserved_session(id: &str) -> bool {
 }
 
 pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Result<()> {
+    if let Some(policy) = &config.http.tenant_file_read {
+        policy.validate()?;
+        ensure!(
+            config.http.tracked_turns && tenant_mode(config) && config.tools.read_file.enabled,
+            "tenant_file_read requires tracked tenant HTTP turns and read_file enabled"
+        );
+    }
     if !config.http.tracked_turns {
         return Ok(());
     }
@@ -150,9 +157,40 @@ pub(super) struct Submission {
     pub(super) enabled_tools: Vec<String>,
     #[serde(default)]
     pub(super) enabled_skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_read_policy_sha256: Option<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
+        if tenant_mode(state.agent.config()) {
+            if !(1..=3).contains(&self.enabled_tools.len())
+                || !self.enabled_skills.is_empty()
+                || self.enabled_tools.iter().any(|name| {
+                    !matches!(name.as_str(), "datetime_now" | "json_query" | "file_read")
+                })
+            {
+                return Err(AppError::BadRequest("invalid_tenant_http_tools".into()));
+            }
+        }
+        let file_selected = self.enabled_tools.iter().any(|name| name == "file_read")
+            && tenant_mode(state.agent.config());
+        if file_selected {
+            let permission = state
+                .agent
+                .config()
+                .http
+                .tenant_file_read
+                .as_ref()
+                .and_then(|policy| jiaclaw::TenantFileReadCapability::capture(policy).ok())
+                .ok_or_else(|| AppError::BadRequest("tenant_file_read_disabled".into()))?;
+            if self.file_read_policy_sha256.as_deref() != Some(permission.policy_sha256.as_str()) {
+                return Err(AppError::BadRequest(
+                    "tenant_file_read_policy_changed".into(),
+                ));
+            }
+        } else if self.file_read_policy_sha256.is_some() {
+            return Err(AppError::BadRequest("unexpected_file_read_policy".into()));
+        }
         let session_uuid = self.session_id.strip_prefix("http:").unwrap_or_default();
         if !super::jobs::valid_creation_id(session_uuid)
             || self.prompt.trim().is_empty()
@@ -279,9 +317,15 @@ pub(super) async fn capabilities(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     authorize(&state, &headers)?;
-    Ok(Json(
-        json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES,"gateway_protocol":if tenant_mode(state.agent.config()) {2} else {0},"agent_name":state.agent.config().name,"max_receipt_bytes":MAX_RESULT_BYTES+16384}),
-    ))
+    let mut value = json!({"protocol":1,"enabled":state.http_turns.is_some(),"streaming":state.http_turns.is_some(),"listing":true,"stream_suffix":"/stream","max_active":1,"turn_budget_secs":state.agent.config().http.tracked_turn_timeout_secs,"max_identities":10000,"max_retained_results":32,"session_prefix":"http:","max_stream_wire_bytes":delivery::WIRE_BYTES,"max_preview_round_bytes":delivery::ROUND_BYTES,"max_preview_total_bytes":delivery::PREVIEW_BYTES,"gateway_protocol":if tenant_mode(state.agent.config()) {2} else {0},"agent_name":state.agent.config().name,"max_receipt_bytes":MAX_RESULT_BYTES+16384});
+    if let Some(policy) = &state.agent.config().http.tenant_file_read {
+        value["file_read"] = serde_json::to_value(
+            jiaclaw::TenantFileReadCapability::capture(policy)
+                .map_err(|_| AppError::HttpTurnUnavailable)?,
+        )
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
+    Ok(Json(value))
 }
 
 fn catalog_query(raw: Option<&str>) -> Result<(String, usize, usize), AppError> {
@@ -907,6 +951,39 @@ mod tests {
         }
         assert!(validate_id(&uuid::Uuid::now_v7().to_string()).is_err());
         assert!(validate_id(&uuid::Uuid::new_v4().to_string().to_uppercase()).is_err());
+    }
+
+    #[test]
+    fn tenant_file_grant_requires_original_tracked_tenant_configuration() {
+        let mut config = AgentConfig::default();
+        config.http.tenant_file_read = Some(jiaclaw_core::TenantFileReadPolicy {
+            paths: vec!["tenant-documents/notes.txt".into()],
+        });
+        assert!(validate_config(&config, Some("private-token")).is_err());
+        config.http.tracked_turns = true;
+        config.http.gateway_channel_chat = true;
+        config.provider.provider_type = "brokerrouter".into();
+        config.model_calls.enabled = true;
+        config.tool_timeout_secs = Some(2);
+        assert!(validate_config(&config, Some("private-token")).is_ok());
+        config.tools.read_file.enabled = false;
+        assert!(validate_config(&config, Some("private-token")).is_err());
+    }
+
+    #[test]
+    fn optional_permission_preserves_legacy_submission_hash_and_binds_new_grant() {
+        let body = serde_json::json!({"session_id":format!("http:{}",uuid::Uuid::new_v4()),"prompt":"Read","enabled_tools":["datetime_now"],"enabled_skills":[]});
+        let submission: Submission = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&submission).unwrap(), body);
+        let mut file = submission;
+        file.file_read_policy_sha256 = Some("a".repeat(64));
+        assert_ne!(
+            file.fingerprint().unwrap(),
+            serde_json::from_value::<Submission>(body)
+                .unwrap()
+                .fingerprint()
+                .unwrap()
+        );
     }
 
     #[test]

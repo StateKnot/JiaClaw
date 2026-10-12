@@ -65,3 +65,13 @@ const streamGateway={...gateway,gateway_protocol:2,streaming:true,stream_suffix:
 assert.doesNotThrow(()=>gatewayCapabilities(streamGateway));
 for(const change of [{streaming:false},{gateway_protocol:1},{turn_budget_secs:301},{turn_budget_secs:9},{stream_suffix:'/anything'},{max_stream_wire_bytes:Infinity},{max_preview_round_bytes:3},{max_preview_total_bytes:0}])assert.throws(()=>gatewayCapabilities({...streamGateway,...change}));
 console.log('PASS parser 9: explicit paired tenant SSE capability budgets; existing JSON workbench remains usable');
+
+const permission={protocol:1,paths:['tenant-documents/notes.txt','tenant-documents/资料.txt'],max_bytes:262144,policy_sha256:require('crypto').createHash('sha256').update(JSON.stringify([1,['tenant-documents/notes.txt','tenant-documents/资料.txt'],262144])).digest('hex')};
+const fileGateway={...streamGateway,enabled_tools:['datetime_now','json_query','file_read'],file_read:permission};
+assert.doesNotThrow(()=>gatewayCapabilities(fileGateway));
+for(const change of [{protocol:2},{max_bytes:262145},{policy_sha256:'A'.repeat(64)},{paths:[]},{paths:['MEMORY.md']},{paths:['tenant-documents/../secret']},{paths:['tenant-documents/.secret']},{paths:['tenant-documents/a','tenant-documents/a']},{paths:['tenant-documents/b','tenant-documents/a']},{paths:['tenant-documents/a ']}]) assert.throws(()=>gatewayCapabilities({...fileGateway,file_read:{...permission,...change}}));
+assert.throws(()=>gatewayCapabilities({...fileGateway,enabled_tools:['file_read']}));
+const fileResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['file_read']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(fileResult,initial,new Set(['file_read'])));
+assert.throws(()=>gatewaySnapshot(fileResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 10: complete opt-in tenant file grant, canonical scope and historical facts preserve captured tool authority');

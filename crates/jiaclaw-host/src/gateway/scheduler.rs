@@ -435,6 +435,7 @@ mod tests {
                     permit: Arc::new(Semaphore::new(1)),
                     control: Arc::new(Semaphore::new(2)),
                     streams: Arc::new(tokio::sync::Semaphore::new(2)),
+                    file_read: None,
                 },
             )]),
             client: reqwest::Client::builder()

@@ -1175,6 +1175,7 @@ mod tests {
                 permit: Arc::new(Semaphore::new(1)),
                 control: Arc::new(Semaphore::new(1)),
                 streams: Arc::new(tokio::sync::Semaphore::new(4)),
+                file_read: None,
             },
         )]);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1539,6 +1540,7 @@ mod tests {
             permit: Arc::new(Semaphore::new(1)),
             control: Arc::new(Semaphore::new(1)),
             streams: Arc::new(tokio::sync::Semaphore::new(4)),
+            file_read: None,
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = configure(

@@ -347,6 +347,7 @@ impl Tool for MemoryReadTool {
 /// `file_read`：`read_file` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileReadTool {
     inner: crate::files::WorkspaceReadFileTool,
+    allowed_paths: Option<Vec<String>>,
 }
 
 impl FileReadTool {
@@ -355,7 +356,23 @@ impl FileReadTool {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             inner: crate::files::WorkspaceReadFileTool::new(workspace_path),
+            allowed_paths: None,
         }
+    }
+
+    /// Reuse the original bounded I/O tool under an exact operator-approved grant.
+    ///
+    /// # Errors
+    /// Invalid tenant file policy.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantFileReadPolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            inner: crate::files::WorkspaceReadFileTool::new(workspace_path),
+            allowed_paths: Some(policy.paths.clone()),
+        })
     }
 }
 
@@ -374,10 +391,31 @@ impl Tool for FileReadTool {
     }
 
     fn parameters_schema(&self) -> Value {
-        self.inner.parameters_schema()
+        let mut schema = self.inner.parameters_schema();
+        if let Some(paths) = &self.allowed_paths {
+            schema["properties"]["path"]["enum"] = serde_json::json!(paths);
+            schema["additionalProperties"] = Value::Bool(false);
+        }
+        schema
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(paths) = &self.allowed_paths {
+            let permitted = args.as_object().is_some_and(|fields| {
+                fields
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "path" | "offset" | "limit"))
+                    && fields
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .is_some_and(|path| paths.iter().any(|allowed| allowed == path))
+            });
+            if !permitted {
+                return Err(JiaClawError::ToolExecution(
+                    "file_read path is outside the captured tenant grant".into(),
+                ));
+            }
+        }
         self.inner.execute(args).await
     }
 }

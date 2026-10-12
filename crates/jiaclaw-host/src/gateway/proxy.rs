@@ -833,6 +833,7 @@ mod tests {
             permit,
             control: Arc::new(tokio::sync::Semaphore::new(2)),
             streams: Arc::new(tokio::sync::Semaphore::new(2)),
+            file_read: None,
         };
         let state = Arc::new(State {
             registry,
