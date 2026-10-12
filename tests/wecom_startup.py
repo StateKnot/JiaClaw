@@ -6,6 +6,7 @@ fail-closed startup, not a live enterprise installation, member license or
 client delivery. Successful first-send token reuse is exercised by wecom.py.
 """
 import base64
+import codecs
 from contextlib import closing
 import hashlib
 import json
@@ -214,7 +215,11 @@ class Case:
                                             env=env, stdout=output, stderr=output)
 
     def public_log(self):
-        content = self.log.read_text()
+        # Capture whether the sole writer had already exited before this read.
+        # A live snapshot may end between UTF-8 bytes; malformed bytes still fail.
+        stopped = self.process.poll() is not None
+        content = codecs.getincrementaldecoder('utf-8')(errors='strict').decode(
+            self.log.read_bytes(), final=stopped)
         assert all(secret not in content for secret in secrets), 'private response/credential escaped'
         return content
 
@@ -272,6 +277,52 @@ class Case:
             self.server.server_close()
             self.thread.join(timeout=2)
             assert not self.thread.is_alive(), 'fixture server did not stop'
+
+
+def check_log_observer(root):
+    # Synthetic reader metadata only; these are not successful app startups.
+    class WriterState:
+        status = None
+
+        def poll(self):
+            return self.status
+
+    observer = Case.__new__(Case)
+    observer.process = WriterState()
+    observer.log = root / 'log-observer.txt'
+    prefix = b'x' * 4095
+    for tail in [b'\xe7', b'\xe7\xbb']:
+        observer.log.write_bytes(prefix + tail)
+        content = observer.public_log()
+        assert content == 'x' * 4095
+        assert 'HTTP 服务已启动于 ' not in content
+    complete = prefix + '终HTTP 服务已启动于 '.encode()
+    observer.log.write_bytes(complete)
+    assert observer.public_log() == complete.decode()
+    observer.process.status = 0
+    assert observer.public_log() == complete.decode()
+    for status, data in [(None, b'\xff'), (0, b'\xff'), (0, prefix + b'\xe7')]:
+        observer.process.status = status
+        observer.log.write_bytes(data)
+        try:
+            observer.public_log()
+        except UnicodeDecodeError:
+            pass
+        else:
+            raise AssertionError('invalid bytes or stopped incomplete UTF-8 accepted')
+    observer.process.status = None
+    observer.log.write_bytes(app_secret.encode() + b'\xe7')
+    try:
+        observer.public_log()
+    except AssertionError as error:
+        assert str(error) == 'private response/credential escaped'
+    else:
+        raise AssertionError('live incomplete suffix hid a complete secret')
+    observer.log.unlink()
+    print('ACTUAL WeCom startup log observer receipts ' + json.dumps({
+        'split_live_prefixes': 2, 'complete_stopped_strict': True,
+        'invalid_live_rejected': True, 'invalid_stopped_rejected': True,
+        'truncated_stopped_rejected': True, 'complete_secret_rejected': True}), flush=True)
 
 
 def malformed_cases():
@@ -344,6 +395,7 @@ def malformed_cases():
 try:
     with tempfile.TemporaryDirectory(prefix='jiaclaw-wecom-startup-') as directory:
         root = Path(directory)
+        check_log_observer(root)
         successful = Case(root, 'valid_union')
         try:
             successful.begin(failure=False)
