@@ -99,3 +99,24 @@ worker 只有在原收据 completed、session_committed=true、error=null、acti
 断流、刷新、pagehide或换Key关闭实际浏览器delivery，服务器仍按原owner/hold结算；与JSON的断开不取消异步执行语义分别保留。显式取消先持久原停止意图再abort交付。原编号、草稿、只有内存的权限与密钥、只读/跨用户查证和管理员独立核对沿用上文；仅GET的只读Key不会打开流式PUT，完成查看也不清管理员审核hold。
 
 本地验收使用真实嵌入资源、Chromium、两个私有后端/实际网关/SQLite/模型fixture，九组覆盖实际准入后的预结算预览、reload/只读GET、持久取消与真实owner、前端终态授权故障、真实响应丢失后的显式同ID200/GET、换Key的迟到结算和独立用户。第九组保持真实合法done/EOF，只篡改最终GET或重复200的工具名；已在初版复现错误清草稿，最终done、200、GET共享receipt的本次选择核验后全部拒绝，正确原GET才解除跟踪。两项期限用明确前端故障fixture缩短原长timer并延迟headers/final GET；真实服务器/模型/control期限不变，不宣称物理85秒、真实代理或供应商认证。原十组JSON工作台另以严格协议1能力形状的前端fixture，在当前真实JSON后端路径验证兼容，不冒充另一历史版本的实机资格。PR #104 固定 head `7fcdc5f3` 的七官方作业与四实际候选已独立核对通过；后续新提交仍须取得自己的资格。
+
+
+## 审阅技能的明确按需复用
+
+`http.tenant_skill_read` 与 gateway backend 同名 policy 默认均为 None。显式启用必须两端完整一致，原 skill_read 开启、agent.skill_lock_required=true 且 resources_enabled=false。精确 loaded 名称及正文 SHA 形成独立 protocol1 权限，与原 SSE protocol2 分开。工作台勾选 skill_read 才捕获权限 SHA；新准入先于身份、hold 和 backend PUT 核验原注册表及完整两端描述。gateway capability GET展示配置epoch的静态权限；native capability与每次新准入验证当前loaded版本，静态描述不证明可用性。无 grant 或未选工具时，租户提示不枚举任何技能；已选只含名称和正文版本，不 eager 注入或自动选择。渠道/cron仍两工具。
+
+后端示例（替换为实际管理员审阅的 loaded body SHA，不能复制占位值投入生产）：
+
+```toml
+[agent]
+skill_lock_required = true
+[tools.skill_read]
+enabled = true
+resources_enabled = false
+[http.tenant_skill_read]
+skills = [{ name = "reviewed", content_sha256 = "<完整 loaded body SHA256>" }]
+```
+
+对应 gateway backend JSON 中增加 `"tenant_skill_read":{"skills":[{"name":"reviewed","content_sha256":"<同一 SHA256>"}]}`。先用管理员认证的 `GET /api/skills` 取得原 loaded 版本，审核正文与来源锁，再停机配置双端。该管理员列表不向个人 Key 开放。目录名与名称是不同合同，正文 SHA 不替代 source lock 原完整文件 hash 或来源认证。
+
+新请求选 `"enabled_tools":["skill_read"]`、空 enabled_skills，并携带认证 capability 的 skill_read_policy_sha256；未选时必须省略。旧请求 None 不改变原 hash。只有原 UUID facts 可在撤权后继续查询，重复 PUT只GET原事实；unknown hold仍需原离线核对，不自动清除。成功 reload 改变授权正文后新请求拒绝，旧版本读取 NoEffect，绝不读新版本；config撤权须停机重启双端。见[完整版本与权限边界](tenant-skill-read.md)。

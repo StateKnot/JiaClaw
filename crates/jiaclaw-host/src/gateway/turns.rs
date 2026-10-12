@@ -55,6 +55,8 @@ struct Capability {
     max_preview_total_bytes: usize,
     #[serde(default)]
     file_read: Option<jiaclaw::TenantFileReadCapability>,
+    #[serde(default)]
+    skill_read: Option<jiaclaw::TenantSkillReadCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -63,6 +65,7 @@ pub(super) async fn check_backend(
     token: &HeaderValue,
     identity: &str,
     file_read: Option<&jiaclaw::TenantFileReadCapability>,
+    skill_read: Option<&jiaclaw::TenantSkillReadCapability>,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
         let response = client
@@ -95,8 +98,8 @@ pub(super) async fn check_backend(
             "backend HTTP turn contract mismatch"
         );
         ensure!(
-            c.file_read.as_ref() == file_read,
-            "backend file permission contract mismatch"
+            c.file_read.as_ref() == file_read && c.skill_read.as_ref() == skill_read,
+            "backend exact tenant permission contract mismatch"
         );
         Ok(c.enabled)
     })
@@ -174,11 +177,14 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=3).contains(&s.enabled_tools.len())
+        && (1..=4).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
-        && s.enabled_tools
-            .iter()
-            .all(|t| matches!(t.as_str(), "datetime_now" | "json_query" | "file_read"))
+        && s.enabled_tools.iter().all(|t| {
+            matches!(
+                t.as_str(),
+                "datetime_now" | "json_query" | "file_read" | "skill_read"
+            )
+        })
         && s.enabled_tools
             .iter()
             .collect::<std::collections::HashSet<_>>()
@@ -193,6 +199,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.file_read_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "skill_read") {
+            s.skill_read_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.skill_read_policy_sha256.is_none()
         }
 }
 
@@ -407,6 +423,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
             if let Some(permission) = &backend.file_read {
                 value["enabled_tools"] = json!(["datetime_now", "json_query", "file_read"]);
                 value["file_read"] = json!(permission);
+            }
+            if let Some(permission) = &backend.skill_read {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("skill_read"));
+                value["skill_read"] = json!(permission);
             }
             response(Json(value), request_id)
         }
@@ -626,6 +649,18 @@ async fn execute(
         ));
         return true;
     }
+    if body.enabled_tools.iter().any(|tool| tool == "skill_read")
+        && !backend.skill_read.as_ref().is_some_and(|permission| {
+            body.skill_read_policy_sha256.as_deref() == Some(permission.policy_sha256.as_str())
+        })
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant skill permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
@@ -634,7 +669,8 @@ async fn execute(
                 &backend.url,
                 &backend.token,
                 &p.backend_id,
-                backend.file_read.as_ref()
+                backend.file_read.as_ref(),
+                backend.skill_read.as_ref()
             )
         )
         .await,

@@ -63,6 +63,9 @@ pub struct BackendConfig {
     /// Explicit file permission; must exactly match the private tracked backend.
     #[serde(default)]
     pub tenant_file_read: Option<jiaclaw_core::TenantFileReadPolicy>,
+    /// Explicit exact loaded skill permission, matched against the private backend.
+    #[serde(default)]
+    pub tenant_skill_read: Option<jiaclaw_core::TenantSkillReadPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -424,6 +427,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_skill_read {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant skill grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             ensure!(
                 !backend.id.is_empty()
                     && backend.id.len() <= 64
@@ -559,6 +569,7 @@ mod tests {
             url: "http://127.0.0.1:9001/".into(),
             token_file: "/tmp/bob.token".into(),
             tenant_file_read: None,
+            tenant_skill_read: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

@@ -2860,7 +2860,8 @@
           "503": {
             "description": "Tracked turn creation unavailable"
           }
-        }
+        },
+        "description": " Default-off paired tenant_skill_read advertises independent permission protocol1, complete 1..16 sorted exact name/body SHA pairs, max_body_bytes=131072, max_result_bytes=262144 and SHA256 of UTF8 JSON [1,[[name,content_sha256],...],131072,262144]. No body, source or resources. Native Agent checks the same locked registry; changed loaded versions refuse new requests. SSE protocol2 remains independent. See docs/tenant-skill-read.md."
       }
     },
     "/api/turns/{id}": {
@@ -2987,6 +2988,11 @@
                       "type": "string",
                       "maxLength": 128
                     }
+                  },
+                  "skill_read_policy_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Tenant only: required iff skill_read is explicitly selected under paired default-off tenant_skill_read. Captures complete exact loaded name/body-version permission. Omit otherwise; old absent fields preserve original request hash. No eager enabled_skills; gateway and native require complete live capability before new admission. Existing UUIDs query original facts without dispatch."
                   }
                 }
               }
@@ -3264,6 +3270,11 @@
                       "type": "string",
                       "maxLength": 128
                     }
+                  },
+                  "skill_read_policy_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Tenant only: required iff skill_read is explicitly selected under paired default-off tenant_skill_read. Captures complete exact loaded name/body-version permission. Omit otherwise; old absent fields preserve original request hash. No eager enabled_skills; gateway and native require complete live capability before new admission. Existing UUIDs query original facts without dispatch."
                   }
                 }
               }

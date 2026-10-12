@@ -251,6 +251,7 @@ $('chat-form').addEventListener('submit', event => {
       if (tools.length > 128 || skills.length > 16) { $('turn-permissions').open = true; throw new Error('单次最多授权 128 个工具和 16 个技能；请减少勾选。'); }
       const body = {session_id:selected, prompt:text, enabled_tools:tools, enabled_skills:skills};
       if (tenantTurns() && tools.includes('file_read')) body.file_read_policy_sha256 = turnCapabilities.file_read.policy_sha256;
+      if (tenantTurns() && tools.includes('skill_read')) body.skill_read_policy_sha256 = turnCapabilities.skill_read.policy_sha256;
       if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
       const attempt = trackTurn(createId(), body); await submitTurn(attempt); return;
     }
@@ -757,17 +758,29 @@ async function connectTurns(gateway) {
     const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
     if (actual !== c.file_read.policy_sha256) throw new Error('文件授权摘要不匹配；请重新连接。');
   }
+  if (gateway && c.skill_read) {
+    if (!isSecureContext || !crypto.subtle) throw new Error('技能授权核验需要安全页面与 WebCrypto；未开放技能任务。');
+    const f = c.skill_read;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([1,f.skills.map(s => [s.name,s.content_sha256]),f.max_body_bytes,f.max_result_bytes])));
+    const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
+    if (actual !== f.policy_sha256) throw new Error('技能授权摘要不匹配；请重新连接。');
+  }
   if (owner !== identity) throw new StaleIdentity();
   turnCapabilities = c;
   $('turn-mode').textContent = gateway ? (c.streaming ? '新请求显示临时预览，结束后按原编号核对已保存回复；断流或停止交付后仍需核对，结束跟踪不解除管理员核对占用。' : '新请求异步保存回复。本页最多观察 30 秒，之后可按原编号核对；结束跟踪不解除需要管理员核对的执行占用。') : '新建会话使用实时预览。旧会话保持原有发送方式；预览不代表已保存。';
   $('turn-catalog-note').textContent = gateway ? '列表只含本用户的原编号、会话编号和准入时间，不表示执行状态。选中后读取原收据；不会再次执行。新记录可能改变后续分页。' : '列表仅展示状态摘要。选中后核对原请求；不会再次执行。每页为读取时的状态，新记录可能改变后续分页。';
-  $('turn-permissions-note').textContent = gateway ? '请选择本次需要的时间和 JSON 查询工具；默认不授权。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
+  $('turn-permissions-note').textContent = gateway ? '请选择本次需要的工具；默认不授权。下方文件和技能范围由管理员明确限定。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
   if (gateway && !readOnly) {
     const tools = [{name:'datetime_now',description:'读取当前时间'},{name:'json_query',description:'查询 JSON'}];
     if (c.file_read) tools.push({name:'file_read',description:'仅读取下方管理员授权的完整文件；256 KiB 上限，内容可能发送给本次模型。'});
+    if (c.skill_read) tools.push({name:'skill_read',description:'仅读取下方已审阅技能的指定版本；正文可能发送给本次模型，不授予其它工具。'});
     renderPermissionList('turn-tools', tools); renderPermissionList('turn-skills', []);
     if (c.file_read) {
       const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'file_read 允许的文件（内容可能发送给模型）：\n' + c.file_read.paths.join('\n');
+      $('turn-tools').append(details);
+    }
+    if (c.skill_read) {
+      const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'skill_read 允许的技能版本（正文可能发送给模型）：\n' + c.skill_read.skills.map(s => s.name + '\nSHA256: ' + s.content_sha256).join('\n');
       $('turn-tools').append(details);
     }
   } else if (!gateway && c.streaming) {

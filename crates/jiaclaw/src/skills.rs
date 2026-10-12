@@ -18,7 +18,7 @@ pub use install::{
 };
 pub use lock::{SkillLockPolicy, SkillPolicyEntry, SkillSourcePin};
 
-const SKILL_FILE_BYTES: usize = 128 * 1024;
+pub(crate) const SKILL_FILE_BYTES: usize = 128 * 1024;
 const CATALOG_BYTES: usize = 2 * 1024 * 1024;
 const CATALOG_SKILLS: usize = 64;
 const CATALOG_ENTRIES: usize = 256;
@@ -630,6 +630,47 @@ impl SkillRegistry {
         self.lock_read().clone()
     }
 
+    fn tenant_selection(
+        &self,
+        policy: &jiaclaw_core::TenantSkillReadPolicy,
+        table: &[Skill],
+    ) -> Result<(), JiaClawError> {
+        policy.validate()?;
+        if !self.lock_required
+            || policy.skills.iter().any(|entry| {
+                !table.iter().any(|skill| {
+                    skill.name == entry.name && skill.content_sha256() == entry.content_sha256
+                })
+            })
+        {
+            return Err(JiaClawError::Configuration(
+                "tenant skill permission is unavailable in the original locked loaded registry"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn tenant_snapshot(
+        &self,
+        policy: &jiaclaw_core::TenantSkillReadPolicy,
+    ) -> Result<Vec<Skill>, JiaClawError> {
+        let table = self.lock_read();
+        self.tenant_selection(policy, &table)?;
+        Ok(table
+            .iter()
+            .filter(|skill| policy.skills.iter().any(|entry| entry.name == skill.name))
+            .cloned()
+            .collect())
+    }
+    pub(crate) fn tenant_capability(
+        &self,
+        policy: &jiaclaw_core::TenantSkillReadPolicy,
+    ) -> Result<crate::TenantSkillReadCapability, JiaClawError> {
+        let table = self.lock_read();
+        self.tenant_selection(policy, &table)?;
+        crate::TenantSkillReadCapability::capture(policy)
+    }
+
     // Read only the loaded table, never an ambient path. Selecting the body and
     // checking its expected version share the same read lock as the catalog.
     fn read_content(&self, name: &str, expected_hash: &str) -> Result<String, JiaClawError> {
@@ -776,11 +817,25 @@ impl SkillRegistry {
 
 pub(crate) struct SkillReadTool {
     registry: Arc<SkillRegistry>,
+    permission: Option<jiaclaw_core::TenantSkillReadPolicy>,
 }
 
 impl SkillReadTool {
     pub(crate) fn new(registry: Arc<SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            permission: None,
+        }
+    }
+    pub(crate) fn restricted(
+        registry: Arc<SkillRegistry>,
+        policy: &jiaclaw_core::TenantSkillReadPolicy,
+    ) -> Result<Self, JiaClawError> {
+        registry.tenant_capability(policy)?;
+        Ok(Self {
+            registry,
+            permission: Some(policy.clone()),
+        })
     }
 }
 
@@ -802,7 +857,7 @@ impl crate::tools::Tool for SkillReadTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "type": "object",
             "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -810,7 +865,17 @@ impl crate::tools::Tool for SkillReadTool {
             },
             "required": ["name", "content_sha256"],
             "additionalProperties": false
-        })
+        });
+        if let Some(policy) = &self.permission {
+            schema["properties"]["name"]["enum"] =
+                serde_json::json!(policy.skills.iter().map(|s| &s.name).collect::<Vec<_>>());
+            schema["properties"]["content_sha256"]["enum"] = serde_json::json!(policy
+                .skills
+                .iter()
+                .map(|s| &s.content_sha256)
+                .collect::<Vec<_>>());
+        }
+        schema
     }
 
     fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
@@ -826,6 +891,16 @@ impl crate::tools::Tool for SkillReadTool {
         if !identifier(&args.name) || !valid_hash(&args.content_sha256) {
             return Err(JiaClawError::ToolExecution(
                 "skill_read requires a bounded catalog name and lowercase SHA-256".into(),
+            ));
+        }
+        if self.permission.as_ref().is_some_and(|policy| {
+            !policy
+                .skills
+                .iter()
+                .any(|entry| entry.name == args.name && entry.content_sha256 == args.content_sha256)
+        }) {
+            return Err(JiaClawError::ToolExecution(
+                "skill_read name/body version is not granted for this tenant".into(),
             ));
         }
         self.registry.read_content(&args.name, &args.content_sha256)

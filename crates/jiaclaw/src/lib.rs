@@ -55,8 +55,10 @@ mod session;
 pub use semantic::SemanticMemory;
 mod skills;
 mod tenant_files;
+mod tenant_skills;
 mod tools;
 pub use tenant_files::TenantFileReadCapability;
+pub use tenant_skills::TenantSkillReadCapability;
 mod workspace;
 
 pub use files::{
@@ -297,12 +299,23 @@ impl JiaClawAgent {
             SkillRegistry::new(skills).with_lock_required(config.skill_lock_required),
         );
 
+        if config.http.tenant_skill_read.is_some()
+            && (!config.tools.skill_read.enabled
+                || !config.skill_lock_required
+                || config.tools.skill_read.resources_enabled)
+        {
+            return Err(JiaClawError::Configuration("tenant skill_read requires skill_read enabled, mandatory source lock and no resource grant".into()));
+        }
+
         // 初始化工具注册表
         let mut tools = ToolRegistry::new();
         if config.tools.skill_read.enabled {
-            tools.register(Box::new(skills::SkillReadTool::new(std::sync::Arc::clone(
-                &skills,
-            ))));
+            let tool = if let Some(policy) = &config.http.tenant_skill_read {
+                skills::SkillReadTool::restricted(std::sync::Arc::clone(&skills), policy)?
+            } else {
+                skills::SkillReadTool::new(std::sync::Arc::clone(&skills))
+            };
+            tools.register(Box::new(tool));
             if config.tools.skill_read.resources_enabled {
                 tools.register(Box::new(skills::SkillResourceReadTool::new(
                     std::sync::Arc::clone(&skills),
@@ -433,6 +446,21 @@ impl JiaClawAgent {
     #[must_use]
     pub fn skills(&self) -> Vec<Skill> {
         self.skills.snapshot()
+    }
+
+    /// Validate the configured exact skill permission against the same live registry.
+    ///
+    /// # Errors
+    /// Missing, changed or unlocked selected bodies; no source/provider request occurs.
+    pub fn tenant_skill_read_capability(
+        &self,
+    ) -> Result<Option<TenantSkillReadCapability>, JiaClawError> {
+        self.config
+            .http
+            .tenant_skill_read
+            .as_ref()
+            .map(|policy| self.skills.tenant_capability(policy))
+            .transpose()
     }
 
     /// 重新扫描工作区 `skills/` 并替换进程内注册表。
@@ -569,7 +597,7 @@ impl JiaClawAgent {
                 max_tokens = selection.max_tokens, "selected model policy for turn");
         }
         // 短锁快照：reload 期间进行中的 chat 继续使用本轮技能表，不持锁。
-        let skills = self.skills.snapshot();
+        let skills = self.skills_for_request(request)?;
         // 检查是否有技能应该被自动触发（仅在 auto_skills 为 true 时）
         let mut enabled_skills = request.enabled_skills.clone();
 
@@ -866,10 +894,37 @@ impl JiaClawAgent {
         }
     }
 
+    // The real model path and prompt tests use the same checked snapshot selection.
+    fn skills_for_request(&self, request: &ChatRequest) -> Result<Vec<Skill>, JiaClawError> {
+        Ok(if let Some(policy) = &self.config.http.tenant_skill_read {
+            if !request.enabled_skills.is_empty() {
+                return Err(JiaClawError::InvalidRequest(
+                    "tenant skills require on-demand reads, not eager enabled_skills".into(),
+                ));
+            }
+            let selected = self.skills.tenant_snapshot(policy)?;
+            if request
+                .enabled_tools
+                .iter()
+                .any(|name| name == "skill_read")
+            {
+                selected
+            } else {
+                Vec::new()
+            }
+        } else if self.config.http.gateway_channel_chat || self.config.scheduler.gateway_driven {
+            Vec::new()
+        } else {
+            self.skills.snapshot()
+        })
+    }
+
     /// 构建系统提示（包含工作空间内容；每次调用重读 SOUL / USER / MEMORY）
     #[cfg(test)]
     fn build_system_prompt(&self, request: &ChatRequest) -> String {
-        let skills = self.skills.snapshot();
+        let skills = self
+            .skills_for_request(request)
+            .expect("prompt test must pass production skill selection");
         self.build_system_prompt_with_skills(request, &skills)
     }
 
@@ -917,7 +972,10 @@ impl JiaClawAgent {
             for skill in skills {
                 if on_demand {
                     let mut descriptor = serde_json::json!({"name":skill.name,
-                        "description":skill.description, "content_sha256":skill.content_sha256()});
+                        "content_sha256":skill.content_sha256()});
+                    if self.config.http.tenant_skill_read.is_none() {
+                        descriptor["description"] = serde_json::json!(skill.description);
+                    }
                     if self.config.tools.skill_read.resources_enabled {
                         descriptor["resources"] = serde_json::json!(skill.resources);
                     }
@@ -928,7 +986,7 @@ impl JiaClawAgent {
             }
 
             // 如果用户请求了特定技能，添加详细信息
-            if !request.enabled_skills.is_empty() {
+            if self.config.http.tenant_skill_read.is_none() && !request.enabled_skills.is_empty() {
                 prompt.push_str("\n### Enabled Skills (详细)\n");
                 for skill_name in &request.enabled_skills {
                     if let Some(skill) = skills.iter().find(|s| &s.name == skill_name) {
