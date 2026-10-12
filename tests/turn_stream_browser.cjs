@@ -1,3 +1,4 @@
+const {downloadExact, rejectDownloadChanges}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright');
 const assert=require('assert'), fs=require('fs'), crypto=require('crypto');
 const {base,token,control}=JSON.parse(fs.readFileSync(process.argv[2]));
@@ -35,6 +36,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   const id=await page.locator('#turn-id').inputValue();let s=await ctl('status','stream-tools');
   assert.strictEqual(s.count,1);assert(s.rows.some(r=>r.id===id&&r.state==='running'&&r.session_committed===0));assert.strictEqual(s.effects.length,0);assert(s.ledger.some(r=>r.turn_id===id&&r.state==='submitting'));
   assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
+  assert.strictEqual(await page.locator('#turn-download').isDisabled(),true);
   assert.strictEqual(await page.locator('#turn-observed-steps li').count(),1);
   assert((await page.locator('#turn-observed-steps').textContent()).includes('模型请求已提交'));
   assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
@@ -50,7 +52,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   });
   await ctl('release','stream-tools');await until(()=>finalReadRequested,'actual final GET blocked');
   try {
-    assert.strictEqual(finalReadDelivered,false);assert.strictEqual(await page.locator('#turn-observed-steps li').count(),5);
+    assert.strictEqual(finalReadDelivered,false);assert.strictEqual(await page.locator('#turn-download').isDisabled(),true);assert.strictEqual(await page.locator('#turn-observed-steps li').count(),5);
     assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0,'done cannot inherit manual running GET freshness');
     assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
   } finally {releaseFinalRead();}
@@ -63,7 +65,9 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   assert(observed[4].includes('第 2 轮')&&observed[4].includes('收据已保存'));
   assert.deepStrictEqual(await page.locator('#turn-saved-tools li').allTextContents(),['file_write']);
   assert((await page.locator('#turn-observed-note').textContent()).includes('不代表成功'));
-  await finish();assert.strictEqual(await page.locator('#turn-observed-steps li').count(),0);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
+  await downloadExact(page,id,'最终🦀回复');await rejectDownloadChanges(page,id);
+  console.log('PASS turn download standalone: actual UTF8 file, final GET gate, original GET-only recheck and purge/active/identity/hash/invalidUnicode/503 refusals');
+  await finish();assert.strictEqual(await page.locator('#turn-download').isDisabled(),true);assert.strictEqual(await page.locator('#turn-observed-steps li').count(),0);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
   console.log('PASS task activity standalone: actual two model rounds, returned file tool, original saved tool order, finish clears private steps');
   console.log('PASS task activity original GET gate: manual running lookup plus actual done cannot show saved tools before final GET delivery; original deadline and execution retained');
   s=await ctl('status','stream-tools');assert.strictEqual(s.count,2);assert.deepStrictEqual(s.effects,['stream-tools.txt']);assert.strictEqual(await page.locator('.provisional').count(),0);assert((await page.locator('#messages').textContent()).includes('最终🦀回复'));assert.strictEqual(await page.locator('#message').inputValue(),'');
@@ -108,7 +112,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   await ctl('gate','stream-slow');const largeId=await begin('stream-slow');
   await page.waitForFunction(()=>document.querySelector('.provisional p')?.textContent.includes('预览显示已截断'));
   assert((await page.locator('.provisional p').textContent()).length<66000);assert.strictEqual(await page.locator('.provisional').count(),1);assert.strictEqual((await ctl('status','stream-slow')).rows.find(r=>r.id===largeId).state,'running');
-  await ctl('release','stream-slow');await finish();assert((await page.locator('#messages').textContent()).includes('显示已截断'));assert((await page.locator('#messages').textContent()).length<100000);
+  await ctl('release','stream-slow');await downloadExact(page,largeId,'x'.repeat(1900*1024));await finish();console.log('PASS turn download long: actual 1900 KiB saved reply exact bytes despite truncated DOM');assert((await page.locator('#messages').textContent()).includes('显示已截断'));assert((await page.locator('#messages').textContent()).length<100000);
   console.log('PASS web stream 7: actual 1900 KiB preview/result consumed with bounded DOM, complete receipt and explicit history truncation');
 
   await page.clock.install();await ctl('gate','stream-stop');const deadlineId=await begin('stream-stop');

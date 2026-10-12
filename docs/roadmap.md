@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-13 接通[保存任务回复](turn-result-download.md)：standalone与个人Key工作台可显式保存原UUID已核对的完整UTF-8文本，点击时复用原有界GET/身份校验，预览、未核对、正文清理及迟到身份拒绝。只读Key沿用原查询权限，不重发任务或扩工具/存储。源码、本机与新head官方资格独立，父PR134资格仅历史；不认证供应商、经验质量或Agent浏览器/durable。
+
 2026-10-12 接通[任务步骤与工具记录](task-activity.md)：工作台消费原已核对 SSE 模型提交/收据/工具返回事件，并独立展示原 JSON 收据的有序工具名称。断流保留本页部分观察，刷新只读原事实，不补造步骤、不重发或解除原 hold；两份列表各128条、文本渲染、身份切换清私人 DOM。固定源码/本机和新 head 官方资格分别验收，父PR133只历史继承。本批为用户任务可观察性，不认证真实 Agent 浏览器、审批/durable/子Agent、供应商或经验质量。
 
 2026-10-12 PR131原6de964a的Linux ARM优化候选在第二文件组的gateway hold结算断言失败，后续打包/安装未执行，原head不完整合格。受控真实loopback receipt relay在GET重叠时503，能让原夹具看到completed但原gateway正确保留审核hold；历史唯一根因仍未知。修订只将成功用例的原15秒hold核对移到额外client GET之前，并保持返回前绝对截止/全部结果、权限与八read owner断言；Alice受控relay/Bob直连通过后先结算与退役relay，再原HTTP/Chromium矩阵。107生产inputs与ed64 frozen/target不变，本批不重跑Rust/build或扩大供应商/Agentbrowser/durable资格。[结算回归与边界](tenant-file-settlement.md)。新fixed head仍须七actual/两平台63Python/Linux十一Chromium/四候选各13唯一安装归档源码/API digest与149guards，不能借旧失败head、父或本机。
