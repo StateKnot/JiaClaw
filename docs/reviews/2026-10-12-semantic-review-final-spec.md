@@ -1,0 +1,11 @@
+# Spec: final semantic-review source
+
+Open findings: **0**. Fixed source `56e61fc999e9a28ea55d91999623858d76961409`, parent76ddacb:19 fresh paths, including the six-path repair. Cumulative4b2357fc and prior qualified PRs remain inherited history, not exhaustive fresh review. Standards findings were not read.
+
+Both original findings are independently closed. The UI now validates complete generation metadata before presenting readiness, satisfying `docs/semantic-review.md:11` (“完整核对generation空间、计数、字节预算与freshness一致性”). The original four malformed responses—missing generation, current+null, wrong space and invalid chunks/bytes—each clear the old snapshot and refuse readiness. The empty-source control still refuses. New route fallbacks preserve original authorization and405 while satisfying `docs/semantic-review.md:9` (“错误方法也复用门槛和私密响应”). Original POST/PUT/DELETE/OPTIONS cases retain405 and all three private headers; capability-route methods and anonymous401 were independently checked too.
+
+Actual independent session7077 exited0:24 HTTP cases, ten CLI/startup commands, five real Chromium runs and seven serving children all settled0. Real missing, stale, space_mismatch and current-with-zero-chunks snapshots work in the browser, including different source/generation counts for stale. Original live-owner rejection, invalid UTF8/linked sources, same-mtime changes, corrupt-vector refusal and complete SQL preservation remain verified. Checks made zero gateway requests; three embedding POSTs were synthetic setup only. Old identity, no polling/storage and no page errors remain verified.
+
+Frozen SHAf9e62f0a63f14ec81725ff248b97d98ae2c8b4fa60ed382fbe62cf86907baaf9 matches target and embedded fixed UI.106 declared source/current inputs match; post-freeze cfgtest assertions are not retroactively claimed as compiled by that freeze. Playwright1.62.1 used the explicit Chromium153.0.8010.12 executable, not its absent default distribution. Root's Rust/full-suite results do not substitute for these probes.
+
+Initial raw reports and actual evidence remain unchanged. No additional missing, partial, extra or incorrect requirement found. No real workspace, paid provider, new Rust build or official-head qualification was used; this does not certify learning quality, Agent browser tools, release installation, power loss or StateKnot durable.

@@ -8,6 +8,7 @@ let jobsOffset = 0, jobsNext = null, jobsPrevious = [], runsOffset = 0, runsNext
 let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted = false;
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
 let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = null;
+let semanticReviewEnabled = false;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -44,6 +45,7 @@ function controls() {
   $('delivery-cancel').disabled ||= !deliveryFresh || !['pending','retry_wait','unknown','permanent_failed','expired'].includes(delivery?.state);
   for (const id of ['chat-tab','jobs-tab','outbox-tab','memory-tab']) $(id).disabled = !connected || busy;
   $('memory-refresh').disabled = !connected || busy || !memoryReviewEnabled;
+  $('semantic-check').disabled = !connected || busy || !semanticReviewEnabled;
   for (const element of $('memory-edit-form').querySelectorAll('button,input,textarea')) element.disabled = !connected || readOnly || busy || !memoryEditEnabled || !memorySnapshot;
   $('memory-save').disabled ||= !$('memory-reviewed').checked;
   turnControls();
@@ -56,6 +58,7 @@ function clearIdentity() {
   $('job-lookup').hidden = true; $('job-lookup-id').value = ''; $('job-create-tracking').hidden = true;
   outboxEnabled = false; deliveries = []; delivery = null; outboxOffset = 0; outboxNext = false; deliveryFresh = false;
   memoryReviewEnabled = false; memoryEditEnabled = false; $('memory-tab').hidden = true; clearMemoryReview();
+  semanticReviewEnabled = false; $('semantic-review').hidden = true;
   $('memory-edit-form').hidden = true;
   jobsOffset = 0; jobsNext = null; jobsPrevious = []; runsOffset = 0; runsNext = null; runsPrevious = [];
   $('api-token').value = ''; $('message').value = '';
@@ -202,10 +205,14 @@ $('connect-form').addEventListener('submit', event => {
         const edit = await api('/api/memory/edit-capabilities', 'GET', undefined, [403,404], 15000, 16384);
         if (edit && (edit.protocol !== 1 || edit.scope !== 'standalone' || edit.operation !== 'replace' || edit.max_bytes !== 32768 || edit.conditions !== 'path-and-two-raw-sha256')) throw new Error('记忆纠错权限响应异常，请联系管理员核对。');
         memoryEditEnabled = !!edit && !!globalThis.crypto?.subtle;
+        const semantic = await api('/api/memory/semantic-capabilities', 'GET', undefined, [403,404], 15000, 16384);
+        if (semantic && (semantic.protocol !== 1 || semantic.scope !== 'standalone' || semantic.operation !== 'semantic-check' || semantic.read_only !== true || semantic.local_only !== true || semantic.max_sources !== 3 || semantic.max_source_bytes !== 131072 || semantic.max_total_source_bytes !== 393216 || semantic.max_chunks !== 512)) throw new Error('语义索引检查权限响应异常，请联系管理员核对。');
+        semanticReviewEnabled = !!semantic;
       }
     }
     $('memory-tab').hidden = !memoryReviewEnabled;
     $('memory-edit-form').hidden = !memoryEditEnabled;
+    $('semantic-review').hidden = !semanticReviewEnabled;
     $('outbox-tab').hidden = !outboxEnabled; $('workspace-tabs').hidden = !scheduledJobs && !outboxEnabled && !memoryReviewEnabled;
     await connectTurns(capabilities !== MISSING_ROUTE);
     try { await refresh(); }
@@ -324,10 +331,32 @@ async function refreshRuns(targetOffset = runsOffset, previous = runsPrevious) {
 }
 $('chat-tab').addEventListener('click', () => showView('chat'));
 function clearMemoryReview() {
+  clearSemanticReview();
   memorySnapshot = null;
   $('memory-candidate').value = ''; $('memory-reviewed').checked = false;
   for (const id of ['memory-content','memory-summary','memory-state']) $(id).textContent = '';
 }
+function clearSemanticReview() {
+  $('semantic-summary').textContent = ''; $('semantic-state').textContent = '';
+}
+function validSemanticGeneration(value) {
+  if (!Object.hasOwn(value,'generation')) return false;
+  const generation = value.generation;
+  if (value.freshness === 'missing') return generation === null;
+  return generation !== null && typeof generation === 'object' && /^[0-9a-f]{64}$/.test(generation.space) && Number.isInteger(generation.chunks) && generation.chunks >= 0 && generation.chunks <= 512 && Number.isInteger(generation.bytes) && generation.bytes > 0 && generation.bytes <= 8 * 1024 * 1024 && (value.freshness === 'space_mismatch' ? generation.space !== value.active_space : generation.space === value.active_space) && (value.freshness !== 'current' || generation.chunks === value.source_chunks);
+}
+async function reviewSemantic() {
+  clearSemanticReview();
+  const owner = identity;
+  const value = await api('/api/memory/semantic', 'GET', undefined, false, 15000, 64 * 1024);
+  const labels = {current:'内容与当前索引一致',stale:'内容已变化，索引陈旧',missing:'尚无完整索引',space_mismatch:'索引与当前配置不匹配'};
+  if (!value || value.protocol_version !== 1 || !Object.hasOwn(labels,value.freshness) || value.local_only !== true || value.runtime_applied !== false || !/^[0-9a-f]{64}$/.test(value.manifest) || !/^[0-9a-f]{64}$/.test(value.active_space) || !Array.isArray(value.sources) || value.sources.length < 1 || value.sources.length > 3 || !value.sources.every(p=>typeof p==='string' && p.length > 0 && p.length <= 4096) || !Number.isInteger(value.source_chunks) || value.source_chunks < 0 || value.source_chunks > 512 || !validSemanticGeneration(value) || !Object.hasOwn(value,'pending') || (value.pending !== null && (typeof value.pending !== 'object' || typeof value.pending.id !== 'string' || !['pending','unknown'].includes(value.pending.state))) || value.search_ready_at_capture !== (value.freshness === 'current' && value.pending === null) || value.next_action !== (value.pending !== null ? 'reconcile_pending' : value.search_ready_at_capture ? 'none' : 'explicit_refresh')) throw new Error('语义索引检查摘要不完整，未展示；请重新核对。');
+  if (owner !== identity) throw new StaleIdentity();
+  $('semantic-summary').textContent = `来源：\n${value.sources.join('\n')}\n本次内容 SHA256：${value.manifest}\n本次内容块数：${value.source_chunks}\n${labels[value.freshness]}\n${value.pending === null ? '无待核对的原请求' : `待核对原请求：${value.pending.id}（${value.pending.state}）`}`;
+  $('semantic-state').textContent = value.pending !== null ? '先核对原请求；页面不会重发或解除等待。' : value.search_ready_at_capture ? '本次已保存内容可由当前索引检索；后续变化需重新检查。' : '需要管理员另行更新索引；本次检查未发送正文或刷新索引。';
+  status('语义索引检查完成');
+}
+$('semantic-check').addEventListener('click', () => task(async () => { if (semanticReviewEnabled) await reviewSemantic(); }));
 async function memoryHash(text) {
   const bytes = new TextEncoder().encode(text);
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2,'0')).join('');
@@ -349,7 +378,7 @@ async function reviewMemory() {
 }
 $('memory-tab').addEventListener('click', () => task(async () => { if (!memoryReviewEnabled) return; showView('memory'); await reviewMemory(); }));
 $('memory-refresh').addEventListener('click', () => task(reviewMemory));
-$('memory-candidate').addEventListener('input', () => { $('memory-reviewed').checked = false; controls(); });
+$('memory-candidate').addEventListener('input', () => { clearSemanticReview(); $('memory-reviewed').checked = false; controls(); });
 $('memory-reviewed').addEventListener('change', controls);
 $('memory-edit-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -362,6 +391,7 @@ $('memory-edit-form').addEventListener('submit', event => {
     if (owner !== identity) throw new StaleIdentity();
     if (digest === snapshot.content_sha256) throw new Error('更正内容未变化，未提交。');
     memorySnapshot = null;
+    clearSemanticReview();
     try {
       const receipt = await api('/api/memory/replace', 'POST', {path:snapshot.path, content, if_content_sha256:snapshot.content_sha256, if_replacement_sha256:digest}, false, 15000, 16384);
       if (!receipt || receipt.path !== snapshot.path || receipt.previous_sha256 !== snapshot.content_sha256 || receipt.content_sha256 !== digest || receipt.bytes_written !== bytes) throw new Error('更正回执不匹配；请先重新读取核对，不要重复提交。');

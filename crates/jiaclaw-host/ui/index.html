@@ -49,5 +49,10 @@
 <label><input id="memory-reviewed" type="checkbox" disabled>我已审阅原文与更正后的全文，包括明确留空的结果。</label>
 <button id="memory-save" type="submit" disabled>提交本次更正</button>
 </form>
+<section id="semantic-review" hidden aria-label="语义索引检查">
+<div class="conversation-head"><h3>语义索引检查</h3><button id="semantic-check" class="subtle" disabled>检查语义索引</button></div>
+<p class="jobs-note">仅检查已保存文件与当前索引，不发送正文或自动更新索引。结果是本次读取时的状态；更正后请重新检查。需要本机更新或核对原请求时，请先停止此服务，完成维护后重新启动。</p>
+<pre id="semantic-summary"></pre><p id="semantic-state" class="jobs-note" role="status"></p>
+</section>
 </section></main></div>
 </body></html>

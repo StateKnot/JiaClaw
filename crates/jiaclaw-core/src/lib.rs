@@ -1417,6 +1417,9 @@ pub struct HttpConfig {
     /// Separately opt-in administrator memory replacement; requires memory_review.
     #[serde(default)]
     pub memory_edit: bool,
+    /// Separately opt-in local semantic index inspection; requires memory_review and semantic memory.
+    #[serde(default)]
+    pub semantic_review: bool,
     /// Opt-in standalone durable HTTP turns; requires Brokerrouter, model_calls, persistence and authentication.
     #[serde(default)]
     pub tracked_turns: bool,
@@ -1580,6 +1583,7 @@ impl Default for HttpConfig {
         Self {
             memory_review: false,
             memory_edit: false,
+            semantic_review: false,
             tracked_turns: false,
             tracked_turn_timeout_secs: default_tracked_turn_timeout(),
             gateway_channel_chat: false,

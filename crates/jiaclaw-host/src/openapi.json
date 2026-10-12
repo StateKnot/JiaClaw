@@ -3424,6 +3424,57 @@
           }
         }
       }
+    },
+    "/api/memory/semantic-capabilities": {
+      "get": {
+        "summary": "Explicit semantic_review plus memory_review, enabled semantic memory, nonempty administrator Token and standalone required; local read-only protocol1.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Explicit private capability contract; no-store, nosniff, no-referrer"
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          }
+        }
+      }
+    },
+    "/api/memory/semantic": {
+      "get": {
+        "summary": "Complete no-network local semantic freshness capture using the running Agent original store/admission/writer; max3 sources,384KiB,512 chunks; no raw text, embedding, refresh or hold settlement.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current/stale/missing/space_mismatch capture, readiness and original pending identity; no-store,nosniff,no-referrer. Ordinary Agent startup remains operational, not CLI inspection startup."
+          },
+          "401": {
+            "description": "Administrator authentication required"
+          },
+          "403": {
+            "description": "Explicit capability or standalone scope absent"
+          },
+          "422": {
+            "description": "Index or allowed sources cannot be checked completely, or original semantic owner busy; no fallback or ready claim."
+          },
+          "500": {
+            "description": "Semantic review worker failed"
+          },
+          "503": {
+            "description": "Shared non-queued control capacity busy"
+          }
+        }
+      }
     }
   },
   "components": {

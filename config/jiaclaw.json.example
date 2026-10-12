@@ -16,6 +16,7 @@
   },
   "routing": {},
   "http": {
+    "semantic_review": false,
     "bind": "127.0.0.1:8080",
     "persist": true,
     "persist_path": "../state/sessions.sqlite3",

@@ -1,0 +1,11 @@
+# Spec: initial admission fixture
+
+Fresh source da4702eee5b09a800236c7893899a78657a4c49b changes only semantic_review.py and its contract relative to941f. Production and prior qualified baseline4b conclusions are inherited, not exhaustive fresh review. Standards findings were not read.
+
+**[P2] Final header reception can succeed after the original deadline** — tests/semantic_review.py:166. The contract requires “同一个原2秒观察截止内读取” (docs/semantic-review.md:16). The helper checks remaining time before recv, but never checks completion against the same deadline before returning. An owned helper child stopped immediately before its last actual recv accepted Continue at2.167s and fifth503 at2.162s. More decisively, an independently pinned da full fixture paused only its observer before the last fifth503 recv: accepted_at4.647709875 exceeded absolute_deadline4.472752375, yet every original seven group passed and the child exited0. The service continued running; the original2s budget was unchanged. Recheck that same deadline before returning the complete header.
+
+Independent normal public fixture15441 exits0. Eight real socketpair cases correctly accept exactContinue/final503 and reject EOF, wrong200/503 admission, expired/deferred deadlines and oversized headers. Initial helper52812 and full-case72624 exit0 mean successful reproduction of this acceptance defect, not qualified budget GREEN.
+
+The native admission premise is otherwise sound: pinned Hyper1.11.1 sends Continue after Body demand, and the original handler takes its control permit before polling; global budget middleware does not poll Body. [Fixed upstream source](https://github.com/hyperium/hyper/blob/v1.11.1/src/proto/h1/conn.rs#L405) and local dependency code were independently read. Normal/400ms native receipts, fifth refusal and release0/SIGKILL−9 are verified; the original5s body and8s settlement assertions remain.
+
+The initial wrapper import failure occurred before fixture execution and is preserved as a driver error. No production/Rust/browser change, paid provider or real workspace was used. Old ARM failure's unique historical cause remains unproved; controlled mechanisms do not qualify a revised official head. One finding remains open.
