@@ -647,6 +647,7 @@ const trackedSession = () => typeof selected === 'string' && selected.startsWith
 const tenantTurns = () => turnCapabilities?.scope === 'gateway';
 const turnWritable = () => !readOnly && turnCapabilities?.enabled && (tenantTurns() || turnCapabilities?.streaming);
 const turnResolved = () => pendingTurn?.fresh && !pendingTurn.active && (pendingTurn.receipt?.state === 'completed' || pendingTurn.receipt?.reviewed_ms != null);
+const turnDownloadable = () => connected && pendingTurn?.fresh && !pendingTurn.active && pendingTurn.receipt?.state === 'completed' && !pendingTurn.receipt.result_purged && !!pendingTurn.receipt.result;
 // Observed delivery and persisted tool records are separate facts. Neither
 // authorizes dispatch or changes the original receipt/hold decision.
 const TURN_ACTIVITY_ROWS = 128;
@@ -702,6 +703,7 @@ function turnControls() {
   $('turn-cancel').disabled = !held || readOnly || turnControlBusy || !turnCapabilities?.enabled || pendingTurn?.receipt?.state !== 'running';
   $('turn-retry').disabled = !held || turnControlBusy || busy || !!turnConnection || !pendingTurn?.body || !turnWritable() || !!pendingTurn?.receipt;
   $('turn-finish').disabled = !turnResolved() || !!turnConnection || turnControlBusy;
+  $('turn-download').disabled = !turnDownloadable() || !!turnConnection || turnControlBusy || busy;
   const review = pendingTurn?.receipt?.state === 'needs_review' || (pendingTurn?.receipt?.state === 'running' && !pendingTurn?.active);
   $('turn-review').hidden = tenantTurns() || !review;
   $('turn-gateway-review').hidden = !tenantTurns() || !review;
@@ -772,7 +774,12 @@ async function turnControl(fn) {
   if (turnControlBusy || !pendingTurn) return;
   const owner = identity, attempt = pendingTurn; turnControlBusy = true; controls();
   try { await fn(attempt); }
-  catch (error) { if (owner === identity && !(error instanceof StaleIdentity)) { attempt.fresh = false; status(error.message + ' 请继续按原编号核对。', true); } }
+  catch (error) {
+    // api clears the identity before throwing 401. Keep that auth failure
+    // visible while disconnected, without restoring the old attempt or facts.
+    if (error instanceof ApiError && error.code === 401 && !connected) status(error.message, true);
+    else if (owner === identity && !(error instanceof StaleIdentity)) { attempt.fresh = false; status(error.message + ' 请继续按原编号核对。', true); }
+  }
   finally { if (owner === identity && pendingTurn === attempt) { turnControlBusy = false; controls(); } }
 }
 function renderPermissionList(id, records) {
@@ -998,6 +1005,31 @@ $('turn-lookup').addEventListener('submit', event => {
   trackTurn(id); turnControl(attempt => checkTurn(attempt));
 });
 $('turn-check').addEventListener('click', () => turnControl(attempt => checkTurn(attempt)));
+$('turn-download').addEventListener('click', () => {
+  if (!turnDownloadable() || turnConnection || turnControlBusy || busy) return;
+  turnControl(async attempt => {
+    const owner = identity;
+    // A retained page result may have been purged or its key revoked. Reuse the
+    // original bounded receipt GET/validator, never DOM text or stream preview.
+    attempt.fresh = false; controls();
+    const value = await turnApi('/api/turns/' + attempt.id);
+    if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+    showTurnSnapshot(value, attempt);
+    if (!turnDownloadable()) throw new Error('当前没有可下载的已完成回复；结果可能仍需核对或正文已清理。');
+    if (/[\p{Surrogate}]/u.test(attempt.receipt.result.reply)) throw new Error('回复字符无效；未创建下载文件。');
+    const blob = new Blob([new TextEncoder().encode(attempt.receipt.result.reply)], {type:'text/plain;charset=utf-8'});
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    try {
+      link.href = url; link.download = 'jiaclaw-' + attempt.id + '.txt';
+      document.body.append(link); link.click();
+      status('已请求浏览器下载完整回复；请在下载列表确认保存。');
+    } finally {
+      link.remove();
+      // Let the browser consume the URL before retiring its in-memory bytes.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+  });
+});
 $('turn-cancel').addEventListener('click', () => turnControl(async attempt => {
   const value = await turnApi('/api/turns/' + attempt.id + '/cancel', 'POST');
   showTurnSnapshot(value, attempt);

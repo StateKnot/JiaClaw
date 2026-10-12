@@ -1,3 +1,4 @@
+const {downloadExact, staleDownload, revokedDownload}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright'), assert=require('assert'), fs=require('fs');
 const cfg=JSON.parse(fs.readFileSync(process.argv[2])), wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function ctl(action,prompt='none',who='alice',id) {const r=await fetch(cfg.control,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,prompt,who,id})});const j=await r.json();assert(r.ok,JSON.stringify(j));return j.value;}
@@ -44,10 +45,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   await until(async()=>(await ctl('status',prompt)).ready,'actual model before settlement');
   assert.strictEqual(puts[0].path,'/api/turns/'+first+'/stream','protocol 2 must use actual stream route');
   await page.waitForFunction(()=>document.querySelector('.provisional p')?.textContent.includes('alice: '));
-  let value=await original(first);assert.strictEqual(value.receipt.state,'running');assert.strictEqual(value.receipt.session_committed,false);assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);assert.strictEqual(await page.locator('#message').inputValue(),prompt);
+  let value=await original(first);assert.strictEqual(value.receipt.state,'running');assert.strictEqual(value.receipt.session_committed,false);assert.strictEqual(await page.locator('#turn-download').isDisabled(),true);assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);assert.strictEqual(await page.locator('#message').inputValue(),prompt);
   assert.deepStrictEqual(puts[0].body.enabled_tools,['datetime_now']);assert.deepStrictEqual(puts[0].body.enabled_skills,[]);assert.strictEqual((await ctl('status',prompt)).count,1);
   assert.strictEqual(await page.locator('#turn-observed-steps li').count(),1);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
-  await ctl('release',prompt);await finish(async()=>{const steps=await page.locator('#turn-observed-steps li').allTextContents();assert.strictEqual(steps.length,2);assert(steps[0].includes('模型请求已提交'));assert(steps[1].includes('模型收据已保存'));assert((await page.locator('#turn-saved-note').textContent()).includes('保存 0 次'));});value=await original(first);
+  await ctl('release',prompt);await finish(async()=>{await downloadExact(page,first,'alice: '+prompt);console.log('PASS turn download tenant preview: actual HTML-looking Unicode original reply exported as exact text, no replay');const steps=await page.locator('#turn-observed-steps li').allTextContents();assert.strictEqual(steps.length,2);assert(steps[0].includes('模型请求已提交'));assert(steps[1].includes('模型收据已保存'));assert((await page.locator('#turn-saved-note').textContent()).includes('保存 0 次'));});value=await original(first);
   console.log('PASS task activity tenant preview: actual model submission and persisted receipt, saved zero tools without fabricated attempts');assert.strictEqual(value.receipt.state,'completed');assert((await page.locator('#messages').textContent()).includes('alice: '+prompt));assert.strictEqual(await page.locator('#messages img').count(),0);assert.strictEqual(await page.evaluate(()=>typeof window.TENANT_XSS),'undefined');assert.strictEqual(await page.locator('#message').inputValue(),'');assert(requests.some(r=>r.method==='GET'&&r.path==='/api/turns/'+first));await idle();await noStorage();
   console.log('PASS tenant preview 1: raw protocol-2 capability, actual pre-settlement preview, explicit tools, original GET/committed reply, text-only Unicode and no stored credentials');
 
@@ -79,6 +80,11 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   if(value.receipt.state==='needs_review') {await until(async()=>(await ctl('status','preview-stale')).holds[0]?.state==='needs_review','stale identity review hold');await ctl('review','none','alice',stale);}
   await idle();const bob=await begin('preview-bob');await finish();assert((await page.locator('#messages').textContent()).includes('bob: preview-bob'));assert.strictEqual((await ctl('status','preview-bob','bob')).count,1);await idle('bob');
   console.log('PASS tenant preview 6: identity switch during actual preview aborts old delivery, late settlement cannot repopulate new identity, independent user succeeds');
+  await page.locator('#turn-lookup-id').fill(first);await connect(cfg.alice);await page.locator('#turn-lookup-id').fill(first);await page.locator('#turn-lookup button').click();await page.waitForFunction(()=>!document.getElementById('turn-download').disabled);
+  await staleDownload(page,first,()=>connect(cfg.bob));
+  await connect(cfg.alice);await page.locator('#turn-lookup-id').fill(first);await page.locator('#turn-lookup button').click();await page.waitForFunction(()=>!document.getElementById('turn-download').disabled);
+  await revokedDownload(page,first);await connect(cfg.bob);
+  console.log('PASS turn download privacy: late original GET after real identity switch and nonJSON revoked Key cannot create files or restore private DOM');
   await authorityChecks('bob');
 
   // Explicit browser transport fault fixture, not a physical 85-second claim.
