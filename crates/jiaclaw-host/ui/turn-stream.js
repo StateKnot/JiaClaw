@@ -22,6 +22,7 @@
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
     if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
+    if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
@@ -44,6 +45,23 @@
         previous = encoded;
       }
       allowed.push('file_read');
+    }
+    if (c.skill_read !== undefined) {
+      const f = c.skill_read;
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === 5 && ['protocol','skills','max_body_bytes','max_result_bytes','policy_sha256'].every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.max_body_bytes === 131072 && f.max_result_bytes === 262144 && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.skills) && f.skills.length >= 1 && f.skills.length <= 16);
+      let previous = null;
+      for (const entry of f.skills) {
+        require(object(entry) && Object.keys(entry).length === 2 && ['name','content_sha256'].every(k => Object.hasOwn(entry,k)));
+        require(typeof entry.name === 'string' && entry.name.length > 0 && bytes(entry.name) <= 128 && entry.name.trim() === entry.name && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(entry.name) && typeof entry.content_sha256 === 'string' && hash.test(entry.content_sha256));
+        const encoded = encoder.encode(entry.name);
+        if (previous) {
+          let i = 0; while (i < Math.min(previous.length, encoded.length) && previous[i] === encoded[i]) i++;
+          require(i === previous.length ? i < encoded.length : i < encoded.length && previous[i] < encoded[i]);
+        }
+        previous = encoded;
+      }
+      allowed.push('skill_read');
     }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
@@ -116,7 +134,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','skill_read'].includes(t)));
     return value;
   }
   class Parser {

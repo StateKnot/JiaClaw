@@ -75,3 +75,14 @@ const fileResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResul
 assert.doesNotThrow(()=>gatewaySnapshot(fileResult,initial,new Set(['file_read'])));
 assert.throws(()=>gatewaySnapshot(fileResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 10: complete opt-in tenant file grant, canonical scope and historical facts preserve captured tool authority');
+
+const skillPermission={protocol:1,skills:[{name:'reviewed',content_sha256:'b'.repeat(64)}],max_body_bytes:131072,max_result_bytes:262144,policy_sha256:'c'.repeat(64)};
+const skillGateway={...streamGateway,enabled_tools:['datetime_now','json_query','skill_read'],skill_read:skillPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(skillGateway));
+assert.doesNotThrow(()=>gatewayCapabilities({...fileGateway,enabled_tools:[...fileGateway.enabled_tools,'skill_read'],skill_read:skillPermission}));
+for(const change of [{protocol:2},{max_body_bytes:131073},{max_result_bytes:262145},{skills:[]},{skills:Array(17).fill(skillPermission.skills[0])},{skills:[{name:'reviewed',content_sha256:'A'.repeat(64)}]},{skills:[{name:' reviewed',content_sha256:'b'.repeat(64)}]},{skills:[{name:'a'.repeat(129),content_sha256:'b'.repeat(64)}]},{skills:[{name:'x\n',content_sha256:'b'.repeat(64)}]},{skills:[{name:'a',content_sha256:'b'.repeat(64)},{name:'a',content_sha256:'b'.repeat(64)}]},{skills:[{name:'b',content_sha256:'b'.repeat(64)},{name:'a',content_sha256:'b'.repeat(64)}]},{skills:[{...skillPermission.skills[0],body:'private'}]},{body:'private'}]) assert.throws(()=>gatewayCapabilities({...skillGateway,skill_read:{...skillPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...skillGateway,enabled_tools:['skill_read']}));
+const skillResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['skill_read']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(skillResult,initial,new Set(['skill_read'])));
+assert.throws(()=>gatewaySnapshot(skillResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 11: complete exact tenant skill body-version grant, bounded metadata and captured historical tool authority');

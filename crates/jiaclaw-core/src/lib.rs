@@ -1447,12 +1447,65 @@ impl TenantFileReadPolicy {
     }
 }
 
+/// One exact loaded skill body version explicitly approved for tenant tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSkillReadEntry {
+    /// Catalog metadata name, never a filesystem path.
+    pub name: String,
+    /// Existing skill_read full loaded-body version.
+    pub content_sha256: String,
+}
+
+/// Default-off, bounded permission for existing skill_read only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSkillReadPolicy {
+    /// 1..=16 sorted unique exact name/body-version pairs.
+    pub skills: Vec<TenantSkillReadEntry>,
+}
+impl TenantSkillReadPolicy {
+    /// Validate complete bounded catalog permission without opening sources.
+    ///
+    /// # Errors
+    /// Empty, duplicated, unsorted, ambiguous names or invalid body versions.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        if !(1..=16).contains(&self.skills.len())
+            || !self
+                .skills
+                .windows(2)
+                .all(|pair| pair[0].name < pair[1].name)
+            || self.skills.iter().any(|entry| {
+                entry.name.is_empty()
+                    || entry.name.len() > 128
+                    || entry.name.trim() != entry.name
+                    || entry.name.chars().any(char::is_control)
+                    || entry.name.starts_with('\u{feff}')
+                    || entry.name.ends_with('\u{feff}')
+                    || entry.content_sha256.len() != 64
+                    || !entry
+                        .content_sha256
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        {
+            return Err(JiaClawError::Configuration(
+                "tenant skill grant requires 1..16 sorted unique exact catalog names (128 UTF8 bytes) and lowercase body SHA256".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
     /// Explicit tenant HTTP file grant. Omission leaves the two-tool contract unchanged.
     #[serde(default)]
     pub tenant_file_read: Option<TenantFileReadPolicy>,
+    /// Explicit original-registry tenant skill body grant; omission denies skill reads.
+    #[serde(default)]
+    pub tenant_skill_read: Option<TenantSkillReadPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1624,6 +1677,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             tenant_file_read: None,
+            tenant_skill_read: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

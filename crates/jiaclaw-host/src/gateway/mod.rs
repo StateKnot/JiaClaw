@@ -44,6 +44,7 @@ struct Backend {
     control: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     file_read: Option<jiaclaw::TenantFileReadCapability>,
+    skill_read: Option<jiaclaw::TenantSkillReadCapability>,
 }
 struct State {
     registry: Registry,
@@ -282,7 +283,20 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 .as_ref()
                 .map(jiaclaw::TenantFileReadCapability::capture)
                 .transpose()?;
-            turns::check_backend(&client, &url, &token, &backend.id, permission.as_ref()).await?;
+            let skills = backend
+                .tenant_skill_read
+                .as_ref()
+                .map(jiaclaw::TenantSkillReadCapability::capture)
+                .transpose()?;
+            turns::check_backend(
+                &client,
+                &url,
+                &token,
+                &backend.id,
+                permission.as_ref(),
+                skills.as_ref(),
+            )
+            .await?;
         }
         backends.insert(
             backend.id.clone(),
@@ -292,6 +306,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 permit: Arc::new(Semaphore::new(usize::from(!reserved.contains(&backend.id)))),
                 control: Arc::new(Semaphore::new(2)),
                 streams: Arc::new(tokio::sync::Semaphore::new(2)),
+                skill_read: backend
+                    .tenant_skill_read
+                    .as_ref()
+                    .map(jiaclaw::TenantSkillReadCapability::capture)
+                    .transpose()?,
                 file_read: backend
                     .tenant_file_read
                     .as_ref()

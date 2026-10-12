@@ -40,6 +40,12 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
             "tenant_file_read requires tracked tenant HTTP turns and read_file enabled"
         );
     }
+    if let Some(policy) = &config.http.tenant_skill_read {
+        policy.validate()?;
+        ensure!(config.http.tracked_turns && tenant_mode(config) && config.tools.skill_read.enabled
+            && config.skill_lock_required && !config.tools.skill_read.resources_enabled,
+            "tenant_skill_read requires tracked tenant HTTP, mandatory source lock and body-only skill_read");
+    }
     if !config.http.tracked_turns {
         return Ok(());
     }
@@ -159,14 +165,19 @@ pub(super) struct Submission {
     pub(super) enabled_skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) file_read_policy_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) skill_read_policy_sha256: Option<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
         if tenant_mode(state.agent.config()) {
-            if !(1..=3).contains(&self.enabled_tools.len())
+            if !(1..=4).contains(&self.enabled_tools.len())
                 || !self.enabled_skills.is_empty()
                 || self.enabled_tools.iter().any(|name| {
-                    !matches!(name.as_str(), "datetime_now" | "json_query" | "file_read")
+                    !matches!(
+                        name.as_str(),
+                        "datetime_now" | "json_query" | "file_read" | "skill_read"
+                    )
                 })
             {
                 return Err(AppError::BadRequest("invalid_tenant_http_tools".into()));
@@ -190,6 +201,23 @@ impl Submission {
             }
         } else if self.file_read_policy_sha256.is_some() {
             return Err(AppError::BadRequest("unexpected_file_read_policy".into()));
+        }
+        let permission = state
+            .agent
+            .tenant_skill_read_capability()
+            .map_err(|_| AppError::HttpTurnUnavailable)?;
+        let skill_selected = tenant_mode(state.agent.config())
+            && self.enabled_tools.iter().any(|name| name == "skill_read");
+        if skill_selected {
+            let permission = permission
+                .ok_or_else(|| AppError::BadRequest("tenant_skill_read_disabled".into()))?;
+            if self.skill_read_policy_sha256.as_deref() != Some(permission.policy_sha256.as_str()) {
+                return Err(AppError::BadRequest(
+                    "tenant_skill_read_policy_changed".into(),
+                ));
+            }
+        } else if self.skill_read_policy_sha256.is_some() {
+            return Err(AppError::BadRequest("unexpected_skill_read_policy".into()));
         }
         let session_uuid = self.session_id.strip_prefix("http:").unwrap_or_default();
         if !super::jobs::valid_creation_id(session_uuid)
@@ -324,6 +352,14 @@ pub(super) async fn capabilities(
                 .map_err(|_| AppError::HttpTurnUnavailable)?,
         )
         .map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
+    if let Some(permission) = state
+        .agent
+        .tenant_skill_read_capability()
+        .map_err(|_| AppError::HttpTurnUnavailable)?
+    {
+        value["skill_read"] =
+            serde_json::to_value(permission).map_err(|_| AppError::HttpTurnUnavailable)?;
     }
     Ok(Json(value))
 }
@@ -975,6 +1011,12 @@ mod tests {
         let body = serde_json::json!({"session_id":format!("http:{}",uuid::Uuid::new_v4()),"prompt":"Read","enabled_tools":["datetime_now"],"enabled_skills":[]});
         let submission: Submission = serde_json::from_value(body.clone()).unwrap();
         assert_eq!(serde_json::to_value(&submission).unwrap(), body);
+        let mut skill = serde_json::from_value::<Submission>(body.clone()).unwrap();
+        skill.skill_read_policy_sha256 = Some("b".repeat(64));
+        assert_ne!(
+            skill.fingerprint().unwrap(),
+            submission.fingerprint().unwrap()
+        );
         let mut file = submission;
         file.file_read_policy_sha256 = Some("a".repeat(64));
         assert_ne!(
