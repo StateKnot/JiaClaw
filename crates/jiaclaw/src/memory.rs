@@ -734,6 +734,7 @@ pub struct MemorySearchTool {
     workspace_path: PathBuf,
     default_paths: Vec<String>,
     semantic: Option<std::sync::Arc<crate::SemanticMemory>>,
+    restricted: bool,
 }
 
 impl MemorySearchTool {
@@ -747,6 +748,7 @@ impl MemorySearchTool {
         Self {
             workspace_path: canonical_workspace,
             semantic: None,
+            restricted: false,
             default_paths: unique_relative_paths(
                 default_paths
                     .into_iter()
@@ -760,6 +762,48 @@ impl MemorySearchTool {
     pub(crate) fn with_semantic(mut self, semantic: std::sync::Arc<crate::SemanticMemory>) -> Self {
         self.semantic = Some(semantic);
         self
+    }
+
+    /// Restrict the original keyword reader to a complete configured source subset.
+    ///
+    /// # Errors
+    /// Invalid permission or any path outside the configured MEMORY/SOUL/USER set.
+    pub fn restricted(
+        workspace: &Path,
+        policy: &jiaclaw_core::TenantMemorySearchPolicy,
+        configured: &[String],
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        if policy.paths.iter().any(|p| !configured.contains(p)) {
+            return Err(JiaClawError::Configuration(
+                "tenant memory source is not configured MEMORY/SOUL/USER".into(),
+            ));
+        }
+        let mut tool = Self::new(workspace, policy.paths.clone());
+        tool.restricted = true;
+        Ok(tool)
+    }
+
+    fn validate_restricted_args(&self, args: &Value) -> Result<(), JiaClawError> {
+        if !self.restricted {
+            return Ok(());
+        }
+        let valid = args.as_object().is_some_and(|o| {
+            o.keys()
+                .all(|k| matches!(k.as_str(), "query" | "max_results"))
+        }) && args
+            .get("max_results")
+            .is_none_or(|n| n.as_u64().is_some_and(|n| (1..=20).contains(&n)))
+            && args
+                .get("query")
+                .and_then(Value::as_str)
+                .is_some_and(|query| {
+                    !query.trim().is_empty() && query.len() <= MEMORY_SEARCH_QUERY_MAX_BYTES
+                });
+        if !valid {
+            return Err(JiaClawError::ToolExecution("tenant keyword search accepts query and optional integer max_results in 1..20 only".into()));
+        }
+        Ok(())
     }
 
     fn search_targets(&self, override_paths: Option<Vec<String>>) -> Vec<String> {
@@ -776,8 +820,18 @@ impl Tool for MemorySearchTool {
         "memory_search"
     }
 
+    fn failure_effect(&self) -> crate::tools::ToolFailureEffect {
+        if self.restricted {
+            crate::tools::ToolFailureEffect::NoEffect
+        } else {
+            crate::tools::ToolFailureEffect::Unknown
+        }
+    }
+
     fn description(&self) -> &str {
-        if self.semantic.is_some() {
+        if self.restricted {
+            "Search only the explicitly configured memory sources by case-insensitive keyword. All sources must be complete safe UTF8 within 512KiB each; missing or invalid sources reject the search. Query up to 1024 bytes, at most 20 results and 1024 bytes per excerpt. No paths, mode or other arguments. Existing per-turn ambient memory remains independent."
+        } else if self.semantic.is_some() {
             "检索记忆。mode=keyword（默认）按有界子串检索；mode=semantic 用授权embedding模型检索已刷新的索引。semantic paths只能缩小配置上传白名单；索引过期或请求未知时停止并要求本地维护。query最多1024字节，默认5最多20条，每条摘录最多1024字节。"
         } else {
             "在工作区记忆类文件中按关键词检索相关片段（大小写不敏感子串 + 行窗）。默认扫描配置的 MEMORY / SOUL / USER；可选 paths 指定工作区相对路径。返回 {path, line, excerpt}。单文件超过 512KiB 截断；最多16个路径、query最多1024字节、每条摘录最多1024字节。禁止链接、特殊文件和路径穿越。"
@@ -785,6 +839,12 @@ impl Tool for MemorySearchTool {
     }
 
     fn parameters_schema(&self) -> Value {
+        if self.restricted {
+            return serde_json::json!({"type":"object","additionalProperties":false,
+                "properties":{"query":{"type":"string","minLength":1,"maxLength":1024},
+                "max_results":{"type":"integer","minimum":1,"maximum":20,"default":5}},
+                "required":["query"]});
+        }
         let modes = if self.semantic.is_some() {
             vec!["keyword", "semantic"]
         } else {
@@ -818,6 +878,7 @@ impl Tool for MemorySearchTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        self.validate_restricted_args(&args)?;
         let mode = match args.get("mode") {
             None => "keyword",
             Some(Value::String(mode)) if mode == "keyword" || mode == "semantic" => mode.as_str(),
@@ -861,7 +922,33 @@ impl MemorySearchTool {
         let mut matches = Vec::new();
         let mut warnings = Vec::new();
 
-        for rel in targets {
+        let captured = if self.restricted {
+            crate::memory_io::with_workspace_writer(&self.workspace_path, |root| {
+                targets
+                    .iter()
+                    .map(|rel| {
+                        let file = crate::memory_io::read_text_at(
+                            root,
+                            rel,
+                            MEMORY_SEARCH_FILE_MAX_BYTES,
+                            false,
+                        )?
+                        .ok_or_else(|| {
+                            JiaClawError::ToolExecution("tenant memory source missing".into())
+                        })?;
+                        if file.text.contains('\0') {
+                            return Err(JiaClawError::ToolExecution(
+                                "tenant memory source contains NUL".into(),
+                            ));
+                        }
+                        Ok(file)
+                    })
+                    .collect::<Result<Vec<_>, JiaClawError>>()
+            })?
+        } else {
+            Vec::new()
+        };
+        for (index, rel) in targets.into_iter().enumerate() {
             if matches.len() >= max_results {
                 break;
             }
@@ -870,12 +957,22 @@ impl MemorySearchTool {
                     "paths 超过 1024 字节上限".into(),
                 ));
             }
-            match crate::memory_io::read_text(
-                &self.workspace_path,
-                &rel,
-                MEMORY_SEARCH_FILE_MAX_BYTES,
-                true,
-            )? {
+            let file = if self.restricted {
+                Some(&captured[index])
+            } else {
+                None
+            };
+            let ordinary = if self.restricted {
+                None
+            } else {
+                crate::memory_io::read_text(
+                    &self.workspace_path,
+                    &rel,
+                    MEMORY_SEARCH_FILE_MAX_BYTES,
+                    true,
+                )?
+            };
+            match file.or(ordinary.as_ref()) {
                 None => warnings.push(format!("{rel}: 文件不存在，已跳过")),
                 Some(file) => {
                     if file.truncated {
@@ -911,6 +1008,115 @@ mod tests {
     use jiaclaw_core::{DEFAULT_MEMORY_PATH, DEFAULT_SOUL_PATH, DEFAULT_USER_PATH};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn tenant_keyword_search_refuses_ungranted_sources() {
+        use crate::JiaClawAgent;
+        use jiaclaw_core::{AgentConfig, ToolCall};
+        let ws = tempfile::tempdir().unwrap();
+        fs::write(ws.path().join("MEMORY.md"), "approved needle").unwrap();
+        fs::write(ws.path().join("private.txt"), "private needle").unwrap();
+        let mut value = serde_json::to_value(AgentConfig::default()).unwrap();
+        value["workspace_path"] = serde_json::json!(ws.path());
+        value["http"]["gateway_channel_chat"] = serde_json::json!(true);
+        value["http"]["tracked_turns"] = serde_json::json!(true);
+        value["http"]["tenant_memory_search"] = serde_json::json!({"paths":["MEMORY.md"]});
+        let agent = JiaClawAgent::new(serde_json::from_value(value).unwrap()).unwrap();
+        let result = agent
+            .tools()
+            .execute(&ToolCall {
+                tool_name: "memory_search".into(),
+                arguments: serde_json::json!({"query":"needle","paths":["private.txt"]}),
+                result: None,
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "tenant search disclosed an ungranted source: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_keyword_search_captures_every_source_before_success() {
+        let ws = tempfile::tempdir().unwrap();
+        let policy = jiaclaw_core::TenantMemorySearchPolicy {
+            paths: vec!["MEMORY.md".into(), "USER.md".into()],
+        };
+        let tool = MemorySearchTool::restricted(ws.path(), &policy, &policy.paths).unwrap();
+        fs::write(ws.path().join("MEMORY.md"), "needle\ncontext").unwrap();
+        for bytes in [
+            vec![b'x'; MEMORY_SEARCH_FILE_MAX_BYTES + 1],
+            vec![0xff],
+            b"a\0b".to_vec(),
+        ] {
+            fs::write(ws.path().join("USER.md"), bytes).unwrap();
+            assert!(tool
+                .execute(serde_json::json!({"query":"needle","max_results":1}))
+                .await
+                .is_err());
+        }
+        fs::remove_file(ws.path().join("USER.md")).unwrap();
+        assert!(tool
+            .execute(serde_json::json!({"query":"needle","max_results":1}))
+            .await
+            .is_err());
+        fs::write(
+            ws.path().join("USER.md"),
+            vec![b'x'; MEMORY_SEARCH_FILE_MAX_BYTES],
+        )
+        .unwrap();
+        let output = tool
+            .execute(serde_json::json!({"query":"needle","max_results":1}))
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["matches"][0]["path"], "MEMORY.md");
+        assert!(value.get("warnings").is_none());
+        assert_eq!(
+            tool.failure_effect(),
+            crate::tools::ToolFailureEffect::NoEffect
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_keyword_search_rejects_modes_aliases_and_extra_arguments() {
+        let ws = tempfile::tempdir().unwrap();
+        let policy = jiaclaw_core::TenantMemorySearchPolicy {
+            paths: vec!["MEMORY.md".into()],
+        };
+        let tool = MemorySearchTool::restricted(ws.path(), &policy, &policy.paths).unwrap();
+        fs::write(ws.path().join("MEMORY.md"), "needle").unwrap();
+        for args in [
+            serde_json::json!({"query":"needle","mode":"keyword"}),
+            serde_json::json!({"query":"needle","mode":"semantic"}),
+            serde_json::json!({"query":"needle","paths":[]}),
+            serde_json::json!({"query":"needle","extra":true}),
+            serde_json::json!({"query":"needle","max_results":0}),
+            serde_json::json!({"query":"needle","max_results":21}),
+            serde_json::json!({"query":"needle","max_results":1.0}),
+            serde_json::json!({"query":format!("{}needle", " ".repeat(1024))}),
+            serde_json::json!({"query":format!("{}needle", "\u{2000}".repeat(400))}),
+        ] {
+            assert!(tool.execute(args).await.is_err());
+        }
+        for path in [
+            "private.txt",
+            "./MEMORY.md",
+            "MEMORY.md ",
+            "a//b",
+            "../MEMORY.md",
+            "a\\b",
+            "/MEMORY.md",
+        ] {
+            let invalid = jiaclaw_core::TenantMemorySearchPolicy {
+                paths: vec![path.into()],
+            };
+            assert!(MemorySearchTool::restricted(ws.path(), &invalid, &policy.paths).is_err());
+        }
+        let schema = tool.parameters_schema();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+    }
 
     fn unique_temp(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()

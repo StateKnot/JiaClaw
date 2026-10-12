@@ -55,9 +55,11 @@ mod session;
 pub use semantic::SemanticMemory;
 mod skills;
 mod tenant_files;
+mod tenant_memory;
 mod tenant_skills;
 mod tools;
 pub use tenant_files::TenantFileReadCapability;
+pub use tenant_memory::TenantMemorySearchCapability;
 pub use tenant_skills::TenantSkillReadCapability;
 mod workspace;
 
@@ -254,17 +256,8 @@ impl JiaClawAgent {
         mcp::initialize(&agent.config.mcp, &mut agent.tools).await?;
         if let Some(semantic) = semantic {
             agent.semantic_memory = Some(std::sync::Arc::clone(&semantic));
-            agent.tools.register(Box::new(
-                MemorySearchTool::new(
-                    &agent.config.workspace_path,
-                    [
-                        agent.config.memory.path.clone(),
-                        agent.config.identity.soul_path.clone(),
-                        agent.config.identity.user_path.clone(),
-                    ],
-                )
-                .with_semantic(semantic),
-            ));
+            let tool = Self::memory_search_tool(&agent.config)?.with_semantic(semantic);
+            agent.tools.register(Box::new(tool));
         }
         Ok(agent)
     }
@@ -332,15 +325,18 @@ impl JiaClawAgent {
             config.identity.soul_path.clone(),
             config.identity.user_path.clone(),
         )));
+        if config.http.tenant_memory_search.is_some()
+            && (!config.http.tracked_turns
+                || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+                || !config.tools.memory_search.enabled)
+        {
+            return Err(JiaClawError::Configuration(
+                "tenant memory search requires tracked tenant mode and memory_search enabled"
+                    .into(),
+            ));
+        }
         if config.tools.memory_search.enabled {
-            tools.register(Box::new(MemorySearchTool::new(
-                &config.workspace_path,
-                [
-                    config.memory.path.clone(),
-                    config.identity.soul_path.clone(),
-                    config.identity.user_path.clone(),
-                ],
-            )));
+            tools.register(Box::new(Self::memory_search_tool(&config)?));
         }
         if config.tools.memory_write.enabled {
             tools.register(Box::new(MemoryAppendTool::new(
@@ -446,6 +442,34 @@ impl JiaClawAgent {
     #[must_use]
     pub fn skills(&self) -> Vec<Skill> {
         self.skills.snapshot()
+    }
+
+    fn memory_search_tool(config: &AgentConfig) -> Result<MemorySearchTool, JiaClawError> {
+        let configured = [
+            config.memory.path.clone(),
+            config.identity.soul_path.clone(),
+            config.identity.user_path.clone(),
+        ];
+        if let Some(policy) = &config.http.tenant_memory_search {
+            MemorySearchTool::restricted(&config.workspace_path, policy, &configured)
+        } else {
+            Ok(MemorySearchTool::new(&config.workspace_path, configured))
+        }
+    }
+
+    /// Complete static keyword permission; no source readiness or provider request.
+    ///
+    /// # Errors
+    /// Invalid configured permission.
+    pub fn tenant_memory_search_capability(
+        &self,
+    ) -> Result<Option<TenantMemorySearchCapability>, JiaClawError> {
+        self.config
+            .http
+            .tenant_memory_search
+            .as_ref()
+            .map(TenantMemorySearchCapability::capture)
+            .transpose()
     }
 
     /// Validate the configured exact skill permission against the same live registry.

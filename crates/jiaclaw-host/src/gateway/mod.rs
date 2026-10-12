@@ -45,6 +45,7 @@ struct Backend {
     streams: Arc<Semaphore>,
     file_read: Option<jiaclaw::TenantFileReadCapability>,
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
+    memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
 }
 struct State {
     registry: Registry,
@@ -288,6 +289,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 .as_ref()
                 .map(jiaclaw::TenantSkillReadCapability::capture)
                 .transpose()?;
+            let memory = backend
+                .tenant_memory_search
+                .as_ref()
+                .map(jiaclaw::TenantMemorySearchCapability::capture)
+                .transpose()?;
             turns::check_backend(
                 &client,
                 &url,
@@ -295,6 +301,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 &backend.id,
                 permission.as_ref(),
                 skills.as_ref(),
+                memory.as_ref(),
             )
             .await?;
         }
@@ -310,6 +317,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .tenant_skill_read
                     .as_ref()
                     .map(jiaclaw::TenantSkillReadCapability::capture)
+                    .transpose()?,
+                memory_search: backend
+                    .tenant_memory_search
+                    .as_ref()
+                    .map(jiaclaw::TenantMemorySearchCapability::capture)
                     .transpose()?,
                 file_read: backend
                     .tenant_file_read

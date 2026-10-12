@@ -1,0 +1,9 @@
+# Spec review: tenant keyword memory search (initial source)
+
+Pinned base `7fbfe68779ce4f32da94e7f2b010ff23363237ba`; head `d3adc272952b9f1e34781f48bb1ea540dd30053e`, tree `bc60d9eb5721cab72eb98f417463798dc5e00318`. Fresh scope is the 21-path feature diff and `docs/tenant-memory-search.md`; cumulative origin/main 4b2357f and parent qualification are inherited. This is source review only: the earlier HTTP run used a binary preceding the factory refactor, and pending Rust/local evidence does not certify this fixed source.
+
+- **[P2] Enforce the advertised query byte bound before trimming** (`crates/jiaclaw/src/memory.rs`, `validate_restricted_args` / `parse_memory_search_args`). The spec advertises "1024 query bytes" in the complete capability and says the restricted schema/execution accepts the bounded query. The restricted validator checks only argument names and max_results. The shared parser calls `str::trim` before checking length, while ToolRegistry executes directly without enforcing JSON Schema. Consequently 1024 spaces plus `needle` exceeds the promised wire query budget yet reaches the original reader/matcher after normalization. Check raw UTF-8 query bytes in the restricted validator before delegating to the shared parser; leave ordinary standalone normalization unchanged. A fixed-binary public boundary probe remains pending.
+
+No additional source findings. Paired default-off descriptors/captured hashes, complete trailing-source capture under the original IO/root/writer, keyword-only execution even with semantic initialization, factual old UUID lookup, UI complete descriptor/late identity checks, and the explicit ambient-memory limitation appear correctly wired. This does not certify supplier quality, automatic learning, durable execution or Agent browser tooling.
+
+Spec: 1 finding; worst P2, advertised query budget enforcement.

@@ -52,6 +52,8 @@ on:
       - 'tests/tenant_file_read.py'
       - 'tests/tenant_skill_read.py'
       - 'tests/tenant_skill_read_browser.cjs'
+      - 'tests/tenant_memory_search.py'
+      - 'tests/tenant_memory_search_browser.cjs'
       - 'tests/tenant_file_gateway.py'
       - 'tests/tenant_file_read_hold.c'
       - 'tests/tenant_file_read_browser.cjs'
@@ -148,6 +150,7 @@ jobs:
           python3 tests/http_turn_cli.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_file_read.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_skill_read.py "target/$TARGET/release/jiaclaw"
+          python3 tests/tenant_memory_search.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_http_stream.py "target/$TARGET/release/jiaclaw"
           python3 tests/gateway_shutdown.py "target/$TARGET/release/jiaclaw"

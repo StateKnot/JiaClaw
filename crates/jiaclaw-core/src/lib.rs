@@ -1497,6 +1497,41 @@ impl TenantSkillReadPolicy {
     }
 }
 
+/// Exact configured ambient-memory sources approved for explicit keyword search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantMemorySearchPolicy {
+    /// 1..3 sorted canonical paths; Agent additionally checks configured source membership.
+    pub paths: Vec<String>,
+}
+impl TenantMemorySearchPolicy {
+    /// Validate bounded permission metadata without reading sources.
+    ///
+    /// # Errors
+    /// Empty, duplicate, unsorted or ambiguous paths.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        if !(1..=3).contains(&self.paths.len())
+            || !self.paths.windows(2).all(|p| p[0] < p[1])
+            || self.paths.iter().any(|path| {
+                path.len() > 256
+                    || path.contains('\\')
+                    || path.chars().any(char::is_control)
+                    || path.split('/').count() > 16
+                    || path.split('/').any(|part| {
+                        part.is_empty()
+                            || part.trim() != part
+                            || part.starts_with('.')
+                            || part.starts_with('\u{feff}')
+                            || part.ends_with('\u{feff}')
+                    })
+            })
+        {
+            return Err(JiaClawError::Configuration("tenant memory search requires 1..3 sorted unique canonical configured source paths (256 UTF8 bytes/16 components)".into()));
+        }
+        Ok(())
+    }
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -1506,6 +1541,9 @@ pub struct HttpConfig {
     /// Explicit original-registry tenant skill body grant; omission denies skill reads.
     #[serde(default)]
     pub tenant_skill_read: Option<TenantSkillReadPolicy>,
+    /// Explicit keyword-only configured memory source permission; default off.
+    #[serde(default)]
+    pub tenant_memory_search: Option<TenantMemorySearchPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1678,6 +1716,7 @@ impl Default for HttpConfig {
         Self {
             tenant_file_read: None,
             tenant_skill_read: None,
+            tenant_memory_search: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,
