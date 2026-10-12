@@ -17,3 +17,5 @@
 #memory-state{overflow-wrap:anywhere}
 
 .tenant-file-paths{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}
+
+#turn-activity h3{font-size:12px;margin:12px 0 6px}#turn-activity ol{font-size:12px;max-height:180px;overflow:auto;padding-left:26px;white-space:pre-wrap;overflow-wrap:anywhere}#turn-activity li{margin:5px 0}

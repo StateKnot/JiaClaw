@@ -10,7 +10,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
  const page=await browser.newPage({viewport:{width:1360,height:1000}}), errors=[], submissions=[];
  page.on('pageerror',e=>errors.push(String(e)));page.on('request',r=>{if(r.method()==='PUT'&&new URL(r.url()).pathname.endsWith('/stream'))submissions.push({url:r.url(),body:r.postDataJSON(),auth:r.headers().authorization});});
  const connect=async()=>{await page.locator('#api-token').fill(token);await page.locator('#connect-form button').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='已连接 · 选择或新建会话');};
- const begin=async(caseName)=>{await page.locator('#new-session').click();await page.locator('#turn-permissions summary').click();await page.locator('#turn-tools input[value="file_write"]').check();await page.locator('#message').fill(caseName);await page.locator('#send').click();await page.waitForFunction(()=>document.querySelectorAll('.provisional').length>0);return page.locator('#turn-id').inputValue();};
+ const begin=async(caseName,waitPreview=true)=>{await page.locator('#new-session').click();await page.locator('#turn-permissions summary').click();await page.locator('#turn-tools input[value="file_write"]').check();await page.locator('#message').fill(caseName);await page.locator('#send').click();if(waitPreview)await page.waitForFunction(()=>document.querySelectorAll('.provisional').length>0);else await page.waitForFunction(()=>document.getElementById('turn-id').value.length===36);return page.locator('#turn-id').inputValue();};
  const finish=async()=>{await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);await page.locator('#turn-finish').click();};
  const releaseAndCheck=async(caseName,id)=>{await ctl('release',caseName);await until(async()=>{const s=await ctl('status',caseName);const r=await fetch(base+'/api/turns/'+id,{headers:{Authorization:'Bearer '+token}});const value=await r.json();return s.rows.some(r=>r.id===id&&r.state!=='running')&&!value.active},'actual terminal');await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-abandon').disabled);};
  try {
@@ -35,7 +35,37 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   const id=await page.locator('#turn-id').inputValue();let s=await ctl('status','stream-tools');
   assert.strictEqual(s.count,1);assert(s.rows.some(r=>r.id===id&&r.state==='running'&&r.session_committed===0));assert.strictEqual(s.effects.length,0);assert(s.ledger.some(r=>r.turn_id===id&&r.state==='submitting'));
   assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
-  await ctl('release','stream-tools');await finish();
+  assert.strictEqual(await page.locator('#turn-observed-steps li').count(),1);
+  assert((await page.locator('#turn-observed-steps').textContent()).includes('模型请求已提交'));
+  assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
+  // A manual running GET must not make the later done receipt fresh. Hold the
+  // original final GET, preserving its original 15-second transport budget.
+  await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled&&document.getElementById('turn-state').textContent.includes('处理中'));
+  let finalReadRequested=false,finalReadDelivered=false,releaseFinalRead;
+  const finalReadGate=new Promise(resolve=>{releaseFinalRead=resolve;});
+  await page.route('**/api/turns/'+id,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    const response=await route.fetch({maxRetries:0,maxRedirects:0});finalReadRequested=true;
+    await finalReadGate;await route.fulfill({response});finalReadDelivered=true;
+  });
+  await ctl('release','stream-tools');await until(()=>finalReadRequested,'actual final GET blocked');
+  try {
+    assert.strictEqual(finalReadDelivered,false);assert.strictEqual(await page.locator('#turn-observed-steps li').count(),5);
+    assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0,'done cannot inherit manual running GET freshness');
+    assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
+  } finally {releaseFinalRead();}
+  await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);await page.unroute('**/api/turns/'+id);
+  const observed=await page.locator('#turn-observed-steps li').allTextContents();
+  assert.strictEqual(observed.length,5);assert(observed[0].includes('第 1 轮')&&observed[0].includes('请求已提交'));
+  assert(observed[1].includes('第 1 轮')&&observed[1].includes('收据已保存'));
+  assert(observed[2].includes('工具已返回')&&observed[2].includes('file_write'));
+  assert(observed[3].includes('第 2 轮')&&observed[3].includes('请求已提交'));
+  assert(observed[4].includes('第 2 轮')&&observed[4].includes('收据已保存'));
+  assert.deepStrictEqual(await page.locator('#turn-saved-tools li').allTextContents(),['file_write']);
+  assert((await page.locator('#turn-observed-note').textContent()).includes('不代表成功'));
+  await finish();assert.strictEqual(await page.locator('#turn-observed-steps li').count(),0);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
+  console.log('PASS task activity standalone: actual two model rounds, returned file tool, original saved tool order, finish clears private steps');
+  console.log('PASS task activity original GET gate: manual running lookup plus actual done cannot show saved tools before final GET delivery; original deadline and execution retained');
   s=await ctl('status','stream-tools');assert.strictEqual(s.count,2);assert.deepStrictEqual(s.effects,['stream-tools.txt']);assert.strictEqual(await page.locator('.provisional').count(),0);assert((await page.locator('#messages').textContent()).includes('最终🦀回复'));assert.strictEqual(await page.locator('#message').inputValue(),'');
   assert.deepStrictEqual(submissions[0].body.enabled_tools,['file_write']);assert.deepStrictEqual(submissions[0].body.enabled_skills,[]);assert.strictEqual(submissions[0].auth,'Bearer '+token);
   console.log('PASS web stream 1: authenticated gated preview before commit, explicit permissions, two native rounds and stored Unicode result');
@@ -128,6 +158,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   if(!await oldButton.count()){await page.locator('#turn-catalog-next').click();await page.waitForFunction(()=>document.getElementById('turn-catalog-status').textContent.startsWith('第 6'));}
   await oldButton.click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled&&(document.getElementById('turn-state').textContent.includes('正文已清理')));
   assert.strictEqual(await page.locator('#turn-finish').isDisabled(),false);assert((await page.locator('#turn-state').textContent()).includes('历史不可读取'));
+  assert.strictEqual(await page.locator('#turn-observed-steps li').count(),0);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);assert((await page.locator('#turn-saved-note').textContent()).includes('已清理'));console.log('PASS task activity purge: actual original result purge exposes no fabricated or restored tool records');
   assert.strictEqual(await page.locator('#messages .message').count(),0);assert.strictEqual(await page.locator('#session-title').textContent(),'原请求历史不可读取');await finish();
   assert.strictEqual(submissions.length,beforeHistoryLookup);assert.strictEqual((await ctl('status','stream-tools')).count,2);
   // A protocol fault is different from the actual authenticated 404 above.
@@ -139,6 +170,35 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   }
   console.log('PASS web stream 12: actual completed history deletion and result purge retain original identity, no fabricated history or permanent UI hold, no replay');
 
+  // Metadata fault fixture crosses the real authenticated browser transport.
+  // The original task executes once with zero tools; injected rows certify
+  // display bounds/text handling only, never actual extra tool execution.
+  await page.route('**/api/turns/*/stream',async route=>{
+    const response=await route.fetch({maxRetries:0,maxRedirects:0});assert.strictEqual(response.status(),202);
+    let body=await response.text();
+    body=body.replace(/event: model_started\ndata: ([^\n]+)/,(_all,raw)=>{const v=JSON.parse(raw);v.model='<img src=x onerror="window.ACTIVITY_XSS=1">'+'x'.repeat(900);return 'event: model_started\ndata: '+JSON.stringify(v);});
+    const extra=Array.from({length:130},(_,i)=>({event:'tool_completed',round:0,tool_call_id:'display-'+i,tool_name:'file_write'})).map(v=>`event: ${v.event}\ndata: ${JSON.stringify(v)}\n\n`).join('');
+    body=body.replace('event: done\n',extra+'event: done\n');await route.fulfill({response,body});
+  });
+  await page.route('**/api/turns/*',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    const response=await route.fetch({maxRetries:0,maxRedirects:0}),v=await response.json();
+    v.receipt.result.tool_names=Array(2048).fill('file_write');await route.fulfill({response,json:v});
+  });
+  const bounds=await begin('activity-display-bounds',false);await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);
+  assert.strictEqual(await page.locator('#turn-observed-steps li').count(),128);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),128);
+  assert((await page.locator('#turn-observed-note').textContent()).includes('132 条'));assert((await page.locator('#turn-saved-note').textContent()).includes('2048 次'));
+  assert.strictEqual(await page.locator('#turn-activity img').count(),0);assert.strictEqual(await page.evaluate(()=>typeof window.ACTIVITY_XSS),'undefined');
+  await page.locator('#turn-activity summary').click();await page.setViewportSize({width:380,height:900});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  const originalBounds=await fetch(base+'/api/turns/'+bounds,{headers:{Authorization:'Bearer '+token}}).then(r=>r.json());
+  assert.deepStrictEqual(originalBounds.receipt.result.tool_names,[]);assert.strictEqual((await ctl('status','activity-display-bounds')).count,1);
+  const boundsPuts=submissions.length;await page.unroute('**/api/turns/*');
+  await page.route('**/api/turns/*',route=>route.request().method()==='GET'?route.fulfill({status:500,contentType:'application/json',body:'{"error":"display read fault"}'}):route.continue());
+  await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-check').disabled&&document.getElementById('status').textContent.includes('display read fault'));
+  assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);assert.strictEqual(await page.locator('#turn-observed-steps li').count(),128);assert.strictEqual(await page.locator('#turn-finish').isDisabled(),true);
+  await page.unroute('**/api/turns/*');await page.unroute('**/api/turns/*/stream');await page.locator('#turn-check').click();await finish();assert.strictEqual(submissions.length,boundsPuts);
+  console.log('PASS task activity display contract: 128 observed/128 saved row limits, explicit 132/2048 counts, text-only model metadata and mobile wrapping, failed GET clears saved facts, original zero-tool task executes once');
+
   // Malformed transport is a frontend contract fault fixture, not a supplier test.
   await page.route('**/api/turns/*/stream',route=>{const body=route.request().postDataJSON(),rid=new URL(route.request().url()).pathname.split('/')[3];const receipt={id:rid,session_id:body.session_id,request_hash:'a'.repeat(64),context_hash:'b'.repeat(64),created_ms:1,finished_ms:null,state:'running',session_committed:false,error:null,result:null,result_purged:false,cancel_requested:false,reviewed_ms:null,review_note:null};const values=[{event:'admitted',protocol:1,receipt},{event:'model_started',turn_id:rid,operation_id:rid,remote_id:rid,round:0,model:'fixture'},{event:'preview',round:0,text:'<img src=x onerror="window.STREAM_XSS=1">临时🦀'}];return route.fulfill({status:202,headers:{'Content-Type':'text/event-stream; charset=utf-8'},body:values.map(v=>`event: ${v.event}\ndata: ${JSON.stringify(v)}\n\n`).join('')+'event: done\ndata: {"event":"done"'});});
   await begin('browser-corrupt');await page.waitForFunction(()=>document.getElementById('status').textContent.includes('勿重复执行'));
@@ -149,6 +209,7 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
   await page.locator('#api-token').fill('invalid-other-identity');await page.locator('#connect-form button').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('鉴权失败'));await ctl('release','browser-identity');
   await until(async()=>{const r=await fetch(base+'/api/turns/'+identityId,{headers:{Authorization:'Bearer '+token}});const v=await r.json();return v.receipt.state!=='running'&&!v.active},'old identity actual settlement');
   assert.strictEqual(await page.locator('#messages .message').count(),0);assert.strictEqual(await page.locator('#turn-id').inputValue(),'');assert.strictEqual(await page.locator('#message').inputValue(),'');assert.strictEqual(await page.evaluate(()=>location.hash),'');
+  assert.strictEqual(await page.locator('#turn-observed-steps li').count(),0);assert.strictEqual(await page.locator('#turn-saved-tools li').count(),0);
   assert.deepStrictEqual(errors,[]);assert.strictEqual((await ctl('status','browser-identity')).faults.length,0);
   console.log('PASS web stream 5: partial terminal never saves/replays, text-only XSS/mobile bounds and stale identity clears delivery');
  } finally {await browser.close();}

@@ -1,0 +1,11 @@
+Spec closure: 0 outstanding product or external-driver findings.
+
+Affirmed the final fresh eight-path `f9b5555233e01b27b4141a496f36183579b9f7c4...3f0040894bb9db70170415bff52f87399f8d920c` diff. Since the independently reviewed `a786d958` implementation, only the browser fixture changed: `begin` retains its real-preview wait by default; only buffered `activity-display-bounds` waits for the original UUID. Its original 30-second wait, final completion, 132/2048 counts, independent 128-row caps, text injection/mobile, actual zero-tool/single-model-call and no-extra-PUT assertions remain intact. No product witness was weakened.
+
+The earlier execution `8586` exited 1 on a transient `.provisional` wait in this buffered metadata fixture, after the original-GET race check passed. This is recorded as a fixture wait failure, not product or supplier failure. Root execution `50649` subsequently exited 0 across all three actual browser suites; complete logs and result JSON were independently inspected. Synthetic metadata proves display handling only. The production `d938365a…` binary and 109 compiled-input hashes remain byte-identical and match final head/tree `cde84505…`; the original `a786` report/identity and RED/GREEN evidence remain unchanged.
+
+Separately preserved old external-driver `93843c75…` findings and accepted probes. Repaired driver `f9f75da6a2c138e03c9ffdf3e121961c2302778e332a68b8779f16456bd60651` independently matches the three fixed Actions commands, rejects additional/wrong family commands, enforces globally unique markers/completions and suite ownership/internal ordering. All 157 inherited AST assertions are unchanged; three new guards give 160 total. Both a valid synthetic block and wrapped actual three-suite logs pass; 12 negative cases, including all three original counterexamples, are rejected. These are driver checks, not official CI/product qualification.
+
+No source edits, other-axis reads or product reruns were needed for this closure. Official seven-job/four-candidate, supplier, durable and Agent-browser qualification remain separate.
+
+Evidence: `/tmp/jiaclaw-oct12-task-activity-spec-closure-driver-final-probe.json`; initial driver findings in `/tmp/jiaclaw-oct12-task-activity-spec-driver-initial.md`.

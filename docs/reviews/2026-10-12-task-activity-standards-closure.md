@@ -1,0 +1,5 @@
+Standards fixture closure: `git diff a786d958274a173094921b5902b1e7bbd84be309...3f0040894bb9db70170415bff52f87399f8d920c` changes only `tests/turn_stream_browser.cjs`. **0 documented violations;0 actionable heuristic findings.**
+
+`begin(caseName,waitPreview=true)` retains the original real-preview wait by default; only `begin('activity-display-bounds',false)` waits for the original UUID because this explicit metadata fixture buffers its complete stream before delivery. The ordinary30s browser waits, original final-GET15s gate,132/2048 totals,128-row caps, no-XSS/mobile checks, original zero-tool receipt and one-model-count assertion are unchanged. This preserves the bounded real-versus-injected evidence separation documented in `docs/web-streaming.md:19–21` and the production-quality AGENTS rule; the flag serves an existing concrete case.
+
+Final head3f004089/treecde84505 is clean; all109 compiler inputs match unchanged production builda786 and binarySHAd938365a. Separate closure identity errors=[]; no product execution or source edits by this axis. Initial raw report remains untouched.

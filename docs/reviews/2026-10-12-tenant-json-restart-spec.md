@@ -1,0 +1,11 @@
+Spec review: 0 outstanding findings for source fixture/docs and repaired external driver.
+
+Reviewed only `772a3310bec7e9e88bd473b008fa838fa3c2501b...762e4e39164baaa7c9c82a074ecf505eb473cd66`, tree `2a30868e147c319c6975cdb09aa0f54a219aafa0`. `docs/tenant-json-restart-admission.md:3` requires “两项核对共享原 restart gate 的 15 秒绝对截止”. The fixture anchors one deadline before prior-hold settlement, passes remaining time into each original `until`, rejects late returned settlement/admission, and retains the original SIGKILL/UUID/review-hold/no-replay/other-user matrix. No redispatch, hold-clearing, deadline relaxation or unrequested runtime change found.
+
+Independent controlled session `24081` exited 0 on unchanged `d938365a…`, custom Chromium `153.0.8010.12`: prior completed receipt still had its actual in_flight hold; after the original 1.5-second observer delay, settlement plus next admission took 1342 ms within the shared 15000 ms, model posts were exactly 1+1. Real restart retained the next UUID's needs_review hold with zero replay. Page-error and fixture-fault assertions passed. This was one bounded controlled case, not full-suite/supplier/CI certification. Root full/controlled logs and original RED provenance were independently inspected, with the historical CI cause still explicitly unknown.
+
+Initial external-driver P3 is preserved separately: `ac05…` accepted receipt/PASS5/PASS6 borrowed from the preceding standalone segment. Repaired `ae56e44333651a630f719bd0039a6fb582f3f6fed2abb684cca9bf483e2bfce0` requires the unique owned JSON start before PASS5/receipt/PASS6/completion. The same counterexample now rejects. All 160 original assertion ASTs are identical; one new site gives 161. Independent synthetic checks passed three positives and rejected 51 typed/structural/order cases; they qualify only the driver.
+
+All 109 compiler inputs remain identical; no Rust/build/paid calls or source/pin/Git edits. Original 1310/cumulative reviews and old-head six successes/four candidates are inherited records. New-head official qualification remains required.
+
+Evidence: `/tmp/jiaclaw-oct12-round77-restart-spec-controlled-green.log`, `/tmp/jiaclaw-oct12-round77-restart-spec-driver-final-probe.json`; initial finding `/tmp/jiaclaw-oct12-round77-restart-spec-initial-driver.md`.

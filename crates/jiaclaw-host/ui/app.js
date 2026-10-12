@@ -647,7 +647,46 @@ const trackedSession = () => typeof selected === 'string' && selected.startsWith
 const tenantTurns = () => turnCapabilities?.scope === 'gateway';
 const turnWritable = () => !readOnly && turnCapabilities?.enabled && (tenantTurns() || turnCapabilities?.streaming);
 const turnResolved = () => pendingTurn?.fresh && !pendingTurn.active && (pendingTurn.receipt?.state === 'completed' || pendingTurn.receipt?.reviewed_ms != null);
+// Observed delivery and persisted tool records are separate facts. Neither
+// authorizes dispatch or changes the original receipt/hold decision.
+const TURN_ACTIVITY_ROWS = 128;
+function clearTurnActivity() {
+  $('turn-activity').hidden = true; $('turn-activity').open = false;
+  for (const id of ['turn-observed-steps','turn-saved-tools','turn-observed-note','turn-saved-note']) $(id).replaceChildren();
+}
+function renderTurnActivity() {
+  const attempt = pendingTurn;
+  $('turn-activity').hidden = !attempt;
+  if (!attempt) return;
+  $('turn-observed-note').textContent = attempt.observedSteps
+    ? `本页已观察 ${attempt.observedSteps} 条事件${attempt.observedSteps > TURN_ACTIVITY_ROWS ? `，仅显示前 ${TURN_ACTIVITY_ROWS} 条` : ''}。记录可能不完整；工具返回不代表成功，也不证明外部效果。`
+    : '本页尚未观察到执行事件。刷新或 JSON 请求不恢复实时步骤；空列表不表示没有执行。';
+  $('turn-saved-tools').replaceChildren();
+  // A failed or stale read cannot leave old tools labelled as current facts.
+  const result = attempt.fresh ? attempt.receipt?.result : null;
+  $('turn-saved-note').textContent = result
+    ? `原收据保存 ${result.tool_names.length} 次工具记录${result.tool_names.length > TURN_ACTIVITY_ROWS ? `，仅显示前 ${TURN_ACTIVITY_ROWS} 次` : ''}，按原顺序展示。名称不包含参数、结果或成功判定。`
+    : attempt.fresh && attempt.receipt?.result_purged ? '原收据确认结果正文已清理；无法恢复工具记录。'
+      : '当前尚无已核对的工具记录；可能仍在执行、需要人工核对或读取未确认。';
+  for (const name of result?.tool_names.slice(0, TURN_ACTIVITY_ROWS) || []) {
+    const row = document.createElement('li'); row.textContent = name; $('turn-saved-tools').append(row);
+  }
+}
+function observeTurnActivity(attempt, value) {
+  if (pendingTurn !== attempt) return;
+  let text;
+  if (value.event === 'model_started') text = `第 ${value.round + 1} 轮 · 模型请求已提交 · ${value.model}`;
+  else if (value.event === 'model_completed') text = `第 ${value.round + 1} 轮 · 模型收据已保存`;
+  else if (value.event === 'tool_completed') text = `第 ${value.round + 1} 轮 · 工具已返回 · ${value.tool_name}`;
+  else return;
+  attempt.observedSteps++;
+  if (attempt.observedSteps <= TURN_ACTIVITY_ROWS) {
+    const row = document.createElement('li'); row.textContent = text; $('turn-observed-steps').append(row);
+  }
+  renderTurnActivity();
+}
 function turnControls() {
+  renderTurnActivity();
   $('turn-workspace').hidden = !connected || !turnCapabilities || (readOnly && !tenantTurns());
   $('turn-permissions').hidden = !trackedSession() || !turnWritable();
   $('chat-note').textContent = trackedSession() ? (turnCapabilities?.streaming ? '实时文字为临时预览；按原编号核对已保存结果。' : '回复按原编号保存在服务端；本页观察结束后仍可核对。') : '回复完成后显示；支持工具调用。';
@@ -679,6 +718,7 @@ function turnControls() {
   for (const button of $('turn-catalog-rows').querySelectorAll('button')) button.disabled = catalogDisabled || held;
 }
 function forgetTurns() {
+  clearTurnActivity();
   turnConnection?.abort(); turnConnection = null; turnControlBusy = false; pendingTurn = null; turnCapabilities = null;
   turnCatalogPage = null; $('turn-catalog').open = false; $('turn-catalog').hidden = true;
   $('turn-catalog-filter').value = 'unresolved'; $('turn-catalog-rows').replaceChildren(); $('turn-catalog-status').textContent = '';
@@ -688,7 +728,8 @@ function forgetTurns() {
   $('turn-workspace').hidden = true; $('turn-tracking').hidden = true; $('turn-permissions').open = false;
 }
 function trackTurn(id, body = null, session = null) {
-  pendingTurn = {id, body, session_id:body?.session_id || session, receipt:null, active:false, fresh:false};
+  clearTurnActivity();
+  pendingTurn = {id, body, session_id:body?.session_id || session, receipt:null, active:false, fresh:false, observedSteps:0};
   if (tenantTurns()) { selected = body?.session_id || null; renderMessages([]); $('session-title').textContent = '原请求结果'; }
   history.replaceState(null, '', location.pathname + location.search + '#turn=' + id);
   $('turn-id').value = id; $('turn-review-note').value = ''; $('turn-review').open = false;
@@ -841,6 +882,7 @@ function previewRenderer(owner, attempt) {
   let current = null, total = 0, frame = null;
   const flush = () => { frame = null; if (owner === identity && pendingTurn === attempt && current) { current.node.textContent = current.text + (current.truncated ? '\n[预览显示已截断；请核对服务端最终记录]' : ''); $('messages').scrollTop = $('messages').scrollHeight; } };
   const renderer = value => {
+    observeTurnActivity(attempt, value);
     if (value.event === 'model_started') {
       if (frame !== null) { cancelAnimationFrame(frame); flush(); }
       const article = document.createElement('article'), role = document.createElement('div'), node = document.createElement('p');
@@ -927,7 +969,7 @@ async function streamTurn(attempt) {
       if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
       if (tenantTurns() && ['admitted','done'].includes(value.event)) Turn.gatewaySnapshot({protocol:value.protocol,receipt:value.receipt,active:value.event === 'admitted'}, attempt.receipt || attempt);
       if (value.event === 'admitted') { attempt.receipt = value.receipt; attempt.active = true; $('turn-state').textContent = '已准入原请求；临时预览尚未保存。'; controls(); }
-      else if (value.event === 'done') { attempt.receipt = value.receipt; done = true; controls(); }
+      else if (value.event === 'done') { attempt.fresh = false; attempt.receipt = value.receipt; done = true; controls(); }
       else if (value.event === 'error') throw new Error('交付停止，原模型或工具可能仍在结算。');
       else render(value);
     });
@@ -986,7 +1028,7 @@ $('turn-abandon').addEventListener('click', () => turnControl(async attempt => {
 $('turn-finish').addEventListener('click', () => {
   if (!turnResolved() || turnConnection) return;
   if (pendingTurn.body && $('message').value.trim() === pendingTurn.body.prompt) $('message').value = '';
-  pendingTurn = null; history.replaceState(null,'',location.pathname + location.search); controls();
+  clearTurnActivity(); pendingTurn = null; history.replaceState(null,'',location.pathname + location.search); controls();
 });
 addEventListener('pagehide', () => turnConnection?.abort());
 
