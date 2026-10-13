@@ -1,3 +1,4 @@
+const {textInputTask}=require('./text_task_input.cjs');
 const {downloadExact, rejectDownloadChanges}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright');
 const assert=require('assert'), fs=require('fs'), crypto=require('crypto');
@@ -15,6 +16,10 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
  const finish=async()=>{await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);await page.locator('#turn-finish').click();};
  const releaseAndCheck=async(caseName,id)=>{await ctl('release',caseName);await until(async()=>{const s=await ctl('status',caseName);const r=await fetch(base+'/api/turns/'+id,{headers:{Authorization:'Bearer '+token}});const value=await r.json();return s.rows.some(r=>r.id===id&&r.state!=='running')&&!value.active},'actual terminal');await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-abandon').disabled);};
  try {
+  if(process.env.JIACLAW_TEST_TEXT_INPUT_ONLY==='1'){
+  await textInputTask(browser,{base,token,mode:"standalone",tool:"file_write",inspect:async prompt=>{const v=await ctl("status",prompt);return {...v,posts:v.posts.filter(p=>p.case===prompt)};},reply:()=>"最终🦀回复"});
+  return;
+  }
   await page.goto(base);
   // Synthetic tool DTOs exercise only the catalog/selection wire contract;
   // the 20 skills below are really installed and discovered by the server.

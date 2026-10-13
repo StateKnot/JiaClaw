@@ -9,6 +9,7 @@ let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
 let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = null;
 let semanticReviewEnabled = false;
+let textFileReader = null, textImportEpoch = 0;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -49,8 +50,11 @@ function controls() {
   for (const element of $('memory-edit-form').querySelectorAll('button,input,textarea')) element.disabled = !connected || readOnly || busy || !memoryEditEnabled || !memorySnapshot;
   $('memory-save').disabled ||= !$('memory-reviewed').checked;
   turnControls();
+  $('text-file').disabled = $('message').disabled || $('message').readOnly || busy;
+  $('text-file-add').disabled = $('text-file').disabled || $('text-file').files.length !== 1;
 }
 function clearIdentity() {
+  clearTextImport();
   forgetTurns(); identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
   sessionNext = null;
   $('access-mode').hidden = true; $('job-create').hidden = false;
@@ -72,6 +76,48 @@ function clearIdentity() {
   for (const id of ['jobs-list', 'job-runs', 'job-title', 'job-summary', 'job-detail-prompt', 'job-detail-contract', 'jobs-count', 'jobs-health', 'job-create-id', 'job-create-state']) $(id).replaceChildren();
   renderMessages([]); renderSessions();
 }
+function clearTextImport() {
+  textImportEpoch++;
+  textFileReader?.abort(); textFileReader = null;
+  $('text-file').value = ''; $('text-file-state').textContent = '';
+}
+$('text-file').addEventListener('change', () => { textImportEpoch++; $('text-file-state').textContent = ''; controls(); });
+$('text-file-add').addEventListener('click', () => {
+  if ($('message').disabled || $('message').readOnly || busy || $('text-file').files.length !== 1) return;
+  const file = $('text-file').files[0], owner = identity, session = selected, draft = $('message').value, epoch = textImportEpoch;
+  task(async () => {
+    if (!/\.(txt|md|csv|json|log)$/i.test(file.name) || /[\p{Cc}\p{Bidi_Control}/\\]/u.test(file.name) || new TextEncoder().encode(file.name).length > 128) throw new Error('请选择名称不超过 128 UTF-8 字节的 .txt、.md、.csv、.json 或 .log 文本文件。');
+    if (!file.size || file.size > 16384) throw new Error('文本资料须为 1–16384 字节；超过上限不会截取或加入草稿。');
+    const reader = new FileReader(), deadline = performance.now() + 5000; textFileReader = reader; let timer, timedOut = false;
+    let bytes;
+    try {
+      bytes = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('无法读取所选文件；原草稿已保留。'));
+        reader.onabort = () => reject(timedOut ? new Error('文本资料读取超过 5 秒；原草稿已保留。') : new StaleIdentity());
+        timer = setTimeout(() => { timedOut = true; reader.abort(); }, 5000);
+        reader.readAsArrayBuffer(file);
+      });
+    } finally {
+      clearTimeout(timer); reader.onload = reader.onerror = reader.onabort = null;
+      if (textFileReader === reader) textFileReader = null;
+    }
+    if (owner !== identity || session !== selected || epoch !== textImportEpoch || draft !== $('message').value) throw new StaleIdentity();
+    if (performance.now() >= deadline) throw new Error('文本资料读取超过 5 秒；原草稿已保留。');
+    if (!(bytes instanceof ArrayBuffer) || bytes.byteLength !== file.size || bytes.byteLength > 16384) throw new Error('文本资料未完整读取；原草稿已保留。');
+    let text;
+    try { text = new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes); }
+    catch { throw new Error('文件不是完整 UTF-8 文本；原草稿已保留。'); }
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error('文本含不支持的控制字符；原草稿已保留。');
+    text = text.replace(/\r\n?/g, '\n');
+    const next = draft + (draft ? '\n\n' : '') + `[用户提供的文本资料：${file.name}]\n${text}\n[资料结束]`;
+    if (!next.isWellFormed() || new TextEncoder().encode(next).length > 32768) throw new Error('加入资料后的完整消息超过 32 KiB UTF-8 上限或含非法 Unicode；原草稿已保留。');
+    if (performance.now() >= deadline) throw new Error('文本资料读取超过 5 秒；原草稿已保留。');
+    $('message').value = next; $('text-file').value = '';
+    $('text-file-state').textContent = `已加入草稿：${file.name}（原文件 ${file.size} 字节）。请审阅后再发送。`;
+    status('文本资料已加入可编辑草稿；尚未发送。');
+  });
+});
 async function api(path, method = 'GET', body, optional = false, timeout = 0, maxBytes = 0, parentSignal = null) {
   if (readOnly && method !== 'GET') throw new ApiError('当前密钥仅允许查看；修改内容或运行模型需要完整权限密钥。', 403);
   const owner = identity, credential = token, controller = new AbortController();
@@ -232,6 +278,7 @@ $('session-next').addEventListener('click', () => task(async () => { if (session
 $('new-session').addEventListener('click', () => task(async () => {
   if (!connected || readOnly) return;
   if (pendingTurn) return;
+  clearTextImport();
   if (turnWritable()) { $('turn-permissions').open = false; for (const input of $('turn-permissions').querySelectorAll('input')) input.checked = false; selected = 'http:' + createId(); $('session-title').textContent = `会话 ${selected.slice(0,17)}`; renderMessages([]); if (!tenantTurns()) await refresh(); showView('chat'); status('新会话就绪；请显式选择本次允许的工具。'); return; }
   const data = await api('/api/sessions', 'POST'); await refresh(); await select(data.session_id);
 }));

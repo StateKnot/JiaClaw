@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real Chromium + two private backends/gateway/registry/model; no vendor calls."""
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -37,7 +38,7 @@ class App:
     def status(self,who,prompt):
         with f.lock: records=[p for p in f.posts if p['who']==who and p['prompt']==prompt];gate=f.gates.get((who,prompt))
         b=self.backends[who]
-        return {'count':len(records),'ready':bool(gate and gate['ready'].is_set()),'rows':f.sql(b['db'],'SELECT id,session_id,state,session_committed,cancel_requested,reviewed_ms FROM http_turns'),
+        return {'count':len(records),'posts':[p['body'] for p in records],'ready':bool(gate and gate['ready'].is_set()),'rows':f.sql(b['db'],'SELECT id,session_id,state,session_committed,cancel_requested,reviewed_ms FROM http_turns'),
                 'holds':f.sql(self.registry,'SELECT request_id,state FROM write_holds WHERE user_id=?',(self.users[who]['user_id'],)), 'faults':f.faults}
     def review(self,who,identity):
         b=self.backends[who];code,value,_=f.request(b['port'],'/api/turns/'+identity,b['token'],marker=True)
@@ -72,7 +73,7 @@ try:
         assert not sys.argv[2:] or preview, 'only --preview is supported'
         script = 'tests/tenant_http_preview_browser.cjs' if preview else 'tests/tenant_http_browser.cjs'
         r=subprocess.run(['node',script,str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
-        print('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS',flush=True)
+        print('TEXT INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else ('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS'),flush=True)
 finally:
     for gate in f.gates.values():gate['release'].set()
     for p in reversed(f.processes):f.stop(p)
