@@ -363,7 +363,8 @@ def verification_and_parts():
             nonce = base64.urlsafe_b64encode(uuid.UUID(row['id']).bytes).decode().rstrip('=')
             assert post['body']['nonce'] == nonce and row['receipt']
         assert [row['method'] for row in s.requests] == ['GET', 'GET', 'POST'] * len(rows)
-        assert s.sql('PRAGMA user_version')[0]['user_version'] == 11
+        # Scheduled delivery shares the host's current session schema.
+        assert s.sql('PRAGMA user_version')[0]['user_version'] == 12
 
 
 def persisted_cooldowns():
