@@ -65,6 +65,7 @@ jobs:
       - run: python3 tests/semantic_check.py target/debug/jiaclaw
       - run: python3 tests/semantic_review.py target/debug/jiaclaw
       - run: python3 tests/model_routing.py target/debug/jiaclaw
+      - run: python3 tests/task_feedback.py target/debug/jiaclaw
       - run: python3 tests/model_calls.py target/debug/jiaclaw
       - run: python3 tests/cli_stream.py target/debug/jiaclaw
       - run: python3 tests/http_turns.py target/debug/jiaclaw
@@ -124,6 +125,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/text_task_input.py target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/text_task_input.py target/debug/jiaclaw --tenant-json
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/text_task_input.py target/debug/jiaclaw --tenant-preview
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/task_feedback.py target/debug/jiaclaw --browser
       - name: Real container sandbox acceptance
         if: runner.os == 'Linux'
         env:

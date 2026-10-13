@@ -386,6 +386,7 @@ pub(super) async fn capabilities(
         )
         .map_err(|_| AppError::HttpTurnUnavailable)?;
     }
+    value["feedback_protocol"] = json!(if state.http_turns.is_some() { 1 } else { 0 });
     if let Some(permission) = state
         .agent
         .tenant_skill_read_capability()
@@ -829,6 +830,46 @@ pub(super) async fn purge_result(
     authorize(&state, &headers)?;
     validate_id(&id)?;
     let receipt = control(&state, move |store| store.purge_http_result(&id)).await?;
+    Ok(receipt_response(&state, &receipt, StatusCode::OK))
+}
+
+pub(super) async fn feedback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Response, AppError> {
+    authorize(&state, &headers)?;
+    validate_id(&id)?;
+    let runtime = state
+        .http_turns
+        .clone()
+        .ok_or(AppError::HttpTurnUnavailable)?;
+    let mut types = headers.get_all(axum::http::header::CONTENT_TYPE).iter();
+    if !types.next().and_then(|v| v.to_str().ok()).is_some_and(|v| {
+        v.split(';')
+            .next()
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
+    }) || types.next().is_some()
+    {
+        return Err(AppError::BadRequest("JSON feedback required".into()));
+    }
+    let bytes = match read_body(&state, request).await {
+        Ok(b) => b,
+        Err(r) => return Ok(r),
+    };
+    let body: super::http_turn_store::FeedbackRequest = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("invalid_http_turn_feedback".into()))?;
+    if !body.validate() {
+        return Err(AppError::BadRequest("invalid_http_turn_feedback".into()));
+    }
+    let receipt = control(&state, move |store| {
+        if runtime.is_active(&id) {
+            return Err(super::http_turn_store::Conflict("http_turn_active").into());
+        }
+        store.feedback_http_turn(&id, &body)
+    })
+    .await?;
     Ok(receipt_response(&state, &receipt, StatusCode::OK))
 }
 

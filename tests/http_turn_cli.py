@@ -178,11 +178,11 @@ try:
         bad.write_bytes(b'not a SQLite database at all'); bad.chmod(0o600)
         command(bad, 'list', error='requires an existing SQLite database')
         assert bad.read_bytes() == b'not a SQLite database at all'
-        for version in (10, 12):
+        for version in (10, 13):
             app.sql(f'PRAGMA user_version={version}', write=True)
             command(app.db, 'list', error='requires schema 11')
             assert app.sql('PRAGMA user_version')[0]['user_version'] == version
-        app.sql('PRAGMA user_version=11', write=True)
+        app.sql('PRAGMA user_version=12', write=True)
         app.sql('PRAGMA journal_mode=DELETE', write=True)
         command(app.db, 'list', error='requires an existing WAL database')
         assert app.sql('PRAGMA journal_mode')[0]['journal_mode'] == 'delete'

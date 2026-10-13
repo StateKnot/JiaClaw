@@ -41,6 +41,65 @@ CREATE UNIQUE INDEX http_turn_one_unresolved ON http_turns(session_id)
 PRAGMA user_version=11;
 ";
 
+pub(super) const SCHEMA_V12: &str = "
+ALTER TABLE http_turns ADD COLUMN feedback_revision INTEGER NOT NULL DEFAULT 0 CHECK(feedback_revision BETWEEN 0 AND 2147483647);
+ALTER TABLE http_turns ADD COLUMN feedback TEXT CHECK(feedback IS NULL OR (json_valid(feedback) AND length(CAST(feedback AS BLOB))<=8192));
+PRAGMA user_version=12;
+";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FeedbackDecision {
+    Usable,
+    NeedsChanges,
+    Clear,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FeedbackRequest {
+    pub expected_revision: u32,
+    pub decision: FeedbackDecision,
+    pub note: String,
+}
+impl FeedbackRequest {
+    pub(super) fn validate(&self) -> bool {
+        self.expected_revision < 2_147_483_647
+            && self.note.len() <= 1024
+            && self
+                .note
+                .chars()
+                .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+            && (self.decision != FeedbackDecision::Clear || self.note.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Feedback {
+    pub revision: u32,
+    pub decision: FeedbackDecision,
+    pub note: String,
+    pub updated_ms: i64,
+}
+impl Feedback {
+    pub(super) fn validate(&self, revision: u32) -> bool {
+        self.revision == revision
+            && revision > 0
+            && self.updated_ms >= 0
+            && self.decision != FeedbackDecision::Clear
+            && FeedbackRequest {
+                expected_revision: revision - 1,
+                decision: self.decision.clone(),
+                note: self.note.clone(),
+            }
+            .validate()
+    }
+}
+fn zero_revision(value: &u32) -> bool {
+    *value == 0
+}
+
 #[derive(Debug)]
 pub(super) struct Conflict(pub &'static str);
 impl std::fmt::Display for Conflict {
@@ -67,6 +126,10 @@ pub(super) struct Receipt {
     pub cancel_requested: bool,
     pub reviewed_ms: Option<i64>,
     pub review_note: Option<String>,
+    #[serde(default, skip_serializing_if = "zero_revision")]
+    pub feedback_revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<Feedback>,
 }
 
 /// Discovery metadata only. Never load retained result bodies or authorization
@@ -85,13 +148,54 @@ pub(super) struct Summary {
 }
 
 fn lookup(conn: &Connection, id: &str) -> Result<Option<Receipt>> {
-    let row = conn.query_row("SELECT id,session_id,request_hash,context_hash,created_ms,finished_ms,state,session_committed,error,result,result_purged,reviewed_ms,review_note,cancel_requested FROM http_turns WHERE id=?1", [id], |row| {
-        Ok((Receipt { id:row.get(0)?, session_id:row.get(1)?, request_hash:row.get(2)?, context_hash:row.get(3)?, created_ms:row.get(4)?, finished_ms:row.get(5)?, state:row.get(6)?, session_committed:row.get(7)?, error:row.get(8)?, result:None, result_purged:row.get(10)?, reviewed_ms:row.get(11)?, review_note:row.get(12)?, cancel_requested:row.get(13)? }, row.get::<_,Option<String>>(9)?))
-    }).optional()?;
-    row.map(|(mut receipt, result)| {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let columns = if version == 11 {
+        "0,NULL"
+    } else {
+        "feedback_revision,feedback"
+    };
+    let query = format!("SELECT id,session_id,request_hash,context_hash,created_ms,finished_ms,state,session_committed,error,result,result_purged,reviewed_ms,review_note,cancel_requested,{columns} FROM http_turns WHERE id=?1");
+    let row = conn
+        .query_row(&query, [id], |row| {
+            Ok((
+                Receipt {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    request_hash: row.get(2)?,
+                    context_hash: row.get(3)?,
+                    created_ms: row.get(4)?,
+                    finished_ms: row.get(5)?,
+                    state: row.get(6)?,
+                    session_committed: row.get(7)?,
+                    error: row.get(8)?,
+                    result: None,
+                    result_purged: row.get(10)?,
+                    reviewed_ms: row.get(11)?,
+                    review_note: row.get(12)?,
+                    cancel_requested: row.get(13)?,
+                    feedback_revision: row.get(14)?,
+                    feedback: None,
+                },
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(15)?,
+            ))
+        })
+        .optional()?;
+    row.map(|(mut receipt, result, feedback)| {
         receipt.result = result
             .map(|value| serde_json::from_str(&value))
             .transpose()?;
+        receipt.feedback = feedback.map(|v| serde_json::from_str(&v)).transpose()?;
+        ensure!(
+            receipt.feedback_revision <= 2_147_483_647
+                && receipt
+                    .feedback
+                    .as_ref()
+                    .is_none_or(|f| f.validate(receipt.feedback_revision)
+                        && receipt.state == "completed"
+                        && !receipt.result_purged),
+            "invalid saved HTTP feedback"
+        );
         Ok(receipt)
     })
     .transpose()
@@ -113,6 +217,11 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
     }
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(SCHEMA_V11)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    ensure!(matches!(version, 11 | 12), "unsupported HTTP turn schema");
+    if version == 12 {
+        expected.execute_batch(SCHEMA_V12)?;
+    }
     ensure!(
         shape(conn)? == shape(&expected)?,
         "HTTP turn schema does not match its declared version"
@@ -302,11 +411,70 @@ impl SessionStore {
         if receipt.state == "running" {
             return Err(Conflict("http_turn_active").into());
         }
-        conn.execute(
-            "UPDATE http_turns SET result=NULL,result_purged=1 WHERE id=?1",
-            [id],
-        )?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let query = if version == 11 {
+            "UPDATE http_turns SET result=NULL,result_purged=1 WHERE id=?1"
+        } else {
+            "UPDATE http_turns SET result=NULL,result_purged=1,feedback=NULL,feedback_revision=CASE WHEN feedback IS NULL THEN feedback_revision ELSE min(feedback_revision+1,2147483647) END WHERE id=?1"
+        };
+        conn.execute(query, [id])?;
         lookup(conn, id)?.ok_or_else(|| Conflict("http_turn_not_found").into())
+    }
+
+    pub(super) fn feedback_http_turn(
+        &mut self,
+        id: &str,
+        request: &FeedbackRequest,
+    ) -> Result<Receipt> {
+        ensure!(request.validate(), "invalid HTTP feedback");
+        let Self::Sqlite { conn, .. } = self else {
+            anyhow::bail!("tracked HTTP turns require SQLite")
+        };
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let receipt = lookup(&tx, id)?.ok_or(Conflict("http_turn_not_found"))?;
+        if receipt.state != "completed"
+            || receipt.result_purged
+            || receipt
+                .result
+                .as_ref()
+                .and_then(|v| v.get("status"))
+                .and_then(serde_json::Value::as_str)
+                != Some("completed")
+        {
+            return Err(Conflict("http_turn_feedback_unavailable").into());
+        }
+        if receipt.feedback_revision != request.expected_revision {
+            return Err(Conflict("http_turn_feedback_changed").into());
+        }
+        let unchanged = match &receipt.feedback {
+            None => request.decision == FeedbackDecision::Clear,
+            Some(old) => old.decision == request.decision && old.note == request.note,
+        };
+        if unchanged {
+            return Ok(receipt);
+        }
+        let revision = receipt
+            .feedback_revision
+            .checked_add(1)
+            .filter(|r| *r <= 2_147_483_647)
+            .ok_or(Conflict("http_turn_feedback_capacity"))?;
+        let feedback = if request.decision == FeedbackDecision::Clear {
+            None
+        } else {
+            Some(serde_json::to_string(&Feedback {
+                revision,
+                decision: request.decision.clone(),
+                note: request.note.clone(),
+                updated_ms: now_ms(),
+            })?)
+        };
+        tx.execute(
+            "UPDATE http_turns SET feedback_revision=?2,feedback=?3 WHERE id=?1",
+            params![id, revision, feedback],
+        )?;
+        let receipt = lookup(&tx, id)?.expect("retained original identity");
+        tx.commit()?;
+        Ok(receipt)
     }
 }
 
@@ -339,6 +507,164 @@ mod tests {
                 .unwrap()
                 .1
         );
+    }
+
+    #[test]
+    fn feedback_is_conditional_user_metadata_and_preserves_original_facts() {
+        let mut store = store();
+        let id = new_id();
+        let sid = session();
+        admit(&mut store, &id, &sid);
+        let request = FeedbackRequest {
+            expected_revision: 0,
+            decision: FeedbackDecision::Usable,
+            note: "原文🦀\r\n".into(),
+        };
+        assert!(store.feedback_http_turn(&id, &request).is_err());
+        let original = store
+            .finish_http_turn(
+                &id,
+                Some(history("reply")),
+                Some(serde_json::json!({"reply":"reply","status":"completed","tool_names":[]})),
+                None,
+                false,
+            )
+            .unwrap();
+        let saved = store.feedback_http_turn(&id, &request).unwrap();
+        assert_eq!(saved.feedback_revision, 1);
+        assert_eq!(saved.feedback.as_ref().unwrap().note, request.note);
+        let mut before = serde_json::to_value(&original).unwrap();
+        let mut after = serde_json::to_value(&saved).unwrap();
+        for row in [&mut before, &mut after] {
+            row.as_object_mut().unwrap().remove("feedback");
+            row.as_object_mut().unwrap().remove("feedback_revision");
+        }
+        assert_eq!(before, after);
+        assert!(store.feedback_http_turn(&id, &request).is_err());
+        let duplicate = FeedbackRequest {
+            expected_revision: 1,
+            ..request.clone()
+        };
+        assert_eq!(
+            store
+                .feedback_http_turn(&id, &duplicate)
+                .unwrap()
+                .feedback_revision,
+            1
+        );
+        let clear = FeedbackRequest {
+            expected_revision: 1,
+            decision: FeedbackDecision::Clear,
+            note: String::new(),
+        };
+        let cleared = store.feedback_http_turn(&id, &clear).unwrap();
+        assert_eq!(cleared.feedback_revision, 2);
+        assert!(cleared.feedback.is_none());
+        store.purge_http_result(&id).unwrap();
+        assert!(store
+            .feedback_http_turn(
+                &id,
+                &FeedbackRequest {
+                    expected_revision: 2,
+                    ..request
+                }
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn feedback_boundary_and_invalid_payloads_are_not_accepted() {
+        let mut request = FeedbackRequest {
+            expected_revision: 0,
+            decision: FeedbackDecision::Usable,
+            note: "🦀".repeat(256),
+        };
+        assert!(request.validate());
+        request.note.push('x');
+        assert!(!request.validate());
+        for note in ["\0", "\u{0085}", "\u{007f}"] {
+            request.note = note.into();
+            assert!(!request.validate());
+        }
+        request.note = "\u{feff}\t\r\n".into();
+        assert!(request.validate());
+        request.expected_revision = 2_147_483_647;
+        assert!(!request.validate());
+        for raw in [
+            r#"{"expected_revision":true,"decision":"usable","note":""}"#,
+            r#"{"expected_revision":1.0,"decision":"usable","note":""}"#,
+            r#"{"expected_revision":0,"expected_revision":1,"decision":"usable","note":""}"#,
+            r#"{"expected_revision":0,"decision":"usable","note":"","extra":0}"#,
+        ] {
+            assert!(serde_json::from_str::<FeedbackRequest>(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn feedback_schema11_migration_retains_identities_history_and_review_hold() {
+        let dir =
+            std::env::temp_dir().join(format!("jiaclaw-feedback-schema-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("sessions.sqlite3");
+        let id = new_id();
+        let interrupted = new_id();
+        let sid = session();
+        let mut store = SessionStore::open(&path).unwrap();
+        admit(&mut store, &id, &sid);
+        store
+            .finish_http_turn(
+                &id,
+                Some(history("original")),
+                Some(serde_json::json!({"reply":"original","status":"completed","tool_names":[]})),
+                None,
+                false,
+            )
+            .unwrap();
+        admit(&mut store, &interrupted, &session());
+        let completed = serde_json::to_value(store.http_receipt(&id, None).unwrap()).unwrap();
+        let pending =
+            serde_json::to_value(store.http_receipt(&interrupted, None).unwrap()).unwrap();
+        drop(store);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("ALTER TABLE http_turns RENAME TO old_feedback_fixture; DROP INDEX http_turn_one_unresolved;").unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.execute_batch("INSERT INTO http_turns(id,session_id,request_hash,context_hash,created_ms,finished_ms,state,session_committed,error,result,cancel_requested,result_purged,reviewed_ms,review_note) SELECT id,session_id,request_hash,context_hash,created_ms,finished_ms,state,session_committed,error,result,cancel_requested,result_purged,reviewed_ms,review_note FROM old_feedback_fixture; DROP TABLE old_feedback_fixture;").unwrap();
+        validate_schema(&conn).unwrap();
+        drop(conn);
+        let mut store = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(store.http_receipt(&id, None).unwrap()).unwrap(),
+            completed
+        );
+        assert_eq!(
+            serde_json::to_value(store.http_receipt(&interrupted, None).unwrap()).unwrap(),
+            pending
+        );
+        assert_eq!(
+            store.get(&sid).unwrap().unwrap().messages,
+            history("original")
+        );
+        store
+            .feedback_http_turn(
+                &id,
+                &FeedbackRequest {
+                    expected_revision: 0,
+                    decision: FeedbackDecision::NeedsChanges,
+                    note: "private correction".into(),
+                },
+            )
+            .unwrap();
+        drop(store);
+        let store = SessionStore::open(&path).unwrap();
+        let r = store.http_receipt(&id, None).unwrap().unwrap();
+        assert_eq!(r.feedback_revision, 1);
+        assert_eq!(r.feedback.unwrap().note, "private correction");
+        assert_eq!(
+            serde_json::to_value(store.http_receipt(&interrupted, None).unwrap()).unwrap(),
+            pending
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -666,7 +992,7 @@ mod tests {
         store
             .http_connection()
             .unwrap()
-            .execute_batch("PRAGMA user_version=12")
+            .execute_batch("PRAGMA user_version=13")
             .unwrap();
         drop(store);
         let Err(error) = SessionStore::open(&file) else {

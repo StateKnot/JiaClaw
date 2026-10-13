@@ -14,7 +14,7 @@ jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 review ORIGINA
 jiaclaw http-turns --database /srv/jiaclaw/state/sessions.sqlite3 purge-result ORIGINAL_UUID --confirm-purge
 ```
 
-四个命令均要求同库 `serve` 已停止，以其相同的独占生命周期锁排斥服务及其他维护者。只接受 schema 11/WAL、Unix 下单链接且无组/其他用户权限的普通数据库与锁文件；拒绝数据库/锁叶子符号链接、FIFO、旧/未来版本、错误 HTTP 表/索引/附加触发器和网关渠道私库。不创建数据库、不自动迁移、不初始化 Agent/MCP、不开模型账本、不做 TTL 清理，也不把查询到的 `running` 自动改为中断。SQLite 读取可能维护 WAL/SHM 辅助文件，不能把只读 SQL 等同于文件系统零写入。数据库父目录和显式路径由本机管理员信任并管理，不提供针对同权限管理员替换文件的沙箱或 inode CAS 保证。
+四个命令均要求同库 `serve` 已停止，以其相同的独占生命周期锁排斥服务及其他维护者。只接受 schema 11或12/WAL、Unix 下单链接且无组/其他用户权限的普通数据库与锁文件；拒绝数据库/锁叶子符号链接、FIFO、旧/未来版本、错误 HTTP 表/索引/附加触发器和网关渠道私库。不创建数据库、不自动迁移、不初始化 Agent/MCP、不开模型账本、不做 TTL 清理，也不把查询到的 `running` 自动改为中断。SQLite 读取可能维护 WAL/SHM 辅助文件，不能把只读 SQL 等同于文件系统零写入。数据库父目录和显式路径由本机管理员信任并管理，不提供针对同权限管理员替换文件的沙箱或 inode CAS 保证。
 
 `list` 沿用 HTTP 目录的九字段投影和有限页（limit 1..50 / offset 0..10000）；`get` 返回原私密收据、保留结果和核对备注。输出有 `offline:true`，没有 `active`，持久状态不能证明实际模型、容器或其他外部资源已停止。特别是 SIGKILL 后的供应商请求或容器子进程，须先独立核对；独占数据库锁不证明退款、效果回滚或这些参与方停止。
 
@@ -37,7 +37,7 @@ store_path = "../state/model-calls/index.sqlite3"
 
 还须配置 Brokerrouter 提供商与有效 `tool_timeout_secs` 1..=30。独立 `serve` 模式和 gateway_channel_chat/gateway-driven 租户后端使用不同准入标记与固定工具授权；租户模式须按[专门配置](tenant-http-turns.md#配置与迁移)部署，由网关开放受限 `/api/turns` 路径，不能直接套用本页管理员入口。没有认证、SQLite、模型账本或有限期限时启动拒绝，不能默默转为内存/无账本运行。
 
-会话库从 schema 10 原子升级到 **11**，保留已有历史、任务、渠道及身份。新版本校验 HTTP 表/索引的完整声明形状；缺失、替换或附加触发器须先人工检查，不能自动丢弃身份。旧二进制拒绝 schema 11，需升级所有读取该库的 CLI/后端维护工具。升级前停服务并备份整个 SQLite 数据库及 WAL；不要只复制正在写入的主文件。五个私有渠道 store 接受原 schema 10 后迁移和当前 11，仍拒绝其他版本和错误归属。
+会话库从 schema 10 原子升级到 **11**，保留已有历史、任务、渠道及身份。新版本校验 HTTP 表/索引的完整声明形状；缺失、替换或附加触发器须先人工检查，不能自动丢弃身份。旧二进制拒绝 schema 11，需升级所有读取该库的 CLI/后端维护工具。升级前停服务并备份整个 SQLite 数据库及 WAL；不要只复制正在写入的主文件。五个私有渠道 store 接受原 schema10/11后迁移和当前12，仍拒绝其他版本和错误归属。本批schema12在原HTTP身份行增添[用户任务反馈](task-feedback.md)，不改变旧任务状态、收据、历史、请求hash或未知hold；升级前仍须停机一致备份，旧二进制不得读写新schema12。
 
 ## 客户端合同
 

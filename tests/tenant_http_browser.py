@@ -64,17 +64,18 @@ class Control(BaseHTTPRequestHandler):
         except Exception as e:raw=json.dumps({'error':repr(e)}).encode();self.send_response(500)
         self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
 
-try:
-    with tempfile.TemporaryDirectory(prefix='jiaclaw-tenant-browser-') as temporary:
-        root=Path(temporary);app=App(root);control=ThreadingHTTPServer(('127.0.0.1',0),Control);control.daemon_threads=True
-        threading.Thread(target=control.serve_forever,daemon=True).start()
-        config=root/'browser.json';config.write_text(json.dumps({'base':f'http://127.0.0.1:{app.gp}','alice':app.users['alice']['token'],'bob':app.users['bob']['token'],'readonly':app.readonly['token'],'control':f'http://127.0.0.1:{control.server_port}'}))
-        preview = sys.argv[2:] == ['--preview']
-        assert not sys.argv[2:] or preview, 'only --preview is supported'
-        script = 'tests/tenant_http_preview_browser.cjs' if preview else 'tests/tenant_http_browser.cjs'
-        r=subprocess.run(['node',script,str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
-        print('TEXT INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else ('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS'),flush=True)
-finally:
-    for gate in f.gates.values():gate['release'].set()
-    for p in reversed(f.processes):f.stop(p)
-    f.model.shutdown()
+if __name__ == "__main__":
+    try:
+        with tempfile.TemporaryDirectory(prefix='jiaclaw-tenant-browser-') as temporary:
+            root=Path(temporary);app=App(root);control=ThreadingHTTPServer(('127.0.0.1',0),Control);control.daemon_threads=True
+            threading.Thread(target=control.serve_forever,daemon=True).start()
+            config=root/'browser.json';config.write_text(json.dumps({'base':f'http://127.0.0.1:{app.gp}','alice':app.users['alice']['token'],'bob':app.users['bob']['token'],'readonly':app.readonly['token'],'control':f'http://127.0.0.1:{control.server_port}'}))
+            preview = sys.argv[2:] == ['--preview']
+            assert not sys.argv[2:] or preview, 'only --preview is supported'
+            script = 'tests/tenant_http_preview_browser.cjs' if preview else 'tests/tenant_http_browser.cjs'
+            r=subprocess.run(['node',script,str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
+            print('TEXT INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else ('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS'),flush=True)
+    finally:
+        for gate in f.gates.values():gate['release'].set()
+        for p in reversed(f.processes):f.stop(p)
+        f.model.shutdown()

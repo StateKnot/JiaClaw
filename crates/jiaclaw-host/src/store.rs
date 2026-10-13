@@ -172,7 +172,7 @@ impl SessionStore {
         Self::open_with_ownership(path, ownership)
     }
 
-    /// Existing standalone v11 only. No migration, creation, interruption, TTL
+    /// Existing standalone v11/v12 only. No migration, creation, interruption, TTL
     /// maintenance or model/runtime initialization. The same lifetime lock as
     /// serve is held until the SQLite connection has closed.
     pub(super) fn open_http_maintenance(path: &Path, writable: bool) -> Result<Self> {
@@ -234,8 +234,8 @@ impl SessionStore {
         conn.busy_timeout(Duration::from_secs(5))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         anyhow::ensure!(
-            version == 11,
-            "HTTP receipt maintenance requires schema 11, found {version}; no migration performed"
+            matches!(version, 11 | 12),
+            "HTTP receipt maintenance requires schema 11 or 12, found {version}; no migration performed"
         );
         let private_channel: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name GLOB 'gateway_*_owner')",
@@ -272,7 +272,7 @@ impl SessionStore {
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 11 {
+        if version > 12 {
             anyhow::bail!("unsupported session database version {version}; refusing downgrade");
         }
         if version < 1 {
@@ -309,6 +309,10 @@ impl SessionStore {
             tx.execute_batch(super::http_turn_store::SCHEMA_V11)?;
         }
         super::http_turn_store::validate_schema(&tx)?;
+        if version < 12 {
+            tx.execute_batch(super::http_turn_store::SCHEMA_V12)?;
+            super::http_turn_store::validate_schema(&tx)?;
+        }
         let violation = tx
             .prepare("PRAGMA foreign_key_check")?
             .query([])?
@@ -679,14 +683,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{corrupt");
         drop(store);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA user_version=12;").unwrap();
+        conn.execute_batch("PRAGMA user_version=13;").unwrap();
         drop(conn);
         assert!(SessionStore::open(&db).is_err());
         let conn = Connection::open(&db).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            12
+            13
         );
         drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
@@ -734,7 +738,7 @@ mod tests {
         let path = dir.join("sessions.sqlite3");
         drop(SessionStore::open(&path).unwrap());
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version=12;").unwrap();
+        conn.execute_batch("PRAGMA user_version=13;").unwrap();
         drop(conn);
         let lock_path = path.with_extension("sqlite3.lock");
         let file = std::fs::OpenOptions::new()
@@ -756,7 +760,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            12
+            13
         );
         drop(conn);
         drop(retained);

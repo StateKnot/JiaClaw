@@ -1,0 +1,11 @@
+## Standards
+
+Reviewed fixed fresh diff `git diff e5db71fe0da6e3e4ca4c490feb32ca097f2d8d8a...e4aea5ef7cfdba0f5ad4b2b496204f3ffd9f92a0`, commit `e4aea5e feat(turns): persist conditional user feedback on task results` (24 changed paths; the originating Spec document was excluded from Standards reading). Source tree: `c4cf13fbe9a3d31f37cfba5f57014b9458be3a2c`; base tree: `bb20057a88180c87af1390a0b123054e7277c3dc`.
+
+**Hard documented breaches: 0.** Against global AGENTS.md, docs/http-turns.md, docs/tenant-http-turns.md, docs/validation.md and docs/release-candidates.md, the inspected changes preserve original identity/receipt/history, apply the schema migration under the existing FULL/WAL transaction and lifetime owner, retain finite control ownership and authenticated body budgets, recheck tenant authority without creating admissions/holds, and avoid model/tool/hold-recovery effects. Private notes use textContent and lifecycle cleanup. Source/test/fixture wiring is not treated as official release or supplier qualification. No additional product execution was performed for this review.
+
+**Possible baseline smells: 1 (judgment only).** Possible Duplicated Code in `crates/jiaclaw-host/ui/app.js:801` and `crates/jiaclaw-host/ui/turn-stream.js:149`: both newly repeat the same control-range test (`/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(...)`) and complete-UTF-8 roundtrip (`new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(new TextEncoder().encode(...))`). Extract a small shared browser feedback-note predicate so proposal and receipt validation cannot drift. Independent Rust/backend validation should remain. This is a maintenance judgment, not a demonstrated correctness defect or a hard repository-rule violation.
+
+The other eleven Fowler baseline judgments yielded no actionable fresh finding; documented boundaries override superficial cross-layer duplication. Tool-enforced formatting/lints were excluded. Cumulative baseline `4b2357fcf01f47ba08d7724edbba7accfb60972c` and PR107–137 history are inherited context, not exhaustively re-reviewed or requalified by this report. No Spec report was read.
+
+Summary: Standards 0 hard breaches, 1 possible smell; no blocking Standards defect.

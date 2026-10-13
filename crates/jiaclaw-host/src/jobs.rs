@@ -2027,7 +2027,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             db.get_job(&job.id).unwrap().unwrap().spec.prompt,
@@ -2150,7 +2150,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         let job = db.create_job(spec(), 0).unwrap();
         drop(db);
