@@ -423,6 +423,7 @@ impl Tool for FileReadTool {
 /// `file_write`：`write_file` 的兼容名称，共用配置、参数、输出与 I/O 边界。
 pub struct FileWriteTool {
     inner: crate::files::WorkspaceWriteFileTool,
+    approved_paths: Option<Vec<String>>,
 }
 
 impl FileWriteTool {
@@ -431,7 +432,23 @@ impl FileWriteTool {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             inner: crate::files::WorkspaceWriteFileTool::new(workspace_path),
+            approved_paths: None,
         }
+    }
+
+    /// Bind exact tenant overwrite targets to the original workspace writer and I/O owner.
+    ///
+    /// # Errors
+    /// Invalid canonical document permission.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantFileWritePolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            inner: crate::files::WorkspaceWriteFileTool::new(workspace_path),
+            approved_paths: Some(policy.paths.clone()),
+        })
     }
 }
 
@@ -442,14 +459,36 @@ impl Tool for FileWriteTool {
     }
 
     fn description(&self) -> &str {
-        self.inner.description()
+        if self.approved_paths.is_some() {
+            "完整覆盖管理员明确授权的 tenant-documents 文件（可新建）；path/content 必填，不能追加或写入其它路径。复用原256KiB正文上限与原子工作区 writer；失败或取消后实际效果可能未知，不能自动重试。"
+        } else {
+            self.inner.description()
+        }
     }
 
     fn parameters_schema(&self) -> Value {
-        self.inner.parameters_schema()
+        if let Some(paths) = &self.approved_paths {
+            serde_json::json!({"type":"object","properties":{"path":{"type":"string","enum":paths},"content":{"type":"string","maxLength":crate::WRITE_FILE_MAX_BYTES}},"required":["path","content"],"additionalProperties":false})
+        } else {
+            self.inner.parameters_schema()
+        }
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(paths) = &self.approved_paths {
+            let valid = args.as_object().is_some_and(|object| object.len() == 2)
+                && args
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| paths.iter().any(|p| p == path))
+                && args
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.len() <= crate::WRITE_FILE_MAX_BYTES);
+            if !valid {
+                return Err(JiaClawError::ToolExecution("tenant file_write requires one exact granted target and complete bounded content; no extra arguments".into()));
+            }
+        }
         self.inner.execute(args).await
     }
 }

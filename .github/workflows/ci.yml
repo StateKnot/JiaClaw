@@ -74,6 +74,7 @@ jobs:
       - run: python3 tests/session_catalog.py target/debug/jiaclaw
       - run: python3 tests/http_turn_cli.py target/debug/jiaclaw
       - run: python3 tests/tenant_file_read.py target/debug/jiaclaw
+      - run: python3 tests/tenant_file_write.py target/debug/jiaclaw
       - run: python3 tests/tenant_skill_read.py target/debug/jiaclaw
       - run: python3 tests/tenant_memory_search.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_turns.py target/debug/jiaclaw
@@ -117,6 +118,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_http_browser.py target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_http_browser.py target/debug/jiaclaw --preview
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_file_read.py target/debug/jiaclaw --browser
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_file_write.py target/debug/jiaclaw --browser
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_skill_read.py target/debug/jiaclaw --browser
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_memory_search.py target/debug/jiaclaw --browser
       - name: Text materials acceptance

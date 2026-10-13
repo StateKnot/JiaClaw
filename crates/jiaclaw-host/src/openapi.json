@@ -2998,6 +2998,11 @@
                     "type": "string",
                     "pattern": "^[0-9a-f]{64}$",
                     "description": "Tenant only: required iff memory_search explicitly selected under paired default-off tenant_memory_search. Exact configured source subset, keyword-only complete reads; no paths/mode/extra tool arguments. Existing ambient SOUL/USER/MEMORY per-turn prompt reads remain independent. Omit otherwise to preserve legacy fingerprints. Existing UUIDs remain factual without redispatch."
+                  },
+                  "file_write_policy_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Tenant only: required iff file_write explicitly selected under paired default-off exact tenant_file_write; complete overwrite, no append. Original writer and unknown effect settlement preserved. Omit otherwise to preserve old fingerprints."
                   }
                 }
               }
@@ -3285,6 +3290,11 @@
                     "type": "string",
                     "pattern": "^[0-9a-f]{64}$",
                     "description": "Tenant only: required iff memory_search explicitly selected under paired default-off tenant_memory_search. Exact configured source subset, keyword-only complete reads; no paths/mode/extra tool arguments. Existing ambient SOUL/USER/MEMORY per-turn prompt reads remain independent. Omit otherwise to preserve legacy fingerprints. Existing UUIDs remain factual without redispatch."
+                  },
+                  "file_write_policy_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Tenant only: required iff file_write explicitly selected under paired default-off exact tenant_file_write; complete overwrite, no append. Original writer and unknown effect settlement preserved. Omit otherwise to preserve old fingerprints."
                   }
                 }
               }

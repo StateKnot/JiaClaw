@@ -1447,6 +1447,26 @@ impl TenantFileReadPolicy {
     }
 }
 
+/// Explicit whole-file overwrite permission for bounded tenant document targets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantFileWritePolicy {
+    /// 1..=32 sorted exact files under tenant-documents/, never recursive grants.
+    pub paths: Vec<String>,
+}
+impl TenantFileWritePolicy {
+    /// Use the original canonical document-path permission rules without file I/O.
+    ///
+    /// # Errors
+    /// Empty, unsorted, duplicate, hidden, ambiguous or out-of-scope targets.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        TenantFileReadPolicy {
+            paths: self.paths.clone(),
+        }
+        .validate()
+    }
+}
+
 /// One exact loaded skill body version explicitly approved for tenant tasks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1538,6 +1558,9 @@ pub struct HttpConfig {
     /// Explicit tenant HTTP file grant. Omission leaves the two-tool contract unchanged.
     #[serde(default)]
     pub tenant_file_read: Option<TenantFileReadPolicy>,
+    /// Explicit exact document overwrite grant; default off, separate from reading.
+    #[serde(default)]
+    pub tenant_file_write: Option<TenantFileWritePolicy>,
     /// Explicit original-registry tenant skill body grant; omission denies skill reads.
     #[serde(default)]
     pub tenant_skill_read: Option<TenantSkillReadPolicy>,
@@ -1715,6 +1738,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             tenant_file_read: None,
+            tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,
             memory_review: false,

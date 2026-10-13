@@ -50,6 +50,8 @@ on:
       - 'tests/session_catalog.py'
       - 'tests/http_turn_cli.py'
       - 'tests/tenant_file_read.py'
+      - 'tests/tenant_file_write.py'
+      - 'tests/tenant_file_write_browser.cjs'
       - 'tests/tenant_skill_read.py'
       - 'tests/tenant_skill_read_browser.cjs'
       - 'tests/tenant_memory_search.py'
@@ -152,6 +154,7 @@ jobs:
           python3 tests/session_catalog.py "target/$TARGET/release/jiaclaw"
           python3 tests/http_turn_cli.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_file_read.py "target/$TARGET/release/jiaclaw"
+          python3 tests/tenant_file_write.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_skill_read.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_memory_search.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"

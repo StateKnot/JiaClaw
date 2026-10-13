@@ -58,7 +58,7 @@ mod tenant_files;
 mod tenant_memory;
 mod tenant_skills;
 mod tools;
-pub use tenant_files::TenantFileReadCapability;
+pub use tenant_files::{TenantFileReadCapability, TenantFileWriteCapability};
 pub use tenant_memory::TenantMemorySearchCapability;
 pub use tenant_skills::TenantSkillReadCapability;
 mod workspace;
@@ -153,7 +153,12 @@ fn register_optional_workspace_file_tools(
     }
     if config.tools.write_file.enabled {
         tools.register(Box::new(WorkspaceWriteFileTool::new(workspace)));
-        tools.register(Box::new(FileWriteTool::new(workspace)));
+        let tool = if let Some(policy) = &config.http.tenant_file_write {
+            FileWriteTool::restricted(workspace, policy)?
+        } else {
+            FileWriteTool::new(workspace)
+        };
+        tools.register(Box::new(tool));
     }
     if config.tools.delete_file.enabled {
         tools.register(Box::new(WorkspaceDeleteFileTool::new(workspace)));

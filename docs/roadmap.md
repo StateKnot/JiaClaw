@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-13 接通[个人 Key 的明确文件交付](tenant-file-write.md)：双端默认关闭的精确目标清单、独立权限摘要和本次明确勾选，使原 file_write 通过原八槽IO/workspace writer完成新建或完整覆盖。读取与其它工具授权独立；取消/超时保留Unknown效果，撤权后旧UUID只查原事实、零重派发。本批真实双用户文件效果、writer竞争、取消和工作台迟到Crypto与源码独立验收，自己的新fixedhead官方资格仍须完成；不认证业务质量、自动学习或durable。[本批范围](tenant-file-write-validation.md)。
+
 2026-10-13 接通[按已保存修改说明准备新任务](task-revision-draft.md)：用户明确确认后，原完整回复与当前保存的 needs_changes 说明经原认证 GET 再核对，进入完整32KiB可编辑草稿；新工具授权全部取消，显式发送才生成新UUID。原任务、评价和未知效果不重放或自动继续，不增加读/Store/模型工具。源码及三实际工作台与相关反馈回归已分别验收，自己的新fixedhead官方资格仍须独立完成；父PR138完整仅历史，不认证业务修订质量、自动学习或durable。[本批范围](task-revision-validation.md)。
 
 2026-10-13 接通[原任务结果的用户评价](task-feedback.md)：明确可用/需要修改/清除、私人说明与revision条件更新，保存在原SQLite永久身份行，工作台写前及写后原GET核对；readonly/撤Key/跨用户/未知效果与重启边界分别验收。不触发模型、工具重放、自动记忆或解除hold；接线证据不代真实业务成功率、学习、供应商或durable资格。
