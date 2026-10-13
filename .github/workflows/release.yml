@@ -72,6 +72,9 @@ on:
       - 'tests/turn_result_download.cjs'
       - 'tests/text_task_input.cjs'
       - 'tests/text_task_input.py'
+      - 'tests/pdf_task_input.py'
+      - 'tests/pdf_task_input.cjs'
+      - 'tests/pdf_task_input_fixtures.json'
       - 'tests/web_stream.py'
   push:
     tags: ['v*']

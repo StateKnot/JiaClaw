@@ -15,7 +15,7 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"));
+    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"));
     response
 }
 pub(super) async fn index() -> Response {
@@ -35,4 +35,35 @@ pub(super) async fn turn_stream() -> Response {
         "text/javascript; charset=utf-8",
         include_str!("../ui/turn-stream.js"),
     )
+}
+pub(super) async fn pdf_input() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/pdf-input.js"),
+    )
+}
+pub(super) async fn pdf_library() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/pdfjs/pdf.mjs"),
+    )
+}
+pub(super) async fn pdf_license() -> Response {
+    asset(
+        "text/plain; charset=utf-8",
+        include_str!("../ui/pdfjs/LICENSE"),
+    )
+}
+pub(super) async fn pdf_worker() -> Response {
+    let mut response = asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/pdfjs/pdf.worker.mjs"),
+    );
+    response.headers_mut().insert(
+        "content-security-policy",
+        HeaderValue::from_static(
+            "default-src 'none'; script-src 'self'; connect-src 'none'; worker-src 'none'",
+        ),
+    );
+    response
 }

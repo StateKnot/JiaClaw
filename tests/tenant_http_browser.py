@@ -76,7 +76,7 @@ if __name__ == "__main__":
             assert not sys.argv[2:] or preview, 'only --preview is supported'
             script = 'tests/tenant_http_preview_browser.cjs' if preview else 'tests/tenant_http_browser.cjs'
             r=subprocess.run(['node',script,str(config)],timeout=240);assert r.returncode==0,r.returncode;assert not f.faults,f.faults
-            print('TEXT INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else ('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS'),flush=True)
+            print('PDF INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_PDF_INPUT_ONLY') == '1' else ('TEXT INPUT ORIGINAL TENANT FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else ('ALL TENANT PREVIEW BROWSER GROUPS PASS' if preview else 'ALL TENANT HTTP BROWSER GROUPS PASS')),flush=True)
     finally:
         for gate in f.gates.values():gate['release'].set()
         for p in reversed(f.processes):f.stop(p)

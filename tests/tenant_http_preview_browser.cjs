@@ -1,4 +1,5 @@
 const {textInputTask}=require('./text_task_input.cjs');
+const {pdfInputTask}=require('./pdf_task_input.cjs');
 const {downloadExact, staleDownload, revokedDownload}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright'), assert=require('assert'), fs=require('fs');
 const cfg=JSON.parse(fs.readFileSync(process.argv[2])), wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -39,6 +40,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   console.log('PASS tenant preview 9: actual normal done plus corrupted final GET/duplicate JSON 200 cannot authorize an unselected tool or clear the original draft; correct original GET reconciles once');
  };
  try {
+  if(process.env.JIACLAW_TEST_PDF_INPUT_ONLY==='1'){
+  await pdfInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-preview",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"PDF task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   if(process.env.JIACLAW_TEST_PREVIEW_AUTHORITY_ONLY==='1'){await page.goto(cfg.base);await connect();await authorityChecks();return;}
   if(process.env.JIACLAW_TEST_TEXT_INPUT_ONLY==='1'){
   await textInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-preview",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"text task hold settled"),reply:prompt=>"alice: "+prompt});
