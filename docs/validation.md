@@ -1371,3 +1371,8 @@ PR127 原 head `82fc69b9ca0350b512ff8f4ba9cb33014c805080` 的 Ubuntu 作业 `114
 独立初Spec在固定f584源码/8a3冻结binary发现P2 generation未完整校验而显示ready，以及P3错误方法405缺三私密头。独立实际probe成功复现违约不是产品GREEN；根持久回归在原binary分别实际exit1，原报告与证据不改。修订56e61fc完整校验generation空间、计数/bytes预算、freshness及current块数一致性；两个新路由的method fallback复用原授权和private响应。七generation拒绝、八错误方法、原七HTTP/四Chromium同条件GREEN；预算、截止与原断言保留。最终Standards/Spec独立关闭原缺口，不将原初报告改为0。
 
 初完整Rust在sandbox有46失败：37显式PermissionDenied及9个原Mockito server未监听断言，完整失败日志保留；授权同源完整串行执行另行实际exit0，不能说初执行通过或假定9个监听断言的唯一历史根因。最终四工具actual5986及十五冻结binary实际进程的逐套退出/来源/UTC/log SHA记录在 /tmp/jiaclaw-oct12-semantic-review-delivery。新进程为semantic_review/check/semantic_memory/memory_io/correction/edit/review/doctor/e2e/read_only_keys，五页面套为semantic_review_browser/edit_browser/review_browser/read_only_browser/browser；完整结果按process-checks-final.json核对，不将生成metadata当重跑。无本机optimized、其余五Chromium/parser或全部历史进程重跑，无paid供应商调用。新官方资格须独立七actual jobs、两平台62必需Python/Linux十实际Chromium、四候选各13唯一安装归档源码/认证artifact API摘要、新七review/两Rust/四Chromium及generation marker与全部继承合同；尚未以本机或父129取得新head官方资格。140 audit guards。
+
+
+## 长资料完整摘要输入的本机验收
+
+见[独立发布前记录](complete-summary-validation.md)：冻结父4373/262144字节真实RED，最终完整262144/超限262145零摘要、原持久会话精确重启GREEN，最终1313Rust（另1忽略）及六相关进程通过。本机、源码、发布身份与新head正式166资格分别记录；PR136已完成的资格仅历史，不重造其head验证循环。

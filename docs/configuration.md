@@ -119,7 +119,7 @@ Telegram、Slack、Discord、飞书、企业微信和钉钉必须配置 `http.ch
 
 `heartbeat.enabled` 默认 false，`interval_secs` 默认 3600，`path` 默认 HEARTBEAT.md，`session_id` 默认 heartbeat。仅 serve 内运行；空或缺失文件跳过，超过 32 KiB 拒绝本轮且不调用模型；它不是持久化 cron 多任务调度器。
 
-`session.summarize_on_overflow` 默认 false，历史超过 50 条时硬截断；启用则摘要并保留 `keep_recent`（默认 10）。摘要失败退回截断。`logging.format` 为 text/json；`logging.level` 默认 info。
+`session.summarize_on_overflow` 默认 false，历史超过 50 条时硬截断；启用则摘要并保留 `keep_recent`（默认 10）。摘要完整接收旧消息，含角色和分隔符最多256KiB UTF-8；超限不提交部分摘要，已知失败或超限退回原截断，可能丢失旧消息。未知模型提交仍保留原hold。详见[完整摘要输入](complete-summary-input.md)。`logging.format` 为 text/json；`logging.level` 默认 info。
 
 ## 环境变量覆盖
 

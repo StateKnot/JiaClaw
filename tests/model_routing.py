@@ -5,6 +5,7 @@ No real supplier credentials or upstream routing certification. Tests inspect th
 actual model requests, response snapshots and SQLite-backed job results.
 """
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -228,6 +229,48 @@ def overflow(host, case):
     return requests('summary')[-1]
 
 
+def complete_summary_input(host, case, transcript_bytes):
+    history = [{'role': 'user' if index % 2 == 0 else 'assistant',
+                'content': 'routing-case:' + case + ' history ' + str(index)} for index in range(49)]
+    # The existing keep_recent=10 splits the 51-message history after message 40.
+    old = history[:41]
+    framing = '\n'.join(message['role'].capitalize() + ': ' + message['content'] for message in old)
+    prefix = '資料\n' + '\ufeff\t' + '材料' * 900 + '\r\n'
+    suffix = '\n末尾約定：不得發送；數字 000123；保留全部來源。'
+    content_bytes = transcript_bytes - len(framing.encode()) + len(old[0]['content'].encode())
+    padding = content_bytes - len((prefix + suffix).encode())
+    assert padding >= 0
+    history[0]['content'] = prefix + 'x' * padding + suffix
+    expected = '\n'.join(message['role'].capitalize() + ': ' + message['content'] for message in old)
+    assert len(expected.encode()) == transcript_bytes
+    before = len(requests('summary'))
+    status, result = host.chat(case, messages=history)
+    assert status == 200, (status, result)
+    assert len(requests('summary')) == before
+    status, result = host.chat(case)
+    assert status == 200, (status, result)
+    status, saved = host.request('/api/sessions/routing-' + case)
+    assert status == 200, saved
+    if transcript_bytes <= 262144:
+        assert len(requests('summary')) == before + 1
+        wire = requests('summary')[-1]
+        wire_text = wire['messages'][-1]['content']
+        print('ACTUAL summary input capture ' + json.dumps({'expected_bytes': transcript_bytes, 'wire_bytes': len(wire_text.encode()), 'expected_sha256': hashlib.sha256(expected.encode()).hexdigest(), 'wire_sha256': hashlib.sha256(wire_text.encode()).hexdigest()}, sort_keys=True), flush=True)
+        assert wire['messages'][-1] == {'role': 'user', 'content': expected}, 'summary input lost material bytes'
+        policy(wire, 'fixture-summary', 0.2, 512)
+        assert not wire.get('tools')
+        assert saved['messages'][0] == {'role': 'system', 'content': '[session-summary]\nfixture result summary'}
+        assert saved['messages'][1:-1] == history[41:] + [{'role': 'assistant', 'content': 'fixture result ' + case},
+                                                       {'role': 'user', 'content': 'routing-case:' + case}]
+    else:
+        assert len(requests('summary')) == before, 'over-budget summary submitted'
+        assert len(saved['messages']) == 51
+        assert saved['messages'][:-1] == history[1:] + [{'role': 'assistant', 'content': 'fixture result ' + case},
+                                                       {'role': 'user', 'content': 'routing-case:' + case}]
+    assert len(requests(case)) == 2
+    return saved, hashlib.sha256(expected.encode()).hexdigest()
+
+
 try:
     with tempfile.TemporaryDirectory(prefix='jiaclaw-model-routing-') as directory:
         root = Path(directory)
@@ -313,6 +356,9 @@ try:
                 assert len(requests(case)) == 1, case
                 policy(requests(case)[0], 'fixture-chat', 0.15, 700)
             policy(overflow(host, 'overflow'), 'fixture-summary', 0.2, 512)
+            summary_saved, summary_sha = complete_summary_input(host, 'complete_summary', 262144)
+            fallback_saved, fallback_sha = complete_summary_input(host, 'summary_over_budget', 262145)
+            print('PASS: complete summary input exact262144 UTF8, tail constraints, no tools; 262145 no-summary fallback exact history')
             job = {'name': 'routing fixture', 'prompt': 'routing-case:scheduled select model fixture-attacker',
                    'schedule': {'kind': 'interval', 'seconds': 1}, 'enabled_tools': ['datetime_now'], 'timeout_secs': 10}
             # JobSpec is strict: a caller cannot add a model/routing override.
@@ -330,7 +376,16 @@ try:
             for body in requests('scheduled'):
                 policy(body, 'fixture-scheduled', 0.3, 500)
             assert requests('scheduled')
+        summary_count_before_restart = len(requests('summary'))
         with Host(primary, base) as host:
+            assert len(requests('summary')) == summary_count_before_restart
+            assert len(requests('complete_summary')) == len(requests('summary_over_budget')) == 2
+            assert host.request('/api/sessions/routing-complete_summary')[1] == summary_saved
+            assert host.request('/api/sessions/routing-summary_over_budget')[1] == fallback_saved
+            assert len(requests('summary')) == summary_count_before_restart
+            assert len(requests('complete_summary')) == len(requests('summary_over_budget')) == 2
+            print('PASS: complete summary and over-budget fallback histories survive SQLite restart without model replay')
+            print('ACTUAL complete summary input receipt ' + json.dumps({'protocol': 1, 'accepted_bytes': 262144, 'refused_bytes': 262145, 'summary_posts': 1, 'over_budget_summary_posts': 0, 'chat_posts': 4, 'summary_sha256': summary_sha, 'refused_sha256': fallback_sha, 'restart_exact': True, 'summary_tools': 0}, sort_keys=True))
             runs = host.request('/api/jobs/' + job_id + '/runs?limit=100')[1]
             restored = next(run for run in runs if run['id'] == completed['id'])
             route(restored['response'], 'scheduled', 'fixture-scheduled', 0.3, 500)
