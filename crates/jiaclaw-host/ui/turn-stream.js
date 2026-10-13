@@ -10,12 +10,14 @@
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   function require(condition) { if (!condition) throw new Error('流式协议或原编号不匹配；请核对原请求，勿重复执行。'); }
   const text = (value, maximum) => typeof value === 'string' && bytes(value) <= maximum;
+  const feedbackNote = value => text(value,1024) && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value) && new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(encoder.encode(value)) === value;
   function capabilities(c) {
     require(object(c) && c.protocol === 1 && typeof c.enabled === 'boolean' && typeof c.streaming === 'boolean' && c.streaming === c.enabled);
     require(c.session_prefix === 'http:' && c.stream_suffix === '/stream' && c.max_active === 1 && c.max_identities === 10000 && c.max_retained_results === 32);
     require(!c.streaming || (Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 1 && c.turn_budget_secs <= 300));
     require(c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
     require(c.listing === undefined || typeof c.listing === 'boolean');
+    require(c.feedback_protocol === undefined || [0,1].includes(c.feedback_protocol));
     return c;
   }
   function gatewayCapabilities(c) {
@@ -24,9 +26,11 @@
     if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
     if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
     if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
+    if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
+    require(c.feedback_protocol === undefined || c.feedback_protocol === 1);
     if (c.gateway_protocol === 2) require(c.stream_suffix === '/stream' && Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 10 && c.turn_budget_secs <= 300 && c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
     const allowed = ['datetime_now','json_query'];
     if (c.file_read !== undefined) {
@@ -139,6 +143,13 @@
     require(r.state === 'running' || (r.finished_ms !== null && r.finished_ms >= 0));
     require(r.state !== 'completed' || (r.session_committed && r.error === null && (r.result_purged || r.result?.status === 'completed')));
     require(r.reviewed_ms === null || (r.state === 'needs_review' && r.review_note !== null));
+    require(r.feedback_revision === undefined || (Number.isInteger(r.feedback_revision) && r.feedback_revision > 0 && r.feedback_revision <= 2147483647));
+    if (r.feedback !== undefined) {
+      const f = r.feedback;
+      require(object(f) && Object.keys(f).length === 4 && ['revision','decision','note','updated_ms'].every(k => Object.hasOwn(f,k)));
+      require(f.revision === r.feedback_revision && ['usable','needs_changes'].includes(f.decision) && feedbackNote(f.note) && Number.isSafeInteger(f.updated_ms) && f.updated_ms >= 0);
+      require(r.state === 'completed' && !r.result_purged);
+    }
     if (expected) {
       require(r.id === expected.id && (!expected.session_id || r.session_id === expected.session_id));
       if (expected.request_hash) require(r.request_hash === expected.request_hash && r.context_hash === expected.context_hash && r.created_ms === expected.created_ms);
@@ -226,7 +237,7 @@
     }
     finish() { this.consume(this.decoder.decode()); require(this.frameBytes === 0 && !this.lastLF && this.terminal); }
   }
-  const api = Object.freeze({bytes, uuid, capabilities, gatewayCapabilities, catalog, gatewayCatalog, receipt, snapshot, gatewaySnapshot, Parser});
+  const api = Object.freeze({bytes, feedbackNote, uuid, capabilities, gatewayCapabilities, catalog, gatewayCatalog, receipt, snapshot, gatewaySnapshot, Parser});
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else globalThis.JiaClawTurnStream = api;
 })();

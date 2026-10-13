@@ -1435,6 +1435,11 @@ fn build_router_with_body_limit(
         )
         .route("/api/turns/:id/cancel", post(http_turns::cancel))
         .route(
+            "/api/turns/:id/feedback",
+            axum::routing::put(http_turns::feedback)
+                .layer(DefaultBodyLimit::max(body_limit.min(8192))),
+        )
+        .route(
             "/api/turns/:id/stream",
             axum::routing::put(http_turns::submit_stream)
                 .layer(DefaultBodyLimit::max(body_limit.min(64 * 1024))),

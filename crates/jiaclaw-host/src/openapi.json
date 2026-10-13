@@ -3496,6 +3496,92 @@
           }
         }
       }
+    },
+    "/api/turns/{id}/feedback": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Canonical lowercase RFC4122 UUIDv4 request ID, permanently retained."
+        }
+      ],
+      "put": {
+        "tags": [
+          "turns"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Record or clear conditional user feedback on an original completed task; no execution, model call or hold release",
+        "responses": {
+          "200": {
+            "description": "Capability or original receipt JSON; no replay"
+          },
+          "400": {
+            "description": "Invalid identity or bounded request"
+          },
+          "401": {
+            "description": "Missing, duplicate, alternate or incorrect Bearer"
+          },
+          "404": {
+            "description": "Original identity absent"
+          },
+          "409": {
+            "description": "Original task unavailable or feedback revision changed; reread original UUID before any write"
+          },
+          "503": {
+            "description": "Tracked turn creation unavailable"
+          },
+          "408": {
+            "description": "Authenticated body read exceeded five-second shared control budget; no admission or effects"
+          },
+          "413": {
+            "description": "Body exceeds the route or configured byte budget; no admission or effects"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_revision",
+                  "decision",
+                  "note"
+                ],
+                "properties": {
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483646
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "usable",
+                      "needs_changes",
+                      "clear"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "description": "Complete UTF-8, at most1024 bytes; clear requires empty note; rejects controls exceptTAB/CR/LF"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

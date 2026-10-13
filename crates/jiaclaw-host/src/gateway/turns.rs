@@ -41,6 +41,7 @@ fn json_content(headers: &HeaderMap) -> bool {
 
 #[derive(Deserialize)]
 struct Capability {
+    feedback_protocol: u8,
     protocol: u8,
     gateway_protocol: u8,
     agent_name: String,
@@ -88,6 +89,7 @@ pub(super) async fn check_backend(
         let c: Capability = serde_json::from_slice(&bytes)?;
         ensure!(
             c.protocol == 1
+                && c.feedback_protocol == u8::from(c.enabled)
                 && c.gateway_protocol == 2
                 && c.agent_name == identity
                 && c.streaming == c.enabled
@@ -113,6 +115,7 @@ pub(super) async fn check_backend(
 }
 
 enum Route {
+    Feedback(Uuid),
     Capabilities,
     Catalog(usize, usize),
     Turn(Uuid),
@@ -159,6 +162,11 @@ fn route(method: &Method, uri: &Uri) -> Option<Route> {
         return Some(Route::Capabilities);
     }
     let tail = uri.path().strip_prefix("/api/turns/")?;
+    if let Some(value) = tail.strip_suffix("/feedback") {
+        return (method == Method::PUT)
+            .then(|| canonical(value).map(Route::Feedback))
+            .flatten();
+    }
     if let Some(value) = tail.strip_suffix("/stream") {
         return (method == Method::PUT)
             .then(|| canonical(value).map(Route::Stream))
@@ -272,6 +280,15 @@ impl Envelope {
             "invalid original HTTP receipt"
         );
         ensure!(
+            r.feedback_revision <= 2_147_483_647
+                && r.feedback
+                    .as_ref()
+                    .is_none_or(|f| f.validate(r.feedback_revision)
+                        && r.state == "completed"
+                        && !r.result_purged),
+            "invalid original feedback receipt"
+        );
+        ensure!(
             match r.state.as_str() {
                 "running" =>
                     r.finished_ms.is_none()
@@ -355,6 +372,99 @@ fn response(value: impl IntoResponse, request_id: Uuid) -> Response {
     );
     r
 }
+
+async fn remote_feedback(
+    state: &State,
+    principal: &Principal,
+    id: Uuid,
+    hash: &str,
+    session: &str,
+    body: &crate::http_turn_store::FeedbackRequest,
+) -> Result<(StatusCode, Option<Envelope>)> {
+    let backend = &state.backends[&principal.backend_id];
+    tokio::time::timeout(IO_BUDGET, async {
+        let response = state
+            .client
+            .put(backend.url.join(&format!("api/turns/{id}/feedback"))?)
+            .header(header::AUTHORIZATION, backend.token.clone())
+            .header("x-jiaclaw-gateway-turns", "1")
+            .json(body)
+            .timeout(IO_BUDGET)
+            .send()
+            .await?;
+        let status = response.status();
+        ensure!(
+            json_content(response.headers()),
+            "invalid feedback response"
+        );
+        let bytes = super::proxy::read_response(response, MAX_RECEIPT)
+            .await
+            .map_err(|()| anyhow::anyhow!("invalid feedback response"))?;
+        if matches!(
+            status,
+            StatusCode::BAD_REQUEST | StatusCode::CONFLICT | StatusCode::NOT_FOUND
+        ) {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            ensure!(
+                value.get("error").is_some_and(serde_json::Value::is_string),
+                "invalid feedback refusal"
+            );
+            return Ok((status, None));
+        }
+        ensure!(status == StatusCode::OK, "feedback outcome unknown");
+        let envelope: Envelope = serde_json::from_slice(&bytes)?;
+        envelope.validate(id, hash, session)?;
+        ensure!(
+            envelope.known_success()
+                && !envelope.receipt.result_purged
+                && envelope.receipt.result.as_ref().is_some_and(|result| {
+                    result.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+                        && result
+                            .get("reply")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|reply| reply.len() <= 2 * 1024 * 1024)
+                        && result
+                            .get("tool_names")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|names| {
+                                names.len() <= 2048
+                                    && names.iter().all(|name| {
+                                        name.as_str().is_some_and(|name| {
+                                            matches!(
+                                                name,
+                                                "datetime_now"
+                                                    | "json_query"
+                                                    | "file_read"
+                                                    | "skill_read"
+                                                    | "memory_search"
+                                            )
+                                        })
+                                    })
+                            })
+                }),
+            "feedback receipt unavailable"
+        );
+        let r = &envelope.receipt;
+        ensure!(
+            r.feedback_revision == body.expected_revision
+                || r.feedback_revision == body.expected_revision + 1,
+            "feedback revision mismatch"
+        );
+        ensure!(
+            if body.decision == crate::http_turn_store::FeedbackDecision::Clear {
+                r.feedback.is_none()
+            } else {
+                r.feedback
+                    .as_ref()
+                    .is_some_and(|f| f.decision == body.decision && f.note == body.note)
+            },
+            "feedback intent mismatch"
+        );
+        Ok((status, Some(envelope)))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("feedback request timed out"))?
+}
 fn error(status: StatusCode, code: &'static str, id: Uuid) -> Response {
     response((status, Json(json!({"error":code}))), id)
 }
@@ -435,6 +545,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
     match route {
         Route::Capabilities => {
             let mut value = json!({"protocol":1,"gateway_protocol":2,"enabled":true,"streaming":true,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"],"stream_suffix":"/stream","turn_budget_secs":state.timeout.as_secs(),"max_stream_wire_bytes":crate::http_turns::delivery::WIRE_BYTES,"max_preview_round_bytes":crate::http_turns::delivery::ROUND_BYTES,"max_preview_total_bytes":crate::http_turns::delivery::PREVIEW_BYTES});
+            value["feedback_protocol"] = json!(1);
             if let Some(permission) = &backend.file_read {
                 value["enabled_tools"] = json!(["datetime_now", "json_query", "file_read"]);
                 value["file_read"] = json!(permission);
@@ -469,6 +580,70 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                     request_id,
                 ),
                 Err(e) => admission_error(&e, request_id),
+            }
+        }
+        Route::Feedback(id) => {
+            if !json_content(request.headers()) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "JSON feedback required",
+                    request_id,
+                );
+            }
+            let bytes =
+                match tokio::time::timeout(IO_BUDGET, to_bytes(request.into_body(), 8192)).await {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(_)) => {
+                        return error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "feedback body too large",
+                            request_id,
+                        )
+                    }
+                    Err(_) => {
+                        return error(
+                            StatusCode::REQUEST_TIMEOUT,
+                            "feedback body timed out",
+                            request_id,
+                        )
+                    }
+                };
+            let Ok(body) =
+                serde_json::from_slice::<crate::http_turn_store::FeedbackRequest>(&bytes)
+            else {
+                return error(StatusCode::BAD_REQUEST, "invalid feedback", request_id);
+            };
+            if !body.validate() {
+                return error(StatusCode::BAD_REQUEST, "invalid feedback", request_id);
+            }
+            let principal = p.clone();
+            let existing = match db(state.registry.clone(), control.clone(), move |r| {
+                r.http_turn_identity(&principal, id, true)
+            })
+            .await
+            {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return error(
+                        StatusCode::NOT_FOUND,
+                        "original request not found",
+                        request_id,
+                    )
+                }
+                Err(e) => return admission_error(&e, request_id),
+            };
+            match remote_feedback(&state, &p, id, &existing.hash, &existing.session, &body).await {
+                Ok((StatusCode::OK, Some(envelope))) => response(Json(envelope), request_id),
+                Ok((status, _)) => error(
+                    status,
+                    "feedback changed or unavailable; read original request",
+                    request_id,
+                ),
+                Err(_) => error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "feedback outcome unknown; read original request before another write",
+                    request_id,
+                ),
             }
         }
         Route::Turn(id) | Route::Stream(id) | Route::Cancel(id) => {

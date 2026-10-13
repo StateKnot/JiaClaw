@@ -188,7 +188,7 @@ fn verify_owner(conn: &Connection, binding: &TelegramBindingSummary) -> Result<(
     );
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     ensure!(
-        matches!(version, 0 | 10 | 11),
+        matches!(version, 0 | 10 | 11 | 12),
         "unsupported Telegram session schema"
     );
     if version == 0 {
@@ -535,7 +535,7 @@ mod tests {
                 .connection()
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             store

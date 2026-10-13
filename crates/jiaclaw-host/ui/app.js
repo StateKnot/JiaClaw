@@ -699,6 +699,7 @@ const turnDownloadable = () => connected && pendingTurn?.fresh && !pendingTurn.a
 // authorizes dispatch or changes the original receipt/hold decision.
 const TURN_ACTIVITY_ROWS = 128;
 function clearTurnActivity() {
+  clearTurnFeedback();
   $('turn-activity').hidden = true; $('turn-activity').open = false;
   for (const id of ['turn-observed-steps','turn-saved-tools','turn-observed-note','turn-saved-note']) $(id).replaceChildren();
 }
@@ -735,6 +736,7 @@ function observeTurnActivity(attempt, value) {
 }
 function turnControls() {
   renderTurnActivity();
+  renderTurnFeedback();
   $('turn-workspace').hidden = !connected || !turnCapabilities || (readOnly && !tenantTurns());
   $('turn-permissions').hidden = !trackedSession() || !turnWritable();
   $('chat-note').textContent = trackedSession() ? (turnCapabilities?.streaming ? '实时文字为临时预览；按原编号核对已保存结果。' : '回复按原编号保存在服务端；本页观察结束后仍可核对。') : '回复完成后显示；支持工具调用。';
@@ -766,6 +768,54 @@ function turnControls() {
   $('turn-catalog-next').disabled = catalogDisabled || !turnCatalogPage?.has_more || turnCatalogPage.offset + 5 > 10000;
   for (const button of $('turn-catalog-rows').querySelectorAll('button')) button.disabled = catalogDisabled || held;
 }
+function clearTurnFeedback() {
+  $('turn-feedback').hidden = true;
+  $('turn-feedback-form').reset();
+  for (const id of ['turn-feedback-saved','turn-feedback-saved-note','turn-feedback-state']) $(id).textContent = '';
+}
+function renderTurnFeedback() {
+  const attempt = pendingTurn, verified = turnCapabilities?.feedback_protocol === 1 && turnDownloadable();
+  $('turn-feedback').hidden = !attempt || turnCapabilities?.feedback_protocol !== 1;
+  const r = verified ? attempt.receipt : null, f = r?.feedback;
+  $('turn-feedback-saved').textContent = !verified ? '当前评价未核对；请先按原编号核对结果。' : f ? `当前评价：${f.decision === 'usable' ? '可用' : '需要修改'} · 修订 ${r.feedback_revision}` : '当前没有已保存的评价。';
+  $('turn-feedback-saved-note').textContent = f?.note || '';
+  if (attempt && attempt.feedbackReviewRevision !== (r?.feedback_revision || 0)) $('turn-feedback-reviewed').checked = false;
+  const disabled = !verified || readOnly || busy || turnControlBusy || !!turnConnection;
+  for (const e of $('turn-feedback-form').querySelectorAll('input,select,textarea,button')) e.disabled = disabled;
+  $('turn-feedback-save').disabled ||= !$('turn-feedback-reviewed').checked;
+  $('turn-feedback-clear').disabled ||= !$('turn-feedback-reviewed').checked || !f;
+}
+for (const id of ['turn-feedback-note','turn-feedback-decision']) $(id).addEventListener('input', () => {
+  $('turn-feedback-reviewed').checked = false;
+  if (pendingTurn) pendingTurn.feedbackReviewRevision = undefined;
+  controls();
+});
+$('turn-feedback-reviewed').addEventListener('change', () => {
+  if (pendingTurn) pendingTurn.feedbackReviewRevision = $('turn-feedback-reviewed').checked ? (pendingTurn.receipt?.feedback_revision || 0) : undefined;
+  controls();
+});
+async function saveTurnFeedback(attempt, clear) {
+  if (readOnly || !turnDownloadable() || turnCapabilities?.feedback_protocol !== 1 || !$('turn-feedback-reviewed').checked) return;
+  const owner = identity, revision = attempt.feedbackReviewRevision;
+  const decision = clear ? 'clear' : $('turn-feedback-decision').value, note = clear ? '' : $('turn-feedback-note').value;
+  if (!['usable','needs_changes','clear'].includes(decision) || !Turn.feedbackNote(note)) throw new Error('说明必须为完整 UTF-8 文本、最多1024字节，不允许控制字符。');
+  await checkTurn(attempt);
+  if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+  if (!turnDownloadable() || revision !== (attempt.receipt.feedback_revision || 0)) throw new Error('原结果或当前评价已变化；请重新核对并确认。');
+  // A lost write response is never retried. Only original GET makes the new view fresh.
+  attempt.fresh = false; $('turn-feedback-reviewed').checked = false; controls();
+  $('turn-feedback-state').textContent = '正在提交本次评价；若响应未知，请先核对原编号，勿重复提交。';
+  const value = await turnApi('/api/turns/' + attempt.id + '/feedback','PUT',{expected_revision:revision,decision,note},15000);
+  if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+  (tenantTurns() ? Turn.gatewaySnapshot : Turn.snapshot)(value,attempt.receipt,attempt.body ? new Set(attempt.body.enabled_tools) : null);
+  const feedback = value.receipt.feedback, next = value.receipt.feedback_revision || 0;
+  if ((next !== revision && next !== revision + 1) || (clear ? feedback !== undefined : feedback?.decision !== decision || feedback?.note !== note)) throw new Error('评价回执未通过核对；请按原编号读取当前记录。');
+  await checkTurn(attempt);
+  if (owner !== identity || pendingTurn !== attempt) throw new StaleIdentity();
+  $('turn-feedback-state').textContent = clear ? '当前评价已清除并按原编号核对；原任务保留。' : '评价已保存并按原编号核对；未继续执行任务。';
+}
+$('turn-feedback-form').addEventListener('submit', e => { e.preventDefault(); turnControl(a => saveTurnFeedback(a,false)); });
+$('turn-feedback-clear').addEventListener('click', () => turnControl(a => saveTurnFeedback(a,true)));
 function forgetTurns() {
   clearTurnActivity();
   turnConnection?.abort(); turnConnection = null; turnControlBusy = false; pendingTurn = null; turnCapabilities = null;
