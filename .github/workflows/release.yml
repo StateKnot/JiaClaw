@@ -50,6 +50,8 @@ on:
       - 'tests/session_catalog.py'
       - 'tests/http_turn_cli.py'
       - 'tests/tenant_file_read.py'
+      - 'tests/tenant_file_download.py'
+      - 'tests/tenant_file_download.cjs'
       - 'tests/tenant_file_write.py'
       - 'tests/tenant_file_write_browser.cjs'
       - 'tests/tenant_skill_read.py'
@@ -163,6 +165,8 @@ jobs:
           python3 tests/tenant_http_turns.py "target/$TARGET/release/jiaclaw"
           python3 tests/tenant_http_stream.py "target/$TARGET/release/jiaclaw"
           python3 tests/gateway_shutdown.py "target/$TARGET/release/jiaclaw"
+      - name: Current file capture acceptance
+        run: python3 tests/tenant_file_download.py "target/${{ matrix.target }}/release/jiaclaw"
       - name: Package and install the exact release archive
         run: |
           mkdir dist

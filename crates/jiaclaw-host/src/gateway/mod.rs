@@ -44,6 +44,7 @@ struct Backend {
     control: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     file_read: Option<jiaclaw::TenantFileReadCapability>,
+    file_download: bool,
     file_write: Option<jiaclaw::TenantFileWriteCapability>,
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
@@ -309,6 +310,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                 write_permission.as_ref(),
                 skills.as_ref(),
                 memory.as_ref(),
+                backend.tenant_file_download,
             )
             .await?;
         }
@@ -335,6 +337,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .as_ref()
                     .map(jiaclaw::TenantFileWriteCapability::capture)
                     .transpose()?,
+                file_download: backend.tenant_file_download,
                 file_read: backend
                     .tenant_file_read
                     .as_ref()

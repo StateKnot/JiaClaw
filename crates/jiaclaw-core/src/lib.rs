@@ -1558,6 +1558,9 @@ pub struct HttpConfig {
     /// Explicit tenant HTTP file grant. Omission leaves the two-tool contract unchanged.
     #[serde(default)]
     pub tenant_file_read: Option<TenantFileReadPolicy>,
+    /// Separately opt-in human file download using the existing exact read grant.
+    #[serde(default)]
+    pub tenant_file_download: bool,
     /// Explicit exact document overwrite grant; default off, separate from reading.
     #[serde(default)]
     pub tenant_file_write: Option<TenantFileWritePolicy>,
@@ -1738,6 +1741,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             tenant_file_read: None,
+            tenant_file_download: false,
             tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,

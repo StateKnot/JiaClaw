@@ -1077,16 +1077,8 @@ pub fn read_workspace_file(
     limit: Option<usize>,
     max_bytes: usize,
 ) -> Result<ReadFileOutput, JiaClawError> {
-    let bytes = crate::memory_io::read_file_bytes(workspace, rel_path, max_bytes)?;
-    let size_bytes = bytes.len() as u64;
-    let content = match String::from_utf8(bytes) {
-        Ok(text) if !text.contains('\0') => text,
-        _ => {
-            return Err(JiaClawError::ToolExecution(format!(
-                "二进制文件，拒绝读取: {rel_path}（检测到 NUL 或非 UTF-8）"
-            )))
-        }
-    };
+    let content = read_workspace_text(workspace, rel_path, max_bytes)?;
+    let size_bytes = content.len() as u64;
     let (text, total_lines, returned_lines, truncated) = slice_lines(&content, offset, limit);
     Ok(ReadFileOutput {
         path: rel_path.to_string(),
@@ -1098,6 +1090,22 @@ pub fn read_workspace_file(
         size_bytes,
         content: text,
     })
+}
+
+fn read_workspace_text(
+    workspace: &Path,
+    rel_path: &str,
+    max_bytes: usize,
+) -> Result<String, JiaClawError> {
+    let bytes = crate::memory_io::read_file_bytes(workspace, rel_path, max_bytes)?;
+    match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => Ok(text),
+        _ => {
+            return Err(JiaClawError::ToolExecution(format!(
+                "二进制文件，拒绝读取: {rel_path}（检测到 NUL 或非 UTF-8）"
+            )))
+        }
+    }
 }
 
 /// 列出工作区相对目录（默认不递归，不跟随 symlink 目录）。
@@ -1296,6 +1304,25 @@ impl WorkspaceReadFileTool {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
             max_bytes: READ_FILE_MAX_BYTES,
         }
+    }
+
+    /// Capture original complete UTF-8 bytes under the original I/O capacity.
+    /// The caller's owner survives cancellation until actual blocking work exits.
+    ///
+    /// # Errors
+    /// Original path, type, byte, UTF-8 and capacity checks failed.
+    pub async fn capture_text_owned<O: Send + 'static>(
+        &self,
+        path: String,
+        owner: O,
+    ) -> Result<String, JiaClawError> {
+        let workspace = self.workspace_path.clone();
+        let maximum = self.max_bytes;
+        crate::memory_io::run_blocking(move || {
+            let _owner = owner;
+            read_workspace_text(&workspace, &path, maximum)
+        })
+        .await
     }
 
     /// 测试或自定义上限。

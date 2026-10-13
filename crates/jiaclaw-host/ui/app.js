@@ -10,6 +10,7 @@ let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, o
 let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = null;
 let semanticReviewEnabled = false;
 let textFileReader = null, textImportEpoch = 0, pdfInputController = null;
+let fileDownloadController = null, fileDownloadEpoch = 0;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -54,9 +55,15 @@ function controls() {
   $('text-file-add').disabled = $('text-file').disabled || $('text-file').files.length !== 1;
   $('pdf-file').disabled = $('text-file').disabled;
   $('pdf-file-add').disabled = $('pdf-file').disabled || $('pdf-file').files.length !== 1;
+  const filesEnabled = connected && tenantTurns() && turnCapabilities?.file_download_protocol === 1;
+  $('file-download').hidden = !filesEnabled;
+  $('file-download-path').disabled = $('file-download-reviewed').disabled = !filesEnabled || busy || turnControlBusy;
+  $('file-download-save').disabled = !filesEnabled || busy || turnControlBusy || $('file-download-path').value === '' || !$('file-download-reviewed').checked;
+
 }
 function clearIdentity() {
   clearTextImport();
+  clearFileDownload();
   forgetTurns(); identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
   sessionNext = null;
   $('access-mode').hidden = true; $('job-create').hidden = false;
@@ -163,6 +170,53 @@ $('pdf-file-add').addEventListener('click', () => {
       $('pdf-file-state').textContent = `已加入 PDF 可提取文字：${file.name}（${result.pages} 页，原文件 ${file.size} 字节）。请核对原 PDF 与草稿后再发送。`;
       status('PDF 可提取文字已加入可编辑草稿；尚未发送。');
     } finally { controller.abort(); if (pdfInputController === controller) pdfInputController = null; }
+  });
+});
+function clearFileDownload() {
+  fileDownloadEpoch++; fileDownloadController?.abort(); fileDownloadController = null;
+  $('file-download-reviewed').checked = false; $('file-download-state').textContent = '';
+  $('file-download-path').replaceChildren(new Option('明确选择一个文件','')); $('file-download').hidden = true;
+}
+$('file-download-path').addEventListener('change', () => {
+  fileDownloadEpoch++; fileDownloadController?.abort(); $('file-download-reviewed').checked = false; $('file-download-state').textContent = ''; controls();
+});
+$('file-download-reviewed').addEventListener('change', () => { fileDownloadEpoch++; fileDownloadController?.abort(); controls(); });
+$('file-download-save').addEventListener('click', () => {
+  if ($('file-download-save').disabled) return;
+  const owner = identity, permission = turnCapabilities, index = $('file-download-path').value, epoch = fileDownloadEpoch, credential = token;
+  task(async () => {
+    const deadline = performance.now() + 15000, controller = new AbortController(); fileDownloadController = controller;
+    const current = () => {
+      if (owner !== identity || permission !== turnCapabilities || epoch !== fileDownloadEpoch || $('file-download-path').value !== index || !$('file-download-reviewed').checked) throw new StaleIdentity();
+      if (controller.signal.aborted || performance.now() >= deadline) throw new Error('文件下载超时；没有请求保存文件。');
+    };
+    const timer = setTimeout(() => controller.abort(), Math.max(0,deadline-performance.now()));
+    $('file-download-state').textContent = '';
+    try {
+      current();
+      if (!permission || permission.file_download_protocol !== 1 || !permission.file_read || !/^(0|[1-9][0-9]?)$/.test(index) || Number(index) >= permission.file_read.paths.length) throw new Error('文件授权已改变，请重新连接。');
+      const response = await fetch(`/api/turns/files/${index}/${permission.file_read.policy_sha256}`, {headers:{Authorization:`Bearer ${credential}`},signal:controller.signal,credentials:'omit',cache:'no-store'}); current();
+      if (response.status === 401) { clearIdentity(); throw new ApiError('鉴权失败，请重新连接。',401); }
+      if (!response.ok) throw new Error(`当前文件不可完整读取（HTTP ${response.status}），没有请求下载。`);
+      const h = response.headers, size = h.get('x-jiaclaw-file-bytes'), digest = h.get('x-jiaclaw-file-sha256');
+      if (h.get('content-type') !== 'application/octet-stream' || h.has('content-encoding') || h.get('x-jiaclaw-file-protocol') !== '1' || h.get('x-jiaclaw-file-index') !== index || h.get('x-jiaclaw-file-policy') !== permission.file_read.policy_sha256 || !/^(0|[1-9][0-9]*)$/.test(size || '') || Number(size)>262144 || !/^[0-9a-f]{64}$/.test(digest || '')) throw new Error('文件响应合同异常，没有请求下载。');
+      const reader = response.body?.getReader(); if (!reader) throw new Error('未取得完整文件。');
+      const chunks = []; let length = 0;
+      try { while (true) { const c = await reader.read(); current(); if(c.done) break; length += c.value.byteLength; if(length>262144 || length>Number(size)) throw new Error('文件超过完整读取限额，没有请求下载。'); chunks.push(c.value); } }
+      catch(error) { await reader.cancel().catch(()=>{}); throw error; }
+      finally { reader.releaseLock(); }
+      if(length !== Number(size)) throw new Error('文件正文不完整，没有请求下载。');
+      const bytes = new Uint8Array(length); let offset = 0; for(const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.byteLength; }
+      new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes); if(bytes.includes(0)) throw new Error('文件不是已授权的完整 UTF-8 文本。');
+      const actual = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),v=>v.toString(16).padStart(2,'0')).join(''); current();
+      if(actual !== digest) throw new Error('文件完整摘要不匹配，没有请求下载。');
+      const source = permission.file_read.paths[Number(index)], ext = /\.(txt|md|csv|json|log)$/i.exec(source)?.[1]?.toLowerCase() || 'txt';
+      const url = URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'})), link = document.createElement('a');
+      try { link.href=url; link.download=`jiaclaw-file-${digest}.${ext}`; document.body.append(link); current(); link.click(); }
+      finally { link.remove(); setTimeout(()=>URL.revokeObjectURL(url),0); }
+      $('file-download-state').textContent = `已请求浏览器下载当前文件（${length} 字节，SHA256: ${digest}）。请核对本机保存结果；这不认证历史任务产物。`;
+      $('file-download-reviewed').checked = false;
+    } finally { clearTimeout(timer); controller.abort(); if(fileDownloadController===controller) fileDownloadController=null; }
   });
 });
 async function api(path, method = 'GET', body, optional = false, timeout = 0, maxBytes = 0, parentSignal = null) {
@@ -1014,6 +1068,8 @@ async function connectTurns(gateway) {
   }
   if (owner !== identity) throw new StaleIdentity();
   turnCapabilities = c;
+  clearFileDownload();
+  if (gateway && c.file_download_protocol === 1) c.file_read.paths.forEach((path,index) => $('file-download-path').append(new Option(path,String(index))));
   $('turn-mode').textContent = gateway ? (c.streaming ? '新请求显示临时预览，结束后按原编号核对已保存回复；断流或停止交付后仍需核对，结束跟踪不解除管理员核对占用。' : '新请求异步保存回复。本页最多观察 30 秒，之后可按原编号核对；结束跟踪不解除需要管理员核对的执行占用。') : '新建会话使用实时预览。旧会话保持原有发送方式；预览不代表已保存。';
   $('turn-catalog-note').textContent = gateway ? '列表只含本用户的原编号、会话编号和准入时间，不表示执行状态。选中后读取原收据；不会再次执行。新记录可能改变后续分页。' : '列表仅展示状态摘要。选中后核对原请求；不会再次执行。每页为读取时的状态，新记录可能改变后续分页。';
   $('turn-permissions-note').textContent = gateway ? '请选择本次需要的工具；默认不授权。文件读与完整覆盖、技能和关键词检索范围由管理员分别限定；选择覆盖会授权模型替换清单内文件正文。原有 SOUL/USER/MEMORY 每轮提示读取独立保留，未选检索不会移除这些记忆。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';

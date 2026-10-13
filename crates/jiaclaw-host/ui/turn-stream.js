@@ -38,6 +38,7 @@
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
     if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
+    if (Object.hasOwn(c || {}, 'file_download_protocol')) fields.push('file_download_protocol');
     if (Object.hasOwn(c || {}, 'file_write')) fields.push('file_write');
     if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
     if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
@@ -47,6 +48,7 @@
     require(c.session_prefix === 'http:' && c.max_identities === 10000 && c.max_page === 50);
     require(c.feedback_protocol === undefined || c.feedback_protocol === 1);
     if (c.gateway_protocol === 2) require(c.stream_suffix === '/stream' && Number.isInteger(c.turn_budget_secs) && c.turn_budget_secs >= 10 && c.turn_budget_secs <= 300 && c.max_stream_wire_bytes === 12 * MiB && c.max_preview_round_bytes === 2 * MiB && c.max_preview_total_bytes === 8 * MiB);
+    require(c.file_download_protocol === undefined || (c.file_download_protocol === 1 && c.file_read !== undefined));
     const allowed = ['datetime_now','json_query'];
     if (c.file_read !== undefined) {
       const f = c.file_read;
