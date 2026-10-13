@@ -60,6 +60,10 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
             "tenant_memory_search requires tracked tenant HTTP and memory_search enabled"
         );
     }
+    ensure!(
+        !config.http.tenant_file_download || config.http.tenant_file_read.is_some(),
+        "tenant_file_download requires the original exact tenant_file_read grant"
+    );
     if !config.http.tracked_turns {
         return Ok(());
     }
@@ -416,6 +420,10 @@ pub(super) async fn capabilities(
         .map_err(|_| AppError::HttpTurnUnavailable)?;
     }
     value["feedback_protocol"] = json!(if state.http_turns.is_some() { 1 } else { 0 });
+    if state.agent.config().http.tenant_file_download {
+        value["file_download_protocol"] = json!(1);
+    }
+
     if let Some(policy) = &state.agent.config().http.tenant_file_write {
         value["file_write"] = serde_json::to_value(
             jiaclaw::TenantFileWriteCapability::capture(policy)
@@ -867,6 +875,59 @@ pub(super) async fn purge_result(
     validate_id(&id)?;
     let receipt = control(&state, move |store| store.purge_http_result(&id)).await?;
     Ok(receipt_response(&state, &receipt, StatusCode::OK))
+}
+
+pub(super) async fn download_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((index, policy)): Path<(String, String)>,
+    uri: axum::http::Uri,
+    method: axum::http::Method,
+) -> Result<Response, AppError> {
+    authorize(&state, &headers)?;
+    let cfg = state.agent.config();
+    if method != axum::http::Method::GET
+        || !cfg.http.tenant_file_download
+        || state.http_turns.is_none()
+        || uri.query().is_some()
+        || uri.path() != format!("/api/turns/files/{index}/{policy}")
+        || !super::tenant_file_download::empty_request(&headers)
+    {
+        return Err(AppError::BadRequest("file_download_unavailable".into()));
+    }
+    let index = super::tenant_file_download::target(&index, &policy)
+        .ok_or_else(|| AppError::BadRequest("invalid_file_download".into()))?;
+    let grant = cfg
+        .http
+        .tenant_file_read
+        .as_ref()
+        .ok_or(AppError::HttpTurnUnavailable)?;
+    let permission = jiaclaw::TenantFileReadCapability::capture(grant)
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    if permission.policy_sha256 != policy || index >= permission.paths.len() {
+        return Err(AppError::BadRequest(
+            "file_download_permission_changed".into(),
+        ));
+    }
+    let owner = state
+        .http_turn_controls
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::JobConflict("http_turn_control_busy".into()))?;
+    let tool = jiaclaw::FileReadTool::restricted(&cfg.workspace_path, grant)
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    let content = tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.capture_text_owned(permission.paths[index].clone(), owner),
+    )
+    .await
+    .map_err(|_| AppError::JobConflict("file_capture_timeout".into()))?
+    .map_err(|_| AppError::BadRequest("file_capture_rejected".into()))?;
+    Ok(super::tenant_file_download::response(
+        content.into_bytes(),
+        index,
+        &policy,
+    ))
 }
 
 pub(super) async fn feedback(

@@ -374,6 +374,27 @@ impl FileReadTool {
             allowed_paths: Some(policy.paths.clone()),
         })
     }
+
+    /// Complete snapshot only within the original explicit tenant grant.
+    ///
+    /// # Errors
+    /// Missing/outside grant or original bounded file I/O failure.
+    pub async fn capture_text_owned<O: Send + 'static>(
+        &self,
+        path: String,
+        owner: O,
+    ) -> Result<String, JiaClawError> {
+        if !self
+            .allowed_paths
+            .as_ref()
+            .is_some_and(|paths| paths.contains(&path))
+        {
+            return Err(JiaClawError::ToolExecution(
+                "file capture outside explicit tenant grant".into(),
+            ));
+        }
+        self.inner.capture_text_owned(path, owner).await
+    }
 }
 
 #[async_trait]

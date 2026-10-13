@@ -63,6 +63,9 @@ pub struct BackendConfig {
     /// Explicit file permission; must exactly match the private tracked backend.
     #[serde(default)]
     pub tenant_file_read: Option<jiaclaw_core::TenantFileReadPolicy>,
+    /// Separately opt-in human file download using the existing exact read grant.
+    #[serde(default)]
+    pub tenant_file_download: bool,
     /// Exact whole-file tenant overwrite grant; default off and independent of reads.
     #[serde(default)]
     pub tenant_file_write: Option<jiaclaw_core::TenantFileWritePolicy>,
@@ -426,6 +429,10 @@ impl Config {
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
+            ensure!(
+                !backend.tenant_file_download || backend.tenant_file_read.is_some(),
+                "tenant_file_download requires exact tenant_file_read grant"
+            );
             if let Some(policy) = &backend.tenant_file_write {
                 ensure!(
                     self.tracked_turns,
@@ -589,6 +596,7 @@ mod tests {
             url: "http://127.0.0.1:9001/".into(),
             token_file: "/tmp/bob.token".into(),
             tenant_file_read: None,
+            tenant_file_download: false,
             tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,

@@ -81,6 +81,62 @@ impl TenantFileWriteCapability {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn tenant_file_capture_uses_original_complete_reader_and_exact_grant() {
+        use crate::Tool;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("tenant-documents")).unwrap();
+        let policy = TenantFileReadPolicy {
+            paths: vec!["tenant-documents/output.md".into()],
+        };
+        let target = root.path().join(&policy.paths[0]);
+        let tool = crate::FileReadTool::restricted(root.path(), &policy).unwrap();
+        let original = "\u{feff}完整🦀\r\n\t tail  \r\n";
+        std::fs::write(&target, original).unwrap();
+        assert_eq!(
+            tool.capture_text_owned(policy.paths[0].clone(), ())
+                .await
+                .unwrap(),
+            original
+        );
+        let old = tool
+            .execute(serde_json::json!({"path":policy.paths[0]}))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&old).unwrap()["content"],
+            "\u{feff}完整🦀\n\t tail  "
+        );
+        assert!(tool
+            .capture_text_owned("private.txt".into(), ())
+            .await
+            .is_err());
+        assert!(crate::FileReadTool::new(root.path())
+            .capture_text_owned(policy.paths[0].clone(), ())
+            .await
+            .is_err());
+        for bytes in [vec![], vec![b'x'; crate::READ_FILE_MAX_BYTES]] {
+            std::fs::write(&target, &bytes).unwrap();
+            assert_eq!(
+                tool.capture_text_owned(policy.paths[0].clone(), ())
+                    .await
+                    .unwrap()
+                    .as_bytes(),
+                bytes
+            );
+        }
+        for bytes in [
+            vec![b'x'; crate::READ_FILE_MAX_BYTES + 1],
+            vec![0],
+            vec![255],
+        ] {
+            std::fs::write(&target, bytes).unwrap();
+            assert!(tool
+                .capture_text_owned(policy.paths[0].clone(), ())
+                .await
+                .is_err());
+        }
+    }
+    #[tokio::test]
     async fn tenant_write_uses_original_atomic_writer_and_exact_complete_content() {
         use crate::Tool;
         let root = tempfile::tempdir().unwrap();

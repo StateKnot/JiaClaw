@@ -41,6 +41,8 @@ fn json_content(headers: &HeaderMap) -> bool {
 
 #[derive(Deserialize)]
 struct Capability {
+    #[serde(default)]
+    file_download_protocol: Option<u8>,
     feedback_protocol: u8,
     protocol: u8,
     gateway_protocol: u8,
@@ -73,6 +75,7 @@ pub(super) async fn check_backend(
     file_write: Option<&jiaclaw::TenantFileWriteCapability>,
     skill_read: Option<&jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<&jiaclaw::TenantMemorySearchCapability>,
+    file_download: bool,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
         let response = client
@@ -106,7 +109,8 @@ pub(super) async fn check_backend(
             "backend HTTP turn contract mismatch"
         );
         ensure!(
-            c.file_read.as_ref() == file_read
+            c.file_download_protocol == file_download.then_some(1)
+                && c.file_read.as_ref() == file_read
                 && c.file_write.as_ref() == file_write
                 && c.skill_read.as_ref() == skill_read
                 && c.memory_search.as_ref() == memory_search,
@@ -119,6 +123,7 @@ pub(super) async fn check_backend(
 }
 
 enum Route {
+    File(usize, String),
     Feedback(Uuid),
     Capabilities,
     Catalog(usize, usize),
@@ -161,6 +166,15 @@ fn route(method: &Method, uri: &Uri) -> Option<Route> {
     }
     if uri.query().is_some() {
         return None;
+    }
+    if let Some(tail) = uri.path().strip_prefix("/api/turns/files/") {
+        let (index, policy) = tail.split_once('/')?;
+        return (method == Method::GET)
+            .then(|| {
+                crate::tenant_file_download::target(index, policy)
+                    .map(|n| Route::File(n, policy.to_owned()))
+            })
+            .flatten();
     }
     if uri.path() == "/api/turns/capabilities" && method == Method::GET {
         return Some(Route::Capabilities);
@@ -529,6 +543,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
         _global: global,
         _backend: None,
     });
+    let current_token = token.clone();
     let p = match db(state.registry.clone(), control.clone(), move |r| {
         r.authenticate(&token)
     })
@@ -563,9 +578,93 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
     control._backend = Some(backend_control);
     let control = Arc::new(control);
     match route {
+        Route::File(index, policy) => {
+            if !backend.file_download
+                || !crate::tenant_file_download::empty_request(request.headers())
+                || !backend
+                    .file_read
+                    .as_ref()
+                    .is_some_and(|c| c.policy_sha256 == policy && index < c.paths.len())
+            {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "file download not authorized",
+                    request_id,
+                );
+            }
+            let result = tokio::time::timeout(IO_BUDGET, async {
+                ensure!(
+                    check_backend(
+                        &state.client,
+                        &backend.url,
+                        &backend.token,
+                        &p.backend_id,
+                        backend.file_read.as_ref(),
+                        backend.file_write.as_ref(),
+                        backend.skill_read.as_ref(),
+                        backend.memory_search.as_ref(),
+                        backend.file_download
+                    )
+                    .await?,
+                    "backend file download unavailable"
+                );
+                let response = state
+                    .client
+                    .get(
+                        backend
+                            .url
+                            .join(&format!("api/turns/files/{index}/{policy}"))?,
+                    )
+                    .header(header::AUTHORIZATION, backend.token.clone())
+                    .header("x-jiaclaw-gateway-turns", "1")
+                    .timeout(IO_BUDGET)
+                    .send()
+                    .await?;
+                ensure!(
+                    response.status() == StatusCode::OK,
+                    "backend file capture refused"
+                );
+                let headers = response.headers().clone();
+                let bytes = super::proxy::read_response(response, jiaclaw::READ_FILE_MAX_BYTES)
+                    .await
+                    .map_err(|()| anyhow::anyhow!("file capture body refused"))?;
+                ensure!(
+                    crate::tenant_file_download::valid(&headers, &bytes, index, &policy),
+                    "invalid file capture contract"
+                );
+                let now = db(state.registry.clone(), control.clone(), move |r| {
+                    r.authenticate(&current_token)
+                })
+                .await?;
+                ensure!(
+                    now.is_some_and(|q| q.user_id == p.user_id
+                        && q.key_id == p.key_id
+                        && q.backend_id == p.backend_id
+                        && q.read_only == p.read_only),
+                    "key revoked during capture"
+                );
+                Ok::<_, anyhow::Error>(bytes)
+            })
+            .await;
+            match result {
+                Ok(Ok(bytes)) => response(
+                    crate::tenant_file_download::response(bytes, index, &policy),
+                    request_id,
+                ),
+                _ => error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "file capture unavailable; no download",
+                    request_id,
+                ),
+            }
+        }
         Route::Capabilities => {
             let mut value = json!({"protocol":1,"gateway_protocol":2,"enabled":true,"streaming":true,"listing":true,"scope":"gateway","session_prefix":"http:","max_identities":10000,"max_page":50,"enabled_tools":["datetime_now","json_query"],"stream_suffix":"/stream","turn_budget_secs":state.timeout.as_secs(),"max_stream_wire_bytes":crate::http_turns::delivery::WIRE_BYTES,"max_preview_round_bytes":crate::http_turns::delivery::ROUND_BYTES,"max_preview_total_bytes":crate::http_turns::delivery::PREVIEW_BYTES});
             value["feedback_protocol"] = json!(1);
+            if backend.file_download {
+                value["file_download_protocol"] = json!(1);
+            }
+
             if let Some(permission) = &backend.file_read {
                 value["enabled_tools"] = json!(["datetime_now", "json_query", "file_read"]);
                 value["file_read"] = json!(permission);
@@ -923,7 +1022,8 @@ async fn execute(
                 backend.file_read.as_ref(),
                 backend.file_write.as_ref(),
                 backend.skill_read.as_ref(),
-                backend.memory_search.as_ref()
+                backend.memory_search.as_ref(),
+                backend.file_download
             )
         )
         .await,

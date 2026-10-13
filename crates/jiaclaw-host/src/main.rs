@@ -75,6 +75,7 @@ mod semantic_review;
 mod session_turn_tests;
 mod store;
 mod tenant_channel;
+mod tenant_file_download;
 mod tenant_scheduler;
 mod ui;
 mod wecom;
@@ -1431,6 +1432,10 @@ fn build_router_with_body_limit(
         .route("/api/chat", post(chat_handler))
         .route("/api/turns", get(http_turns::list))
         .route("/api/turns/capabilities", get(http_turns::capabilities))
+        .route(
+            "/api/turns/files/:index/:policy",
+            get(http_turns::download_file),
+        )
         .route(
             "/api/turns/:id",
             get(http_turns::get)

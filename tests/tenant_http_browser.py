@@ -12,7 +12,7 @@ import sys
 import tenant_http_fixture as f
 
 class App:
-    def __init__(self, root, file_write=None):
+    def __init__(self, root, file_write=None, file_read=None, file_download=False):
         self.root=root; self.registry=root/'registry/users.sqlite3'; self.backends={}
         self.gp=f.port(); self.config_path=root/'gateway.json'
         self.gateway={'bind':'127.0.0.1:'+str(self.gp),'registry_path':str(self.registry),
@@ -25,10 +25,14 @@ class App:
                 'model_calls':{'enabled':True,'store_path':'../state/model-calls/index.sqlite3'},
                 'http':{'bind':f'127.0.0.1:{number}','persist':True,'persist_path':'../state/sessions.sqlite3','api_token':token,'tracked_turns':True,'tracked_turn_timeout_secs':10,'shutdown_timeout_secs':2,'gateway_channel_chat':True}}
             if file_write and who in file_write: config['http']['tenant_file_write']={'paths':file_write[who]}
+            if file_read and who in file_read: config['http']['tenant_file_read']={'paths':file_read[who]}
+            if file_download: config['http']['tenant_file_download']=True
             path=directory/'config.json';path.write_text(json.dumps(config));self.backends[who]={'port':number,'token':token,'db':directory/'state/sessions.sqlite3','ledger':directory/'state/model-calls/index.sqlite3','workspace':workspace,'path':path,'config':config,'log':directory/'serve.log'}
             self.backends[who]['process']=f.launch(['serve','--config',str(path)],number,directory/'serve.log')
             self.gateway['backends'].append({'id':who,'url':f'http://127.0.0.1:{number}/','token_file':str(token_file)})
             if file_write and who in file_write: self.gateway['backends'][-1]['tenant_file_write']={'paths':file_write[who]}
+            if file_read and who in file_read: self.gateway['backends'][-1]['tenant_file_read']={'paths':file_read[who]}
+            if file_download: self.gateway['backends'][-1]['tenant_file_download']=True
         self.config_path.write_text(json.dumps(self.gateway))
         self.users={who:self.cli('user-add','--backend',who) for who in ('alice','bob')}
         self.readonly=self.cli('key-add','--user',self.users['alice']['user_id'],'--read-only')
