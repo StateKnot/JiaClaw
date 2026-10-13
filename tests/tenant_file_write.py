@@ -44,6 +44,14 @@ try:
         identity=str(uuid.uuid4());original=body(who,prompt);plan(who,prompt,path,content,**extra)
         api(who,'/api/turns/'+identity,'PUT',original,202,native=native)
         return identity,original,complete(who,identity,native)
+    def observe_review_hold(who,identity,started,deadline,prefix):
+        def observed():
+            rows=f.sql(app.registry,'SELECT request_id,state FROM write_holds WHERE user_id=?',(app.users[who]['user_id'],))
+            assert time.monotonic()<deadline, 'original 15s hold observation deadline exceeded'
+            return rows if rows==[{'request_id':identity,'state':'needs_review'}] else None
+        rows=f.wait(observed,'original gateway unknown write hold',seconds=max(0,deadline-time.monotonic()))
+        assert time.monotonic()<deadline and rows==[{'request_id':identity,'state':'needs_review'}]
+        print(prefix+json.dumps({'id':identity,'state':'needs_review','elapsed_ms':int((time.monotonic()-started)*1000),'within_original_15s':True,'same_absolute_deadline':True}),flush=True)
     def review_native(who,identity):
         value=api(who,'/api/turns/'+identity+'/review','POST',{'decision':'abandon','note':'Actual original model receipt and workspace effects inspected in disposable fixture.'},native=True)
         assert value['receipt']['reviewed_ms'] is not None
@@ -113,13 +121,7 @@ try:
         hold_started=time.monotonic();hold_deadline=hold_started+15
         identity,_,result=submit('alice','write-writer-busy',grant['alice'][0],'BAD')
         assert result['receipt']['state']=='needs_review' and count('write-writer-busy')==1 and target.read_text()=='ORIGINAL-alice',result
-        def hold_observed():
-            rows=f.sql(app.registry,'SELECT request_id,state FROM write_holds WHERE user_id=?',(app.users['alice']['user_id'],))
-            assert time.monotonic()<hold_deadline, 'original 15s hold observation deadline exceeded'
-            return rows if rows==[{'request_id':identity,'state':'needs_review'}] else None
-        rows=f.wait(hold_observed,'original gateway unknown write hold',seconds=max(0,hold_deadline-time.monotonic()))
-        assert time.monotonic()<hold_deadline and rows==[{'request_id':identity,'state':'needs_review'}]
-        print('ACTUAL tenant write hold observation '+json.dumps({'id':identity,'state':'needs_review','elapsed_ms':int((time.monotonic()-hold_started)*1000),'within_original_15s':True,'same_absolute_deadline':True}),flush=True)
+        observe_review_hold('alice',identity,hold_started,hold_deadline,'ACTUAL tenant write hold observation ')
         bob,_,value=submit('bob','write-independent-bob',grant['bob'][0],'BOB-independent');settle('bob')
         assert value['receipt']['state']=='completed' and (app.backends['bob']['workspace']/grant['bob'][0]).read_text()=='BOB-independent'
     finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
@@ -128,9 +130,11 @@ try:
     prompt='write-cancel';gate={'ready':threading.Event(),'release':threading.Event()};f.gates[('alice',prompt)]=gate
     identity=str(uuid.uuid4());plan('alice',prompt,grant['alice'][0],'CANCELLED');original=body('alice',prompt)
     api('alice','/api/turns/'+identity,'PUT',original,202);assert gate['ready'].wait(5)
+    cancel_started=time.monotonic();cancel_deadline=cancel_started+15
     api('alice','/api/turns/'+identity+'/cancel','POST',{})
     gate['release'].set();value=complete('alice',identity)
     assert value['receipt']['cancel_requested'] and value['receipt']['state']=='needs_review' and count(prompt)==1 and target.read_text()=='ORIGINAL-alice',value
+    observe_review_hold('alice',identity,cancel_started,cancel_deadline,'ACTUAL tenant write cancel hold observation ')
     app.review('alice',identity)
     print('PASS tenant write 6: actual submitted model cancellation blocks future file dispatch, keeps original cancel intent and review until explicit fixture reconciliation',flush=True)
     f.stop(app.process);b=app.backends['alice'];f.stop(b['process']);b['config']['http'].pop('tenant_file_write');b['path'].write_text(json.dumps(b['config']));app.gateway['backends'][0].pop('tenant_file_write');app.config_path.write_text(json.dumps(app.gateway))
