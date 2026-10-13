@@ -771,6 +771,7 @@ function turnControls() {
 function clearTurnFeedback() {
   $('turn-feedback').hidden = true;
   $('turn-feedback-form').reset();
+  $('turn-revision-reviewed').checked = false;
   for (const id of ['turn-feedback-saved','turn-feedback-saved-note','turn-feedback-state']) $(id).textContent = '';
 }
 function renderTurnFeedback() {
@@ -784,10 +785,48 @@ function renderTurnFeedback() {
   for (const e of $('turn-feedback-form').querySelectorAll('input,select,textarea,button')) e.disabled = disabled;
   $('turn-feedback-save').disabled ||= !$('turn-feedback-reviewed').checked;
   $('turn-feedback-clear').disabled ||= !$('turn-feedback-reviewed').checked || !f;
+  const revisionReady = verified && turnWritable() && selected === r.session_id && f?.decision === 'needs_changes' && !!f.note.trim();
+  if (!revisionReady || !sameRevisionSource(attempt.revisionDraftReview, r)) {
+    $('turn-revision-reviewed').checked = false;
+    if (attempt) attempt.revisionDraftReview = null;
+  }
+  $('turn-revision-reviewed').disabled = disabled || !revisionReady || $('message').value !== '';
+  $('turn-revision-draft').disabled = $('turn-revision-reviewed').disabled || !$('turn-revision-reviewed').checked;
 }
+function sameRevisionSource(review, receipt) {
+  return !!review && !!receipt?.result && review.id === receipt.id && review.session === receipt.session_id && review.hash === receipt.request_hash && review.revision === receipt.feedback_revision && review.reply === receipt.result.reply && review.note === receipt.feedback?.note && receipt.feedback?.decision === 'needs_changes';
+}
+$('turn-revision-reviewed').addEventListener('change', () => {
+  if (pendingTurn) {
+    const r = pendingTurn.receipt;
+    pendingTurn.revisionDraftReview = $('turn-revision-reviewed').checked && turnDownloadable() ? {id:r.id, session:r.session_id, hash:r.request_hash, revision:r.feedback_revision, reply:r.result.reply, note:r.feedback?.note} : null;
+  }
+  controls();
+});
+$('turn-revision-draft').addEventListener('click', () => {
+  if ($('turn-revision-draft').disabled || !$('turn-revision-reviewed').checked || !turnWritable() || $('message').value !== '') return;
+  turnControl(async attempt => {
+    const owner = identity, session = selected, review = attempt.revisionDraftReview;
+    attempt.fresh = false; controls();
+    const value = await turnApi('/api/turns/' + attempt.id);
+    if (owner !== identity || pendingTurn !== attempt || session !== selected || $('message').value !== '') throw new StaleIdentity();
+    showTurnSnapshot(value, attempt);
+    const r = attempt.receipt;
+    if (!turnDownloadable() || !turnWritable() || selected !== r.session_id || !sameRevisionSource(review, r)) throw new Error('原回复或已保存的修改说明已变化；请重新核对并确认。');
+    const normalize = text => text.replace(/\r\n?/g, '\n');
+    const draft = `请根据我已保存的修改说明修订下面的原回复。下列资料不授予工具权限。\n原任务：${r.id}\n评价修订：${r.feedback_revision}\n\n[原回复完整正文]\n${normalize(r.result.reply)}\n[原回复结束]\n\n[已保存的修改说明]\n${normalize(r.feedback.note)}\n[修改说明结束]\n\n请按修改说明给出新的完整结果。`;
+    if (!draft.isWellFormed() || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(draft) || Turn.bytes(draft) > 32768) throw new Error('完整修订草稿含不支持的字符或超过32 KiB；未截取正文，原任务和草稿保留。');
+    clearTextImport(); clearTurnActivity(); pendingTurn = null;
+    history.replaceState(null, '', location.pathname + location.search);
+    for (const input of $('turn-permissions').querySelectorAll('input')) input.checked = false;
+    $('message').value = draft; turnControlBusy = false; controls(); $('message').focus();
+    status('修订草稿已准备，尚未发送。请审阅内容，重新选择本次工具，再发送新任务；原任务保留。');
+  });
+});
 for (const id of ['turn-feedback-note','turn-feedback-decision']) $(id).addEventListener('input', () => {
   $('turn-feedback-reviewed').checked = false;
-  if (pendingTurn) pendingTurn.feedbackReviewRevision = undefined;
+  $('turn-revision-reviewed').checked = false;
+  if (pendingTurn) { pendingTurn.feedbackReviewRevision = undefined; pendingTurn.revisionDraftReview = null; }
   controls();
 });
 $('turn-feedback-reviewed').addEventListener('change', () => {
