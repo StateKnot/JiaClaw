@@ -378,6 +378,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         .route("/", get(index))
         .route("/ui/app.js", get(crate::ui::javascript))
         .route("/ui/turn-stream.js", get(crate::ui::turn_stream))
+        .route("/ui/pdf-input.js", get(crate::ui::pdf_input))
+        .route("/ui/pdfjs/pdf.mjs", get(crate::ui::pdf_library))
+        .route("/ui/pdfjs/pdf.worker.mjs", get(crate::ui::pdf_worker))
+        .route("/ui/pdfjs/LICENSE", get(crate::ui::pdf_license))
         .route("/ui/app.css", get(crate::ui::stylesheet))
         .route(
             "/health",
@@ -625,7 +629,7 @@ async fn index() -> axum::response::Response {
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
     );
-    headers.insert("content-security-policy", axum::http::HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"));
+    headers.insert("content-security-policy", axum::http::HeaderValue::from_static("default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"));
     headers.insert(
         "x-content-type-options",
         axum::http::HeaderValue::from_static("nosniff"),

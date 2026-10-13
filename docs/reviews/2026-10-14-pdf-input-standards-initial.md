@@ -1,0 +1,12 @@
+## Standards
+
+**2 documented-standard findings (P2); 0 additional actionable smell findings.** Reviewed exactly `git diff abffbf3e…...eb19f29c…` and its single commit across20 paths. Repository standards-file inventory found no AGENTS/CLAUDE/CODING_STANDARDS/CONTRIBUTING file; user AGENTS and the native-tool, failure-effect, MCP, text-input and PDF-input contracts govern this review. Fowler baseline smells are heuristics, overridden by repository requirements and excluding tooling-enforced checks.
+
+- **P2 — XFA refusal is ineffective:** `ui/pdf-input.js:38` checks `doc.isPureXfa`, but line29 sets `enableXfa:false`. The fixed SDK constructs its XFA factory only when enableXfa is true (`pdf.worker.mjs:59671`), and the document property reflects `_htmlForXfa` (`pdf.mjs:15643`). XFA-bearing documents with ordinary page text can therefore be imported. `docs/pdf-task-input.md:8` requires “加密、XFA、损坏或无法解析时整次拒绝”. Inspect metadata `info.IsXFAPresent` before extraction, within the same deadline, and reject it.
+- **P2 — Openable encrypted PDFs bypass refusal:** `ui/pdf-input.js:35–38` only rejects encryption through `PasswordException`. The fixed SDK accepts a valid empty user password and exposes the encryption flag as `documentInfo.EncryptFilterName` (`pdf.worker.mjs:59856`); successful loading is not proof of an unencrypted file. The same documented rule requires rejection of these PDFs. Check encryption metadata before page extraction and keep whole refusal.
+
+The shared original FileReader path retains text UTF-8/control/16KiB rules; PDF capture, explicit Send, identity guards, native Worker port, termination,5-second absolute checks,1MiB/32-page/16KiB/32KiB boundaries, same-origin lazy assets and restrictive Worker CSP are present. No second read/backend upload/Store/model tool was added.
+
+Independently fetched Mozilla release metadata binds the local ZIP SHA `f2245eb7…`; SDK, worker and LICENSE exactly match its three archive members and recorded hashes. This verifies upstream byte provenance, not line-by-line upstream correctness.
+
+No product test/build or mutation was performed by this reviewer. Final three-mode Chrome, original-text regression, build/fmt/Clippy results were pending at review admission; this report does not qualify official CI. Historical PR140, cumulative `4b2357fc` and local1318 conclusions remain inherited. Initial timeout/mobile observations do not establish a unique timeout cause.

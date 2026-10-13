@@ -1,4 +1,5 @@
 const {textInputTask}=require('./text_task_input.cjs');
+const {pdfInputTask}=require('./pdf_task_input.cjs');
 const {downloadExact}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright'), assert=require('assert'), fs=require('fs'), crypto=require('crypto');
 const cfg=JSON.parse(fs.readFileSync(process.argv[2])), wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -25,6 +26,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   await route.fulfill({response:r,json:j});
  });
  try {
+  if(process.env.JIACLAW_TEST_PDF_INPUT_ONLY==='1'){
+  await pdfInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-json",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"PDF task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   if(process.env.JIACLAW_TEST_TEXT_INPUT_ONLY==='1'){
   await textInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-json",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"text task hold settled"),reply:prompt=>"alice: "+prompt});
   return;
