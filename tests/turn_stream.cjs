@@ -57,7 +57,7 @@ assert.doesNotThrow(()=>gatewaySnapshot(ownResult,initial,new Set(['datetime_now
 assert.throws(()=>gatewaySnapshot(ownResult,initial,new Set(['json_query'])));
 assert.throws(()=>snapshot(ownResult,initial,new Set(['json_query'])));
 assert.throws(()=>gatewaySnapshot({...ownResult,receipt:{...ownResult.receipt,session_id:'http:'+id}},initial));
-assert.throws(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial));
+assert.throws(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial,new Set(['datetime_now'])));
 assert.throws(()=>gatewaySnapshot({...ownResult,state:'completed'},initial));
 console.log('PASS parser 8: pinned tenant JSON scope, finite payload-free admissions, original receipt/session and fixed tool authority');
 
@@ -95,3 +95,13 @@ const memoryResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownRes
 assert.doesNotThrow(()=>gatewaySnapshot(memoryResult,initial,new Set(['memory_search'])));
 assert.throws(()=>gatewaySnapshot(memoryResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 12: complete exact keyword memory grant and bounds, source aliases refuse, historical facts retain captured tool authority');
+
+const writePermission={protocol:1,paths:['tenant-documents/report.md'],mode:'overwrite',max_bytes:262144,policy_sha256:'e'.repeat(64)};
+const writeGateway={...streamGateway,enabled_tools:['datetime_now','json_query','file_write'],file_write:writePermission};
+assert.doesNotThrow(()=>gatewayCapabilities(writeGateway));
+for(const change of [{protocol:2},{mode:'append'},{max_bytes:262145},{paths:[]},{paths:['MEMORY.md']},{paths:['tenant-documents/./a']},{paths:['tenant-documents/a//b']},{paths:['tenant-documents/a','tenant-documents/a']},{paths:['tenant-documents/b','tenant-documents/a']},{paths:['tenant-documents/\ufeffa']},{paths:['tenant-documents/a\ufeff']},{paths:['tenant-documents/a\\b']},{paths:['tenant-documents/a\nb']},{paths:['tenant-documents/\ud800']},{body:'private'}])assert.throws(()=>gatewayCapabilities({...writeGateway,file_write:{...writePermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...writeGateway,enabled_tools:['datetime_now','json_query']}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','file_write']}));
+assert.doesNotThrow(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial,new Set(['file_write'])));
+assert.doesNotThrow(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial));
+console.log('PASS parser 13: complete separate tenant overwrite grant and canonical paths, no implicit dispatch permission, original and withdrawn write facts with captured authority');

@@ -63,6 +63,9 @@ pub struct BackendConfig {
     /// Explicit file permission; must exactly match the private tracked backend.
     #[serde(default)]
     pub tenant_file_read: Option<jiaclaw_core::TenantFileReadPolicy>,
+    /// Exact whole-file tenant overwrite grant; default off and independent of reads.
+    #[serde(default)]
+    pub tenant_file_write: Option<jiaclaw_core::TenantFileWritePolicy>,
     /// Explicit exact loaded skill permission, matched against the private backend.
     #[serde(default)]
     pub tenant_skill_read: Option<jiaclaw_core::TenantSkillReadPolicy>,
@@ -423,6 +426,13 @@ impl Config {
         let mut ids = HashSet::new();
         let mut origins = HashSet::new();
         for backend in &self.backends {
+            if let Some(policy) = &backend.tenant_file_write {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant write grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_file_read {
                 ensure!(
                     self.tracked_turns,
@@ -579,6 +589,7 @@ mod tests {
             url: "http://127.0.0.1:9001/".into(),
             token_file: "/tmp/bob.token".into(),
             tenant_file_read: None,
+            tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,
         });

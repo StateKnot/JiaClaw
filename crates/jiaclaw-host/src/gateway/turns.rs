@@ -57,6 +57,8 @@ struct Capability {
     #[serde(default)]
     file_read: Option<jiaclaw::TenantFileReadCapability>,
     #[serde(default)]
+    file_write: Option<jiaclaw::TenantFileWriteCapability>,
+    #[serde(default)]
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
     #[serde(default)]
     memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
@@ -68,6 +70,7 @@ pub(super) async fn check_backend(
     token: &HeaderValue,
     identity: &str,
     file_read: Option<&jiaclaw::TenantFileReadCapability>,
+    file_write: Option<&jiaclaw::TenantFileWriteCapability>,
     skill_read: Option<&jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<&jiaclaw::TenantMemorySearchCapability>,
 ) -> Result<bool> {
@@ -104,6 +107,7 @@ pub(super) async fn check_backend(
         );
         ensure!(
             c.file_read.as_ref() == file_read
+                && c.file_write.as_ref() == file_write
                 && c.skill_read.as_ref() == skill_read
                 && c.memory_search.as_ref() == memory_search,
             "backend exact tenant permission contract mismatch"
@@ -190,12 +194,17 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=5).contains(&s.enabled_tools.len())
+        && (1..=6).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools.iter().all(|t| {
             matches!(
                 t.as_str(),
-                "datetime_now" | "json_query" | "file_read" | "skill_read" | "memory_search"
+                "datetime_now"
+                    | "json_query"
+                    | "file_read"
+                    | "file_write"
+                    | "skill_read"
+                    | "memory_search"
             )
         })
         && s.enabled_tools
@@ -212,6 +221,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.file_read_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "file_write") {
+            s.file_write_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.file_write_policy_sha256.is_none()
         }
         && if s.enabled_tools.iter().any(|t| t == "skill_read") {
             s.skill_read_policy_sha256.as_ref().is_some_and(|hash| {
@@ -435,6 +454,7 @@ async fn remote_feedback(
                                                 "datetime_now"
                                                     | "json_query"
                                                     | "file_read"
+                                                    | "file_write"
                                                     | "skill_read"
                                                     | "memory_search"
                                             )
@@ -549,6 +569,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
             if let Some(permission) = &backend.file_read {
                 value["enabled_tools"] = json!(["datetime_now", "json_query", "file_read"]);
                 value["file_read"] = json!(permission);
+            }
+            if let Some(permission) = &backend.file_write {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("file_write"));
+                value["file_write"] = json!(permission);
             }
             if let Some(permission) = &backend.skill_read {
                 value["enabled_tools"]
@@ -846,6 +873,18 @@ async fn execute(
         ));
         return true;
     }
+    if body.enabled_tools.iter().any(|tool| tool == "file_write")
+        && !backend.file_write.as_ref().is_some_and(|permission| {
+            body.file_write_policy_sha256.as_deref() == Some(permission.policy_sha256.as_str())
+        })
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant file overwrite permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if body.enabled_tools.iter().any(|tool| tool == "skill_read")
         && !backend.skill_read.as_ref().is_some_and(|permission| {
             body.skill_read_policy_sha256.as_deref() == Some(permission.policy_sha256.as_str())
@@ -882,6 +921,7 @@ async fn execute(
                 &backend.token,
                 &p.backend_id,
                 backend.file_read.as_ref(),
+                backend.file_write.as_ref(),
                 backend.skill_read.as_ref(),
                 backend.memory_search.as_ref()
             )

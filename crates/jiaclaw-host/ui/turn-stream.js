@@ -20,10 +20,25 @@
     require(c.feedback_protocol === undefined || [0,1].includes(c.feedback_protocol));
     return c;
   }
+  function canonicalDocumentPaths(paths) {
+    let previous = null;
+    for (const path of paths) {
+      require(typeof path === 'string' && !/[\\\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(path) && bytes(path) <= 256 && path.startsWith('tenant-documents/'));
+      const parts = path.split('/');
+      require(parts.length <= 16 && parts.every(p => p && p.trim() === p && !p.startsWith('.') && !p.startsWith('\ufeff') && !p.endsWith('\ufeff')));
+      const encoded = encoder.encode(path);
+      if (previous) {
+        let i = 0; while (i < Math.min(previous.length, encoded.length) && previous[i] === encoded[i]) i++;
+        require(i === previous.length ? i < encoded.length : i < encoded.length && previous[i] < encoded[i]);
+      }
+      previous = encoded;
+    }
+  }
   function gatewayCapabilities(c) {
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
     if (Object.hasOwn(c || {}, 'file_read')) fields.push('file_read');
+    if (Object.hasOwn(c || {}, 'file_write')) fields.push('file_write');
     if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
     if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
@@ -37,19 +52,15 @@
       const f = c.file_read;
       require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === 4 && ['protocol','paths','max_bytes','policy_sha256'].every(k => Object.hasOwn(f,k)));
       require(f.protocol === 1 && f.max_bytes === 262144 && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.paths) && f.paths.length >= 1 && f.paths.length <= 32);
-      let previous = null;
-      for (const path of f.paths) {
-        require(typeof path === 'string' && bytes(path) <= 256 && path.startsWith('tenant-documents/') && !/[\\\u0000-\u001f\u007f-\u009f]/.test(path));
-        const parts = path.split('/');
-        require(parts.length <= 16 && parts.every(p => p && p.trim() === p && !p.startsWith('.')));
-        const encoded = encoder.encode(path);
-        if (previous) {
-          let i = 0; while (i < Math.min(previous.length, encoded.length) && previous[i] === encoded[i]) i++;
-          require(i === previous.length ? i < encoded.length : i < encoded.length && previous[i] < encoded[i]);
-        }
-        previous = encoded;
-      }
+      canonicalDocumentPaths(f.paths);
       allowed.push('file_read');
+    }
+    if (c.file_write !== undefined) {
+      const f = c.file_write;
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === 5 && ['protocol','paths','mode','max_bytes','policy_sha256'].every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.mode === 'overwrite' && f.max_bytes === 262144 && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.paths) && f.paths.length >= 1 && f.paths.length <= 32);
+      canonicalDocumentPaths(f.paths);
+      allowed.push('file_write');
     }
     if (c.skill_read !== undefined) {
       const f = c.skill_read;
@@ -166,7 +177,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','skill_read','memory_search'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search'].includes(t)));
     return value;
   }
   class Parser {

@@ -33,6 +33,13 @@ pub(super) fn reserved_session(id: &str) -> bool {
 }
 
 pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Result<()> {
+    if let Some(policy) = &config.http.tenant_file_write {
+        policy.validate()?;
+        ensure!(
+            config.http.tracked_turns && tenant_mode(config) && config.tools.write_file.enabled,
+            "tenant_file_write requires tracked tenant HTTP turns and write_file enabled"
+        );
+    }
     if let Some(policy) = &config.http.tenant_file_read {
         policy.validate()?;
         ensure!(
@@ -173,6 +180,8 @@ pub(super) struct Submission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) file_read_policy_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_write_policy_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) skill_read_policy_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) memory_search_policy_sha256: Option<String>,
@@ -180,7 +189,7 @@ pub(super) struct Submission {
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
         if tenant_mode(state.agent.config()) {
-            if !(1..=5).contains(&self.enabled_tools.len())
+            if !(1..=6).contains(&self.enabled_tools.len())
                 || !self.enabled_skills.is_empty()
                 || self.enabled_tools.iter().any(|name| {
                     !matches!(
@@ -188,6 +197,7 @@ impl Submission {
                         "datetime_now"
                             | "json_query"
                             | "file_read"
+                            | "file_write"
                             | "skill_read"
                             | "memory_search"
                     )
@@ -214,6 +224,25 @@ impl Submission {
             }
         } else if self.file_read_policy_sha256.is_some() {
             return Err(AppError::BadRequest("unexpected_file_read_policy".into()));
+        }
+        let write_selected = tenant_mode(state.agent.config())
+            && self.enabled_tools.iter().any(|name| name == "file_write");
+        if write_selected {
+            let permission = state
+                .agent
+                .config()
+                .http
+                .tenant_file_write
+                .as_ref()
+                .and_then(|policy| jiaclaw::TenantFileWriteCapability::capture(policy).ok())
+                .ok_or_else(|| AppError::BadRequest("tenant_file_write_disabled".into()))?;
+            if self.file_write_policy_sha256.as_deref() != Some(permission.policy_sha256.as_str()) {
+                return Err(AppError::BadRequest(
+                    "tenant_file_write_policy_changed".into(),
+                ));
+            }
+        } else if self.file_write_policy_sha256.is_some() {
+            return Err(AppError::BadRequest("unexpected_file_write_policy".into()));
         }
         let permission = state
             .agent
@@ -387,6 +416,13 @@ pub(super) async fn capabilities(
         .map_err(|_| AppError::HttpTurnUnavailable)?;
     }
     value["feedback_protocol"] = json!(if state.http_turns.is_some() { 1 } else { 0 });
+    if let Some(policy) = &state.agent.config().http.tenant_file_write {
+        value["file_write"] = serde_json::to_value(
+            jiaclaw::TenantFileWriteCapability::capture(policy)
+                .map_err(|_| AppError::HttpTurnUnavailable)?,
+        )
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
     if let Some(permission) = state
         .agent
         .tenant_skill_read_capability()
@@ -1093,6 +1129,12 @@ mod tests {
         let body = serde_json::json!({"session_id":format!("http:{}",uuid::Uuid::new_v4()),"prompt":"Read","enabled_tools":["datetime_now"],"enabled_skills":[]});
         let submission: Submission = serde_json::from_value(body.clone()).unwrap();
         assert_eq!(serde_json::to_value(&submission).unwrap(), body);
+        let mut write = submission.clone();
+        write.file_write_policy_sha256 = Some("d".repeat(64));
+        assert_ne!(
+            write.fingerprint().unwrap(),
+            submission.fingerprint().unwrap()
+        );
         let mut skill = serde_json::from_value::<Submission>(body.clone()).unwrap();
         let mut memory = skill.clone();
         memory.memory_search_policy_sha256 = Some("c".repeat(64));

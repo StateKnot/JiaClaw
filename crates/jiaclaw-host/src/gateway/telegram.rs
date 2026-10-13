@@ -1176,6 +1176,7 @@ mod tests {
                 control: Arc::new(Semaphore::new(1)),
                 streams: Arc::new(tokio::sync::Semaphore::new(4)),
                 file_read: None,
+                file_write: None,
                 skill_read: None,
                 memory_search: None,
             },
@@ -1543,6 +1544,7 @@ mod tests {
             control: Arc::new(Semaphore::new(1)),
             streams: Arc::new(tokio::sync::Semaphore::new(4)),
             file_read: None,
+            file_write: None,
             skill_read: None,
             memory_search: None,
         };
