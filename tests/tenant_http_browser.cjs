@@ -1,3 +1,4 @@
+const {textInputTask}=require('./text_task_input.cjs');
 const {downloadExact}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright'), assert=require('assert'), fs=require('fs'), crypto=require('crypto');
 const cfg=JSON.parse(fs.readFileSync(process.argv[2])), wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -24,6 +25,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   await route.fulfill({response:r,json:j});
  });
  try {
+  if(process.env.JIACLAW_TEST_TEXT_INPUT_ONLY==='1'){
+  await textInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-json",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"text task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   await page.goto(cfg.base);await connect();assert.strictEqual(await page.locator('#new-session').isDisabled(),false);assert.strictEqual(await page.locator('#turn-catalog-filter').isVisible(),false);assert((await page.locator('#turn-mode').textContent()).includes('30 秒'));
   await page.locator('#new-session').click();await page.locator('#message').fill('permission-negative');await page.locator('#send').click();await page.waitForFunction(()=>document.getElementById('status').textContent.includes('请选择本次允许'));
   assert.strictEqual(puts.length,0);assert.strictEqual((await ctl('status','permission-negative')).count,0);assert.strictEqual(await page.locator('#turn-tools input').count(),2);assert.strictEqual(await page.locator('#turn-skills input').count(),0);await connect();

@@ -5,6 +5,7 @@ Test-only local control service owns fixture gates and fault injection. No vendo
 credentials, no UI/backend replay, no tenant or reverse-proxy certification.
 """
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -74,7 +75,7 @@ try:
         result = subprocess.run(['node', 'tests/turn_stream_browser.cjs', str(config)], timeout=240)
         assert result.returncode == 0, result.returncode
         assert not fixture.faults, fixture.faults
-        print('ALL WEB STREAM BROWSER GROUPS PASS', flush=True)
+        print('TEXT INPUT ORIGINAL NATIVE FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else 'ALL WEB STREAM BROWSER GROUPS PASS', flush=True)
 finally:
     for gate in fixture.gates.values():
         gate['release'].set()

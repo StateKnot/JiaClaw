@@ -68,6 +68,8 @@ on:
       - 'tests/turn_stream.cjs'
       - 'tests/turn_stream_browser.cjs'
       - 'tests/turn_result_download.cjs'
+      - 'tests/text_task_input.cjs'
+      - 'tests/text_task_input.py'
       - 'tests/web_stream.py'
   push:
     tags: ['v*']

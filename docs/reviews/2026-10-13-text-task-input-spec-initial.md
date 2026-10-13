@@ -1,0 +1,11 @@
+# Spec — initial source0484818
+
+Fresh scope: `git diff 788b094e182a2488e86fd4dfc83f89acf5052c0e...0484818b72865b5c82f3567104fac66856432a72`, tree514d80b2, commits5285a20/0484818,13 paths. Spec: `docs/text-task-input.md` and the latest heartbeat's explicit local-material task requirement. Cumulative4b and completed PR135 are inherited history, not fresh exhaustive review. No Standards prose was read.
+
+**[P2] Filename validation omits promised bidi marks and non-ASCII control characters.** The spec states “名称中的路径分隔符、控制字符及双向文本控制符拒绝”. The new filename regex covers ASCII controls plus bidi embeddings/isolates but omits U+061C ALM, U+200E LRM, U+200F RLM and U+0085 NEL. All four actual filenames were accepted and added to the message draft; the already covered U+202E RLO was refused. Thus filenames can carry the invisible directional/control marks the user was promised would be refused. Validate the whole filename control/bidi property set while preserving the intentionally broader ordinary text-body contract.
+
+Independent actual6989 exited1 against immutable candidate SHA `4fdd479f4b9484f194008f4efd876d4e958e4c2e81e68c7e5550b88af205b1e7`. Six real local files were selected through actual Chromium153/FileReader/native UI: normal filename imported, RLO refused, the four omitted marks imported. Every selection/import made0 API calls/0 modelPOSTs and preserved permission selections; no page or fixture errors. Raw results/log and driver hashes are separately pinned. This is a product spec boundary failure, not supplier/Agent-browser certification or the prior fixture-ledger arrangement error.
+
+Static review otherwise finds original size/UTF-8/BOM/LF/assembled-message limits, writable/held/selected gates, same5s absolute deadline, identity/selection/draft stale guards and explicit privacy/no automatic-send boundaries implemented without a new service/storage/model tool. Initial fixture ledger failure and final isolated fixture arrangement remain history; no local complete Rust/browser or new-head official qualification is borrowed. No other missing/partial requirement or scope creep identified at this checkpoint. Reviewer did not modify repository, product or fixtures.
+
+Spec findings: 1 P2.

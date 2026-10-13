@@ -1,3 +1,4 @@
+const {textInputTask}=require('./text_task_input.cjs');
 const {downloadExact, staleDownload, revokedDownload}=require('./turn_result_download.cjs');
 const {chromium}=require('playwright'), assert=require('assert'), fs=require('fs');
 const cfg=JSON.parse(fs.readFileSync(process.argv[2])), wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -39,6 +40,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
  };
  try {
   if(process.env.JIACLAW_TEST_PREVIEW_AUTHORITY_ONLY==='1'){await page.goto(cfg.base);await connect();await authorityChecks();return;}
+  if(process.env.JIACLAW_TEST_TEXT_INPUT_ONLY==='1'){
+  await textInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-preview",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"text task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   await page.goto(cfg.base);await connect();
   const c=await fetch(cfg.base+'/api/turns/capabilities',{headers:{Authorization:'Bearer '+cfg.alice}}).then(r=>r.json());assert.strictEqual(c.gateway_protocol,2);assert.strictEqual(c.streaming,true);
   const prompt='<img src=x onerror="window.TENANT_XSS=1">流式🦀';await ctl('gate',prompt);const first=await begin(prompt);
