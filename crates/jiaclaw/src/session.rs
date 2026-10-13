@@ -22,7 +22,9 @@ pub const SESSION_SUMMARY_MAX_TOKENS: u32 = 512;
 /// 摘要补全温度（偏低，偏向稳定要点）。
 pub const SESSION_SUMMARY_TEMPERATURE: f32 = 0.2;
 
-const TRANSCRIPT_MSG_MAX_CHARS: usize = 800;
+/// Complete formatted summary input, including role labels and separators.
+/// This bounds input bytes independently of the summary's output token limit.
+pub const SESSION_SUMMARY_INPUT_MAX_BYTES: usize = 256 * 1024;
 
 /// 将会话旧消息折叠成一条摘要。失败时由调用方回退硬截断。
 #[async_trait]
@@ -63,21 +65,34 @@ pub fn hard_truncate_session_messages(
     truncated
 }
 
-/// 将会话消息格式化为摘要用的对话文本。
-#[must_use]
-pub fn format_messages_for_summary(messages: &[ChatMessage]) -> String {
-    let mut out = String::new();
+/// 将完整会话消息格式化为摘要文本，不截断任何一条消息。
+///
+/// # Errors
+/// The complete UTF-8 transcript must fit within `SESSION_SUMMARY_INPUT_MAX_BYTES`.
+/// Refuse before allocating the transcript or submitting a partial summary.
+pub fn format_messages_for_summary(messages: &[ChatMessage]) -> Result<String, JiaClawError> {
+    let bytes = messages.iter().try_fold(0usize, |total, msg| {
+        total
+            .checked_add(role_label(&msg.role).len())
+            .and_then(|n| n.checked_add(2))
+            .and_then(|n| n.checked_add(msg.content.len()))
+            .filter(|n| *n <= SESSION_SUMMARY_INPUT_MAX_BYTES)
+    });
+    let bytes = bytes
+        .and_then(|n| n.checked_add(messages.len().saturating_sub(1)))
+        .filter(|n| *n <= SESSION_SUMMARY_INPUT_MAX_BYTES)
+        .ok_or_else(|| JiaClawError::InvalidRequest("会话摘要完整输入超过256KiB".to_string()))?;
+    let mut out = String::with_capacity(bytes);
     for msg in messages {
         let role = role_label(&msg.role);
-        let content = truncate_chars(&msg.content, TRANSCRIPT_MSG_MAX_CHARS);
         if !out.is_empty() {
             out.push('\n');
         }
         out.push_str(role);
         out.push_str(": ");
-        out.push_str(content);
+        out.push_str(&msg.content);
     }
-    out
+    Ok(out)
 }
 
 /// 无 LLM 时的确定性摘要（stub / 未知提供商），不触发工具。
@@ -289,6 +304,69 @@ mod tests {
             role: MessageRole::System,
             content: text.to_string(),
         }
+    }
+
+    #[test]
+    fn summary_input_keeps_complete_long_utf8_material_and_roles() {
+        let material = format!("\u{feff}\t{}\r\n尾部約定 000123  ", "材料".repeat(900));
+        let messages = vec![
+            system("system\nconstraint"),
+            ChatMessage {
+                role: MessageRole::User,
+                content: material.clone(),
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: "done\0".into(),
+            },
+        ];
+        assert_eq!(
+            format_messages_for_summary(&messages).unwrap(),
+            format!("System: system\nconstraint\nUser: {material}\nAssistant: done\0")
+        );
+    }
+
+    #[test]
+    fn summary_input_counts_roles_separators_and_exact_utf8_boundary() {
+        let messages = vec![
+            user(0),
+            ChatMessage {
+                role: MessageRole::User,
+                content: "界".repeat((SESSION_SUMMARY_INPUT_MAX_BYTES - 21) / 3),
+            },
+        ];
+        let mut messages = messages;
+        let missing =
+            SESSION_SUMMARY_INPUT_MAX_BYTES - format_messages_for_summary(&messages).unwrap().len();
+        messages[1].content.push_str(&"x".repeat(missing));
+        assert_eq!(
+            format_messages_for_summary(&messages).unwrap().len(),
+            SESSION_SUMMARY_INPUT_MAX_BYTES
+        );
+        messages[1].content.push('x');
+        assert!(format_messages_for_summary(&messages).is_err());
+    }
+
+    #[test]
+    fn summary_input_refuses_total_budget_without_individual_truncation() {
+        let mut messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "x".repeat(SESSION_SUMMARY_INPUT_MAX_BYTES - 6),
+        }];
+        assert_eq!(
+            format_messages_for_summary(&messages).unwrap().len(),
+            SESSION_SUMMARY_INPUT_MAX_BYTES
+        );
+        messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+        });
+        let error = format_messages_for_summary(&messages)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("256KiB"));
+        assert!(!error.contains(&"x".repeat(20)));
+        assert_eq!(format_messages_for_summary(&[]).unwrap(), "");
     }
 
     #[test]

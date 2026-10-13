@@ -799,13 +799,13 @@ impl JiaClawAgent {
             return Err(JiaClawError::InvalidRequest("没有可摘要的消息".to_string()));
         }
 
-        let transcript = format_messages_for_summary(messages);
         let env_key = std::env::var("JIACLAW_API_KEY").ok();
         let api_key = Self::resolve_provider_api_key(&self.config.provider, env_key.as_deref())?;
 
         let Some(key) = api_key else {
             return Ok(local_conversation_digest(messages));
         };
+        let transcript = format_messages_for_summary(messages)?;
 
         let prompt_messages = [ChatMessage {
             role: MessageRole::User,
