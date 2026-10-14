@@ -150,6 +150,7 @@ impl Tool for WorkspaceStatTool {
 /// `tree`: a bounded, depth-first workspace directory listing.
 pub struct WorkspaceTreeTool {
     workspace: PathBuf,
+    roots: Option<Vec<String>>,
 }
 
 impl WorkspaceTreeTool {
@@ -157,8 +158,23 @@ impl WorkspaceTreeTool {
     #[must_use]
     pub fn new(workspace: &Path) -> Self {
         Self {
+            roots: None,
             workspace: canonicalize_existing_or_clone(workspace),
         }
+    }
+    /// Restrict the original walker to exact administrator-approved subtree roots.
+    ///
+    /// # Errors
+    /// Invalid permission metadata; no directories are opened during construction.
+    pub fn restricted(
+        workspace: &Path,
+        policy: &jiaclaw_core::TenantTreePolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            workspace: canonicalize_existing_or_clone(workspace),
+            roots: Some(policy.roots.clone()),
+        })
     }
 }
 
@@ -172,16 +188,34 @@ impl Tool for WorkspaceTreeTool {
         "tree"
     }
     fn description(&self) -> &str {
-        "按名称排序逐层深度优先列出工作区目录，包含隐藏项且不跟随链接。path 默认 .；max_depth 默认 3（1..32），max_entries 默认 200（1..1000），超范围报错。共享扫描 2000 项/2 秒协作期限/64 KiB 完整 JSON 上限，任何限制均 truncated=true；不是一致快照。entries 路径相对于选择的目录。"
+        if self.roots.is_some() {
+            "仅列出明确批准的目录子树名称、类型及普通文件大小，包含隐藏项但不跟随链接或读取正文。path 必须选择 schema 中的完整根路径，不能改用子目录或别名。max_depth 1..32，max_entries 1..1000；原扫描2000项/2秒协作期限/64KiB JSON限制，truncated=true表示不完整；不是一致快照。"
+        } else {
+            "按名称排序逐层深度优先列出工作区目录，包含隐藏项且不跟随链接。path 默认 .；max_depth 默认 3（1..32），max_entries 默认 200（1..1000），超范围报错。共享扫描 2000 项/2 秒协作期限/64 KiB 完整 JSON 上限，任何限制均 truncated=true；不是一致快照。entries 路径相对于选择的目录。"
+        }
     }
     fn parameters_schema(&self) -> Value {
-        json!({"type":"object", "properties":{
+        let mut schema = json!({"type":"object", "properties":{
             "path":path_schema(),
             "max_depth":{"type":"integer","minimum":1,"maximum":32,"default":3},
             "max_entries":{"type":"integer","minimum":1,"maximum":1000,"default":200}
-        },"additionalProperties":false})
+        },"additionalProperties":false});
+        if let Some(roots) = &self.roots {
+            schema["properties"]["path"] = json!({"type":"string","enum":roots});
+            schema["required"] = json!(["path"]);
+        }
+        schema
     }
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(roots) = &self.roots {
+            if !args
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|p| roots.iter().any(|r| r == p))
+            {
+                return Err(parse_error("tree path must be an explicitly approved root"));
+            }
+        }
         let args: TreeArgs = parse_args(args)?;
         validate_tree(&args)?;
         let workspace = self.workspace.clone();

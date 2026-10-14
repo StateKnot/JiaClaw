@@ -838,6 +838,7 @@ mod tests {
             file_download: false,
             skill_read: None,
             memory_search: None,
+            tree: None,
         };
         let state = Arc::new(State {
             registry,

@@ -56,6 +56,8 @@ pub use semantic::SemanticMemory;
 mod skills;
 mod tenant_files;
 mod tenant_memory;
+mod tenant_tree;
+pub use tenant_tree::TenantTreeCapability;
 mod tenant_skills;
 mod tools;
 pub use tenant_files::{TenantFileReadCapability, TenantFileWriteCapability};
@@ -148,8 +150,25 @@ fn register_optional_workspace_file_tools(
     if config.tools.stat.enabled {
         tools.register(Box::new(WorkspaceStatTool::new(workspace)));
     }
+    if config.http.tenant_tree.is_some() && !config.tools.tree.enabled {
+        return Err(JiaClawError::Configuration(
+            "tenant tree requires tree enabled".into(),
+        ));
+    }
     if config.tools.tree.enabled {
-        tools.register(Box::new(WorkspaceTreeTool::new(workspace)));
+        let tool = if let Some(policy) = &config.http.tenant_tree {
+            if !config.http.tracked_turns
+                || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+            {
+                return Err(JiaClawError::Configuration(
+                    "tenant tree requires tracked tenant mode".into(),
+                ));
+            }
+            WorkspaceTreeTool::restricted(workspace, policy)?
+        } else {
+            WorkspaceTreeTool::new(workspace)
+        };
+        tools.register(Box::new(tool));
     }
     if config.tools.write_file.enabled {
         tools.register(Box::new(WorkspaceWriteFileTool::new(workspace)));

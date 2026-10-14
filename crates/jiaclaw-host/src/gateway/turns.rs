@@ -64,6 +64,8 @@ struct Capability {
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
     #[serde(default)]
     memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
+    #[serde(default)]
+    tree: Option<jiaclaw::TenantTreeCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -75,6 +77,7 @@ pub(super) async fn check_backend(
     file_write: Option<&jiaclaw::TenantFileWriteCapability>,
     skill_read: Option<&jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<&jiaclaw::TenantMemorySearchCapability>,
+    tree: Option<&jiaclaw::TenantTreeCapability>,
     file_download: bool,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
@@ -113,7 +116,8 @@ pub(super) async fn check_backend(
                 && c.file_read.as_ref() == file_read
                 && c.file_write.as_ref() == file_write
                 && c.skill_read.as_ref() == skill_read
-                && c.memory_search.as_ref() == memory_search,
+                && c.memory_search.as_ref() == memory_search
+                && c.tree.as_ref() == tree,
             "backend exact tenant permission contract mismatch"
         );
         Ok(c.enabled)
@@ -208,7 +212,7 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=6).contains(&s.enabled_tools.len())
+        && (1..=7).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools.iter().all(|t| {
             matches!(
@@ -219,6 +223,7 @@ fn valid_submission(s: &Submission) -> bool {
                     | "file_write"
                     | "skill_read"
                     | "memory_search"
+                    | "tree"
             )
         })
         && s.enabled_tools
@@ -265,6 +270,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.memory_search_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "tree") {
+            s.tree_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.tree_policy_sha256.is_none()
         }
 }
 
@@ -471,6 +486,7 @@ async fn remote_feedback(
                                                     | "file_write"
                                                     | "skill_read"
                                                     | "memory_search"
+                                                    | "tree"
                                             )
                                         })
                                     })
@@ -603,6 +619,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                         backend.file_write.as_ref(),
                         backend.skill_read.as_ref(),
                         backend.memory_search.as_ref(),
+                        backend.tree.as_ref(),
                         backend.file_download
                     )
                     .await?,
@@ -682,6 +699,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                     .expect("static tool list")
                     .push(json!("skill_read"));
                 value["skill_read"] = json!(permission);
+            }
+            if let Some(permission) = &backend.tree {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("tree"));
+                value["tree"] = json!(permission);
             }
             if let Some(permission) = &backend.memory_search {
                 value["enabled_tools"]
@@ -1011,6 +1035,19 @@ async fn execute(
         ));
         return true;
     }
+    if body.enabled_tools.iter().any(|t| t == "tree")
+        && !backend
+            .tree
+            .as_ref()
+            .is_some_and(|p| body.tree_policy_sha256.as_deref() == Some(p.policy_sha256.as_str()))
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant tree permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
@@ -1023,6 +1060,7 @@ async fn execute(
                 backend.file_write.as_ref(),
                 backend.skill_read.as_ref(),
                 backend.memory_search.as_ref(),
+                backend.tree.as_ref(),
                 backend.file_download
             )
         )

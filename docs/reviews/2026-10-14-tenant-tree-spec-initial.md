@@ -1,0 +1,9 @@
+# Spec — bounded tenant directory tasks
+
+No findings. I independently reviewed all 17 changed paths in `git diff b4a47c2...6cee97a`, against `docs/tenant-tree.md`; earlier cumulative `4b2357fc` and qualified batches remain inherited history, not a fresh exhaustive review.
+
+The implementation matches the specified default-off paired grant, canonical complete descriptor, exact-root schema, original walker/IO owner, submission hash omission when unselected, pre-admission handshake, explicit UI selection, identity checks, and retained-fact authorization. Existing channel/cron tool lists remain unchanged. Standalone construction and the original walker budgets are retained; cancellation does not release the actual blocking owner early.
+
+My own frozen-binary native/gateway/model experiment passed (session 99267, exit 0). Two adjacent-name roots (`a` and `a-extended`) each completed through the original tool loop, exposing names without private bodies. A relay independently omitted the descriptor, changed `max_scanned`, or added a descriptor field: each new task returned 503 before creating an identity, hold or backend PUT. Native boolean, fractional, string, zero and excessive depths plus an unapproved child path were refused. After stopping and restarting both services with the grant withdrawn, four old GETs and two identical old PUTs returned unchanged stored facts with zero extra model POSTs; new tree admission was rejected. Readonly creation was also refused.
+
+The first sandbox loopback denial and my initial temporary state-parent permission preparation error are preserved as environment/fixture observations. They are not product findings. I did not duplicate the root Rust/browser matrix, certify suppliers, business quality, Agent browsing or durable execution. Frozen binary and all 120 compiler inputs independently match the pinned source.

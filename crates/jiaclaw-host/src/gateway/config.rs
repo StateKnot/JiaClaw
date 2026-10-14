@@ -75,6 +75,9 @@ pub struct BackendConfig {
     /// Explicit configured keyword memory permission, matched in full.
     #[serde(default)]
     pub tenant_memory_search: Option<jiaclaw_core::TenantMemorySearchPolicy>,
+    /// Explicit existing tree subtree permission; default off.
+    #[serde(default)]
+    pub tenant_tree: Option<jiaclaw_core::TenantTreePolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -447,6 +450,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_tree {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant tree grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -600,6 +610,7 @@ mod tests {
             tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,
+            tenant_tree: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();
