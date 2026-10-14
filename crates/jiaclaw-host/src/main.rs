@@ -1426,6 +1426,7 @@ fn build_router_with_body_limit(
         .route("/ui/word-input.js", get(ui::word_input))
         .route("/ui/office-input.js", get(ui::office_input))
         .route("/ui/spreadsheet-input.js", get(ui::spreadsheet_input))
+        .route("/ui/presentation-input.js", get(ui::presentation_input))
         .route("/ui/word-worker.js", get(ui::word_worker))
         .route("/ui/pdfjs/pdf.mjs", get(ui::pdf_library))
         .route("/ui/pdfjs/pdf.worker.mjs", get(ui::pdf_worker))

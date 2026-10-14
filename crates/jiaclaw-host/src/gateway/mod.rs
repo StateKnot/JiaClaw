@@ -388,6 +388,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
             "/ui/spreadsheet-input.js",
             get(crate::ui::spreadsheet_input),
         )
+        .route(
+            "/ui/presentation-input.js",
+            get(crate::ui::presentation_input),
+        )
         .route("/ui/word-worker.js", get(crate::ui::word_worker))
         .route("/ui/pdfjs/pdf.mjs", get(crate::ui::pdf_library))
         .route("/ui/pdfjs/pdf.worker.mjs", get(crate::ui::pdf_worker))

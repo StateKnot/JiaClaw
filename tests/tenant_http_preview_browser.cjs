@@ -1,3 +1,4 @@
+const {presentationInputTask}=require('./presentation_task_input.cjs');
 const {spreadsheetInputTask}=require('./spreadsheet_task_input.cjs');
 const {wordInputTask}=require('./word_task_input.cjs');
 const {textInputTask}=require('./text_task_input.cjs');
@@ -42,6 +43,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   console.log('PASS tenant preview 9: actual normal done plus corrupted final GET/duplicate JSON 200 cannot authorize an unselected tool or clear the original draft; correct original GET reconciles once');
  };
  try {
+  if(process.env.JIACLAW_TEST_PRESENTATION_INPUT_ONLY==='1'){
+  await presentationInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-preview",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"Presentation task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   if(process.env.JIACLAW_TEST_SPREADSHEET_INPUT_ONLY==='1'){
   await spreadsheetInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-preview",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"Spreadsheet task hold settled"),reply:prompt=>"alice: "+prompt});
   return;

@@ -58,6 +58,8 @@ function controls() {
   $('pdf-file-add').disabled = $('pdf-file').disabled || $('pdf-file').files.length !== 1;
   $('word-file').disabled = $('text-file').disabled;
   $('word-file-add').disabled = $('word-file').disabled || $('word-file').files.length !== 1;
+  $('presentation-file').disabled = $('text-file').disabled;
+  $('presentation-file-add').disabled = $('presentation-file').disabled || $('presentation-file').files.length !== 1;
   $('spreadsheet-file').disabled = $('text-file').disabled;
   $('spreadsheet-file-add').disabled = $('spreadsheet-file').disabled || $('spreadsheet-file').files.length !== 1;
   const filesEnabled = connected && tenantTurns() && turnCapabilities?.file_download_protocol === 1;
@@ -113,6 +115,7 @@ function clearTextImport() {
   $('text-file').value = ''; $('text-file-state').textContent = '';
   $('pdf-file').value = ''; $('pdf-file-state').textContent = '';
   $('word-file').value = ''; $('word-file-state').textContent = '';
+  $('presentation-file').value = ''; $('presentation-file-state').textContent = '';
   $('spreadsheet-file').value = ''; $('spreadsheet-file-state').textContent = '';
 }
 function validMaterialName(name) {
@@ -241,6 +244,27 @@ $('spreadsheet-file-add').addEventListener('click', () => {
       current();$('message').value=next;$('spreadsheet-file').value='';
       $('spreadsheet-file-state').textContent=`已加入 Excel 原始单元格资料：${file.name}（${result.sheets}个工作表、${result.cells}个单元格）。请核对原表和草稿后再发送。`;
       status('表格资料已加入可编辑草稿；尚未发送。');
+    });
+  });
+});
+$('presentation-file').addEventListener('change', () => { textImportEpoch++; $('presentation-file-state').textContent = ''; controls(); });
+$('presentation-file-add').addEventListener('click', () => {
+  if ($('presentation-file').disabled || busy || $('presentation-file').files.length !== 1) return;
+  const file=$('presentation-file').files[0],owner=identity,session=selected,draft=$('message').value,epoch=textImportEpoch;
+  task(async () => {
+    await withDocumentMaterial(file,'PowerPoint .pptx',/\.pptx$/i,owner,session,draft,epoch,async ({bytes,sha,deadline,signal,current})=>{
+      const module=await import('/ui/presentation-input.js');current();let result;
+      try { result=await module.extractPresentationText(bytes,deadline,signal); }
+      catch(error) {
+        if(error?.presentationInputCode==='cancelled')throw new StaleIdentity();
+        const messages={unsupported:'演示文稿包含不支持的结构（隐藏内容、图片、图表、动画或外部关系等）。',empty:'有幻灯片没有可提取文字。',budget:'演示文稿超过完整提取限额（32张幻灯片、16 KiB完整资料）。',text:'幻灯片文字含不支持的控制字符或非法 Unicode。',timeout:'演示文稿读取与解析超过5秒。'};
+        throw new Error((messages[error?.presentationInputCode]||'无法完整解析受支持的 PowerPoint .pptx。')+'原草稿已保留。');
+      }
+      const next=draft+(draft?'\n\n':'')+`[用户提供的 PowerPoint 幻灯片文字资料：${file.name}；原文件 SHA-256 ${sha}]\n${result.text}[资料结束]`;
+      if(!next.isWellFormed()||new TextEncoder().encode(next).length>32768)throw new Error('加入演示文稿后完整消息超过32 KiB UTF-8上限；不会截取，原草稿已保留。');
+      current();$('message').value=next;$('presentation-file').value='';
+      $('presentation-file-state').textContent=`已加入 PowerPoint 幻灯片文字资料：${file.name}（${result.slides}张幻灯片）。请核对原演示文稿和草稿后再发送。`;
+      status('演示文稿资料已加入可编辑草稿；尚未发送。');
     });
   });
 });

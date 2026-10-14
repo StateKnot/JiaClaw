@@ -1,5 +1,7 @@
 # JiaClaw 里程碑与验收
 
+2026-10-14 接通[PowerPoint 幻灯片文字加入任务草稿](presentation-task-input.md)：显式选择本机 `.pptx`，复用原 FileReader/Office Worker 校验，按主文档1..32张页序完整提取幻灯片自有形状文字，进入原可编辑消息；原显式发送才进入原授权与任务。1MiB源/16KiB完整资料/32KiB草稿及同一5秒截止，隐藏、图形、字段、外部关系和未知正文结构整份拒绝。新三个入口真实文件→任务→物理回复及原 Office 回归分别验收；父PR145完整仅历史，新fixedhead官方179资格独立待验收。[本批范围](presentation-task-input-validation.md)。不认证视觉阅读顺序、备注/母版全文、模型业务质量、自动学习或Agent浏览器/durable。
+
 2026-10-14 接通[PDF 可提取文字加入任务草稿](pdf-task-input.md)：用户明确选择本机PDF后，原FileReader完整捕获并在本地实际Worker消费固定PDF.js，完整页序文字进入原可编辑消息；显式原发送才进入原授权与新UUID。1MiB/32页/16KiB文字/32KiB草稿与同一5秒截止，整体拒绝加密/XFA/空文字/损坏/超限，身份取消终止Worker。三入口真实PDF→任务→物理回复、中文/精确边界与原入口回归及完整Rust分别验收；父PR140已独立完整只历史，新head官方172资格仍须独立完成。[本批范围](pdf-task-input-validation.md)。不认证OCR、视觉全文、模型阅读质量、自动学习或durable。
 
 2026-10-13 接通[个人 Key 的明确文件交付](tenant-file-write.md)：双端默认关闭的精确目标清单、独立权限摘要和本次明确勾选，使原 file_write 通过原八槽IO/workspace writer完成新建或完整覆盖。读取与其它工具授权独立；取消/超时保留Unknown效果，撤权后旧UUID只查原事实、零重派发。本批真实双用户文件效果、writer竞争、取消和工作台迟到Crypto与源码独立验收，自己的新fixedhead官方资格仍须完成；不认证业务质量、自动学习或durable。[本批范围](tenant-file-write-validation.md)。

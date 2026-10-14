@@ -3,7 +3,7 @@ const fail=code=>Object.assign(new Error(code),{officeInputCode:code});
 export async function extractOfficeParts(bytes,deadline,signal,format) {
   const check=()=>{if(signal.aborted)throw fail('cancelled');if(performance.now()>=deadline)throw fail('timeout');};
   check();
-  if(!(bytes instanceof ArrayBuffer)||!bytes.byteLength||bytes.byteLength>1048576||!['word','xlsx'].includes(format))throw fail('format');
+  if(!(bytes instanceof ArrayBuffer)||!bytes.byteLength||bytes.byteLength>1048576||!['word','xlsx','pptx'].includes(format))throw fail('format');
   if(typeof Worker!=='function'||typeof DecompressionStream!=='function')throw fail('unsupported');
   let worker,timer,abort;
   try {
