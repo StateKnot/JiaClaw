@@ -131,6 +131,9 @@ jobs:
       - name: Task revision draft acceptance
         if: runner.os == 'Linux'
         run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/task_revision.py target/debug/jiaclaw
+      - name: Task result comparison acceptance
+        if: runner.os == 'Linux'
+        run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/task_result_compare.py target/debug/jiaclaw
       - name: PDF materials acceptance
         if: runner.os == 'Linux'
         run: |

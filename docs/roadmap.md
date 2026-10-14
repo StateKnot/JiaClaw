@@ -1,3 +1,7 @@
+# 当前增量：原任务完整回复对照（2026-10-14）
+
+三个工作台可显式输入两个原 UUID，确认后复用原收据 GET 展示完整回复，帮助用户自行核对修改效果；两份全部通过才一起显示，身份/编号变化或失败清空，原15秒总期限、权限和hold保持。source实际验收与独立Matt两轴见 [验收记录](reviews/2026-10-14-task-result-comparison-validation.md)，使用范围见 [功能合同](task-result-comparison.md)。本批自身固定head官方资格待完成，父PR146及更早只历史继承。不是自动质量判断或学习，个人Agent全部里程碑尚未充分验收。
+
 # JiaClaw 里程碑与验收
 
 2026-10-14 接通[PowerPoint 幻灯片文字加入任务草稿](presentation-task-input.md)：显式选择本机 `.pptx`，复用原 FileReader/Office Worker 校验，按主文档1..32张页序完整提取幻灯片自有形状文字，进入原可编辑消息；原显式发送才进入原授权与任务。1MiB源/16KiB完整资料/32KiB草稿及同一5秒截止，隐藏、图形、字段、外部关系和未知正文结构整份拒绝。新三个入口真实文件→任务→物理回复及原 Office 回归分别验收；父PR145完整仅历史，新fixedhead官方179资格独立待验收。[本批范围](presentation-task-input-validation.md)。不认证视觉阅读顺序、备注/母版全文、模型业务质量、自动学习或Agent浏览器/durable。

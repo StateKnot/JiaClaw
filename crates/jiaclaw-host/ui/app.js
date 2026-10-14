@@ -983,6 +983,7 @@ $('delivery-cancel').addEventListener('click', () => task(() => resolveDelivery(
 const Turn = JiaClawTurnStream;
 let turnCapabilities = null, pendingTurn = null, turnConnection = null, turnControlBusy = false;
 let turnCatalogPage = null;
+let turnCompareController = null, turnCompareEpoch = 0;
 let resumeTurnId = /^#turn=([0-9a-f-]{36})$/.exec(location.hash)?.[1];
 if (!Turn.uuid.test(resumeTurnId || '')) resumeTurnId = null;
 const trackedSession = () => typeof selected === 'string' && selected.startsWith('http:');
@@ -994,6 +995,7 @@ const turnDownloadable = () => connected && pendingTurn?.fresh && !pendingTurn.a
 // authorizes dispatch or changes the original receipt/hold decision.
 const TURN_ACTIVITY_ROWS = 128;
 function clearTurnActivity() {
+  clearTurnComparison(true);
   clearTurnFeedback();
   $('turn-activity').hidden = true; $('turn-activity').open = false;
   for (const id of ['turn-observed-steps','turn-saved-tools','turn-observed-note','turn-saved-note']) $(id).replaceChildren();
@@ -1062,7 +1064,70 @@ function turnControls() {
   $('turn-catalog-prev').disabled = catalogDisabled || !turnCatalogPage || turnCatalogPage.offset === 0;
   $('turn-catalog-next').disabled = catalogDisabled || !turnCatalogPage?.has_more || turnCatalogPage.offset + 5 > 10000;
   for (const button of $('turn-catalog-rows').querySelectorAll('button')) button.disabled = catalogDisabled || held;
+  const compareEnabled = connected && !!turnCapabilities && (!readOnly || tenantTurns());
+  $('turn-compare').hidden = !compareEnabled;
+  for (const id of ['turn-compare-left-id','turn-compare-right-id','turn-compare-reviewed']) $(id).disabled = !compareEnabled || busy || turnControlBusy || !!turnConnection;
+  $('turn-compare-read').disabled = !compareEnabled || busy || turnControlBusy || !!turnConnection || !!turnCompareController || !$('turn-compare-reviewed').checked;
 }
+function clearTurnComparison(reset = false) {
+  turnCompareEpoch++; turnCompareController?.abort(); turnCompareController = null;
+  $('turn-compare-results').hidden = true;
+  for (const id of ['turn-compare-left-meta','turn-compare-right-meta','turn-compare-left-reply','turn-compare-right-reply','turn-compare-state']) $(id).textContent = '';
+  if (reset) {
+    $('turn-compare-left-id').value = $('turn-compare-right-id').value = '';
+    $('turn-compare-reviewed').checked = false; $('turn-compare').open = false;
+  }
+}
+for (const id of ['turn-compare-left-id','turn-compare-right-id','turn-compare-reviewed']) $(id).addEventListener('input', () => {
+  clearTurnComparison();
+  if (id !== 'turn-compare-reviewed') $('turn-compare-reviewed').checked = false;
+  controls();
+});
+$('turn-compare-clear').addEventListener('click', () => { clearTurnComparison(true); controls(); });
+$('turn-compare-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if ($('turn-compare-read').disabled) return;
+  const ids = [$('turn-compare-left-id').value, $('turn-compare-right-id').value];
+  clearTurnComparison();
+  if (ids.some(id => !Turn.uuid.test(id)) || ids[0] === ids[1]) {
+    $('turn-compare-state').textContent = '请输入两个不同的规范 UUIDv4 原请求编号。'; return;
+  }
+  const owner = identity, epoch = turnCompareEpoch, controller = new AbortController(), deadline = performance.now() + 15000;
+  turnCompareController = controller; controls();
+  const current = () => {
+    if (owner !== identity || epoch !== turnCompareEpoch || !connected || !$('turn-compare-reviewed').checked || ids[0] !== $('turn-compare-left-id').value || ids[1] !== $('turn-compare-right-id').value) throw new StaleIdentity();
+    if (controller.signal.aborted || performance.now() >= deadline) throw new Error('两份回复未在15秒内完整核对；没有显示部分结果。');
+  };
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const values = [];
+    for (const id of ids) {
+      current();
+      const value = await turnApi('/api/turns/' + id, 'GET', undefined, Math.max(1, Math.ceil(deadline - performance.now())), controller.signal);
+      current(); (tenantTurns() ? Turn.gatewaySnapshot : Turn.snapshot)(value, {id});
+      const r = value.receipt;
+      if (value.active || r.state !== 'completed' || r.result_purged || !r.result || !r.result.reply.isWellFormed()) throw new Error('两份回复必须均已完成、没有活跃执行且正文保留；没有显示部分结果。');
+      values.push(r);
+    }
+    // Keep both private replies hidden until the two independent original reads
+    // validate. Never use the clipped message DOM or mutate the tracked attempt.
+    for (let i = 0; i < values.length; i++) {
+      const side = i === 0 ? 'left' : 'right', r = values[i];
+      $('turn-compare-' + side + '-meta').textContent = `原请求：${r.id}\n会话：${r.session_id}\n结果状态：${r.result.status}\n完整回复：${Turn.bytes(r.result.reply)} UTF-8 字节`;
+      $('turn-compare-' + side + '-reply').textContent = r.result.reply;
+    }
+    current(); $('turn-compare-results').hidden = false;
+    $('turn-compare-state').textContent = '两份完整回复已分别核对。请自行判断修改效果；这不是同时刻快照、业务质量或工具效果认证。';
+  } catch (error) {
+    if (owner === identity && epoch === turnCompareEpoch) {
+      clearTurnComparison(); $('turn-compare-state').textContent = error instanceof StaleIdentity ? '' : '对照未完成；没有保留部分结果。请核对编号、权限或读取状态后显式重试。';
+    } else if (error instanceof ApiError && error.code === 401 && !connected) status(error.message, true);
+  } finally {
+    clearTimeout(timer); controller.abort();
+    if (turnCompareController === controller) turnCompareController = null;
+    if (owner === identity) controls();
+  }
+});
 function clearTurnFeedback() {
   $('turn-feedback').hidden = true;
   $('turn-feedback-form').reset();
@@ -1507,6 +1572,6 @@ $('turn-finish').addEventListener('click', () => {
   if (pendingTurn.body && $('message').value.trim() === pendingTurn.body.prompt) $('message').value = '';
   clearTurnActivity(); pendingTurn = null; history.replaceState(null,'',location.pathname + location.search); controls();
 });
-addEventListener('pagehide', () => turnConnection?.abort());
+addEventListener('pagehide', () => { turnConnection?.abort(); clearTurnComparison(true); });
 
 controls();

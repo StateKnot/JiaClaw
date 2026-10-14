@@ -28,6 +28,8 @@ posts, results, gates, faults, processes = [], {}, {}, [], []
 # Only explicitly configured file-task fixtures request tools; legacy fixtures
 # retain their original one-model-round contract.
 tool_plans = {}
+# Explicit local acceptance replies; ordinary fixtures retain their echo contract.
+reply_plans = {}
 
 
 def wait(check, label, seconds=15):
@@ -115,6 +117,7 @@ class Model(BaseHTTPRequestHandler):
             calls = plan if plan and tool_reply is None else None
             if tool_reply is not None and plan:
                 answer = who + ': ' + tool_reply
+            answer = reply_plans.get((who, prompt), answer)
             receipt = {'id': 'fixture', 'object': 'chat.completion', 'created': 1, 'model': body['model'],
                 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': answer}, 'finish_reason': 'stop'}],
                 'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5}}
@@ -138,7 +141,7 @@ class Model(BaseHTTPRequestHandler):
                          'choices': [] if usage else [{'index': 0, 'delta': delta, 'finish_reason': finish}], 'usage': usage}
                 self.wfile.write(('data: ' + json.dumps(value) + '\r\n\r\n').encode())
                 self.wfile.flush()
-            send({'role': 'assistant'} if plan else {'role':'assistant','content':who + ': '})
+            send({'role': 'assistant'} if plan or (who, prompt) in reply_plans else {'role':'assistant','content':who + ': '})
             if gate:
                 gate['ready'].set()
                 assert gate['release'].wait(20), 'fixture model gate expired'
@@ -147,7 +150,7 @@ class Model(BaseHTTPRequestHandler):
                     send({'tool_calls':[dict(call, index=i)]})
                 send({}, 'tool_calls')
             else:
-                send({'content': answer if plan else prompt}, 'stop')
+                send({'content': answer if plan or (who, prompt) in reply_plans else prompt}, 'stop')
             send({}, usage={'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5})
             self.wfile.write(b'data: [DONE]\r\n\r\n')
             self.wfile.flush()
