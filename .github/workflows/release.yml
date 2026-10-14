@@ -77,6 +77,8 @@ on:
       - 'tests/pdf_task_input.py'
       - 'tests/pdf_task_input.cjs'
       - 'tests/pdf_task_input_fixtures.json'
+      - 'tests/word_task_input.py'
+      - 'tests/word_task_input.cjs'
       - 'tests/web_stream.py'
   push:
     tags: ['v*']

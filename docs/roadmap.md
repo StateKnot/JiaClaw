@@ -289,3 +289,7 @@ SOUL/USER/MEMORY ambient prompt reads remain independent of explicit search auth
 ### 2026-10-14：明确下载当前授权文件
 
 已接线个人用户的真实工作区文件下载：双端默认关闭、复用原精确file_read权限与实际reader owner，显式选择/确认后核完整原字节与SHA，支持readonly。原任务file_write生成的Markdown/CSV可取得真实文件；下载当前版本不认证历史任务产物一致性，下载不调模型/不创建任务/不解除hold。生产源52c7515与最终夹具16f95f0已本机1320Rust、相关原链路及实际文件/浏览器验收；新head官方174资格仍须独立完成。见[合同](tenant-file-download.md)与[发布前验收范围](tenant-file-download-validation.md)。这不补经验质量、Agent浏览器、审批durable、供应商或真实公开发行安装里程碑。
+
+### 2026-10-14：Word 正文资料进入原任务草稿
+
+已实现原三个工作台本机 `.docx` 完整有界正文提取→可编辑草稿→原显式发送→真实回复下载，复用 FileReader/原owner和浏览器平台解压/XML，无新模型工具或存储。[规格](word-task-input.md)与[本机验收](validation/2026-10-14-word-task-input.md)。属性/单元格修订初P2已由原文件独立闭合；本批自身固定head官方175资格另行认证，父142完成仅历史。仅正文，不读取页眉脚注批注或认证视觉/业务质量；所有个人Agent里程碑仍未充分，不以此单项停用迭代。

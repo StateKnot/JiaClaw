@@ -1,0 +1,11 @@
+No remaining Spec findings in fixed `e0c2a1b247acbc1bb6819d47033c85764d8e4524`.
+
+The initial P2 is closed. The spec requires “正文中的图片、嵌入对象、altChunk、文本框、修订及不支持 namespace 整次拒绝。” The parser now rejects property `*Change`, cell revisions, deleted text/instructions and movement/customXml revision markers in both supported namespaces before returning draft text. Ordinary `rsid` attributes and saved field results remain usable. No added capability or scope creep was found.
+
+Own real browser replay used the exact 13 preserved initial DOCX files. All three previous UI revision REDs now refuse the whole file, retain the original private draft and terminate their Worker. Broader independently constructed, CRC-valid documents exercised table/row/cell changes, cell insert/delete/merge and paired movement/customXml ranges, with an alternative prefix in Transitional and Strict namespaces. All 41 parser outcomes and four UI imports matched expectations; all 45 Workers terminated, with zero automatic API/model/provider calls and no storage/page errors. Ordinary controls retained exact text hashes. Raw initial REDs remain untouched.
+
+Own three final wrappers independently exited 0 against frozen SHA `5095f54d…`, producing six original Send/model/physical reply receipts and passing bounds, malformed archives, held-Worker deadline/identity/draft/selection, readonly and mobile checks. Their 60 revision probes per mode passed. One initial closure-checker comparison mistakenly required previous RED text hashes to remain unchanged; its failure and correction are preserved separately, without changing product evidence.
+
+Reviewed the three-path repair and confirmed the other 15 paths of the overall 18-path feature diff are byte-identical to the initial review. All 116 compiler-input hashes bind to fixed source; manifest `a98adca9…` and frozen binary SHA match. Original capture, budgets, deadline and Worker cleanup are unchanged.
+
+Fresh scope is this feature and repair only. Earlier source/delivery/publication, cumulative `4b2357fc`, other local runtime and official qualification remain inherited. No product, Git, GitHub API or budget changes; disposable local fixtures made no paid/vendor calls.

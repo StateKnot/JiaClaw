@@ -42,6 +42,15 @@ pub(super) async fn pdf_input() -> Response {
         include_str!("../ui/pdf-input.js"),
     )
 }
+pub(super) async fn word_input() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/word-input.js"),
+    )
+}
+pub(super) async fn word_worker() -> Response {
+    worker_asset(include_str!("../ui/word-worker.js"))
+}
 pub(super) async fn pdf_library() -> Response {
     asset(
         "text/javascript; charset=utf-8",
@@ -55,10 +64,10 @@ pub(super) async fn pdf_license() -> Response {
     )
 }
 pub(super) async fn pdf_worker() -> Response {
-    let mut response = asset(
-        "text/javascript; charset=utf-8",
-        include_str!("../ui/pdfjs/pdf.worker.mjs"),
-    );
+    worker_asset(include_str!("../ui/pdfjs/pdf.worker.mjs"))
+}
+fn worker_asset(body: &'static str) -> Response {
+    let mut response = asset("text/javascript; charset=utf-8", body);
     response.headers_mut().insert(
         "content-security-policy",
         HeaderValue::from_static(

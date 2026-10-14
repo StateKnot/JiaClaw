@@ -137,6 +137,12 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/pdf_task_input.py target/debug/jiaclaw
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/pdf_task_input.py target/debug/jiaclaw --tenant-json
           NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/pdf_task_input.py target/debug/jiaclaw --tenant-preview
+      - name: Word materials acceptance
+        if: runner.os == 'Linux'
+        run: |
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/word_task_input.py target/debug/jiaclaw
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/word_task_input.py target/debug/jiaclaw --tenant-json
+          NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/word_task_input.py target/debug/jiaclaw --tenant-preview
       - name: Current file capture acceptance
         run: python3 tests/tenant_file_download.py target/debug/jiaclaw
       - name: Current file download browser acceptance
