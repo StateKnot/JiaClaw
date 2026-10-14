@@ -1181,6 +1181,7 @@ mod tests {
                 skill_read: None,
                 memory_search: None,
                 tree: None,
+                glob: None,
             },
         )]);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1551,6 +1552,7 @@ mod tests {
             skill_read: None,
             memory_search: None,
             tree: None,
+            glob: None,
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = configure(

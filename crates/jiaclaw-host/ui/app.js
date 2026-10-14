@@ -596,6 +596,7 @@ $('chat-form').addEventListener('submit', event => {
       if (tenantTurns() && tools.includes('skill_read')) body.skill_read_policy_sha256 = turnCapabilities.skill_read.policy_sha256;
       if (tenantTurns() && tools.includes('memory_search')) body.memory_search_policy_sha256 = turnCapabilities.memory_search.policy_sha256;
       if (tenantTurns() && tools.includes('tree')) body.tree_policy_sha256 = turnCapabilities.tree.policy_sha256;
+      if (tenantTurns() && tools.includes('glob')) body.glob_policy_sha256 = turnCapabilities.glob.policy_sha256;
       if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
       const attempt = trackTurn(createId(), body); await submitTurn(attempt); return;
     }
@@ -1331,6 +1332,12 @@ async function connectTurns(gateway) {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([1,f.roots,f.max_depth,f.max_entries,f.max_scanned,f.scan_budget_ms,f.max_result_bytes])));
     const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
     if (actual !== f.policy_sha256) throw new Error('目录授权摘要不匹配；请重新连接。');
+  }  if (gateway && c.glob) {
+    if (!isSecureContext || !crypto.subtle) throw new Error('文件名检索授权核验需要安全页面与 WebCrypto；未开放目录任务。');
+    const f = c.glob;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([1,f.roots,f.max_pattern_bytes,f.max_results,f.max_depth,f.max_scanned,f.scan_budget_ms,f.max_result_bytes])));
+    const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
+    if (actual !== f.policy_sha256) throw new Error('文件名检索授权摘要不匹配；请重新连接。');
   }
   if (owner !== identity) throw new StaleIdentity();
   turnCapabilities = c;
@@ -1345,6 +1352,7 @@ async function connectTurns(gateway) {
     if (c.file_write) tools.push({name:'file_write',description:'完整覆盖下方精确文件，可新建；已有正文会被替换，任务停止不保证撤销写入。仅本次明确授权。'});
     if (c.skill_read) tools.push({name:'skill_read',description:'仅读取下方已审阅技能的指定版本；正文可能发送给本次模型，不授予其它工具。'});
     if (c.memory_search) tools.push({name:'memory_search',description:'仅对下方记忆源做关键词检索；完整源超限或不安全会拒绝，摘录可能发送给本次模型。'});
+    if (c.glob) tools.push({name:'glob',description:'在批准目录内按文件名模式找普通文件；含隐藏名称，不读取正文。文件名可能发送给本次模型。'});
     if (c.tree) tools.push({name:'tree',description:'列出批准目录的整个子树元数据，含隐藏名称；不读取正文、不跟随链接。名称和大小可能发送给本次模型。'});
     renderPermissionList('turn-tools', tools); renderPermissionList('turn-skills', []);
     if (c.file_read) {
@@ -1361,6 +1369,10 @@ async function connectTurns(gateway) {
     }
     if (c.tree) {
       const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'tree 允许的目录子树（含隐藏名称及普通文件大小，可能发送给模型）：\n' + c.tree.roots.join('\n');
+      $('turn-tools').append(details);
+    }
+    if (c.glob) {
+      const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'glob 允许的目录子树（普通文件名含隐藏名，可能发送给模型）：\n' + c.glob.roots.join('\n');
       $('turn-tools').append(details);
     }
     if (c.memory_search) {

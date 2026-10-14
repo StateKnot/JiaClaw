@@ -49,6 +49,7 @@ struct Backend {
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
     tree: Option<jiaclaw::TenantTreeCapability>,
+    glob: Option<jiaclaw::TenantGlobCapability>,
 }
 struct State {
     registry: Registry,
@@ -317,6 +318,12 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .map(jiaclaw::TenantTreeCapability::capture)
                     .transpose()?
                     .as_ref(),
+                backend
+                    .tenant_glob
+                    .as_ref()
+                    .map(jiaclaw::TenantGlobCapability::capture)
+                    .transpose()?
+                    .as_ref(),
                 backend.tenant_file_download,
             )
             .await?;
@@ -338,6 +345,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .tenant_tree
                     .as_ref()
                     .map(jiaclaw::TenantTreeCapability::capture)
+                    .transpose()?,
+                glob: backend
+                    .tenant_glob
+                    .as_ref()
+                    .map(jiaclaw::TenantGlobCapability::capture)
                     .transpose()?,
                 memory_search: backend
                     .tenant_memory_search

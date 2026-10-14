@@ -60,6 +60,13 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
         );
         policy.validate()?;
     }
+    if let Some(policy) = &config.http.tenant_glob {
+        ensure!(
+            config.http.tracked_turns && tenant_mode(config) && config.tools.glob.enabled,
+            "tenant_glob requires tracked tenant HTTP and glob enabled"
+        );
+        policy.validate()?;
+    }
     if let Some(policy) = &config.http.tenant_memory_search {
         policy.validate()?;
         ensure!(
@@ -198,11 +205,13 @@ pub(super) struct Submission {
     pub(super) memory_search_policy_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tree_policy_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) glob_policy_sha256: Option<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
         if tenant_mode(state.agent.config()) {
-            if !(1..=7).contains(&self.enabled_tools.len())
+            if !(1..=8).contains(&self.enabled_tools.len())
                 || !self.enabled_skills.is_empty()
                 || self.enabled_tools.iter().any(|name| {
                     !matches!(
@@ -214,6 +223,7 @@ impl Submission {
                             | "skill_read"
                             | "memory_search"
                             | "tree"
+                            | "glob"
                     )
                 })
             {
@@ -316,6 +326,28 @@ impl Submission {
             }
         } else if self.tree_policy_sha256.is_some() {
             return Err(AppError::BadRequest("unexpected_tree_policy".into()));
+        }
+        let selected =
+            tenant_mode(state.agent.config()) && self.enabled_tools.iter().any(|t| t == "glob");
+        let permission = state
+            .agent
+            .config()
+            .http
+            .tenant_glob
+            .as_ref()
+            .map(jiaclaw::TenantGlobCapability::capture)
+            .transpose()
+            .map_err(|_| AppError::HttpTurnUnavailable)?;
+        if selected {
+            if !permission.is_some_and(|p| {
+                self.glob_policy_sha256.as_deref() == Some(p.policy_sha256.as_str())
+            }) {
+                return Err(AppError::BadRequest(
+                    "tenant_glob_disabled_or_changed".into(),
+                ));
+            }
+        } else if self.glob_policy_sha256.is_some() {
+            return Err(AppError::BadRequest("unexpected_glob_policy".into()));
         }
         let session_uuid = self.session_id.strip_prefix("http:").unwrap_or_default();
         if !super::jobs::valid_creation_id(session_uuid)
@@ -482,6 +514,13 @@ pub(super) async fn capabilities(
     if let Some(policy) = &state.agent.config().http.tenant_tree {
         value["tree"] = serde_json::to_value(
             jiaclaw::TenantTreeCapability::capture(policy)
+                .map_err(|_| AppError::HttpTurnUnavailable)?,
+        )
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
+    if let Some(policy) = &state.agent.config().http.tenant_glob {
+        value["glob"] = serde_json::to_value(
+            jiaclaw::TenantGlobCapability::capture(policy)
                 .map_err(|_| AppError::HttpTurnUnavailable)?,
         )
         .map_err(|_| AppError::HttpTurnUnavailable)?;
@@ -1237,6 +1276,12 @@ mod tests {
         );
         let mut skill = serde_json::from_value::<Submission>(body.clone()).unwrap();
         let mut memory = skill.clone();
+        let mut glob = skill.clone();
+        glob.glob_policy_sha256 = Some("f".repeat(64));
+        assert_ne!(
+            glob.fingerprint().unwrap(),
+            submission.fingerprint().unwrap()
+        );
         let mut tree = skill.clone();
         tree.tree_policy_sha256 = Some("e".repeat(64));
         assert_ne!(

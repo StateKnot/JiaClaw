@@ -78,6 +78,9 @@ pub struct BackendConfig {
     /// Explicit existing tree subtree permission; default off.
     #[serde(default)]
     pub tenant_tree: Option<jiaclaw_core::TenantTreePolicy>,
+    /// Independent default-off filename discovery below exact directory roots.
+    #[serde(default)]
+    pub tenant_glob: Option<jiaclaw_core::TenantGlobPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -457,6 +460,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_glob {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant glob grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -611,6 +621,7 @@ mod tests {
             tenant_skill_read: None,
             tenant_memory_search: None,
             tenant_tree: None,
+            tenant_glob: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();
