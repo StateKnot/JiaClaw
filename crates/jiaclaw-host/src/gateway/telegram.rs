@@ -1180,6 +1180,7 @@ mod tests {
                 file_download: false,
                 skill_read: None,
                 memory_search: None,
+                tree: None,
             },
         )]);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1549,6 +1550,7 @@ mod tests {
             file_download: false,
             skill_read: None,
             memory_search: None,
+            tree: None,
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = configure(

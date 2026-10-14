@@ -595,6 +595,7 @@ $('chat-form').addEventListener('submit', event => {
       if (tenantTurns() && tools.includes('file_write')) body.file_write_policy_sha256 = turnCapabilities.file_write.policy_sha256;
       if (tenantTurns() && tools.includes('skill_read')) body.skill_read_policy_sha256 = turnCapabilities.skill_read.policy_sha256;
       if (tenantTurns() && tools.includes('memory_search')) body.memory_search_policy_sha256 = turnCapabilities.memory_search.policy_sha256;
+      if (tenantTurns() && tools.includes('tree')) body.tree_policy_sha256 = turnCapabilities.tree.policy_sha256;
       if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
       const attempt = trackTurn(createId(), body); await submitTurn(attempt); return;
     }
@@ -1324,19 +1325,27 @@ async function connectTurns(gateway) {
     const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
     if (actual !== f.policy_sha256) throw new Error('记忆检索授权摘要不匹配；请重新连接。');
   }
+  if (gateway && c.tree) {
+    if (!isSecureContext || !crypto.subtle) throw new Error('目录授权核验需要安全页面与 WebCrypto；未开放目录任务。');
+    const f = c.tree;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([1,f.roots,f.max_depth,f.max_entries,f.max_scanned,f.scan_budget_ms,f.max_result_bytes])));
+    const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
+    if (actual !== f.policy_sha256) throw new Error('目录授权摘要不匹配；请重新连接。');
+  }
   if (owner !== identity) throw new StaleIdentity();
   turnCapabilities = c;
   clearFileDownload();
   if (gateway && c.file_download_protocol === 1) c.file_read.paths.forEach((path,index) => $('file-download-path').append(new Option(path,String(index))));
   $('turn-mode').textContent = gateway ? (c.streaming ? '新请求显示临时预览，结束后按原编号核对已保存回复；断流或停止交付后仍需核对，结束跟踪不解除管理员核对占用。' : '新请求异步保存回复。本页最多观察 30 秒，之后可按原编号核对；结束跟踪不解除需要管理员核对的执行占用。') : '新建会话使用实时预览。旧会话保持原有发送方式；预览不代表已保存。';
   $('turn-catalog-note').textContent = gateway ? '列表只含本用户的原编号、会话编号和准入时间，不表示执行状态。选中后读取原收据；不会再次执行。新记录可能改变后续分页。' : '列表仅展示状态摘要。选中后核对原请求；不会再次执行。每页为读取时的状态，新记录可能改变后续分页。';
-  $('turn-permissions-note').textContent = gateway ? '请选择本次需要的工具；默认不授权。文件读与完整覆盖、技能和关键词检索范围由管理员分别限定；选择覆盖会授权模型替换清单内文件正文。原有 SOUL/USER/MEMORY 每轮提示读取独立保留，未选检索不会移除这些记忆。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
+  $('turn-permissions-note').textContent = gateway ? '请选择本次需要的工具；默认不授权。目录子树、文件读与完整覆盖、技能和关键词检索范围由管理员分别限定；选择覆盖会授权模型替换清单内文件正文。原有 SOUL/USER/MEMORY 每轮提示读取独立保留，未选检索不会移除这些记忆。' : '工具可能写文件或产生外部效果。未勾选的工具和技能不会获得授权。注册表变化后请重新连接。';
   if (gateway && !readOnly) {
     const tools = [{name:'datetime_now',description:'读取当前时间'},{name:'json_query',description:'查询 JSON'}];
     if (c.file_read) tools.push({name:'file_read',description:'仅读取下方管理员授权的完整文件；256 KiB 上限，内容可能发送给本次模型。'});
     if (c.file_write) tools.push({name:'file_write',description:'完整覆盖下方精确文件，可新建；已有正文会被替换，任务停止不保证撤销写入。仅本次明确授权。'});
     if (c.skill_read) tools.push({name:'skill_read',description:'仅读取下方已审阅技能的指定版本；正文可能发送给本次模型，不授予其它工具。'});
     if (c.memory_search) tools.push({name:'memory_search',description:'仅对下方记忆源做关键词检索；完整源超限或不安全会拒绝，摘录可能发送给本次模型。'});
+    if (c.tree) tools.push({name:'tree',description:'列出批准目录的整个子树元数据，含隐藏名称；不读取正文、不跟随链接。名称和大小可能发送给本次模型。'});
     renderPermissionList('turn-tools', tools); renderPermissionList('turn-skills', []);
     if (c.file_read) {
       const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'file_read 允许的文件（内容可能发送给模型）：\n' + c.file_read.paths.join('\n');
@@ -1348,6 +1357,10 @@ async function connectTurns(gateway) {
     }
     if (c.skill_read) {
       const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'skill_read 允许的技能版本（正文可能发送给模型）：\n' + c.skill_read.skills.map(s => s.name + '\nSHA256: ' + s.content_sha256).join('\n');
+      $('turn-tools').append(details);
+    }
+    if (c.tree) {
+      const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'tree 允许的目录子树（含隐藏名称及普通文件大小，可能发送给模型）：\n' + c.tree.roots.join('\n');
       $('turn-tools').append(details);
     }
     if (c.memory_search) {

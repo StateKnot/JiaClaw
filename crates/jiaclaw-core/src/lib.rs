@@ -1552,6 +1552,36 @@ impl TenantMemorySearchPolicy {
     }
 }
 
+/// Explicit directory-subtree permission for the existing bounded tree tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantTreePolicy {
+    /// 1..8 sorted, non-overlapping exact roots below tenant-documents/.
+    pub roots: Vec<String>,
+}
+impl TenantTreePolicy {
+    /// Validate permission metadata without reading directories.
+    ///
+    /// # Errors
+    /// Invalid, overlapping, aliased or out-of-scope roots.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        TenantFileReadPolicy {
+            paths: self.roots.clone(),
+        }
+        .validate()?;
+        if self.roots.len() > 8
+            || self.roots.iter().enumerate().any(|(i, root)| {
+                self.roots[..i]
+                    .iter()
+                    .any(|parent| root.starts_with(&format!("{parent}/")))
+            })
+        {
+            return Err(JiaClawError::Configuration("tenant tree requires 1..8 sorted unique non-overlapping tenant-documents/ directory roots".into()));
+        }
+        Ok(())
+    }
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -1570,6 +1600,9 @@ pub struct HttpConfig {
     /// Explicit keyword-only configured memory source permission; default off.
     #[serde(default)]
     pub tenant_memory_search: Option<TenantMemorySearchPolicy>,
+    /// Explicit directory metadata permission; omission keeps tree unavailable.
+    #[serde(default)]
+    pub tenant_tree: Option<TenantTreePolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1745,6 +1778,7 @@ impl Default for HttpConfig {
             tenant_file_write: None,
             tenant_skill_read: None,
             tenant_memory_search: None,
+            tenant_tree: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

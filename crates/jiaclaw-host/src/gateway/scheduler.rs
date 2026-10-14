@@ -440,6 +440,7 @@ mod tests {
                     file_download: false,
                     skill_read: None,
                     memory_search: None,
+                    tree: None,
                 },
             )]),
             client: reqwest::Client::builder()

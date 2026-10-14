@@ -42,6 +42,7 @@
     if (Object.hasOwn(c || {}, 'file_write')) fields.push('file_write');
     if (Object.hasOwn(c || {}, 'skill_read')) fields.push('skill_read');
     if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
+    if (Object.hasOwn(c || {}, 'tree')) fields.push('tree');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
@@ -100,6 +101,15 @@
         previous = encoded;
       }
       allowed.push('memory_search');
+    }
+    if (c.tree !== undefined) {
+      const f = c.tree, keys = ['protocol','roots','max_depth','max_entries','max_scanned','scan_budget_ms','max_result_bytes','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.max_depth === 32 && f.max_entries === 1000 && f.max_scanned === 2000 && f.scan_budget_ms === 2000 && f.max_result_bytes === 65536);
+      require(typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.roots) && f.roots.length >= 1 && f.roots.length <= 8);
+      canonicalDocumentPaths(f.roots);
+      require(f.roots.every((r,i) => f.roots.slice(0,i).every(p => !r.startsWith(p+'/'))));
+      allowed.push('tree');
     }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
@@ -179,7 +189,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree'].includes(t)));
     return value;
   }
   class Parser {
