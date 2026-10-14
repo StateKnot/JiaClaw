@@ -24,3 +24,5 @@
 
 #file-download select { width: 100%; min-width: 0; }
 #file-download-state { overflow-wrap: anywhere; }
+
+#session-transfer{flex-shrink:0;max-height:34dvh;overflow:auto;min-width:0;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}#session-transfer p,#session-import-summary,#session-transfer-state{overflow-wrap:anywhere}#session-import-preview{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:24dvh;overflow:auto}#session-import-file,#session-import-id{min-width:0;max-width:100%;width:100%}#session-transfer button{font-size:12px;margin:5px 0}#session-transfer label{display:block;line-height:1.7}

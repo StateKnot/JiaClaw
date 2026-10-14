@@ -1082,7 +1082,7 @@
         ],
         "summary": "导入会话历史",
         "operationId": "importSession",
-        "description": "将消息导入内存 store（落盘开启时走现有 save）。默认每行一条消息 JSON（`application/x-ndjson`）。`Content-Type: application/json` 或 `?format=json` 接受 `{id?, messages:[...]}`。可选 `?id=` 或 JSON `id`；缺省新建 UUID。id 已存在默认 409（`session_already_exists`）；`?overwrite=true` 替换消息并刷新 last_accessed。非法 role/content 或坏行返回 400。不调用 LLM；超长按 MAX_SESSION_MESSAGES 硬截断/本地摘要。",
+        "description": "将消息导入内存 store（落盘开启时走现有 save）。默认每行一条消息 JSON（`application/x-ndjson`）。`Content-Type: application/json` 或 `?format=json` 接受 `{id?, messages:[...]}`。可选 `?id=` 或 JSON `id`；缺省新建 UUID。id 已存在默认 409（`session_already_exists`）；`?overwrite=true` 替换消息并刷新 last_accessed。非法 role/content 或坏行返回 400。不调用 LLM；超长按 MAX_SESSION_MESSAGES 硬截断/本地摘要。 明确 `preserve=true` 时最多51条消息完整保留，超过上限400且不调用压缩器；缺省false保持原压缩规则。此参数仅standalone，个人Key网关不开放。",
         "security": [
           {
             "bearerAuth": []
@@ -1124,6 +1124,16 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "preserve",
+            "in": "query",
+            "required": false,
+            "description": "Standalone only: preserve all messages without compaction, at most 51; false keeps the existing import policy. Does not restore task identities or execution.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "requestBody": {
@@ -1144,7 +1154,7 @@
         },
         "responses": {
           "200": {
-            "description": "导入后的会话（可能已按上限截断/摘要）",
+            "description": "导入后的会话；preserve=true时完整保留最多51条，否则沿原截断/本地摘要规则。",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/XRequestId"

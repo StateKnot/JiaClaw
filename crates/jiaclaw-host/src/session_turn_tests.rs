@@ -40,6 +40,7 @@ async fn mutate(state: AppState, mutation: Mutation) -> Result<(), AppError> {
                 id: Some("shared".into()),
                 format: Some("json".into()),
                 overwrite: true,
+                preserve: false,
             }),
             Bytes::from_static(b"{\"messages\":[{\"role\":\"user\",\"content\":\"replacement\"}]}"),
         )
