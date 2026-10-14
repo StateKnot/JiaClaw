@@ -3814,6 +3814,9 @@ struct ImportSessionQuery {
     id: Option<String>,
     #[serde(default)]
     overwrite: bool,
+    /// Preserve one bounded exported conversation without the legacy import compactor.
+    #[serde(default)]
+    preserve: bool,
 }
 
 /// JSON 导入整包：与 GET/export `format=json` 对称。
@@ -3912,16 +3915,25 @@ async fn import_session_handler(
 
     purge_expired_sessions(&state).await;
 
-    let compacted = compact_imported_session_messages(
-        messages,
-        state
-            .agent
-            .config()
-            .session
-            .effective_summarize_on_overflow(),
-        state.agent.config().session.effective_keep_recent(),
-    )
-    .await;
+    let compacted = if query.preserve {
+        if messages.len() > MAX_SESSION_MESSAGES + 1 {
+            return Err(AppError::BadRequest(
+                "preserved_session_message_limit".into(),
+            ));
+        }
+        messages
+    } else {
+        compact_imported_session_messages(
+            messages,
+            state
+                .agent
+                .config()
+                .session
+                .effective_summarize_on_overflow(),
+            state.agent.config().session.effective_keep_recent(),
+        )
+        .await
+    };
 
     let guard = session_turn_lock(&state, &session_id).await;
     let id = session_id.clone();
@@ -7235,6 +7247,60 @@ mod tests {
         .unwrap();
         assert_eq!(imported.id, "import-json-id");
         assert_eq!(imported.messages, sample_import_messages());
+    }
+
+    #[tokio::test]
+    async fn preserved_session_import_roundtrips_all_51_messages_without_overwrite() {
+        let app = create_test_app();
+        let messages: Vec<_> = (0..51)
+            .map(|n| ChatMessage {
+                role: if n == 0 {
+                    MessageRole::System
+                } else {
+                    MessageRole::User
+                },
+                content: format!("\u{feff}資料 {n}\r\n\t\0🦀 "),
+            })
+            .collect();
+        let uri =
+            "/api/sessions/import?format=json&id=preserved-copy&overwrite=false&preserve=true";
+        let body = serde_json::json!({"messages":messages}).to_string();
+        let response =
+            http_import_session(&app, uri, Some("application/json"), body.clone(), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let imported: GetSessionResponse =
+            serde_json::from_str(&body_text(response).await).unwrap();
+        assert_eq!(imported.messages, messages);
+        let exported = http_export_session(&app, "preserved-copy", Some("json")).await;
+        let exported: GetSessionResponse =
+            serde_json::from_str(&body_text(exported).await).unwrap();
+        assert_eq!(exported.messages, messages);
+        assert_eq!(
+            http_import_session(&app, uri, Some("application/json"), body, None)
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let mut over = messages;
+        over.push(ChatMessage {
+            role: MessageRole::User,
+            content: "overflow".into(),
+        });
+        let response = http_import_session(
+            &app,
+            "/api/sessions/import?format=json&id=preserved-over&preserve=true",
+            Some("application/json"),
+            serde_json::json!({"messages":over}).to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            http_export_session(&app, "preserved-over", Some("json"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

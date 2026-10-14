@@ -293,3 +293,7 @@ SOUL/USER/MEMORY ambient prompt reads remain independent of explicit search auth
 ### 2026-10-14：Word 正文资料进入原任务草稿
 
 已实现原三个工作台本机 `.docx` 完整有界正文提取→可编辑草稿→原显式发送→真实回复下载，复用 FileReader/原owner和浏览器平台解压/XML，无新模型工具或存储。[规格](word-task-input.md)与[本机验收](validation/2026-10-14-word-task-input.md)。属性/单元格修订初P2已由原文件独立闭合；本批自身固定head官方175资格另行认证，父142完成仅历史。仅正文，不读取页眉脚注批注或认证视觉/业务质量；所有个人Agent里程碑仍未充分，不以此单项停用迭代。
+
+### 2026-10-14：完整会话资料迁移
+
+standalone 工作台复用原会话 export/import 与 Store，明确下载完整JSON、完整预览后导入全新UUID，最多51条不压缩；真实已写响应丢失后只核原目标GET，不重写或重放。网关权限范围保持，零自动模型调用。[合同](session-transfer.md)与[发布前验收](validation/2026-10-14-session-transfer.md)。本机1321Rust、三个相关真实浏览器命令/parser13及独立源码两轴通过；新固定head177官方资格另行认证，父143仅历史。资料迁移不恢复执行、工具效果、配置或 durable，不认证经验质量或完整个人Agent里程碑。

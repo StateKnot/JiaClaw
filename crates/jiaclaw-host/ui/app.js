@@ -11,6 +11,7 @@ let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = nul
 let semanticReviewEnabled = false;
 let textFileReader = null, textImportEpoch = 0, documentInputController = null;
 let fileDownloadController = null, fileDownloadEpoch = 0;
+let transferIsGateway = false, transferPreview = null, transferPending = null, transferEpoch = 0;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
 class ApiTimeout extends Error {}
@@ -61,9 +62,25 @@ function controls() {
   $('file-download').hidden = !filesEnabled;
   $('file-download-path').disabled = $('file-download-reviewed').disabled = !filesEnabled || busy || turnControlBusy;
   $('file-download-save').disabled = !filesEnabled || busy || turnControlBusy || $('file-download-path').value === '' || !$('file-download-reviewed').checked;
-
+  const transferEnabled = connected && !!token && !transferIsGateway;
+  $('session-transfer').hidden = !transferEnabled;
+  const transferBlocked = !transferEnabled || busy || !!pendingTurn || !!transferPending;
+  $('session-export-reviewed').disabled = transferBlocked || !selected;
+  $('session-export').disabled = $('session-export-reviewed').disabled || !$('session-export-reviewed').checked;
+  $('session-import-file').disabled = transferBlocked || readOnly;
+  $('session-import-read').disabled = $('session-import-file').disabled || $('session-import-file').files.length !== 1;
+  $('session-import-reviewed').disabled = transferBlocked || readOnly || !transferPreview || $('message').value !== '';
+  $('session-import-save').disabled = $('session-import-reviewed').disabled || !$('session-import-reviewed').checked;
+  $('session-import-tracking').hidden = !transferPending;
+  $('session-import-check').disabled = !transferEnabled || busy || !transferPending;
+  $('session-import-finish').disabled = busy || !transferPending;
+  if (transferPending) {
+    for (const id of ['new-session','delete-session','send','message']) $(id).disabled = true;
+    for (const b of $('sessions').querySelectorAll('button')) b.disabled = true;
+  }
 }
 function clearIdentity() {
+  clearSessionTransfer(); transferIsGateway = false;
   clearTextImport();
   clearFileDownload();
   forgetTurns(); identity++; token = ''; connected = false; readOnly = false; selected = null; sessionList = [];
@@ -299,6 +316,101 @@ async function boundedJson(response, maximum, owner) {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(bytes));
 }
+function clearTransferPreview() {
+  transferEpoch++; transferPreview = null;
+  $('session-export-reviewed').checked = $('session-import-reviewed').checked = false;
+  $('session-import-preview').textContent = $('session-import-summary').textContent = '';
+}
+function clearSessionTransfer() {
+  clearTransferPreview(); transferPending = null;
+  $('session-import-file').value = ''; $('session-import-id').value = '';
+  $('session-transfer-state').textContent = ''; $('session-transfer').open = false;
+}
+function transferMessages(value, maximum, expectedId = null) {
+  const exactKeys = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).every(k=>keys.includes(k));
+  if (!exactKeys(value, ['id','messages']) || (Object.hasOwn(value,'id') && (typeof value.id !== 'string' || !value.id.isWellFormed() || new TextEncoder().encode(value.id).length > 1024)) || (expectedId !== null && value.id !== expectedId) || !Array.isArray(value.messages) || value.messages.length > maximum || value.messages.some(m=>!exactKeys(m,['role','content']) || Object.keys(m).length !== 2 || !['system','user','assistant'].includes(m.role) || typeof m.content !== 'string' || !m.content.isWellFormed())) throw new Error('会话资料未完整通过核对；不截取或导入部分消息。');
+  return value.messages;
+}
+function transferCurrent(owner, epoch) {
+  if (owner !== identity || epoch !== transferEpoch || !connected || transferIsGateway || !token) throw new StaleIdentity();
+}
+for (const id of ['session-export-reviewed','session-import-reviewed']) $(id).addEventListener('change',controls);
+$('session-import-file').addEventListener('change',()=>{clearTransferPreview(); controls();});
+$('session-export').addEventListener('click',()=>{
+  if ($('session-export').disabled) return;
+  const owner=identity, epoch=transferEpoch, session=selected;
+  task(async()=>{
+    const deadline=performance.now()+15000;
+    const value=await api(`/api/sessions/${encodeURIComponent(session)}/export?format=json`,'GET',undefined,false,15000,2*1024*1024);
+    transferCurrent(owner,epoch);
+    if (selected!==session || !$('session-export-reviewed').checked || performance.now()>=deadline) throw new Error('会话选择、确认或下载期限已变化；没有请求保存。');
+    transferMessages(value,10000,session);
+    const bytes=new TextEncoder().encode(JSON.stringify(value)+'\n');
+    if (bytes.length>2*1024*1024 || performance.now()>=deadline) throw new Error('完整会话超过本页下载预算；没有请求保存。');
+    const url=URL.createObjectURL(new Blob([bytes],{type:'application/json'})),link=document.createElement('a');
+    try {link.href=url;link.download=`jiaclaw-session-${createId()}.json`;document.body.append(link);transferCurrent(owner,epoch);if(selected!==session)throw new StaleIdentity();if(performance.now()>=deadline)throw new Error('完整会话下载超过15秒；没有请求保存。');link.click();}
+    finally {link.remove();setTimeout(()=>URL.revokeObjectURL(url),0);}
+    $('session-export-reviewed').checked=false;
+    $('session-transfer-state').textContent=`已请求浏览器下载完整会话资料（${value.messages.length} 条，${bytes.length} 字节）；请核对本机保存结果。`;
+  });
+});
+$('session-import-read').addEventListener('click',()=>{
+  if ($('session-import-read').disabled) return;
+  const file=$('session-import-file').files[0],owner=identity;
+  clearTransferPreview();const epoch=transferEpoch;
+  task(async()=>{
+    if (!/\.json$/i.test(file.name) || !validMaterialName(file.name) || !file.size || file.size>262144) throw new Error('请选择名称合规、1–262144字节的工作台会话 JSON。');
+    const deadline=performance.now()+5000,bytes=await readMaterialFile(file,deadline,262144,'会话资料');
+    transferCurrent(owner,epoch);
+    let text,value;
+    try {text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);value=JSON.parse(text);}
+    catch {throw new Error('会话资料不是完整 UTF-8 JSON；没有提交。');}
+    if (JSON.stringify(value)!==text.trim()) throw new Error('请选择本工作台导出的紧凑 JSON；非规范编码或重复字段不会导入。');
+    const messages=transferMessages(value,51),body={messages};
+    if (new TextEncoder().encode(JSON.stringify(body)).length>512*1024 || performance.now()>=deadline) throw new Error('完整会话资料超过读取或编码预算；没有提交。');
+    transferCurrent(owner,epoch); transferPreview={messages};
+    $('session-import-summary').textContent=`来源：${value.id ?? '未提供原编号'}；${messages.length} 条完整消息。将保存为新编号，原会话不覆盖。`;
+    $('session-import-preview').textContent=messages.map((m,i)=>`[${i+1} · ${m.role}]\n${m.content}`).join('\n\n');
+    $('session-transfer-state').textContent='已完整读取；请审阅角色和正文，再明确确认。尚未提交。';
+  });
+});
+async function checkTransferredSession(attempt, deadline=performance.now()+15000) {
+  const owner=identity;
+  const value=await api(`/api/sessions/${attempt.id}`,'GET',undefined,false,Math.max(1,Math.min(15000,Math.floor(deadline-performance.now()))),2*1024*1024);
+  if(owner!==identity || transferPending!==attempt)throw new StaleIdentity();
+  const messages=transferMessages(value,51,attempt.id);
+  if(performance.now()>=deadline || JSON.stringify(messages)!==JSON.stringify(attempt.messages))throw new Error('此编号的完整消息未匹配本次资料；保留未知状态，不会重发。');
+  transferPending=null;clearTransferPreview();$('session-import-file').value='';$('session-import-id').value='';
+  selected=attempt.id;$('session-title').textContent=`会话 ${attempt.id.slice(0,12)}`;
+  for(const input of $('turn-permissions').querySelectorAll('input')) input.checked=false;
+  renderMessages(messages);renderSessions();showView('chat');
+  $('session-transfer-state').textContent='新会话完整资料已由原 GET 核对保存；尚未调用模型。';
+  status('资料已导入新会话；后续显式发送沿用原旧式对话配置。');
+}
+$('session-import-save').addEventListener('click',()=>{
+  if($('session-import-save').disabled || !transferPreview || transferPending || $('message').value!=='')return;
+  const attempt={id:createId(),messages:transferPreview.messages},owner=identity;
+  transferPending=attempt;$('session-import-id').value=attempt.id;$('session-import-reviewed').checked=false;
+  task(async()=>{
+    const deadline=performance.now()+30000;
+    $('session-transfer-state').textContent='正在单次保存；请保留新会话编号。';
+    try {
+      const saved=await api(`/api/sessions/import?format=json&id=${attempt.id}&overwrite=false&preserve=true`,'POST',{messages:attempt.messages},false,15000,2*1024*1024);
+      if(owner!==identity || transferPending!==attempt)throw new StaleIdentity();
+      if(JSON.stringify(transferMessages(saved,51,attempt.id))!==JSON.stringify(attempt.messages))throw new Error('导入回执未完整匹配本次资料。');
+      await checkTransferredSession(attempt,deadline);
+    } catch(error) {
+      if(owner===identity && transferPending===attempt)$('session-transfer-state').textContent='保存结果未核对。请保留此编号，只读取已保存资料核对；不会自动重发或换号。';
+      throw error;
+    }
+  });
+});
+$('session-import-check').addEventListener('click',()=>{
+  if(!$('session-import-check').disabled && transferPending){const attempt=transferPending;task(()=>checkTransferredSession(attempt));}
+});
+$('session-import-finish').addEventListener('click',()=>{
+  if(!$('session-import-finish').disabled && confirm('结束本页导入跟踪？这不会删除可能已保存的会话或解除服务端占用；请自行保留编号。')){clearSessionTransfer();controls();}
+});
 const jobsApi = (path, method = 'GET', body, optional = false) => api(path, method, body, optional, 30000, 2 * 1024 * 1024);
 function showView(view) {
   for (const name of ['chat','jobs','outbox','memory']) { $(name+'-view').hidden = name !== view; $(name+'-tab').setAttribute('aria-pressed', String(name === view)); }
@@ -343,7 +455,7 @@ async function select(id, allowMissing = false) {
     showView('chat'); renderMessages([]); renderSessions(); return false;
   }
   if (!session || session.id !== id || !Array.isArray(session.messages) || session.messages.length > 51 || session.messages.some(m => typeof m.content !== 'string')) throw new Error('会话响应异常');
-  selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
+  clearTransferPreview(); selected = id; $('session-title').textContent = `会话 ${id.slice(0, 12)}`;
   showView('chat');
   renderMessages(session.messages); renderSessions(); status(readOnly ? '已连接 · 只读访问 · 会话就绪' : '已连接 · 会话就绪');
   return true;
@@ -364,6 +476,7 @@ $('connect-form').addEventListener('submit', event => {
       clearIdentity(); throw new Error('权限信息响应异常，请重新连接或联系管理员核对。');
     }
     readOnly = capabilities !== MISSING_ROUTE && capabilities.read_only === true;
+    transferIsGateway = capabilities !== MISSING_ROUTE;
     scheduledJobs = capabilities?.scheduled_jobs === true; jobsMode = scheduledJobs ? 'gateway' : null;
     if (capabilities === MISSING_ROUTE && token) {
       const scheduler = await jobsApi('/api/jobs/status', 'GET', undefined, [403,404]);
@@ -411,6 +524,7 @@ $('new-session').addEventListener('click', () => task(async () => {
   if (!connected || readOnly) return;
   if (pendingTurn) return;
   clearTextImport();
+  clearTransferPreview();
   if (turnWritable()) { $('turn-permissions').open = false; for (const input of $('turn-permissions').querySelectorAll('input')) input.checked = false; selected = 'http:' + createId(); $('session-title').textContent = `会话 ${selected.slice(0,17)}`; renderMessages([]); if (!tenantTurns()) await refresh(); showView('chat'); status('新会话就绪；请显式选择本次允许的工具。'); return; }
   const data = await api('/api/sessions', 'POST'); await refresh(); await select(data.session_id);
 }));

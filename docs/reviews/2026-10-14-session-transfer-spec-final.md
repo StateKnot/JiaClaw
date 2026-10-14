@@ -1,0 +1,9 @@
+Spec closure: fixed `fd15fa9…1e5f4ee`, five commits/ten paths; frozen binary `f9efa2e4…`; all 116 compiler-input hashes match the final Git source. **Zero open findings.**
+
+The initial P3 is closed. The spec requires “捕获、校验和浏览器保存请求共15秒，超限整次拒绝，不截取。” (`docs/session-transfer.md:9`). The final implementation rechecks that same absolute deadline immediately before `link.click()`, after Blob/URL, UUID and DOM preparation; cleanup remains in `finally`. Replaying my unchanged 14,200 ms response plus 1,000 ms real URL-preparation delay crossed the boundary at **15,216.8 ms** and produced zero anchor clicks/downloads, with the Blob URL revoked. The initial 15,218.5 ms physical-download RED remains sealed separately.
+
+My current acceptance wrapper (session 96826) exited 0: complete physical export, Unicode/control bytes, one-create import, SQLite restart, 51-message/exact262144-byte receipts, lost committed response with GET-only recovery, privacy/readonly/gateway, mobile and zero model/storage guards. Its additional 13.5-second response/2-second preparation case also refused saving. My six independent partial-ack, changed-final-GET, late-authentication, selection and native legacy/preserve cases passed on the same binary.
+
+The added OpenAPI parameter documents standalone-only `preserve=true`, default false and whole-51 behavior; the original import owner and default compaction remain intact. New receipts strengthen observation without changing product budgets. One intermediate closure observer waited on the wrong DOM status element; its raw timeout is retained, and only the observer selector was corrected.
+
+No further missing, wrong or unrequested behavior was found in this feature scope. Source/runtime closure does not certify new official CI or exhaustively re-review cumulative history. Root Rust/regression results remain inherited; I ran no build, paid call, old auditor, CI/Git mutation or product edit.

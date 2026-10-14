@@ -1,0 +1,5 @@
+Standards intermediate finding at `234f2fc2a103dfefd55fed5cb88d342efd327b59`: **1 fixture-only P3**, separate from the already-correct production deadline boundary.
+
+**[P3] Wait on the actual error control — `tests/session_transfer.cjs:51`.** The new mandatory Linux acceptance test waits for the deadline error in `#session-transfer-state`; the unchanged `task()` catch reports thrown errors only through `status()` into `#status`. Thus the fixture cannot observe a correct refusal and times out before emitting its deadline receipt/end marker. This blocks the actual acceptance promised by `docs/session-transfer.md:23` and the named CI acceptance step. My original Store/Chromium closure independently observes the refusal in `#status` while transfer-state retains the prior success message.
+
+Commit `1e5f4ee8176987f6943760473346dd2205278f00` changes only that wait to the actual `#status` control. No assertion, deadline, production input or binary is relaxed; the 116-input manifest and frozen binary remain identical. The source initial P3 report and raw deadline counterexample remain unchanged.
