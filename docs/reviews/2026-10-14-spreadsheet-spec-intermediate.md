@@ -1,0 +1,9 @@
+# Spec review — frozen 7589ac9
+
+Fresh scope: `git diff c44f4dcda5f3fed5e5a916743a8b167321895afa...7589ac9`. Spec: `docs/spreadsheet-task-input.md` at that head. Cumulative origin/main `4b2357fc` and parent PR144 remain inherited; this is source review, not official fixed-head CI qualification.
+
+**P3 — Unsupported XML leaf children still pass silently.** Spec line 9 requires “未支持结构整次拒绝，不做部分导入”. `spreadsheet-input.js` validates container element names but treats `<sheet>`, content-types `<Override>` and package `<Relationship>` as unchecked leaves. My own real Worker probes add a same-namespace `<unknown/>` inside each of these elements; all three are accepted and return ordinary-cell JSON. The corresponding metadata is unsupported but silently discarded. Require the expected leaf shape at these boundaries, alongside the metadata-container checks already added.
+
+The other initial findings are closed in my independent checks: the production module imports without adjustment; zeroHeight and explicit/zero-sized hidden rows/columns refuse; ST_Xstring CR, escaped underscore and paired surrogate values are exact, while decoded NUL/DEL/unpaired surrogates refuse; foreign-namespace attributes and unknown sheetPr children refuse. Eight visible sheets, Strict namespace, rich shared strings and 2049 dictionary entries with one referenced cell pass. Transitional and Strict Word extraction remain exact in two real Worker checks.
+
+Own evidence: `spec-final-probes/results.json`, 26 independent spreadsheet cases, two Word compatibility cases, Chrome153.0.8010.12, binary SHA `1e1dde0b82d930adb7c9c227b23d6acf29749b183f173e99e133dfee0d2d4cfa`. Served production modules match frozen Git blobs byte-for-byte. No temporary module routes, model POST, product edits, or paid calls. Initial report and probes remain preserved. Findings: 1; worst P3. No scope-creep finding.

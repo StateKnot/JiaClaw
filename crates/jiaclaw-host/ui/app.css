@@ -20,7 +20,7 @@
 
 #turn-activity h3{font-size:12px;margin:12px 0 6px}#turn-activity ol{font-size:12px;max-height:180px;overflow:auto;padding-left:26px;white-space:pre-wrap;overflow-wrap:anywhere}#turn-activity li{margin:5px 0}
 
-#text-input,#pdf-input,#word-input{margin-top:12px;font-size:12px}#text-input summary,#pdf-input summary,#word-input summary{font-size:12px}#text-input p,#pdf-input p,#word-input p{overflow-wrap:anywhere}.text-input-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}#text-file,#pdf-file,#word-file{min-width:0;max-width:100%;width:100%;font-size:12px}#text-file-add,#pdf-file-add,#word-file-add{font-size:12px}#chat-form .text-file-label{position:static;width:auto;height:auto;overflow:visible;clip-path:none}
+#text-input,#pdf-input,#word-input,#spreadsheet-input{margin-top:12px;font-size:12px}#text-input summary,#pdf-input summary,#word-input summary,#spreadsheet-input summary{font-size:12px}#text-input p,#pdf-input p,#word-input p,#spreadsheet-input p{overflow-wrap:anywhere}.text-input-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}#text-file,#pdf-file,#word-file,#spreadsheet-file{min-width:0;max-width:100%;width:100%;font-size:12px}#text-file-add,#pdf-file-add,#word-file-add,#spreadsheet-file-add{font-size:12px}#chat-form .text-file-label{position:static;width:auto;height:auto;overflow:visible;clip-path:none}
 
 #file-download select { width: 100%; min-width: 0; }
 #file-download-state { overflow-wrap: anywhere; }

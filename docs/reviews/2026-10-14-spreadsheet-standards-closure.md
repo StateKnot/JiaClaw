@@ -1,0 +1,11 @@
+# Standards — settled source closure
+
+**Findings: 0.** Independently reviewed the three-path delta `git diff 7589ac9...45f1472` and its integration with the previously reviewed feature. The feature's fixed fresh base remains `c44f4dcda5f3fed5e5a916743a8b167321895afa`; cumulative `origin/main` at `4b2357fcf01f47ba08d7724edbba7accfb60972c` is historical inheritance only. The initial P2 and `7589ac9` final report remain separate and unchanged. User production-grade requirements apply; none of the 12 Fowler heuristics adds an actionable smell in this delta.
+
+`crates/jiaclaw-host/src/gateway/mod.rs:386–391` now serves both shared Office and spreadsheet modules through the original asset handlers. `ui/spreadsheet-input.js:42–47,75,90` rejects nested content in content-type/relationship/sheet/column leaves. Own actual Workers reject all five independently reconstructed leaf variants, including root relationships and columns, while supported documents remain accepted.
+
+Own settled-source parser matrix: **46 cases, 8 positive / 38 negative**, unmodified frozen modules in Chromium 153.0.8010.12 with real Workers. It retains hidden-default/zero-size closure, foreign/nested metadata refusal, strict decoded Unicode/control handling, supported rich text and the 2049-entry shared-string dictionary positive.
+
+Own fresh gateway JSON and gateway preview wrappers both exit 0 against an independently frozen settled binary, SHA `4f316c5385c8fcd6c2c4439d686e9bb0ec07e09baedcef195a91add2976dd86e`. Each mode performs two real selected-file→FileReader→Worker→explicit original authorization/Send→local model wire→physical reply tasks: four unique UUIDs total, exact 1 MiB source / 16 KiB extraction / 32 KiB prompt, each one read/worker/termination/model POST, zero tool records/import API/external requests. Refusal, original five-second timeout, actual delayed owner/identity/draft/selection, readonly and mobile/no-storage assertions remain intact. These fresh gateway executions address the routing delta; the earlier standalone execution belongs to the prior source phase.
+
+Disk was checked before source-only isolation and execution. No product edit, Rust build, shared-target cleanup, paid/provider call or official CI audit occurred. This is source review and local closure evidence, not fixed-head official qualification.
