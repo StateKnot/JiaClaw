@@ -8,7 +8,9 @@ const crcTable = Uint32Array.from({length:256}, (_, n) => {
 const crc32 = bytes => { let crc=0xffffffff; for (const b of bytes) crc=crcTable[(crc^b)&255]^(crc>>>8); return (crc^0xffffffff)>>>0; };
 self.onmessage = async event => {
   try {
-    const bytes=new Uint8Array(event.data), view=new DataView(bytes.buffer);
+    const format=event.data instanceof ArrayBuffer?'word':event.data?.format;
+    if(!['word','xlsx'].includes(format))fail();
+    const bytes=new Uint8Array(format==='word'?event.data:event.data.bytes), view=new DataView(bytes.buffer);
     if (!bytes.length || bytes.length>1048576) fail();
     const u16=p=>view.getUint16(p,true), u32=p=>view.getUint32(p,true);
     const extras=(begin,length)=>{
@@ -54,7 +56,16 @@ self.onmessage = async event => {
     intervals.sort((a,b)=>a[0]-b[0]); let offset=0;
     for(const [begin,finish] of intervals) { if(begin!==offset) fail(); offset=finish; }
     if(offset!==start) fail();
-    const wanted={'[Content_Types].xml':65536,'_rels/.rels':65536,'word/document.xml':1048576}, result={};
+    const wanted={'[Content_Types].xml':65536,'_rels/.rels':65536}, result={};
+    if(format==='word')wanted['word/document.xml']=1048576;
+    else {
+      wanted['xl/workbook.xml']=65536;wanted['xl/_rels/workbook.xml.rels']=65536;
+      for(const e of entries) {
+        if(['xl/','xl/_rels/','xl/theme/','xl/worksheets/'].includes(e.name)&&e.plain===0&&e.data===e.finish)continue;
+        if(e.name.startsWith('xl/') && !/^xl\/(?:workbook\.xml|_rels\/workbook\.xml\.rels|sharedStrings\.xml|styles\.xml|theme\/theme[0-9]+\.xml|worksheets\/[A-Za-z0-9_-]+\.xml)$/.test(e.name))fail();
+        if(/^xl\/(?:sharedStrings\.xml|worksheets\/[A-Za-z0-9_-]+\.xml)$/.test(e.name))wanted[e.name]=1048576;
+      }
+    }
     for(const [name,budget] of Object.entries(wanted)) {
       const entry=entries.find(e=>e.name===name); if(!entry || !entry.plain || entry.plain>budget) fail();
       let output;

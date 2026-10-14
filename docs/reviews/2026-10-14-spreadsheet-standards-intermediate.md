@@ -1,0 +1,11 @@
+# Standards — final frozen source
+
+**Findings: 0.** Independently reviewed `git diff c44f4dcda5f3fed5e5a916743a8b167321895afa...7589ac9` (18 paths), including shared Office worker ownership, the spreadsheet parser, UI integration, fixture isolation and CI command wiring. User production-grade instructions and repository lint policy apply; all 12 Fowler baseline heuristics were considered without a separate actionable smell. Cumulative `origin/main` at `4b2357fcf01f47ba08d7724edbba7accfb60972c` remains inherited history, not an exhaustive fresh review.
+
+The initial P2 is closed at `crates/jiaclaw-host/ui/spreadsheet-input.js:88–93`: worksheet `zeroHeight=1/true`, nonpositive row heights and column widths are now refused. Own unmodified frozen-module Chromium/real Worker probes reject both original hidden-default cases. The original duplicate lexical declaration also no longer prevents module loading. The initial report and original RED evidence remain unchanged.
+
+Own additional parser run: **41 cases, 8 positive / 33 negative**, covering numeric zero equivalents/nonfinite sizes, inherited visibility, unsupported nested metadata, foreign attributes, single-pass ST_Xstring CR/TAB/underscore/surrogate decoding, isolated surrogate/control refusal, supported rich text and a 2049-entry shared-string dictionary with one cell. No product or probe-only syntax correction was used for final source.
+
+Own standalone wrapper completed successfully against an independently frozen binary (SHA `1e1dde0b82d930adb7c9c227b23d6acf29749b183f173e99e133dfee0d2d4cfa`): actual FileReader→Worker→explicit original authorization/Send→local model wire→physical reply download, two unique UUIDs, exact 1 MiB source / 16 KiB extraction / 32 KiB prompt, each one read/worker/termination/model POST and zero tool records/import API/external requests. Original five-second owner/deadline and stale identity/draft/selection, mobile and no-storage checks pass. Seven served UI assets byte-match frozen `7589ac9` via own GETs; that binding made zero model requests.
+
+Disk space was checked before isolation/testing; no Rust compilation, paid/provider call, product edit or shared-target cleanup occurred. This is source review with own local evidence, not official CI qualification; tenant-mode execution is not claimed by this axis.

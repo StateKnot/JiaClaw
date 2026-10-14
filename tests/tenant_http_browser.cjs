@@ -1,3 +1,4 @@
+const {spreadsheetInputTask}=require('./spreadsheet_task_input.cjs');
 const {wordInputTask}=require('./word_task_input.cjs');
 const {textInputTask}=require('./text_task_input.cjs');
 const {pdfInputTask}=require('./pdf_task_input.cjs');
@@ -27,6 +28,10 @@ const original=async(id,token=cfg.alice)=>{const r=await fetch(cfg.base+'/api/tu
   await route.fulfill({response:r,json:j});
  });
  try {
+  if(process.env.JIACLAW_TEST_SPREADSHEET_INPUT_ONLY==='1'){
+  await spreadsheetInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-json",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"Spreadsheet task hold settled"),reply:prompt=>"alice: "+prompt});
+  return;
+  }
   if(process.env.JIACLAW_TEST_WORD_INPUT_ONLY==='1'){
   await wordInputTask(browser,{base:cfg.base,token:cfg.alice,readonly:cfg.readonly,mode:"tenant-json",tool:"datetime_now",inspect:prompt=>ctl("status",prompt),idle:()=>until(async()=>!(await ctl("status")).holds.length,"Word task hold settled"),reply:prompt=>"alice: "+prompt});
   return;

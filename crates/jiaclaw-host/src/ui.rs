@@ -48,6 +48,18 @@ pub(super) async fn word_input() -> Response {
         include_str!("../ui/word-input.js"),
     )
 }
+pub(super) async fn office_input() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/office-input.js"),
+    )
+}
+pub(super) async fn spreadsheet_input() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/spreadsheet-input.js"),
+    )
+}
 pub(super) async fn word_worker() -> Response {
     worker_asset(include_str!("../ui/word-worker.js"))
 }

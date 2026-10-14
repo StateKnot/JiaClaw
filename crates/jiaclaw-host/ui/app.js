@@ -58,6 +58,8 @@ function controls() {
   $('pdf-file-add').disabled = $('pdf-file').disabled || $('pdf-file').files.length !== 1;
   $('word-file').disabled = $('text-file').disabled;
   $('word-file-add').disabled = $('word-file').disabled || $('word-file').files.length !== 1;
+  $('spreadsheet-file').disabled = $('text-file').disabled;
+  $('spreadsheet-file-add').disabled = $('spreadsheet-file').disabled || $('spreadsheet-file').files.length !== 1;
   const filesEnabled = connected && tenantTurns() && turnCapabilities?.file_download_protocol === 1;
   $('file-download').hidden = !filesEnabled;
   $('file-download-path').disabled = $('file-download-reviewed').disabled = !filesEnabled || busy || turnControlBusy;
@@ -111,6 +113,7 @@ function clearTextImport() {
   $('text-file').value = ''; $('text-file-state').textContent = '';
   $('pdf-file').value = ''; $('pdf-file-state').textContent = '';
   $('word-file').value = ''; $('word-file-state').textContent = '';
+  $('spreadsheet-file').value = ''; $('spreadsheet-file-state').textContent = '';
 }
 function validMaterialName(name) {
   return !/[\p{Cc}\p{Bidi_Control}/\\]/u.test(name) && new TextEncoder().encode(name).length <= 128;
@@ -217,6 +220,27 @@ $('word-file-add').addEventListener('click', () => {
       current(); $('message').value = next; $('word-file').value = '';
       $('word-file-state').textContent = `已加入 Word 正文文字：${file.name}（原文件 ${file.size} 字节）。请核对原文和草稿后再发送。`;
       status('Word 正文文字已加入可编辑草稿；尚未发送。');
+    });
+  });
+});
+$('spreadsheet-file').addEventListener('change', () => { textImportEpoch++; $('spreadsheet-file-state').textContent = ''; controls(); });
+$('spreadsheet-file-add').addEventListener('click', () => {
+  if ($('spreadsheet-file').disabled || busy || $('spreadsheet-file').files.length !== 1) return;
+  const file=$('spreadsheet-file').files[0],owner=identity,session=selected,draft=$('message').value,epoch=textImportEpoch;
+  task(async () => {
+    await withDocumentMaterial(file,'Excel .xlsx',/\.xlsx$/i,owner,session,draft,epoch,async ({bytes,sha,deadline,signal,current})=>{
+      const module=await import('/ui/spreadsheet-input.js');current();let result;
+      try { result=await module.extractSpreadsheetText(bytes,deadline,signal); }
+      catch(error) {
+        if(error?.spreadsheetInputCode==='cancelled')throw new StaleIdentity();
+        const messages={unsupported:'表格包含不支持的结构（公式、隐藏内容、合并单元格或外部关系等）。',empty:'工作簿没有单元格数据。',budget:'表格超过完整提取限额（8个工作表、2048个单元格、16 KiB资料）。',text:'单元格含不支持的控制字符或非法 Unicode。',timeout:'表格读取与解析超过5秒。'};
+        throw new Error((messages[error?.spreadsheetInputCode]||'无法完整解析受支持的 Excel .xlsx。')+'原草稿已保留。');
+      }
+      const next=draft+(draft?'\n\n':'')+`[用户提供的 Excel 原始单元格资料：${file.name}；原文件 SHA-256 ${sha}]\n${result.text}[资料结束]`;
+      if(!next.isWellFormed()||new TextEncoder().encode(next).length>32768)throw new Error('加入表格后完整消息超过32 KiB UTF-8上限；不会截取，原草稿已保留。');
+      current();$('message').value=next;$('spreadsheet-file').value='';
+      $('spreadsheet-file-state').textContent=`已加入 Excel 原始单元格资料：${file.name}（${result.sheets}个工作表、${result.cells}个单元格）。请核对原表和草稿后再发送。`;
+      status('表格资料已加入可编辑草稿；尚未发送。');
     });
   });
 });

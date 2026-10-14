@@ -297,3 +297,7 @@ SOUL/USER/MEMORY ambient prompt reads remain independent of explicit search auth
 ### 2026-10-14：完整会话资料迁移
 
 standalone 工作台复用原会话 export/import 与 Store，明确下载完整JSON、完整预览后导入全新UUID，最多51条不压缩；真实已写响应丢失后只核原目标GET，不重写或重放。网关权限范围保持，零自动模型调用。[合同](session-transfer.md)与[发布前验收](validation/2026-10-14-session-transfer.md)。本机1321Rust、三个相关真实浏览器命令/parser13及独立源码两轴通过；新固定head177官方资格另行认证，父143仅历史。资料迁移不恢复执行、工具效果、配置或 durable，不认证经验质量或完整个人Agent里程碑。
+
+### 2026-10-14：Excel 原始单元格资料进入任务草稿
+
+原三个工作台显式读取 .xlsx，复用 Word 同一 ZIP 校验/Worker 和原资料 FileReader/身份/五秒owner，完整提取有坐标与类型的原始单元格 JSON，再由用户核对后原 Send。1MiB源、8表/2048cells、16KiB资料/32KiB草稿；公式、隐藏、合并、外部关系与不支持结构整份拒绝。数字不经浮点转换，样式/日期不渲染。已完成真实资料→原模型→物理回复、本机1321Rust与相关13Chrome/parser13和独立源码两轴；新head full178资格独立另计，不借父144。[合同](spreadsheet-task-input.md)与[验收范围](validation/2026-10-14-spreadsheet-task-input.md)。不增加工具、reader、Store或依赖，不补供应商/业务质量/学习/Agentbrowser/durable里程碑。

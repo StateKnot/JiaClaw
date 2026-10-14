@@ -1,0 +1,9 @@
+# Spec review — frozen 45f1472 closure
+
+Fresh scope: `git diff c44f4dcda5f3fed5e5a916743a8b167321895afa...45f1472`; spec `docs/spreadsheet-task-input.md` at that head. **No remaining Spec findings or scope creep.**
+
+All four initial findings and the intermediate leaf-shape finding are closed. My independent 26-case actual Worker matrix now rejects hidden-default/zero-sized rows and columns, decoded prohibited controls and isolated surrogates, foreign attributes, unknown metadata, and nested unknown children in sheet/type/relationship leaves. Ordinary text, exact CR semantics, escaped underscores, surrogate pairs, eight visible sheets, Strict namespace, rich shared strings and a 2049-entry dictionary with one referenced cell remain correct. Two own original Word checks retain exact Transitional/Strict text.
+
+I independently executed all three frozen spreadsheet wrappers on the settled binary: standalone, tenant JSON and preview each exit 0. Six real FileReader→Worker→explicit original Send/model-wire→physical-reply cases cover exact 1MiB source, 16KiB extracted JSON and 32KiB draft. They also verify original authorization, no automatic import/model request, real Worker termination, late identity/draft/selection and five-second refusal, readonly behavior, mobile375, no storage/page errors/external requests. Gateway routes are exercised through both tenant modes.
+
+Own evidence is under `spec-closure-45f1472/`; binary SHA `4f316c5385c8fcd6c2c4439d686e9bb0ec07e09baedcef195a91add2976dd86e`. Served modules match frozen Git blobs byte-for-byte. No route adjustments, product edits, builds, paid calls, or borrowed root/Standards runtime results. The initial and intermediate reports/identities remain unchanged. Cumulative origin/main `4b2357fc` and parent PR144 are inherited only; this source review does not certify the new head’s official CI, suppliers, business quality, Agent browser, or durable operation.

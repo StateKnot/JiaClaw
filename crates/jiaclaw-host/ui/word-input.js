@@ -1,3 +1,4 @@
+import {extractOfficeParts} from '/ui/office-input.js';
 // One already-captured local DOCX. No upload, rendering or external resolution.
 const fail=code=>{const e=new Error(code);e.wordInputCode=code;return e;};
 export async function extractWordText(bytes,deadline,signal) {
@@ -5,16 +6,8 @@ export async function extractWordText(bytes,deadline,signal) {
   check();
   if(!(bytes instanceof ArrayBuffer)||!bytes.byteLength||bytes.byteLength>1048576)throw fail('format');
   if(typeof Worker!=='function'||typeof DecompressionStream!=='function')throw fail('unsupported');
-  let worker,timer,abort;
   try {
-    const parts=await new Promise((resolve,reject)=>{
-      abort=()=>reject(fail('cancelled'));signal.addEventListener('abort',abort,{once:true});
-      timer=setTimeout(()=>reject(fail('timeout')),Math.max(0,deadline-performance.now()));
-      worker=new Worker('/ui/word-worker.js');
-      worker.onerror=event=>{event.preventDefault();reject(fail('format'));};
-      worker.onmessage=event=>event.data?.error?reject(fail('format')):resolve(event.data?.parts);
-      worker.postMessage(bytes,[bytes]);
-    });
+    const parts=await extractOfficeParts(bytes,deadline,signal,'word');
     check();
     const parse=(name,ns,root)=>{
       const source=parts?.[name];
@@ -51,6 +44,5 @@ export async function extractWordText(bytes,deadline,signal) {
       for(let i=node.children.length-1;i>=0;i--)stack.push([node.children[i],false]);
     }
     check();if(!text.trim())throw fail('empty');return {text};
-  } catch(error) {throw error?.wordInputCode?error:fail('format');}
-  finally {clearTimeout(timer);signal.removeEventListener('abort',abort);worker?.terminate();}
+  } catch(error) {throw error?.wordInputCode?error:fail(error?.officeInputCode||'format');}
 }
