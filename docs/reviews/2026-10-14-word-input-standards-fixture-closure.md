@@ -1,0 +1,9 @@
+Standards fixture closure at `1bbd9cd2621c82538dd3810202d60fe44db75077`, tree `3bb9b35bfdc50b32b08140e4e35f6c1c23647b9c`: **0 findings**.
+
+The only fresh `e0c2a1b...1bbd9cd2` path is `tests/word_task_input.cjs`. Descriptor fixtures now use deterministic genuine raw-DEFLATE stored blocks under ZIP compression method 8. This removes dependence on host zlib output while retaining real data descriptors, CRC checks, native decompression, existing assertions, and non-descriptor dynamic-deflate probes. Production parser/capture code, deadlines and size limits are unchanged. The earlier source P2 remains closed; its initial and final reports remain immutable.
+
+My isolated fixture checks passed at raw sizes 0, 1, 65535, 65536, 131070, and 131071, covering empty input and one/multiple-block boundaries. Node native inflate and Python standard-library ZipFile recovered exact bytes; an independent Python ZIP reconstruction matched every Node package. The two actual receipt source packages also matched byte-for-byte: descriptor DOCX 1105 bytes/SHA `b5561d2791db0ce1ff5ab78ec90b217190818caa68385cb65f7ea13fd541bd21`, exact-size DOCX 1048576 bytes/SHA `5db89e0f992bfb3cce4a81423e552f259b5542d38e9eec6c24d0335e4c97283e`.
+
+All 18 overall changed blobs were bound at this commit; all 116 compiler input bytes equal the prior source, manifest `a98adca9992db540be32a9abf0f7f8b288f802648044ee8f63ff3b75ab3bcf19`, and frozen binary `5095f54d187ca44b8f493cfc9880b38152e5c08627ce392caf968446525ef932` is unchanged. No new actionable Fowler heuristic arose; repository standards override these judgment calls and tooling-enforced rules were excluded.
+
+These were own isolated encoding/helper checks, exit 0, without product/browser execution, build, paid call, or CI action. Parent three-mode runtime logs are separately attributed. Earlier source, delivery, publication, official, and cumulative reviews are inherited only. The external audit-driver finding is recorded separately.

@@ -382,6 +382,8 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         .route("/ui/app.js", get(crate::ui::javascript))
         .route("/ui/turn-stream.js", get(crate::ui::turn_stream))
         .route("/ui/pdf-input.js", get(crate::ui::pdf_input))
+        .route("/ui/word-input.js", get(crate::ui::word_input))
+        .route("/ui/word-worker.js", get(crate::ui::word_worker))
         .route("/ui/pdfjs/pdf.mjs", get(crate::ui::pdf_library))
         .route("/ui/pdfjs/pdf.worker.mjs", get(crate::ui::pdf_worker))
         .route("/ui/pdfjs/LICENSE", get(crate::ui::pdf_license))

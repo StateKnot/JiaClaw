@@ -1,3 +1,4 @@
+const {wordInputTask}=require('./word_task_input.cjs');
 const {textInputTask}=require('./text_task_input.cjs');
 const {pdfInputTask}=require('./pdf_task_input.cjs');
 const {downloadExact, rejectDownloadChanges}=require('./turn_result_download.cjs');
@@ -17,6 +18,10 @@ async function until(fn,label){const deadline=Date.now()+15000;while(Date.now()<
  const finish=async()=>{await page.waitForFunction(()=>!document.getElementById('turn-finish').disabled);await page.locator('#turn-finish').click();};
  const releaseAndCheck=async(caseName,id)=>{await ctl('release',caseName);await until(async()=>{const s=await ctl('status',caseName);const r=await fetch(base+'/api/turns/'+id,{headers:{Authorization:'Bearer '+token}});const value=await r.json();return s.rows.some(r=>r.id===id&&r.state!=='running')&&!value.active},'actual terminal');await page.locator('#turn-check').click();await page.waitForFunction(()=>!document.getElementById('turn-abandon').disabled);};
  try {
+  if(process.env.JIACLAW_TEST_WORD_INPUT_ONLY==='1'){
+  await wordInputTask(browser,{base,token,mode:"standalone",tool:"file_write",inspect:async prompt=>{const v=await ctl("status",prompt);return {...v,posts:v.posts.filter(p=>p.case===prompt)};},reply:()=>"最终🦀回复"});
+  return;
+  }
   if(process.env.JIACLAW_TEST_PDF_INPUT_ONLY==='1'){
   await pdfInputTask(browser,{base,token,mode:"standalone",tool:"file_write",inspect:async prompt=>{const v=await ctl("status",prompt);return {...v,posts:v.posts.filter(p=>p.case===prompt)};},reply:()=>"最终🦀回复"});
   return;

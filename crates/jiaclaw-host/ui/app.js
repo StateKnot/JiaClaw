@@ -9,7 +9,7 @@ let jobsMode = null, jobsHealth = null, pendingCreate = null, jobsIncludeDeleted
 let outboxEnabled = false, deliveries = [], delivery = null, outboxOffset = 0, outboxNext = false, deliveryFresh = false;
 let memoryReviewEnabled = false, memoryEditEnabled = false, memorySnapshot = null;
 let semanticReviewEnabled = false;
-let textFileReader = null, textImportEpoch = 0, pdfInputController = null;
+let textFileReader = null, textImportEpoch = 0, documentInputController = null;
 let fileDownloadController = null, fileDownloadEpoch = 0;
 class StaleIdentity extends Error {}
 class ApiError extends Error { constructor(message, code) { super(message); this.code = code; } }
@@ -55,6 +55,8 @@ function controls() {
   $('text-file-add').disabled = $('text-file').disabled || $('text-file').files.length !== 1;
   $('pdf-file').disabled = $('text-file').disabled;
   $('pdf-file-add').disabled = $('pdf-file').disabled || $('pdf-file').files.length !== 1;
+  $('word-file').disabled = $('text-file').disabled;
+  $('word-file-add').disabled = $('word-file').disabled || $('word-file').files.length !== 1;
   const filesEnabled = connected && tenantTurns() && turnCapabilities?.file_download_protocol === 1;
   $('file-download').hidden = !filesEnabled;
   $('file-download-path').disabled = $('file-download-reviewed').disabled = !filesEnabled || busy || turnControlBusy;
@@ -87,10 +89,11 @@ function clearIdentity() {
 }
 function clearTextImport() {
   textImportEpoch++;
-  pdfInputController?.abort(); pdfInputController = null;
+  documentInputController?.abort(); documentInputController = null;
   textFileReader?.abort(); textFileReader = null;
   $('text-file').value = ''; $('text-file-state').textContent = '';
   $('pdf-file').value = ''; $('pdf-file-state').textContent = '';
+  $('word-file').value = ''; $('word-file-state').textContent = '';
 }
 function validMaterialName(name) {
   return !/[\p{Cc}\p{Bidi_Control}/\\]/u.test(name) && new TextEncoder().encode(name).length <= 128;
@@ -138,26 +141,31 @@ $('text-file-add').addEventListener('click', () => {
     status('文本资料已加入可编辑草稿；尚未发送。');
   });
 });
+async function withDocumentMaterial(file, label, extension, owner, session, draft, epoch, consume) {
+  if (!extension.test(file.name) || !validMaterialName(file.name)) throw new Error(`请选择名称不超过 128 UTF-8 字节的 ${label} 文件。`);
+  if (!file.size || file.size > 1048576) throw new Error(`${label} 须为 1–1048576 字节；不会截取。`);
+  if (!window.isSecureContext || !crypto.subtle) throw new Error(`${label} 导入需要安全连接与 WebCrypto；原草稿已保留。`);
+  const deadline = performance.now() + 5000, controller = new AbortController(); documentInputController = controller;
+  const current = () => {
+    if (controller.signal.aborted || owner !== identity || session !== selected || epoch !== textImportEpoch || draft !== $('message').value) throw new StaleIdentity();
+    if (performance.now() >= deadline) throw new Error(`${label} 读取与解析超过 5 秒；原草稿已保留。`);
+  };
+  try {
+    const bytes = await readMaterialFile(file, deadline, 1048576, label); current();
+    const digest = await crypto.subtle.digest('SHA-256', bytes); current();
+    const sha = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    await consume({bytes, sha, deadline, signal:controller.signal, current});
+  } finally { controller.abort(); if (documentInputController === controller) documentInputController = null; }
+}
 $('pdf-file').addEventListener('change', () => { textImportEpoch++; $('pdf-file-state').textContent = ''; controls(); });
 $('pdf-file-add').addEventListener('click', () => {
   if ($('pdf-file').disabled || busy || $('pdf-file').files.length !== 1) return;
   const file = $('pdf-file').files[0], owner = identity, session = selected, draft = $('message').value, epoch = textImportEpoch;
   task(async () => {
-    if (!/\.pdf$/i.test(file.name) || !validMaterialName(file.name)) throw new Error('请选择名称不超过 128 UTF-8 字节的 .pdf 文件。');
-    if (!file.size || file.size > 1048576) throw new Error('PDF 须为 1–1048576 字节；不会截取。');
-    if (!window.isSecureContext || !crypto.subtle) throw new Error('PDF 导入需要安全连接与 WebCrypto；原草稿已保留。');
-    const deadline = performance.now() + 5000, controller = new AbortController(); pdfInputController = controller;
-    const current = () => {
-      if (controller.signal.aborted || owner !== identity || session !== selected || epoch !== textImportEpoch || draft !== $('message').value) throw new StaleIdentity();
-      if (performance.now() >= deadline) throw new Error('PDF 读取与解析超过 5 秒；原草稿已保留。');
-    };
-    try {
-      const bytes = await readMaterialFile(file, deadline, 1048576, 'PDF'); current();
-      const digest = await crypto.subtle.digest('SHA-256', bytes); current();
-      const sha = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    await withDocumentMaterial(file, 'PDF', /\.pdf$/i, owner, session, draft, epoch, async ({bytes, sha, deadline, signal, current}) => {
       const module = await import('/ui/pdf-input.js'); current();
       let result;
-      try { result = await module.extractPdfText(bytes, deadline, controller.signal); }
+      try { result = await module.extractPdfText(bytes, deadline, signal); }
       catch (error) {
         current();
         const messages = {password:'加密 PDF 不支持导入。',pages:'PDF 须为 1–32 页且不是 XFA 文档。',empty:'PDF 有一页没有可提取文字；不做 OCR，整份未加入。',budget:'PDF 完整提取文字含页标记超过 16 KiB；不会截取。',text:'PDF 文字含不支持的控制字符或非法 Unicode。',timeout:'PDF 读取与解析超过 5 秒。',unsupported:'当前浏览器或 PDF 字体不支持完整提取。'};
@@ -169,7 +177,30 @@ $('pdf-file-add').addEventListener('click', () => {
       current(); $('message').value = next; $('pdf-file').value = '';
       $('pdf-file-state').textContent = `已加入 PDF 可提取文字：${file.name}（${result.pages} 页，原文件 ${file.size} 字节）。请核对原 PDF 与草稿后再发送。`;
       status('PDF 可提取文字已加入可编辑草稿；尚未发送。');
-    } finally { controller.abort(); if (pdfInputController === controller) pdfInputController = null; }
+    });
+  });
+});
+$('word-file').addEventListener('change', () => { textImportEpoch++; $('word-file-state').textContent = ''; controls(); });
+$('word-file-add').addEventListener('click', () => {
+  if ($('word-file').disabled || busy || $('word-file').files.length !== 1) return;
+  const file = $('word-file').files[0], owner = identity, session = selected, draft = $('message').value, epoch = textImportEpoch;
+  task(async () => {
+    await withDocumentMaterial(file, 'Word .docx', /\.docx$/i, owner, session, draft, epoch, async ({bytes, sha, deadline, signal, current}) => {
+      const module = await import('/ui/word-input.js'); current();
+      let result;
+      try { result = await module.extractWordText(bytes, deadline, signal); }
+      catch(error) {
+        current();
+        const messages={unsupported:'当前浏览器或文档结构不支持导入（图片、修订、嵌入内容不支持）。',empty:'Word 正文没有可提取文字。',budget:'Word 完整正文超过 16 KiB；不会截取。',text:'Word 正文含不支持的控制字符或非法 Unicode。',timeout:'Word 读取与解析超过 5 秒。'};
+        throw new Error((messages[error?.wordInputCode] || '无法完整解析受支持的 Word .docx 文件。')+'原草稿已保留。');
+      }
+      current();
+      const next = draft + (draft ? '\n\n' : '') + `[用户提供的 Word 正文文字：${file.name}；原文件 SHA-256 ${sha}]\n${result.text}[资料结束]`;
+      if (!next.isWellFormed() || new TextEncoder().encode(next).length > 32768) throw new Error('加入 Word 后完整消息超过 32 KiB UTF-8 上限；不会截取，原草稿已保留。');
+      current(); $('message').value = next; $('word-file').value = '';
+      $('word-file-state').textContent = `已加入 Word 正文文字：${file.name}（原文件 ${file.size} 字节）。请核对原文和草稿后再发送。`;
+      status('Word 正文文字已加入可编辑草稿；尚未发送。');
+    });
   });
 });
 function clearFileDownload() {
