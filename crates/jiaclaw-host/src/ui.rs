@@ -60,6 +60,12 @@ pub(super) async fn spreadsheet_input() -> Response {
         include_str!("../ui/spreadsheet-input.js"),
     )
 }
+pub(super) async fn presentation_input() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../ui/presentation-input.js"),
+    )
+}
 pub(super) async fn word_worker() -> Response {
     worker_asset(include_str!("../ui/word-worker.js"))
 }

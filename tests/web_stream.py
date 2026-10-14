@@ -75,7 +75,7 @@ try:
         result = subprocess.run(['node', 'tests/turn_stream_browser.cjs', str(config)], timeout=240)
         assert result.returncode == 0, result.returncode
         assert not fixture.faults, fixture.faults
-        print('SPREADSHEET INPUT ORIGINAL FIXTURE PASS' if os.environ.get('JIACLAW_TEST_SPREADSHEET_INPUT_ONLY') == '1' else 'WORD INPUT ORIGINAL FIXTURE PASS' if os.environ.get('JIACLAW_TEST_WORD_INPUT_ONLY') == '1' else ('PDF INPUT ORIGINAL NATIVE FIXTURE PASS' if os.environ.get('JIACLAW_TEST_PDF_INPUT_ONLY') == '1' else ('TEXT INPUT ORIGINAL NATIVE FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else 'ALL WEB STREAM BROWSER GROUPS PASS')), flush=True)
+        print('PRESENTATION INPUT ORIGINAL FIXTURE PASS' if os.environ.get('JIACLAW_TEST_PRESENTATION_INPUT_ONLY') == '1' else 'SPREADSHEET INPUT ORIGINAL FIXTURE PASS' if os.environ.get('JIACLAW_TEST_SPREADSHEET_INPUT_ONLY') == '1' else 'WORD INPUT ORIGINAL FIXTURE PASS' if os.environ.get('JIACLAW_TEST_WORD_INPUT_ONLY') == '1' else ('PDF INPUT ORIGINAL NATIVE FIXTURE PASS' if os.environ.get('JIACLAW_TEST_PDF_INPUT_ONLY') == '1' else ('TEXT INPUT ORIGINAL NATIVE FIXTURE PASS' if os.environ.get('JIACLAW_TEST_TEXT_INPUT_ONLY') == '1' else 'ALL WEB STREAM BROWSER GROUPS PASS')), flush=True)
 finally:
     for gate in fixture.gates.values():
         gate['release'].set()

@@ -1,0 +1,9 @@
+# Standards — final fixed source
+
+**0 findings.** Reviewed the full 19-path `a8b52a750f6aded5d6a5a73ea9a2925e99e06cf4...efedc75f7fec06d44fe241a0a4a129b5aa26770c` source diff and the `4ffc485...efedc75` repair against the user’s production/ownership/cache requirements, architecture, established Office/PDF contracts, and the documented PPTX boundary. Fowler smell heuristics produced no separate actionable concern.
+
+Both initial findings are closed without rewriting the initial report. The same three unsupported nonempty XML fixtures now reject and preserve the original editable draft in an actual frozen-binary HTTP/FileReader/Worker UI. The same independently generated python-pptx file now imports all expected text; an additional actual producer file with a nested group preserves both text boxes in XML order. Printing metadata remains outside decoded/authenticated contents, as the revised documentation explicitly states.
+
+Own verification: same 29 real Chromium/native Worker probes all matched expectations; a separate expanded 40-case run adds nested-group interoperability and ten related Text/CDATA, namespace, attribute, duplicate-property and ordering countercases. Every parser run used one actual Worker and terminated it once. Five actual standalone UI cases passed their explicit expectations with model POST count zero, no fixture faults, and no page errors. The four served source modules matched fixed efedc75 byte-for-byte; frozen reviewed binary SHA is `9ed0aed07b1b334e48cbf3d1b17728034e38cdd36f9600180822ae372f2fbdf0`.
+
+These targeted own helper probes do not claim the unchanged complete product suite, three-mode root execution, official CI qualification, or business quality. Shared pre-existing build cache was assessed and retained; no compilation, paid request, old auditor execution, production edit, or target cleanup. Source/parent qualification and cumulative `4b2357fc` remain historical only.
