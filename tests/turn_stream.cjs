@@ -116,3 +116,14 @@ const globResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResul
 assert.doesNotThrow(()=>gatewaySnapshot(globResult,initial,new Set(['glob'])));
 assert.throws(()=>gatewaySnapshot(globResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 14: exact independent filename grant and original budgets; unknown descriptor fields and withdrawn authority refuse');
+
+const grepPermission={protocol:1,roots:['tenant-documents/a'],max_pattern_bytes:512,max_glob_bytes:128,max_file_bytes:262144,max_read_bytes:16777216,max_matches:200,max_snippet_chars:200,max_depth:32,max_scanned:2000,scan_budget_ms:2000,max_result_bytes:65536,policy_sha256:'f'.repeat(64)};
+const grepGateway={...streamGateway,enabled_tools:['datetime_now','json_query','grep'],grep:grepPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(grepGateway));
+for(const change of [{protocol:2},{max_pattern_bytes:513},{max_glob_bytes:129},{max_file_bytes:262145},{max_read_bytes:16777217},{max_matches:201},{max_snippet_chars:201},{max_depth:33},{max_scanned:2001},{scan_budget_ms:2001},{max_result_bytes:65537},{roots:[]},{roots:['tenant-documents/a','tenant-documents/a/b']},{roots:['tenant-documents/a','tenant-documents/a']},{roots:['tenant-documents/a/']},{roots:['tenant-documents/.a']},{roots:['tenant-documents/a\u0085']},{roots:['tenant-documents/a\\b']},{roots:['tenant-documents/\ud800']},{extra:true}])assert.throws(()=>gatewayCapabilities({...grepGateway,grep:{...grepPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','grep']}));
+assert.throws(()=>gatewayCapabilities({...grepGateway,enabled_tools:['datetime_now','json_query']}));
+const grepResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['grep']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(grepResult,initial,new Set(['grep'])));
+assert.throws(()=>gatewaySnapshot(grepResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 15: exact independent content-search grant and original budgets; unknown descriptor fields and withdrawn authority refuse');

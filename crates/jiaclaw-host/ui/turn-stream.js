@@ -44,6 +44,7 @@
     if (Object.hasOwn(c || {}, 'memory_search')) fields.push('memory_search');
     if (Object.hasOwn(c || {}, 'tree')) fields.push('tree');
     if (Object.hasOwn(c || {}, 'glob')) fields.push('glob');
+    if (Object.hasOwn(c || {}, 'grep')) fields.push('grep');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
@@ -120,6 +121,15 @@
       canonicalDocumentPaths(f.roots);
       require(f.roots.every((r,i) => f.roots.slice(0,i).every(p => !r.startsWith(p+'/'))));
       allowed.push('glob');
+    }
+    if (c.grep !== undefined) {
+      const f = c.grep, keys = ['protocol','roots','max_pattern_bytes','max_glob_bytes','max_file_bytes','max_read_bytes','max_matches','max_snippet_chars','max_depth','max_scanned','scan_budget_ms','max_result_bytes','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.max_pattern_bytes === 512 && f.max_glob_bytes === 128 && f.max_file_bytes === 262144 && f.max_read_bytes === 16777216 && f.max_matches === 200 && f.max_snippet_chars === 200 && f.max_depth === 32 && f.max_scanned === 2000 && f.scan_budget_ms === 2000 && f.max_result_bytes === 65536);
+      require(typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.roots) && f.roots.length >= 1 && f.roots.length <= 8);
+      canonicalDocumentPaths(f.roots);
+      require(f.roots.every((r,i) => f.roots.slice(0,i).every(p => !r.startsWith(p+'/'))));
+      allowed.push('grep');
     }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
@@ -199,7 +209,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep'].includes(t)));
     return value;
   }
   class Parser {

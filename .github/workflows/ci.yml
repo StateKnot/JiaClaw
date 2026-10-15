@@ -79,6 +79,7 @@ jobs:
       - run: python3 tests/tenant_memory_search.py target/debug/jiaclaw
       - run: python3 tests/tenant_tree.py target/debug/jiaclaw
       - run: python3 tests/tenant_glob.py target/debug/jiaclaw
+      - run: python3 tests/tenant_grep.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_turns.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_stream.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
@@ -129,6 +130,9 @@ jobs:
       - name: Tenant filename discovery acceptance
         if: runner.os == 'Linux'
         run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_glob.py target/debug/jiaclaw --browser
+      - name: Tenant document content search acceptance
+        if: runner.os == 'Linux'
+        run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_grep.py target/debug/jiaclaw --browser
       - name: Text materials acceptance
         if: runner.os == 'Linux'
         run: |

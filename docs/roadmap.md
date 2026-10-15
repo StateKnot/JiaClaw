@@ -1,4 +1,8 @@
-# 当前增量：个人 Key 按文件名找资料（2026-10-15）
+# 当前增量：个人 Key 按正文找资料（2026-10-15）
+
+双端default-off独立grep目录根权限，用户显式选择后消费原literal matcher/目录句柄walker/八槽IO，返回匹配行号与摘录。512rawpattern/128rawglob、256KiB每源/16MiB总读/2000扫描/32层/2秒/64KiB预算保持；包括隐藏正文，跳过binary和超大文件，truncated=false也不保证搜全。[合同](tenant-grep.md)与[本批验收](tenant-grep-validation.md)。PR149及更早完整资格只历史，本批自己的新fixedhead full184仍须独立完成，不借本机或父head。全部个人Agent里程碑仍未充分。
+
+# 历史交付快照：个人 Key 按文件名找资料（2026-10-15）
 
 双端默认关闭的独立 glob 目录根权限，使用户可以明确选择原 `glob` 在批准子树内找普通文件名，含隐藏名和二进制文件名，不读取正文。复用原 scanner/matcher/八槽 I/O，完整批准根、raw256字节模式、500返回/2000扫描/32层/2秒/64KiB预算与原hold不变。[使用合同](tenant-glob.md)、[本批验收与独立两轴](tenant-glob-validation.md)。PR148及更早已完整资格只历史；新批需要自己的 fixed head 官方182资格，不能借本机或父head。下方旧待核对表述保留为交付阶段快照，不触发已完成head重新审计。个人Agent全部里程碑仍未充分。
 

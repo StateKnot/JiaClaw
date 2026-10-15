@@ -840,6 +840,7 @@ mod tests {
             memory_search: None,
             tree: None,
             glob: None,
+            grep: None,
         };
         let state = Arc::new(State {
             registry,
