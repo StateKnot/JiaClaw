@@ -149,3 +149,14 @@ const copyResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResul
 assert.doesNotThrow(()=>gatewaySnapshot(copyResult,initial,new Set(['copy'])));
 assert.throws(()=>gatewaySnapshot(copyResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 17: exact create-only copy pairs and original binary budget; aliases, recombination metadata and withdrawn authority refuse');
+
+const movePermission={protocol:1,pairs:[{from:'tenant-documents/a',to:'tenant-documents/b'},{from:'tenant-documents/a',to:'tenant-documents/c'}],mode:'file_only_no_replace',policy_sha256:'f'.repeat(64)};
+const moveGateway={...streamGateway,enabled_tools:['datetime_now','json_query','move'],move:movePermission};
+assert.doesNotThrow(()=>gatewayCapabilities(moveGateway));
+for(const change of [{protocol:2},{mode:'overwrite'},{max_bytes:67108864},{pairs:[]},{pairs:Array(9).fill(movePermission.pairs[0])},{pairs:[movePermission.pairs[1],movePermission.pairs[0]]},{pairs:[movePermission.pairs[0],movePermission.pairs[0]]},{pairs:[{from:'private',to:'tenant-documents/b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/a'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/b',overwrite:false}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/.b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\\b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\ufeffb'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/b\u0085'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\ud800'}]},{extra:true}])assert.throws(()=>gatewayCapabilities({...moveGateway,move:{...movePermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','move']}));
+assert.throws(()=>gatewayCapabilities({...moveGateway,enabled_tools:['datetime_now','json_query']}));
+const moveResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['move']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(moveResult,initial,new Set(['move'])));
+assert.throws(()=>gatewaySnapshot(moveResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 18: exact file-only no-replace move pairs; aliases, recombination metadata and withdrawn authority refuse');

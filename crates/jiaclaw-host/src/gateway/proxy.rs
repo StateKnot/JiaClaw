@@ -843,6 +843,7 @@ mod tests {
             grep: None,
             web_fetch: None,
             copy: None,
+            move_file: None,
         };
         let state = Arc::new(State {
             registry,

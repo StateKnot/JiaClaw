@@ -34,6 +34,21 @@
       previous = encoded;
     }
   }
+  function canonicalDocumentPairs(pairs) {
+      require(Array.isArray(pairs) && pairs.length >= 1 && pairs.length <= 8);
+      const before = (a,b) => {
+        const left = encoder.encode(a), right = encoder.encode(b);
+        let i = 0; while (i < Math.min(left.length,right.length) && left[i] === right[i]) i++;
+        return i === left.length ? i < right.length : i < right.length && left[i] < right[i];
+      };
+      let previous = null;
+      for (const pair of pairs) {
+        require(object(pair) && Object.keys(pair).length === 2 && ['from','to'].every(k => Object.hasOwn(pair,k)));
+        canonicalDocumentPaths([pair.from]); canonicalDocumentPaths([pair.to]);
+        require(pair.from !== pair.to && (!previous || before(previous.from,pair.from) || previous.from === pair.from && before(previous.to,pair.to)));
+        previous = pair;
+      }
+  }
   function gatewayCapabilities(c) {
     const fields = ['protocol','gateway_protocol','enabled','streaming','listing','scope','session_prefix','max_identities','max_page','enabled_tools'];
     if (c?.gateway_protocol === 2) fields.push('stream_suffix','turn_budget_secs','max_stream_wire_bytes','max_preview_round_bytes','max_preview_total_bytes');
@@ -47,6 +62,7 @@
     if (Object.hasOwn(c || {}, 'grep')) fields.push('grep');
     if (Object.hasOwn(c || {}, 'web_fetch')) fields.push('web_fetch');
     if (Object.hasOwn(c || {}, 'copy')) fields.push('copy');
+    if (Object.hasOwn(c || {}, 'move')) fields.push('move');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
@@ -150,20 +166,15 @@
       const f = c.copy, keys = ['protocol','pairs','mode','max_bytes','policy_sha256'];
       require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
       require(f.protocol === 1 && f.mode === 'create_only' && f.max_bytes === 67108864 && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256));
-      require(Array.isArray(f.pairs) && f.pairs.length >= 1 && f.pairs.length <= 8);
-      const before = (a,b) => {
-        const left = encoder.encode(a), right = encoder.encode(b);
-        let i = 0; while (i < Math.min(left.length,right.length) && left[i] === right[i]) i++;
-        return i === left.length ? i < right.length : i < right.length && left[i] < right[i];
-      };
-      let previous = null;
-      for (const pair of f.pairs) {
-        require(object(pair) && Object.keys(pair).length === 2 && ['from','to'].every(k => Object.hasOwn(pair,k)));
-        canonicalDocumentPaths([pair.from]); canonicalDocumentPaths([pair.to]);
-        require(pair.from !== pair.to && (!previous || before(previous.from,pair.from) || previous.from === pair.from && before(previous.to,pair.to)));
-        previous = pair;
-      }
+      canonicalDocumentPairs(f.pairs);
       allowed.push('copy');
+    }
+    if (c.move !== undefined) {
+      const f = c.move, keys = ['protocol','pairs','mode','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.mode === 'file_only_no_replace' && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256));
+      canonicalDocumentPairs(f.pairs);
+      allowed.push('move');
     }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
@@ -243,7 +254,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep','web_fetch','copy'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep','web_fetch','copy','move'].includes(t)));
     return value;
   }
   class Parser {

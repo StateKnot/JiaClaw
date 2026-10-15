@@ -8,6 +8,8 @@ JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记�
 
 个人 Key 也可显式选择原 `copy` [制作完整文件副本](docs/tenant-copy.md)：管理员双端批准完整源→目标组合，含二进制、最多64 MiB，目标已存在时拒绝覆盖；不向模型读取源正文。[本批验收范围](docs/tenant-copy-validation.md)。
 
+个人 Key 可显式选择原 `move` [移动或重命名文件](docs/tenant-move.md)：管理员双端批准完整源→目标组合，只限单链接普通文件、同卷原子不覆盖；成功移除源名称，不读取正文，失败需先核对效果。[本批验收范围](docs/tenant-move-validation.md)。
+
 ## 从源码安装
 
 需要 Rust 1.88.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。
