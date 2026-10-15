@@ -49,6 +49,7 @@ struct Backend {
     skill_read: Option<jiaclaw::TenantSkillReadCapability>,
     memory_search: Option<jiaclaw::TenantMemorySearchCapability>,
     tree: Option<jiaclaw::TenantTreeCapability>,
+    glob: Option<jiaclaw::TenantGlobCapability>,
 }
 struct State {
     registry: Registry,
@@ -317,6 +318,12 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .map(jiaclaw::TenantTreeCapability::capture)
                     .transpose()?
                     .as_ref(),
+                backend
+                    .tenant_glob
+                    .as_ref()
+                    .map(jiaclaw::TenantGlobCapability::capture)
+                    .transpose()?
+                    .as_ref(),
                 backend.tenant_file_download,
             )
             .await?;
@@ -338,6 +345,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .tenant_tree
                     .as_ref()
                     .map(jiaclaw::TenantTreeCapability::capture)
+                    .transpose()?,
+                glob: backend
+                    .tenant_glob
+                    .as_ref()
+                    .map(jiaclaw::TenantGlobCapability::capture)
                     .transpose()?,
                 memory_search: backend
                     .tenant_memory_search
@@ -386,6 +398,10 @@ pub(super) async fn serve(config: Config) -> Result<()> {
         feishu,
         wecom,
     });
+    // TCP reachability must not precede ownership of Unix stop signals. A
+    // signal arriving during the remaining startup work stays queued until
+    // the shutdown future is polled below.
+    let shutdown = shutdown()?;
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .context("bind gateway")?;
@@ -461,7 +477,7 @@ pub(super) async fn serve(config: Config) -> Result<()> {
     tokio::pin!(server);
     let finished = tokio::select! {
         result = &mut server => Some(result),
-        () = shutdown() => None,
+        () = shutdown => None,
     };
     // One deadline starts at the signal, before any mutex or transport drain.
     // A slow downstream socket cannot postpone or reset a worker's grace.
@@ -525,6 +541,49 @@ pub(super) async fn serve(config: Config) -> Result<()> {
 #[cfg(test)]
 mod shutdown_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn signals_are_registered_before_shutdown_future_is_polled() {
+        const CHILD_SIGNAL: &str = "JIACLAW_TEST_GATEWAY_STARTUP_SIGNAL";
+        if let Ok(signal) = std::env::var(CHILD_SIGNAL) {
+            assert!(matches!(signal.as_str(), "TERM" | "INT"));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let shutdown = shutdown().unwrap();
+                    // Send the real OS signal before the returned future has
+                    // ever been polled. Keep it inside this isolated test child.
+                    let status = std::process::Command::new("kill")
+                        .args([format!("-{signal}"), std::process::id().to_string()])
+                        .status()
+                        .unwrap();
+                    assert!(status.success());
+                    tokio::time::timeout(Duration::from_secs(5), shutdown)
+                        .await
+                        .unwrap();
+                    println!("gateway startup signal {signal} observed before first poll");
+                });
+            return;
+        }
+        for signal in ["TERM", "INT"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "gateway::shutdown_tests::signals_are_registered_before_shutdown_future_is_polled",
+                    "--nocapture",
+                ])
+                .env(CHILD_SIGNAL, signal)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8(output.stdout).unwrap().contains(&format!(
+                "gateway startup signal {signal} observed before first poll"
+            )));
+        }
+    }
 
     #[test]
     fn closing_admission_does_not_wait_for_entered_database_work_or_admit_a_later_write() {
@@ -627,17 +686,25 @@ async fn reject_after_close(
     }
     next.run(request).await
 }
-async fn shutdown() {
+fn shutdown() -> Result<impl std::future::Future<Output = ()>> {
     #[cfg(unix)]
     {
-        if let Ok(mut terminate) =
+        let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
-            return;
-        }
+                .context("register gateway SIGTERM before listening")?;
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .context("register gateway SIGINT before listening")?;
+        Ok(async move {
+            tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+        })
     }
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(not(unix))]
+    {
+        Ok(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+    }
 }
 async fn index() -> axum::response::Response {
     use axum::response::IntoResponse;

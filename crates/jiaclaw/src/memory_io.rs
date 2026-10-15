@@ -450,8 +450,9 @@ pub(crate) fn initialize_workspace_file(
 // General file tools share the directory capabilities and writer lock with
 // memory files, but retain their own byte limits and exact append semantics.
 const FILE_LIMIT: usize = crate::files::READ_FILE_MAX_BYTES;
-const DIRECTORY_SCAN_LIMIT: usize = 2000;
-const DIRECTORY_DEPTH_LIMIT: usize = 32;
+pub(crate) const DIRECTORY_SCAN_LIMIT: usize = 2000;
+pub(crate) const DIRECTORY_DEPTH_LIMIT: usize = 32;
+pub(crate) const DIRECTORY_SCAN_BUDGET_MS: usize = 2000;
 const DIRECTORY_JSON_BUDGET: usize = 64 * 1024;
 
 fn read_bytes(file: File, limit: usize) -> Result<Vec<u8>, JiaClawError> {
@@ -1458,6 +1459,17 @@ fn walk_search(
 pub(crate) fn search_files(
     workspace: &Path,
     raw: &str,
+    visit: impl FnMut(SearchFile<'_>, &mut SearchBudget) -> Result<bool, JiaClawError>,
+) -> Result<bool, JiaClawError> {
+    search_files_root(workspace, raw, false, visit)
+}
+
+// The restricted glob requires an actual directory, opened by this same walker.
+// Checking the path separately would introduce another observation and a race.
+pub(crate) fn search_files_root(
+    workspace: &Path,
+    raw: &str,
+    directory_only: bool,
     mut visit: impl FnMut(SearchFile<'_>, &mut SearchBudget) -> Result<bool, JiaClawError>,
 ) -> Result<bool, JiaClawError> {
     if raw.len() > MAX_PATH_BYTES {
@@ -1473,7 +1485,8 @@ pub(crate) fn search_files(
         scanned: 0,
         read_bytes: 0,
         truncated: false,
-        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        deadline: std::time::Instant::now()
+            + std::time::Duration::from_millis(DIRECTORY_SCAN_BUDGET_MS as u64),
     };
     let stopped = if path == Path::new(".") {
         walk_search(&root, "", 0, &mut budget, &mut visit)?
@@ -1500,6 +1513,9 @@ pub(crate) fn search_files(
                 descend(&dir, Path::new(name), false)?.ok_or_else(|| failure("目录不存在"))?;
             walk_search(&child, &rel, 0, &mut budget, &mut visit)?
         } else {
+            if directory_only {
+                return Err(failure("授权搜索根必须是非链接目录"));
+            }
             regular(&metadata)?;
             visit(
                 SearchFile {

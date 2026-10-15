@@ -84,6 +84,8 @@ docker compose up --build -d
 - 多用户聊天入口：独立容器/卷/私有网络、哈希 Key 轮换撤销、管理员签发只读 Key、有界代理与未知写入核对；[部署与验收边界](docs/gateway.md)。默认关闭的[独立用户 Telegram 私聊](docs/tenant-telegram.md)、[Slack](docs/tenant-slack.md)、[Discord Bot DM 命令](docs/tenant-discord.md)分别通过 PR #80/#83/#84 最终跨平台 CI；本批[独立用户飞书](docs/tenant-feishu.md)限定专用企业自建 App、固定人的 p2p 文本和停机核对，验收进行中。只读 Key 已通过 PR #81 最终 CI；可信管理员可[按用户查询保留审计](docs/gateway.md#按用户查询管理审计)，当前批次验证状态见[验证记录](docs/validation.md)。
 - Bearer 鉴权、请求体上限、限流、指标、结构化日志与优雅退出。渠道未配置鉴权时关闭。
 
+个人 Key 可在管理员双端明确授权后，选择原 `glob` [按文件名找资料](docs/tenant-glob.md)；正文读取、目录树与写入各自授权。该功能默认关闭，实际验收范围见[本批记录](docs/tenant-glob-validation.md)。
+
 显式 [Brokerrouter 语义记忆](docs/semantic-memory.md)、[模型调用收据](docs/model-calls.md)和受限独立用户定时任务已接线。MCP stdio、外部写工具的 durable admission、真正逐 token 流式、子 Agent、其他多用户后台/渠道身份绑定、WhatsApp 与多模态仍待完成；真实模型检索质量、供应商和渠道认证另行验收。详细验收要求见[里程碑](docs/roadmap.md)，实际配置字段见[配置说明](docs/configuration.md)，API 与执行边界见[架构说明](docs/architecture.md)。
 
 ## 验证

@@ -55,8 +55,10 @@ mod session;
 pub use semantic::SemanticMemory;
 mod skills;
 mod tenant_files;
+mod tenant_glob;
 mod tenant_memory;
 mod tenant_tree;
+pub use tenant_glob::TenantGlobCapability;
 pub use tenant_tree::TenantTreeCapability;
 mod tenant_skills;
 mod tools;
@@ -189,8 +191,25 @@ fn register_optional_workspace_file_tools(
     if config.tools.grep.enabled {
         tools.register(Box::new(WorkspaceGrepTool::new(workspace)));
     }
+    if config.http.tenant_glob.is_some() && !config.tools.glob.enabled {
+        return Err(JiaClawError::Configuration(
+            "tenant glob requires glob enabled".into(),
+        ));
+    }
     if config.tools.glob.enabled {
-        tools.register(Box::new(WorkspaceGlobTool::new(workspace)));
+        let tool = if let Some(policy) = &config.http.tenant_glob {
+            if !config.http.tracked_turns
+                || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+            {
+                return Err(JiaClawError::Configuration(
+                    "tenant glob requires tracked tenant mode".into(),
+                ));
+            }
+            WorkspaceGlobTool::restricted(workspace, policy)?
+        } else {
+            WorkspaceGlobTool::new(workspace)
+        };
+        tools.register(Box::new(tool));
     }
     if config.tools.mkdir.enabled {
         tools.register(Box::new(WorkspaceMkdirTool::new(workspace)));

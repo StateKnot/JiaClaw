@@ -1582,6 +1582,9 @@ impl TenantTreePolicy {
     }
 }
 
+/// Glob uses the same canonical directory-grant rules as tree; permission remains independent.
+pub type TenantGlobPolicy = TenantTreePolicy;
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -1603,6 +1606,9 @@ pub struct HttpConfig {
     /// Explicit directory metadata permission; omission keeps tree unavailable.
     #[serde(default)]
     pub tenant_tree: Option<TenantTreePolicy>,
+    /// Explicit filename discovery permission; default off, independent of tree and reads.
+    #[serde(default)]
+    pub tenant_glob: Option<TenantGlobPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1779,6 +1785,7 @@ impl Default for HttpConfig {
             tenant_skill_read: None,
             tenant_memory_search: None,
             tenant_tree: None,
+            tenant_glob: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

@@ -105,3 +105,14 @@ assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime
 assert.doesNotThrow(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial,new Set(['file_write'])));
 assert.doesNotThrow(()=>gatewaySnapshot({...ownResult,receipt:terminal},initial));
 console.log('PASS parser 13: complete separate tenant overwrite grant and canonical paths, no implicit dispatch permission, original and withdrawn write facts with captured authority');
+
+const globPermission={protocol:1,roots:['tenant-documents/a'],max_pattern_bytes:256,max_results:500,max_depth:32,max_scanned:2000,scan_budget_ms:2000,max_result_bytes:65536,policy_sha256:'f'.repeat(64)};
+const globGateway={...streamGateway,enabled_tools:['datetime_now','json_query','glob'],glob:globPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(globGateway));
+for(const change of [{protocol:2},{max_pattern_bytes:257},{max_results:501},{max_depth:33},{max_scanned:2001},{scan_budget_ms:2001},{max_result_bytes:65537},{roots:[]},{roots:['tenant-documents/a','tenant-documents/a/b']},{roots:['tenant-documents/a','tenant-documents/a']},{roots:['tenant-documents/a/']},{roots:['tenant-documents/.a']},{roots:['tenant-documents/a\u0085']},{roots:['tenant-documents/a\\b']},{roots:['tenant-documents/\ud800']},{extra:true}])assert.throws(()=>gatewayCapabilities({...globGateway,glob:{...globPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','glob']}));
+assert.throws(()=>gatewayCapabilities({...globGateway,enabled_tools:['datetime_now','json_query']}));
+const globResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['glob']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(globResult,initial,new Set(['glob'])));
+assert.throws(()=>gatewaySnapshot(globResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 14: exact independent filename grant and original budgets; unknown descriptor fields and withdrawn authority refuse');

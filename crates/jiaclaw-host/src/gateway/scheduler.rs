@@ -441,6 +441,7 @@ mod tests {
                     skill_read: None,
                     memory_search: None,
                     tree: None,
+                    glob: None,
                 },
             )]),
             client: reqwest::Client::builder()

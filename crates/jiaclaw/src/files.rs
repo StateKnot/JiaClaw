@@ -960,6 +960,14 @@ pub fn grep_workspace(
 /// 非法或链接路径、特殊目标、无效参数或目录访问失败时返回错误。
 /// 结果按路径排序；达到扫描或输出预算时返回 `truncated=true`。
 pub fn glob_workspace(workspace: &Path, args: &GlobArgs) -> Result<GlobOutput, JiaClawError> {
+    glob_workspace_root(workspace, args, false)
+}
+
+fn glob_workspace_root(
+    workspace: &Path,
+    args: &GlobArgs,
+    directory_only: bool,
+) -> Result<GlobOutput, JiaClawError> {
     if args.path.len() > crate::memory_io::MAX_PATH_BYTES
         || args.pattern.is_empty()
         || args.pattern.len() > GLOB_PATTERN_MAX_BYTES
@@ -977,21 +985,26 @@ pub fn glob_workspace(workspace: &Path, args: &GlobArgs) -> Result<GlobOutput, J
         matches: Vec::new(),
     };
     let mut used = search_json_size(&output)? + 32;
-    output.truncated = crate::memory_io::search_files(workspace, &args.path, |file, budget| {
-        if budget.expired() {
-            return Ok(true);
-        }
-        if !glob_matches(&args.pattern, file.path) {
-            return Ok(false);
-        }
-        // Retain the existing collect/sort/truncate semantics: directory DFS
-        // order is not full-path lexical order (a.rs precedes a/b.rs).
-        if output.matches.len() >= GLOB_MAX_RESULTS {
-            return Ok(true);
-        }
-        output.matches.push(file.path.into());
-        Ok(false)
-    })?;
+    output.truncated = crate::memory_io::search_files_root(
+        workspace,
+        &args.path,
+        directory_only,
+        |file, budget| {
+            if budget.expired() {
+                return Ok(true);
+            }
+            if !glob_matches(&args.pattern, file.path) {
+                return Ok(false);
+            }
+            // Retain the existing collect/sort/truncate semantics: directory DFS
+            // order is not full-path lexical order (a.rs precedes a/b.rs).
+            if output.matches.len() >= GLOB_MAX_RESULTS {
+                return Ok(true);
+            }
+            output.matches.push(file.path.into());
+            Ok(false)
+        },
+    )?;
     output.matches.sort();
     for item in std::mem::take(&mut output.matches) {
         let size = search_json_size(&item)?;
@@ -1761,6 +1774,7 @@ impl Tool for WorkspaceGrepTool {
 /// `glob` 工具：按 glob 模式列出工作区内匹配的常规文件（路径沙箱，不调用 LLM）。
 pub struct WorkspaceGlobTool {
     workspace_path: PathBuf,
+    roots: Option<Vec<String>>,
 }
 
 impl WorkspaceGlobTool {
@@ -1769,7 +1783,23 @@ impl WorkspaceGlobTool {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
+            roots: None,
         }
+    }
+
+    /// Restrict the original scanner to exact, explicitly granted directory roots.
+    ///
+    /// # Errors
+    /// Invalid permission metadata; this constructor does not probe the filesystem.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantGlobPolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            workspace_path: canonicalize_existing_or_clone(workspace_path),
+            roots: Some(policy.roots.clone()),
+        })
     }
 }
 
@@ -1784,10 +1814,24 @@ impl Tool for WorkspaceGlobTool {
     }
 
     fn description(&self) -> &str {
+        if self.roots.is_some() {
+            return "按模式列出完整批准目录子树内的普通文件路径（含隐藏文件名，不读取正文）；path 必须是 schema 的完整根。pattern 原始 UTF8 最多256字节且无首尾空白/控制字符；无 / 匹配文件名，有 / 匹配完整工作区相对路径。max_results 整数1..500，默认100。原扫描最多2000条目/32层/2秒协作/64KiB完整JSON，超限truncated；跳过.git、符号链接、硬链接和特殊文件，不保证原子快照。";
+        }
         "按 glob 模式列出工作区内匹配的常规文件路径（不含目录）。pattern 必填（如 **/*.rs、src/**/*.toml）；可选 path（相对搜索根，默认 .）、max_results（默认 100，钳制 1..=500）。结果按路径排序；超限截断并注明 truncated。禁止 .. / 绝对路径 / symlink 逃逸。不跟随链接或返回硬链接/特殊文件，不读取正文。全条目/深度/时间及 64KiB JSON 预算耗尽时 truncated=true。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
+        if let Some(roots) = &self.roots {
+            return serde_json::json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{
+                    "path":{"type":"string","enum":roots,"description":"完整批准目录根；不能子路径或别名"},
+                    "pattern":{"type":"string","minLength":1,"maxLength":256,"description":"原始 UTF8 最多256字节，无首尾空白或控制字符；不含 / 时匹配文件名，否则匹配完整工作区相对路径"},
+                    "max_results":{"type":"integer","minimum":1,"maximum":500,"default":100}
+                },
+                "required":["path","pattern"]
+            });
+        }
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -1812,10 +1856,35 @@ impl Tool for WorkspaceGlobTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(roots) = &self.roots {
+            let valid = args.as_object().is_some_and(|o| {
+                o.keys()
+                    .all(|k| matches!(k.as_str(), "path" | "pattern" | "max_results"))
+                    && o.get("path")
+                        .and_then(Value::as_str)
+                        .is_some_and(|p| roots.iter().any(|r| r == p))
+                    && o.get("pattern").and_then(Value::as_str).is_some_and(|p| {
+                        !p.is_empty()
+                            && p.len() <= GLOB_PATTERN_MAX_BYTES
+                            && p.trim() == p
+                            && !p.chars().any(char::is_control)
+                    })
+                    && o.get("max_results")
+                        .is_none_or(|n| n.as_u64().is_some_and(|n| (1..=500).contains(&n)))
+            });
+            if !valid {
+                return Err(JiaClawError::ToolExecution(
+                    "glob 参数超出本次批准的目录或预算".into(),
+                ));
+            }
+        }
         let parsed = parse_glob_args(&args)?;
         let workspace = self.workspace_path.clone();
-        let output =
-            crate::memory_io::run_blocking(move || glob_workspace(&workspace, &parsed)).await?;
+        let directory_only = self.roots.is_some();
+        let output = crate::memory_io::run_blocking(move || {
+            glob_workspace_root(&workspace, &parsed, directory_only)
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化 glob 结果失败: {e}")))
     }

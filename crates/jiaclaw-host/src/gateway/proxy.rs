@@ -839,6 +839,7 @@ mod tests {
             skill_read: None,
             memory_search: None,
             tree: None,
+            glob: None,
         };
         let state = Arc::new(State {
             registry,
