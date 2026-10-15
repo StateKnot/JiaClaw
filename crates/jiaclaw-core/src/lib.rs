@@ -1447,6 +1447,26 @@ impl TenantFileReadPolicy {
     }
 }
 
+/// Exact directory creation authority; never grants recursive parent creation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantMkdirPolicy {
+    /// 1..=32 sorted unique canonical directory paths under tenant-documents/.
+    pub paths: Vec<String>,
+}
+impl TenantMkdirPolicy {
+    /// Validate exact directory names without opening them.
+    ///
+    /// # Errors
+    /// Invalid, ambiguous, unsorted or duplicate document paths.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        TenantFileReadPolicy {
+            paths: self.paths.clone(),
+        }
+        .validate()
+    }
+}
+
 /// Explicit whole-file overwrite permission for bounded tenant document targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1772,6 +1792,9 @@ pub struct HttpConfig {
     /// Explicit file-only atomic move permission; default off.
     #[serde(default)]
     pub tenant_move: Option<TenantMovePolicy>,
+    /// Explicit single-directory creation permission; default off.
+    #[serde(default)]
+    pub tenant_mkdir: Option<TenantMkdirPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1953,6 +1976,7 @@ impl Default for HttpConfig {
             tenant_web_fetch: None,
             tenant_copy: None,
             tenant_move: None,
+            tenant_mkdir: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

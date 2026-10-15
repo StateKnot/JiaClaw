@@ -160,3 +160,14 @@ const moveResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResul
 assert.doesNotThrow(()=>gatewaySnapshot(moveResult,initial,new Set(['move'])));
 assert.throws(()=>gatewaySnapshot(moveResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 18: exact file-only no-replace move pairs; aliases, recombination metadata and withdrawn authority refuse');
+
+const mkdirPermission={protocol:1,paths:['tenant-documents/a','tenant-documents/b'],mode:'single_directory',policy_sha256:'f'.repeat(64)};
+const mkdirGateway={...streamGateway,enabled_tools:['datetime_now','json_query','mkdir'],mkdir:mkdirPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(mkdirGateway));
+for(const change of [{protocol:2},{mode:'recursive'},{paths:[]},{paths:Array(33).fill('tenant-documents/a')},{paths:['tenant-documents/b','tenant-documents/a']},{paths:['tenant-documents/a','tenant-documents/a']},{paths:['private']},{paths:['tenant-documents/.a']},{paths:['tenant-documents/a/../b']},{paths:['tenant-documents/a\\b']},{paths:['tenant-documents/ a']},{paths:['tenant-documents/\ufeffa']},{paths:['tenant-documents/a\u0085']},{paths:['tenant-documents/\ud800']},{recursive:false},{extra:true}])assert.throws(()=>gatewayCapabilities({...mkdirGateway,mkdir:{...mkdirPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','mkdir']}));
+assert.throws(()=>gatewayCapabilities({...mkdirGateway,enabled_tools:['datetime_now','json_query']}));
+const mkdirResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['mkdir']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(mkdirResult,initial,new Set(['mkdir'])));
+assert.throws(()=>gatewaySnapshot(mkdirResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 19: exact single-directory mkdir paths; recursive authority, aliases, invalid descriptors and withdrawn authority refuse');

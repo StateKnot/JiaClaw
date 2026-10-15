@@ -1,3 +1,7 @@
+## Personal Key exact directory creation (source checkpoint)
+
+The existing `mkdir` now has independent, default-off exact directory grants in both native HTTP and the gateway. Explicit selection creates one directory through the original handle-based writer, requires an existing parent, and cannot acquire recursive/parents authority. Existing ordinary directories remain idempotent. This lets separately approved write/copy/move tasks use a newly created delivery folder. Private names may enter the user's configured model after Send. See [contract](tenant-mkdir.md). Workbench Chromium is not an Agent browser; supplier/business quality/learning/durable milestones remain unqualified. This source checkpoint does not certify the new PR's official fixed head; parent PR154 completion is historical only.
+
 # 当前增量：个人 Key 移动或重命名资料（2026-10-16）
 
 用户可明确选择原 `move`，按双端默认关闭的精确源→目标组合移动单链接普通文件。同卷原子不覆盖、成功移除源名称、无正文读取，复用原八槽IO/workspace writer/任务hold；取消或失败不自动重试。[合同](tenant-move.md)、[本批验收](tenant-move-validation.md)。PR153及更早完整资格仅历史；本批源码/本机/交付/发布和自身新fixed head完整190官方资格分开，不借父head，也不重跑旧审计器。全部个人Agent里程碑仍未充分。

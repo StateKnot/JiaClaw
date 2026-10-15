@@ -83,6 +83,7 @@ jobs:
       - run: python3 tests/tenant_web_fetch.py target/debug/jiaclaw
       - run: python3 tests/tenant_copy.py target/debug/jiaclaw
       - run: python3 tests/tenant_move.py target/debug/jiaclaw
+      - run: python3 tests/tenant_mkdir.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_turns.py target/debug/jiaclaw
       - run: python3 tests/tenant_http_stream.py target/debug/jiaclaw
       - run: python3 tests/user_gateway.py target/debug/jiaclaw
@@ -145,6 +146,9 @@ jobs:
       - name: Tenant file-only move browser acceptance
         if: runner.os == 'Linux'
         run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_move.py target/debug/jiaclaw --browser
+      - name: Tenant directory creation browser acceptance
+        if: runner.os == 'Linux'
+        run: NODE_PATH="$RUNNER_TEMP/jiaclaw-browser/node_modules" python3 tests/tenant_mkdir.py target/debug/jiaclaw --browser
       - name: Text materials acceptance
         if: runner.os == 'Linux'
         run: |

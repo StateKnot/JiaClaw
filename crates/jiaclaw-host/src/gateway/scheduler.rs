@@ -446,6 +446,7 @@ mod tests {
                     web_fetch: None,
                     copy: None,
                     move_file: None,
+                    mkdir: None,
                 },
             )]),
             client: reqwest::Client::builder()

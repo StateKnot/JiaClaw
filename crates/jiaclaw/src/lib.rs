@@ -59,12 +59,14 @@ mod tenant_files;
 mod tenant_glob;
 mod tenant_grep;
 mod tenant_memory;
+mod tenant_mkdir;
 mod tenant_move;
 mod tenant_tree;
 mod tenant_web_fetch;
 pub use tenant_copy::TenantCopyCapability;
 pub use tenant_glob::TenantGlobCapability;
 pub use tenant_grep::TenantGrepCapability;
+pub use tenant_mkdir::TenantMkdirCapability;
 pub use tenant_move::TenantMoveCapability;
 pub use tenant_tree::TenantTreeCapability;
 pub use tenant_web_fetch::TenantWebFetchCapability;
@@ -236,8 +238,25 @@ fn register_optional_workspace_file_tools(
         };
         tools.register(Box::new(tool));
     }
+    if config.http.tenant_mkdir.is_some() && !config.tools.mkdir.enabled {
+        return Err(JiaClawError::Configuration(
+            "tenant mkdir requires mkdir enabled".into(),
+        ));
+    }
     if config.tools.mkdir.enabled {
-        tools.register(Box::new(WorkspaceMkdirTool::new(workspace)));
+        let tool = if let Some(policy) = &config.http.tenant_mkdir {
+            if !config.http.tracked_turns
+                || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+            {
+                return Err(JiaClawError::Configuration(
+                    "tenant mkdir requires tracked tenant mode".into(),
+                ));
+            }
+            WorkspaceMkdirTool::restricted(workspace, policy)?
+        } else {
+            WorkspaceMkdirTool::new(workspace)
+        };
+        tools.register(Box::new(tool));
     }
     if config.http.tenant_move.is_some() && !config.tools.r#move.enabled {
         return Err(JiaClawError::Configuration(

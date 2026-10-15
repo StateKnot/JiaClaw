@@ -844,6 +844,7 @@ mod tests {
             web_fetch: None,
             copy: None,
             move_file: None,
+            mkdir: None,
         };
         let state = Arc::new(State {
             registry,

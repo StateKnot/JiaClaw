@@ -115,3 +115,5 @@ python3 tests/installer.py
 ```
 
 真实 Chromium、Docker 沙箱和镜像验收由 CI 执行。全套单元/HTTP fixture 测试不需要真实供应商 Key；真实模型、网关计费和渠道服务仍需独立联调。许可证：Apache-2.0 OR MIT。
+
+个人 Key 可分别批准精确目录的非递归创建，复用原 `mkdir` 与工作区写入所有者；父目录须已存在，默认关闭，需双端同一授权与本次显式选择。见[目录创建合同](docs/tenant-mkdir.md)。

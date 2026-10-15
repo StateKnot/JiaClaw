@@ -1973,6 +1973,7 @@ impl Tool for WorkspaceGlobTool {
 /// `mkdir` 工具：创建工作区相对路径下的目录（路径沙箱，不调用 LLM）。
 pub struct WorkspaceMkdirTool {
     workspace_path: PathBuf,
+    policy: Option<jiaclaw_core::TenantMkdirPolicy>,
 }
 
 impl WorkspaceMkdirTool {
@@ -1981,7 +1982,22 @@ impl WorkspaceMkdirTool {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
+            policy: None,
         }
+    }
+    /// Restrict the original directory engine to exact nonrecursive targets.
+    ///
+    /// # Errors
+    /// Invalid administrator permission.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantMkdirPolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            workspace_path: canonicalize_existing_or_clone(workspace_path),
+            policy: Some(policy.clone()),
+        })
     }
 }
 
@@ -1992,10 +2008,16 @@ impl Tool for WorkspaceMkdirTool {
     }
 
     fn description(&self) -> &str {
+        if self.policy.is_some() {
+            return "仅在管理员批准的精确路径创建单个目录；父目录必须存在，不递归创建。已有普通目录幂等成功，文件/链接/特殊项拒绝。失败可能已产生效果，勿自动重试；停止不删除已创建目录。";
+        }
         "创建工作区相对路径下的目录。path 必填；可选 recursive / parents（默认 true，等价 mkdir -p）。目录已存在则幂等成功（created=false, existed=true）。若路径已存在且为文件则报错。禁止 .. / 绝对路径 / symlink 逃逸。目录句柄访问，禁止链接，最多 1024 字节/64 个路径组件。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
+        if let Some(policy) = &self.policy {
+            return serde_json::json!({"type":"object","properties":{"path":{"type":"string","enum":policy.paths}},"required":["path"],"additionalProperties":false});
+        }
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -2019,7 +2041,26 @@ impl Tool for WorkspaceMkdirTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let parsed = parse_mkdir_args(&args)?;
+        let parsed = if let Some(policy) = &self.policy {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ExactPath {
+                path: String,
+            }
+            let exact: ExactPath = serde_json::from_value(args)
+                .map_err(|_| JiaClawError::ToolExecution("invalid mkdir arguments".into()))?;
+            if !policy.paths.contains(&exact.path) {
+                return Err(JiaClawError::ToolExecution(
+                    "mkdir path is not authorized".into(),
+                ));
+            }
+            MkdirArgs {
+                path: exact.path,
+                recursive: false,
+            }
+        } else {
+            parse_mkdir_args(&args)?
+        };
         let workspace = self.workspace_path.clone();
         let output = crate::memory_io::run_blocking(move || {
             mkdir_workspace(&workspace, &parsed.path, parsed.recursive)
