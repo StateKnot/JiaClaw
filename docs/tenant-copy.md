@@ -1,0 +1,23 @@
+# Personal-Key create-only file copies
+
+A personal user can explicitly select the existing `copy` tool for one tracked task. The administrator first approves complete source→destination pairs in both services. This supports complete binary files, including images and office documents, without placing their bodies in the model prompt. The copy itself returns only paths, byte count and publication metadata. Other independently selected tools and ambient SOUL/USER/MEMORY retain their original behavior.
+
+Native configuration adds the following to the existing tracked tenant HTTP setup, with the original `tools.copy.enabled = true`:
+
+```json
+{"http":{"tenant_copy":{"pairs":[{"from":"tenant-documents/source.pdf","to":"tenant-documents/delivery.pdf"}]}}}
+```
+
+Set the identical `tenant_copy` object on that user's gateway `backends[]` entry. Both grants default to disabled. Stop and restart both services to change or withdraw them. This is an administrator configuration, not a public permission-editing API.
+
+The grant has 1–8 unique pairs, sorted by UTF-8 source and then destination. Each path uses the original exact tenant-document rules: `tenant-documents/`, at most 256 UTF-8 bytes and 16 components; hidden components, controls, backslashes, empty/dot/parent components, component-edge whitespace and BOM aliases are rejected. Source and destination must differ. Grants do not attest that a file exists or identify its contents, generation, provenance or independent OS permissions. A source in one pair and destination in another do **not** form an authorized combination.
+
+The restricted canonical tool accepts exactly `from` and `to`. No `source`, `destination`, `overwrite`, append mode or other fields are accepted. The old `file_copy` alias is not registered in the restricted tenant instance. Ordinary standalone copy and its explicit overwrite/compatibility behavior remain available outside this restriction.
+
+The existing descriptor-relative copy engine, eight nonqueueing blocking-I/O owners and cooperative workspace writer do all file work. It opens a regular single-link source, streams at most the original 64 MiB + 1 probe byte into an owned staged file, checks the full 64 MiB limit, synchronizes and atomically publishes with create-if-absent. The target's parent must already exist. Existing targets, symlinks, hardlinks, FIFOs, directories, unsafe parents, missing sources and oversize/growing inputs fail through the original checks. The source remains present; an existing target is never overwritten. A complete empty or non-UTF-8/binary source is allowed. This is cooperative application permission, not an OS ACL, atomic multi-file snapshot, hard thread preemption, durable execution or a source-content/ABA attestation.
+
+Independent permission protocol1 returns exactly `protocol, pairs, mode, max_bytes, policy_sha256`. Mode is `create_only`, byte limit is `67108864`, and the SHA-256 input is UTF-8 JSON `[1,[[from,to],...],"create_only",67108864]`. Backend and gateway compare the entire descriptor at startup and before each new admission, before creating the gateway identity/hold or sending its backend PUT. Only a task selecting `copy` captures `copy_policy_sha256`; old absent fields remain absent in request hashes. Old UUID GET/same-body PUT returns original facts without redispatch after withdrawal.
+
+The workbench validates every field and the canonical SHA with secure-context WebCrypto, displays every complete pair using `textContent`, and leaves the checkbox unchecked. Only explicit Send captures authority. Identity changes clear private scope/results/selections, and late old Crypto cannot restore them or submit a task. Readonly Keys inspect original facts; they cannot copy. Cross-user and revoked Keys retain their existing rejection. No storage, polling, implicit model call, new route, model tool, reader, Store or copy engine is added. Channel and cron tasks retain their original two-tool authority.
+
+Paths, permission metadata and copy results can reach the user's configured model and persistent messages. The copied file can contain private information and survives task completion, cancellation or later permission withdrawal. Cancellation prevents future dispatch; it does not undo a published copy or preempt an already running blocking owner. Errors/timeouts remain **Unknown**: inspect the original receipt and actual file before any deliberate new task. Unknown holds are not automatically cleared, and the workbench does not automatically retry. Fixtures certify this wiring and owned effects, not supplier integration, public TLS, business quality, learning or Agent browser/durable milestones.

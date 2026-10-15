@@ -138,3 +138,14 @@ const fetchResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResu
 assert.doesNotThrow(()=>gatewaySnapshot(fetchResult,initial,new Set(['web_fetch'])));
 assert.throws(()=>gatewaySnapshot(fetchResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 16: exact independent webpage grant and original HTTP budgets; complete URL scope and captured tool authority');
+
+const copyPermission={protocol:1,pairs:[{from:'tenant-documents/a',to:'tenant-documents/b'},{from:'tenant-documents/a',to:'tenant-documents/c'}],mode:'create_only',max_bytes:67108864,policy_sha256:'f'.repeat(64)};
+const copyGateway={...streamGateway,enabled_tools:['datetime_now','json_query','copy'],copy:copyPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(copyGateway));
+for(const change of [{protocol:2},{mode:'overwrite'},{max_bytes:67108865},{pairs:[]},{pairs:Array(9).fill(copyPermission.pairs[0])},{pairs:[copyPermission.pairs[1],copyPermission.pairs[0]]},{pairs:[copyPermission.pairs[0],copyPermission.pairs[0]]},{pairs:[{from:'private',to:'tenant-documents/b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/a'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/b',overwrite:false}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/.b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\\b'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\ufeffb'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/b\u0085'}]},{pairs:[{from:'tenant-documents/a',to:'tenant-documents/\ud800'}]},{extra:true}])assert.throws(()=>gatewayCapabilities({...copyGateway,copy:{...copyPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','copy']}));
+assert.throws(()=>gatewayCapabilities({...copyGateway,enabled_tools:['datetime_now','json_query']}));
+const copyResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['copy']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(copyResult,initial,new Set(['copy'])));
+assert.throws(()=>gatewaySnapshot(copyResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 17: exact create-only copy pairs and original binary budget; aliases, recombination metadata and withdrawn authority refuse');

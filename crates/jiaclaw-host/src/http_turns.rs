@@ -81,6 +81,13 @@ pub(super) fn validate_config(config: &AgentConfig, token: Option<&str>) -> Resu
         );
         policy.validate()?;
     }
+    if let Some(policy) = &config.http.tenant_copy {
+        ensure!(
+            config.http.tracked_turns && tenant_mode(config) && config.tools.copy.enabled,
+            "tenant_copy requires tracked tenant HTTP and copy enabled"
+        );
+        policy.validate()?;
+    }
     if let Some(policy) = &config.http.tenant_memory_search {
         policy.validate()?;
         ensure!(
@@ -225,11 +232,13 @@ pub(super) struct Submission {
     pub(super) grep_policy_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) web_fetch_policy_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) copy_policy_sha256: Option<String>,
 }
 impl Submission {
     fn validate(&self, state: &AppState) -> Result<(), AppError> {
         if tenant_mode(state.agent.config()) {
-            if !(1..=10).contains(&self.enabled_tools.len())
+            if !(1..=11).contains(&self.enabled_tools.len())
                 || !self.enabled_skills.is_empty()
                 || self.enabled_tools.iter().any(|name| {
                     !matches!(
@@ -244,6 +253,7 @@ impl Submission {
                             | "glob"
                             | "grep"
                             | "web_fetch"
+                            | "copy"
                     )
                 })
             {
@@ -412,6 +422,28 @@ impl Submission {
             }
         } else if self.web_fetch_policy_sha256.is_some() {
             return Err(AppError::BadRequest("unexpected_web_fetch_policy".into()));
+        }
+        let selected =
+            tenant_mode(state.agent.config()) && self.enabled_tools.iter().any(|t| t == "copy");
+        let permission = state
+            .agent
+            .config()
+            .http
+            .tenant_copy
+            .as_ref()
+            .map(jiaclaw::TenantCopyCapability::capture)
+            .transpose()
+            .map_err(|_| AppError::HttpTurnUnavailable)?;
+        if selected {
+            if !permission.is_some_and(|p| {
+                self.copy_policy_sha256.as_deref() == Some(p.policy_sha256.as_str())
+            }) {
+                return Err(AppError::BadRequest(
+                    "tenant_copy_disabled_or_changed".into(),
+                ));
+            }
+        } else if self.copy_policy_sha256.is_some() {
+            return Err(AppError::BadRequest("unexpected_copy_policy".into()));
         }
         let session_uuid = self.session_id.strip_prefix("http:").unwrap_or_default();
         if !super::jobs::valid_creation_id(session_uuid)
@@ -599,6 +631,13 @@ pub(super) async fn capabilities(
     if let Some(policy) = &state.agent.config().http.tenant_web_fetch {
         value["web_fetch"] = serde_json::to_value(
             jiaclaw::TenantWebFetchCapability::capture(policy)
+                .map_err(|_| AppError::HttpTurnUnavailable)?,
+        )
+        .map_err(|_| AppError::HttpTurnUnavailable)?;
+    }
+    if let Some(policy) = &state.agent.config().http.tenant_copy {
+        value["copy"] = serde_json::to_value(
+            jiaclaw::TenantCopyCapability::capture(policy)
                 .map_err(|_| AppError::HttpTurnUnavailable)?,
         )
         .map_err(|_| AppError::HttpTurnUnavailable)?;

@@ -54,12 +54,14 @@ mod semantic;
 mod session;
 pub use semantic::SemanticMemory;
 mod skills;
+mod tenant_copy;
 mod tenant_files;
 mod tenant_glob;
 mod tenant_grep;
 mod tenant_memory;
 mod tenant_tree;
 mod tenant_web_fetch;
+pub use tenant_copy::TenantCopyCapability;
 pub use tenant_glob::TenantGlobCapability;
 pub use tenant_grep::TenantGrepCapability;
 pub use tenant_tree::TenantTreeCapability;
@@ -238,9 +240,25 @@ fn register_optional_workspace_file_tools(
     if config.tools.r#move.enabled {
         tools.register(Box::new(WorkspaceMoveTool::new(workspace)));
     }
+    if config.http.tenant_copy.is_some() && !config.tools.copy.enabled {
+        return Err(JiaClawError::Configuration(
+            "tenant copy requires copy enabled".into(),
+        ));
+    }
     if config.tools.copy.enabled {
-        tools.register(Box::new(WorkspaceCopyTool::new(workspace)));
-        tools.register(Box::new(WorkspaceCopyTool::legacy(workspace)));
+        if let Some(policy) = &config.http.tenant_copy {
+            if !config.http.tracked_turns
+                || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+            {
+                return Err(JiaClawError::Configuration(
+                    "tenant copy requires tracked tenant mode".into(),
+                ));
+            }
+            tools.register(Box::new(WorkspaceCopyTool::restricted(workspace, policy)?));
+        } else {
+            tools.register(Box::new(WorkspaceCopyTool::new(workspace)));
+            tools.register(Box::new(WorkspaceCopyTool::legacy(workspace)));
+        }
     }
     Ok(())
 }
