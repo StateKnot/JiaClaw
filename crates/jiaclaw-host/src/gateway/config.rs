@@ -93,6 +93,9 @@ pub struct BackendConfig {
     /// Exact file-only no-replace move pairs; default off.
     #[serde(default)]
     pub tenant_move: Option<jiaclaw_core::TenantMovePolicy>,
+    /// Exact nonrecursive directory targets; disabled by default.
+    #[serde(default)]
+    pub tenant_mkdir: Option<jiaclaw_core::TenantMkdirPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -500,6 +503,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_mkdir {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant mkdir grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_move {
                 ensure!(
                     self.tracked_turns,
@@ -666,6 +676,7 @@ mod tests {
             tenant_web_fetch: None,
             tenant_copy: None,
             tenant_move: None,
+            tenant_mkdir: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

@@ -76,6 +76,8 @@ struct Capability {
     copy: Option<jiaclaw::TenantCopyCapability>,
     #[serde(default, rename = "move")]
     move_file: Option<jiaclaw::TenantMoveCapability>,
+    #[serde(default)]
+    mkdir: Option<jiaclaw::TenantMkdirCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -93,6 +95,7 @@ pub(super) async fn check_backend(
     web_fetch: Option<&jiaclaw::TenantWebFetchCapability>,
     copy: Option<&jiaclaw::TenantCopyCapability>,
     move_file: Option<&jiaclaw::TenantMoveCapability>,
+    mkdir: Option<&jiaclaw::TenantMkdirCapability>,
     file_download: bool,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
@@ -137,7 +140,8 @@ pub(super) async fn check_backend(
                 && c.grep.as_ref() == grep
                 && c.web_fetch.as_ref() == web_fetch
                 && c.copy.as_ref() == copy
-                && c.move_file.as_ref() == move_file,
+                && c.move_file.as_ref() == move_file
+                && c.mkdir.as_ref() == mkdir,
             "backend exact tenant permission contract mismatch"
         );
         Ok(c.enabled)
@@ -232,7 +236,7 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=12).contains(&s.enabled_tools.len())
+        && (1..=13).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools.iter().all(|t| {
             matches!(
@@ -249,6 +253,7 @@ fn valid_submission(s: &Submission) -> bool {
                     | "web_fetch"
                     | "copy"
                     | "move"
+                    | "mkdir"
             )
         })
         && s.enabled_tools
@@ -355,6 +360,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.move_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "mkdir") {
+            s.mkdir_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.mkdir_policy_sha256.is_none()
         }
 }
 
@@ -567,6 +582,7 @@ async fn remote_feedback(
                                                     | "web_fetch"
                                                     | "copy"
                                                     | "move"
+                                                    | "mkdir"
                                             )
                                         })
                                     })
@@ -705,6 +721,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                         backend.web_fetch.as_ref(),
                         backend.copy.as_ref(),
                         backend.move_file.as_ref(),
+                        backend.mkdir.as_ref(),
                         backend.file_download
                     )
                     .await?,
@@ -826,6 +843,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                     .expect("static tool list")
                     .push(json!("move"));
                 value["move"] = json!(permission);
+            }
+            if let Some(permission) = &backend.mkdir {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("mkdir"));
+                value["mkdir"] = json!(permission);
             }
             if let Some(permission) = &backend.memory_search {
                 value["enabled_tools"]
@@ -1232,6 +1256,19 @@ async fn execute(
         ));
         return true;
     }
+    if body.enabled_tools.iter().any(|t| t == "mkdir")
+        && !backend
+            .mkdir
+            .as_ref()
+            .is_some_and(|p| body.mkdir_policy_sha256.as_deref() == Some(p.policy_sha256.as_str()))
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant mkdir permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
@@ -1250,6 +1287,7 @@ async fn execute(
                 backend.web_fetch.as_ref(),
                 backend.copy.as_ref(),
                 backend.move_file.as_ref(),
+                backend.mkdir.as_ref(),
                 backend.file_download
             )
         )

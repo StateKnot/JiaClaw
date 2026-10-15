@@ -63,6 +63,7 @@
     if (Object.hasOwn(c || {}, 'web_fetch')) fields.push('web_fetch');
     if (Object.hasOwn(c || {}, 'copy')) fields.push('copy');
     if (Object.hasOwn(c || {}, 'move')) fields.push('move');
+    if (Object.hasOwn(c || {}, 'mkdir')) fields.push('mkdir');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
@@ -176,6 +177,13 @@
       canonicalDocumentPairs(f.pairs);
       allowed.push('move');
     }
+    if (c.mkdir !== undefined) {
+      const f = c.mkdir, keys = ['protocol','paths','mode','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && f.mode === 'single_directory' && typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.paths) && f.paths.length >= 1 && f.paths.length <= 32);
+      canonicalDocumentPaths(f.paths);
+      allowed.push('mkdir');
+    }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
   }
@@ -254,7 +262,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep','web_fetch','copy','move'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep','web_fetch','copy','move','mkdir'].includes(t)));
     return value;
   }
   class Parser {
