@@ -59,9 +59,11 @@ mod tenant_glob;
 mod tenant_grep;
 mod tenant_memory;
 mod tenant_tree;
+mod tenant_web_fetch;
 pub use tenant_glob::TenantGlobCapability;
 pub use tenant_grep::TenantGrepCapability;
 pub use tenant_tree::TenantTreeCapability;
+pub use tenant_web_fetch::TenantWebFetchCapability;
 mod tenant_skills;
 mod tools;
 pub use tenant_files::{TenantFileReadCapability, TenantFileWriteCapability};
@@ -428,10 +430,25 @@ impl JiaClawAgent {
                 config.tools.web_search.effective_brave_api_key(),
             )));
         }
+        if config.http.tenant_web_fetch.is_some() && !config.tools.web_fetch.enabled {
+            return Err(JiaClawError::Configuration(
+                "tenant web_fetch requires web_fetch enabled".into(),
+            ));
+        }
         if config.tools.web_fetch.enabled {
-            tools.register(Box::new(WebFetchTool::new(
-                config.tools.web_fetch.allow_private,
-            )));
+            let tool = if let Some(policy) = &config.http.tenant_web_fetch {
+                if !config.http.tracked_turns
+                    || !(config.http.gateway_channel_chat || config.scheduler.gateway_driven)
+                {
+                    return Err(JiaClawError::Configuration(
+                        "tenant web_fetch requires tracked tenant mode".into(),
+                    ));
+                }
+                WebFetchTool::restricted(policy, config.tools.web_fetch.allow_private)?
+            } else {
+                WebFetchTool::new(config.tools.web_fetch.allow_private)
+            };
+            tools.register(Box::new(tool));
         }
 
         // 系统工具

@@ -84,6 +84,9 @@ pub struct BackendConfig {
     /// Independent default-off content search below complete directory roots.
     #[serde(default)]
     pub tenant_grep: Option<jiaclaw_core::TenantGrepPolicy>,
+    /// Independent exact HTTP destination permission; default off.
+    #[serde(default)]
+    pub tenant_web_fetch: Option<jiaclaw_core::TenantWebFetchPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -477,6 +480,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_web_fetch {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant web_fetch grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -633,6 +643,7 @@ mod tests {
             tenant_tree: None,
             tenant_glob: None,
             tenant_grep: None,
+            tenant_web_fetch: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

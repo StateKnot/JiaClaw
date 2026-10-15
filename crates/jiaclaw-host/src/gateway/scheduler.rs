@@ -443,6 +443,7 @@ mod tests {
                     tree: None,
                     glob: None,
                     grep: None,
+                    web_fetch: None,
                 },
             )]),
             client: reqwest::Client::builder()

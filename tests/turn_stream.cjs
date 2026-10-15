@@ -127,3 +127,14 @@ const grepResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResul
 assert.doesNotThrow(()=>gatewaySnapshot(grepResult,initial,new Set(['grep'])));
 assert.throws(()=>gatewaySnapshot(grepResult,initial,new Set(['datetime_now'])));
 console.log('PASS parser 15: exact independent content-search grant and original budgets; unknown descriptor fields and withdrawn authority refuse');
+
+const fetchPermission={protocol:1,urls:['https://example.com/a'],allow_private:false,max_capture_bytes:1048577,max_body_bytes:1048576,timeout_seconds:15,max_redirects:5,max_chars:50000,policy_sha256:'f'.repeat(64)};
+const fetchGateway={...streamGateway,enabled_tools:['datetime_now','json_query','web_fetch'],web_fetch:fetchPermission};
+assert.doesNotThrow(()=>gatewayCapabilities(fetchGateway));
+for(const change of [{protocol:2},{allow_private:1},{max_capture_bytes:1048578},{max_body_bytes:1048577},{timeout_seconds:16},{max_redirects:6},{max_chars:50001},{urls:[]},{urls:['https://example.com/a','https://example.com/a']},{urls:['https://example.com/b','https://example.com/a']},{urls:['https://example.com']},{urls:['https://EXAMPLE.com/a']},{urls:['https://user@example.com/a']},{urls:['https://example.com/a#fragment']},{urls:[' https://example.com/a']},{urls:['https://example.com/a\n']},{urls:['https://example.com/界']},{urls:['https://example.com:080/a']},{urls:['https://example.com:+80/a']},{urls:['https://example.com:65536/a']},{urls:['https://example.com\\evil/a']},{extra:true}])assert.throws(()=>gatewayCapabilities({...fetchGateway,web_fetch:{...fetchPermission,...change}}));
+assert.throws(()=>gatewayCapabilities({...streamGateway,enabled_tools:['datetime_now','json_query','web_fetch']}));
+assert.throws(()=>gatewayCapabilities({...fetchGateway,enabled_tools:['datetime_now','json_query']}));
+const fetchResult={...ownResult,receipt:{...ownResult.receipt,result:{...ownResult.receipt.result,tool_names:['web_fetch']}}};
+assert.doesNotThrow(()=>gatewaySnapshot(fetchResult,initial,new Set(['web_fetch'])));
+assert.throws(()=>gatewaySnapshot(fetchResult,initial,new Set(['datetime_now'])));
+console.log('PASS parser 16: exact independent webpage grant and original HTTP budgets; complete URL scope and captured tool authority');
