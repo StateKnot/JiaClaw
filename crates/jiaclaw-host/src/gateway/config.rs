@@ -90,6 +90,9 @@ pub struct BackendConfig {
     /// Exact create-only copy pairs; disabled unless explicitly configured.
     #[serde(default)]
     pub tenant_copy: Option<jiaclaw_core::TenantCopyPolicy>,
+    /// Exact file-only no-replace move pairs; default off.
+    #[serde(default)]
+    pub tenant_move: Option<jiaclaw_core::TenantMovePolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -497,6 +500,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_move {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant move grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -655,6 +665,7 @@ mod tests {
             tenant_grep: None,
             tenant_web_fetch: None,
             tenant_copy: None,
+            tenant_move: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

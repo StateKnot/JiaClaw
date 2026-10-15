@@ -935,11 +935,31 @@ pub(crate) fn move_entry(
     move_entry_with(workspace, from, to, overwrite, rename_entry)
 }
 
+/// Original rename engine with a file-only check under the same writer owner.
+pub(crate) fn move_file_entry(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+) -> Result<(crate::files::MoveKind, bool), JiaClawError> {
+    move_entry_checked(workspace, from, to, false, true, rename_entry)
+}
+
 fn move_entry_with(
     workspace: &Path,
     from: &str,
     to: &str,
     overwrite: bool,
+    rename: impl FnOnce(&Dir, &OsStr, &Dir, &OsStr, bool) -> io::Result<()>,
+) -> Result<(crate::files::MoveKind, bool), JiaClawError> {
+    move_entry_checked(workspace, from, to, overwrite, false, rename)
+}
+
+fn move_entry_checked(
+    workspace: &Path,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    file_only: bool,
     rename: impl FnOnce(&Dir, &OsStr, &Dir, &OsStr, bool) -> io::Result<()>,
 ) -> Result<(crate::files::MoveKind, bool), JiaClawError> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
@@ -963,6 +983,9 @@ fn move_entry_with(
         }
     })?;
     let kind = entry_kind(&source_metadata)?;
+    if file_only && kind != crate::files::MoveKind::File {
+        return Err(failure("tenant move requires a single-link regular file"));
+    }
     if kind == crate::files::MoveKind::Dir && to.starts_with(&from) {
         return Err(failure("拒绝将目录移动到自身子路径"));
     }

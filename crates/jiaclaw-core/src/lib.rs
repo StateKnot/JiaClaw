@@ -1467,14 +1467,36 @@ impl TenantFileWritePolicy {
     }
 }
 
-/// One administrator-approved copy; grants cannot be recombined.
+/// One administrator-approved source/target combination; endpoints cannot be recombined.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TenantCopyPair {
+pub struct TenantFilePair {
     /// Exact existing source file, under tenant-documents/.
     pub from: String,
     /// Exact create-only destination; its parent must already exist.
     pub to: String,
+}
+
+/// Backward-compatible copy pair name, sharing canonical document paths.
+pub type TenantCopyPair = TenantFilePair;
+/// Exact file-move pair; independent from permission to copy or read.
+pub type TenantMovePair = TenantFilePair;
+
+/// Default-off exact file moves; cannot overwrite or move directories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantMovePolicy {
+    /// 1..=8 sorted unique complete source/target pairs.
+    pub pairs: Vec<TenantMovePair>,
+}
+impl TenantMovePolicy {
+    /// Validate canonical pairs without opening files.
+    ///
+    /// # Errors
+    /// Invalid, unsorted, duplicate or identical paths.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        validate_tenant_file_pairs(&self.pairs, "move")
+    }
 }
 
 /// Explicit copy permission, independent of reading or overwriting file bodies.
@@ -1490,24 +1512,28 @@ impl TenantCopyPolicy {
     /// # Errors
     /// Empty, excessive, duplicate, unsorted, identical or noncanonical pairs.
     pub fn validate(&self) -> Result<(), JiaClawError> {
-        if !(1..=8).contains(&self.pairs.len())
-            || !self.pairs.windows(2).all(|p| p[0] < p[1])
-            || self.pairs.iter().any(|p| p.from == p.to)
-        {
-            return Err(JiaClawError::Configuration(
-                "tenant copy requires 1..8 sorted unique distinct source/target pairs".into(),
-            ));
-        }
-        for pair in &self.pairs {
-            for path in [&pair.from, &pair.to] {
-                TenantFileReadPolicy {
-                    paths: vec![path.clone()],
-                }
-                .validate()?;
-            }
-        }
-        Ok(())
+        validate_tenant_file_pairs(&self.pairs, "copy")
     }
+}
+
+fn validate_tenant_file_pairs(pairs: &[TenantFilePair], action: &str) -> Result<(), JiaClawError> {
+    if !(1..=8).contains(&pairs.len())
+        || !pairs.windows(2).all(|p| p[0] < p[1])
+        || pairs.iter().any(|p| p.from == p.to)
+    {
+        return Err(JiaClawError::Configuration(format!(
+            "tenant {action} requires 1..8 sorted unique distinct source/target pairs"
+        )));
+    }
+    for pair in pairs {
+        for path in [&pair.from, &pair.to] {
+            TenantFileReadPolicy {
+                paths: vec![path.clone()],
+            }
+            .validate()?;
+        }
+    }
+    Ok(())
 }
 
 /// One exact loaded skill body version explicitly approved for tenant tasks.
@@ -1743,6 +1769,9 @@ pub struct HttpConfig {
     /// Explicit create-only copies; disabled unless complete pairs are configured.
     #[serde(default)]
     pub tenant_copy: Option<TenantCopyPolicy>,
+    /// Explicit file-only atomic move permission; default off.
+    #[serde(default)]
+    pub tenant_move: Option<TenantMovePolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1923,6 +1952,7 @@ impl Default for HttpConfig {
             tenant_grep: None,
             tenant_web_fetch: None,
             tenant_copy: None,
+            tenant_move: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

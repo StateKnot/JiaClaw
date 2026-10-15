@@ -2033,6 +2033,7 @@ impl Tool for WorkspaceMkdirTool {
 /// `move` 工具：在工作区内移动或重命名文件 / 目录（路径沙箱，不调用 LLM）。
 pub struct WorkspaceMoveTool {
     workspace_path: PathBuf,
+    policy: Option<jiaclaw_core::TenantMovePolicy>,
 }
 
 impl WorkspaceMoveTool {
@@ -2041,7 +2042,22 @@ impl WorkspaceMoveTool {
     pub fn new(workspace_path: &Path) -> Self {
         Self {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
+            policy: None,
         }
+    }
+    /// Restrict the existing move engine to exact file-only, no-replace pairs.
+    ///
+    /// # Errors
+    /// Invalid administrator permission.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantMovePolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            workspace_path: canonicalize_existing_or_clone(workspace_path),
+            policy: Some(policy.clone()),
+        })
     }
 }
 
@@ -2052,10 +2068,16 @@ impl Tool for WorkspaceMoveTool {
     }
 
     fn description(&self) -> &str {
+        if self.policy.is_some() {
+            return "仅按管理员批准的完整 from→to 组合移动/重命名单链接普通文件，移除源名称；只同卷原子不覆盖，不读取正文，不移动目录，不建父目录。目标存在则拒绝。失败可能已产生效果，勿自动重试；停止不会撤销移动。";
+        }
         "在工作区内移动或重命名文件或目录。文档主名 from / to（source / destination 为别名，同时给出时必须一致）。from 必须存在；to 已存在且 overwrite=false（默认）则报错。支持常规单链接文件和目录的同卷原子重命名，跨文件系统拒绝。默认原子不覆盖；overwrite=true 仅替换同类型文件或空目录，不提前删除目标。禁止 .. / 绝对路径 / 符号链接 / 硬链接 / 特殊文件。目录句柄访问，最多 1024 字节/64 个路径组件。不创建中间目录。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
+        if let Some(policy) = &self.policy {
+            return serde_json::json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"],"additionalProperties":false,"oneOf":policy.pairs.iter().map(|p| serde_json::json!({"properties":{"from":{"const":p.from},"to":{"const":p.to}}})).collect::<Vec<_>>()});
+        }
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -2089,10 +2111,38 @@ impl Tool for WorkspaceMoveTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
-        let parsed = parse_move_args(&args)?;
+        let parsed = if let Some(policy) = &self.policy {
+            let pair: jiaclaw_core::TenantMovePair = serde_json::from_value(args)
+                .map_err(|_| JiaClawError::ToolExecution("invalid move arguments".into()))?;
+            if !policy
+                .pairs
+                .iter()
+                .any(|p| p.from == pair.from && p.to == pair.to)
+            {
+                return Err(JiaClawError::ToolExecution(
+                    "move pair is not authorized".into(),
+                ));
+            }
+            parse_move_args(&serde_json::json!({"from":pair.from,"to":pair.to,"overwrite":false}))?
+        } else {
+            parse_move_args(&args)?
+        };
+        let file_only = self.policy.is_some();
         let workspace = self.workspace_path.clone();
         let output = crate::memory_io::run_blocking(move || {
-            move_workspace(&workspace, &parsed.from, &parsed.to, parsed.overwrite)
+            if file_only {
+                let (kind, overwritten) =
+                    crate::memory_io::move_file_entry(&workspace, &parsed.from, &parsed.to)?;
+                Ok(MoveOutput {
+                    from: parsed.from,
+                    to: parsed.to,
+                    overwrite: false,
+                    overwritten,
+                    kind,
+                })
+            } else {
+                move_workspace(&workspace, &parsed.from, &parsed.to, parsed.overwrite)
+            }
         })
         .await?;
         serde_json::to_string_pretty(&output)

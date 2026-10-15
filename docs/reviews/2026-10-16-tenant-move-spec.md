@@ -1,0 +1,9 @@
+# Spec review — tenant file move
+
+No missing, partial, incorrectly implemented, or extra-scope requirement found in the fixed diff. Source is `f949dea5b6974adcac5c15b5e8d77b0f56548d5b` against `280932753003e33831fab9cbecce8a935a6263f2`; spec is its committed `docs/tenant-move.md`.
+
+Reviewed exact dual configuration, canonical pair authority and digest, full startup/new-admission capability equality before durable admission, old None fingerprint preservation, old UUID facts, explicit UI selection, late identity checks, historical receipt validation, original move tool and directory-held no-replace rename, single-link regular metadata checks, eight-slot blocking owner, original Unknown/cancel/hold behavior, and unchanged channel/cron tool boundaries. The diff adds no second reader, search, Store, model tool, learning, durable claim, or real-provider claim.
+
+Independent frozen-binary review checks passed: exact 256-byte/16-component/8-pair acceptance and immediate over-limit refusal; reversed order and extra authority fields refused; mode-000 source renamed without reading its body, preserving all 1,048,576 bytes and inode while removing the source; Unix socket and symlink ancestor sources refused; absent grant rejected move before creating a native request identity. These are local disposable fixtures with no paid credentials. They are not official qualification or exhaustive race/OS fault coverage.
+
+The 125 compiler inputs, committed bytes, working bytes, manifest SHA, tree, and frozen binary SHA were independently rebound. No binding errors. No Rust build or root-owned tests were run by this reviewer. Two initial reviewer-fixture setup failures (missing required configuration fields and macOS Unix-socket path length) are retained separately; the corrected fixture passes all 12 checks. Initial findings: none. Final findings: none.

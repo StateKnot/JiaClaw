@@ -53,6 +53,7 @@ struct Backend {
     grep: Option<jiaclaw::TenantGrepCapability>,
     web_fetch: Option<jiaclaw::TenantWebFetchCapability>,
     copy: Option<jiaclaw::TenantCopyCapability>,
+    move_file: Option<jiaclaw::TenantMoveCapability>,
 }
 struct State {
     registry: Registry,
@@ -345,6 +346,12 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .map(jiaclaw::TenantCopyCapability::capture)
                     .transpose()?
                     .as_ref(),
+                backend
+                    .tenant_move
+                    .as_ref()
+                    .map(jiaclaw::TenantMoveCapability::capture)
+                    .transpose()?
+                    .as_ref(),
                 backend.tenant_file_download,
             )
             .await?;
@@ -386,6 +393,11 @@ pub(super) async fn serve(config: Config) -> Result<()> {
                     .tenant_copy
                     .as_ref()
                     .map(jiaclaw::TenantCopyCapability::capture)
+                    .transpose()?,
+                move_file: backend
+                    .tenant_move
+                    .as_ref()
+                    .map(jiaclaw::TenantMoveCapability::capture)
                     .transpose()?,
                 memory_search: backend
                     .tenant_memory_search
