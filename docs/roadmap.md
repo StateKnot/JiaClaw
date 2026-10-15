@@ -1,4 +1,8 @@
-# 当前增量：个人 Key 按正文找资料（2026-10-15）
+# 当前增量：网页正文在读取时受限（2026-10-15）
+
+原 `web_fetch` 复用固定 HTTP 客户端的 lazy 响应，以实际读取的 1 MiB + 1 探测字节限制捕获，超限不等完整正文／EOF；原解析、工具权限和 15 秒截止保持。真实 TCP held-tail 反例 RED 与修订验收见[读取合同](web-fetch-body-budget.md)和[本批范围](web-fetch-body-budget-validation.md)。PR150 完整资格只历史，新固定 head 的官方资格独立待完成；全部个人 Agent 里程碑仍未充分。
+
+# 历史交付快照：个人 Key 按正文找资料（2026-10-15）
 
 双端default-off独立grep目录根权限，用户显式选择后消费原literal matcher/目录句柄walker/八槽IO，返回匹配行号与摘录。512rawpattern/128rawglob、256KiB每源/16MiB总读/2000扫描/32层/2秒/64KiB预算保持；包括隐藏正文，跳过binary和超大文件，truncated=false也不保证搜全。[合同](tenant-grep.md)与[本批验收](tenant-grep-validation.md)。PR149及更早完整资格只历史，本批自己的新fixedhead full184仍须独立完成，不借本机或父head。全部个人Agent里程碑仍未充分。
 

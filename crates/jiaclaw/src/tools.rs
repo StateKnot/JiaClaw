@@ -1453,6 +1453,8 @@ fn perform_web_fetch(
     max_chars: usize,
     allow_private: bool,
 ) -> Result<String, JiaClawError> {
+    use std::io::Read;
+
     let deadline = Instant::now() + Duration::from_secs(WEB_FETCH_HTTP_TIMEOUT_SECS);
     let mut current = start_url.to_string();
 
@@ -1467,9 +1469,9 @@ fn perform_web_fetch(
                 "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
             )
             .with_header("User-Agent", WEB_FETCH_USER_AGENT)
-            .with_max_redirects(0)
+            .with_follow_redirects(false)
             .with_timeout(timeout_secs)
-            .send()
+            .send_lazy()
             .map_err(|e| JiaClawError::ToolExecution(format!("web_fetch 请求失败: {e}")))?;
 
         let status = response.status_code;
@@ -1495,12 +1497,22 @@ fn perform_web_fetch(
         let content_type = header_value(&response.headers, "content-type")
             .unwrap_or("")
             .to_string();
-        let raw = response.as_bytes();
+        // Bound acquisition itself, not just the bytes passed to the parser.
+        // One extra byte distinguishes an exact-size body from a truncated one.
+        // Dropping the original lazy response also drops its connection; no
+        // over-budget tail or redirect/error body is drained into memory.
+        let mut raw = Vec::with_capacity(WEB_FETCH_MAX_BODY_BYTES + 1);
+        if status != 204 {
+            Read::take(response, (WEB_FETCH_MAX_BODY_BYTES + 1) as u64)
+                .read_to_end(&mut raw)
+                .map_err(|e| JiaClawError::ToolExecution(format!("web_fetch 响应读取失败: {e}")))?;
+        }
+        remaining_timeout_secs(deadline)?;
         let truncated_download = raw.len() > WEB_FETCH_MAX_BODY_BYTES;
         let slice = if truncated_download {
             &raw[..WEB_FETCH_MAX_BODY_BYTES]
         } else {
-            raw
+            &raw
         };
         let body = String::from_utf8_lossy(slice);
 
@@ -1514,6 +1526,7 @@ fn perform_web_fetch(
         if truncated_download && !output.contains("[truncated]") {
             output.push_str("\n\n[truncated]");
         }
+        remaining_timeout_secs(deadline)?;
         return Ok(output);
     }
 
@@ -2751,5 +2764,139 @@ mod tests {
             body.chars().count()
         );
         assert!(result.contains('A'), "{result}");
+    }
+
+    #[tokio::test]
+    async fn web_fetch_stops_at_body_budget_without_waiting_for_eof() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        // A real peer sends enough bytes to prove truncation, then keeps the
+        // body unfinished. The tool must finish before the peer permits EOF.
+        let target = mockito::mock("GET", "/bounded-redirect-target")
+            .with_status(200)
+            .with_body("redirect target")
+            .create();
+        for framing in [
+            "length",
+            "chunked",
+            "close",
+            "no-content",
+            "error",
+            "redirect",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release, held) = mpsc::channel();
+            let redirect = format!("{}/bounded-redirect-target", mockito::server_url());
+            let peer = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 8192);
+                }
+                let framing_header = match framing {
+                    "length" => format!("Content-Length: {}\r\n", WEB_FETCH_MAX_BODY_BYTES * 2),
+                    "chunked" => "Transfer-Encoding: chunked\r\n".to_owned(),
+                    "redirect" => format!("Location: {redirect}\r\nContent-Length: 1048576\r\n"),
+                    _ => String::new(),
+                };
+                let status = match framing {
+                    "no-content" => "204 No Content",
+                    "error" => "503 Service Unavailable",
+                    "redirect" => "302 Found",
+                    _ => "200 OK",
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n{framing_header}\r\n"
+                )
+                .unwrap();
+                if framing == "chunked" {
+                    write!(socket, "{:x}\r\n", WEB_FETCH_MAX_BODY_BYTES + 1).unwrap();
+                }
+                if matches!(framing, "length" | "chunked" | "close") {
+                    let mut prefix = vec![b' '; WEB_FETCH_MAX_BODY_BYTES + 1];
+                    prefix[..4].copy_from_slice(b"kept");
+                    socket.write_all(&prefix).unwrap();
+                    if framing == "chunked" {
+                        // Finish this chunk's framing, while withholding the
+                        // terminating zero chunk and therefore the body EOF.
+                        socket.write_all(b"\r\n").unwrap();
+                    }
+                }
+                socket.flush().unwrap();
+                // Cleanup is explicitly after the client completion observation.
+                held.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            let tool = WebFetchTool::new(true);
+            let completed = tokio::time::timeout(
+                Duration::from_secs(3),
+                tool.execute(serde_json::json!({"url": format!("http://{address}/bounded")})),
+            )
+            .await;
+            release.send(()).unwrap();
+            peer.join().unwrap();
+            let result = completed.expect("web_fetch waited for an over-budget response tail");
+            if framing == "error" {
+                assert!(result.unwrap_err().to_string().contains("HTTP 503"));
+            } else {
+                let output = result.unwrap();
+                assert!(output.len() < 512, "{framing}: unexpected retained body");
+                if framing == "no-content" || framing == "redirect" {
+                    assert!(!output.contains("[truncated]"));
+                    if framing == "redirect" {
+                        assert!(output.contains("redirect target"));
+                    }
+                } else {
+                    assert!(output.contains("kept"), "{framing}");
+                    assert!(output.contains("[truncated]"), "{framing}");
+                }
+            }
+            eprintln!("PASS web_fetch held response: {framing}");
+        }
+        target.assert();
+    }
+
+    #[tokio::test]
+    async fn web_fetch_exact_raw_body_budget_is_not_truncated() {
+        let mut body = vec![b' '; WEB_FETCH_MAX_BODY_BYTES];
+        body[..4].copy_from_slice(b"kept");
+        let fixture = mockito::mock("GET", "/exact-raw-body-budget")
+            .with_status(200)
+            .with_header("content-type", "text/plain")
+            .with_body(body)
+            .create();
+        let output = WebFetchTool::new(true)
+            .execute(serde_json::json!({"url": format!("{}/exact-raw-body-budget", mockito::server_url())}))
+            .await
+            .unwrap();
+        assert!(output.contains("kept"));
+        assert!(!output.contains("[truncated]"));
+        fixture.assert();
+    }
+
+    #[tokio::test]
+    async fn web_fetch_manual_redirect_budget_is_preserved() {
+        let url = format!("{}/bounded-redirect-loop", mockito::server_url());
+        let fixture = mockito::mock("GET", "/bounded-redirect-loop")
+            .with_status(302)
+            .with_header("location", &url)
+            .expect(WEB_FETCH_MAX_REDIRECTS + 1)
+            .create();
+        let error = WebFetchTool::new(true)
+            .execute(serde_json::json!({"url": url}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("重定向超过 5 次"), "{error}");
+        fixture.assert();
     }
 }
