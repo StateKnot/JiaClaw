@@ -1,5 +1,7 @@
 # 当前增量：网页正文在读取时受限（2026-10-15）
 
+2026-10-15 新批源码检查点：个人 Key 已接通原 `web_fetch` 的双端精确 URL 授权、显式选择和逐跳校验；本机1333Rust/相关API与两次最终Chromium验收通过，独立源码两轴0发现。该检查点仍待本批独立remote head完整186官方资格，不借父PR151；[配置](tenant-web-fetch.md)、[验收范围](tenant-web-fetch-validation.md)。不标记Agent浏览器或经验质量里程碑完成。
+
 原 `web_fetch` 复用固定 HTTP 客户端的 lazy 响应，以实际读取的 1 MiB + 1 探测字节限制捕获，超限不等完整正文／EOF；原解析、工具权限和 15 秒截止保持。真实 TCP held-tail 反例 RED 与修订验收见[读取合同](web-fetch-body-budget.md)和[本批范围](web-fetch-body-budget-validation.md)。PR150 完整资格只历史，新固定 head 的官方资格独立待完成；全部个人 Agent 里程碑仍未充分。
 
 # 历史交付快照：个人 Key 按正文找资料（2026-10-15）

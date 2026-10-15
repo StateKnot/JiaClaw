@@ -841,6 +841,7 @@ mod tests {
             tree: None,
             glob: None,
             grep: None,
+            web_fetch: None,
         };
         let state = Arc::new(State {
             registry,

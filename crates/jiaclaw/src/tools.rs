@@ -865,7 +865,7 @@ pub const WEB_FETCH_MIN_CHARS: usize = 500;
 pub const WEB_FETCH_MAX_CHARS: usize = 50_000;
 
 /// 原始响应用的读取上限，避免超大页面占满内存
-const WEB_FETCH_MAX_BODY_BYTES: usize = 1_048_576;
+pub(crate) const WEB_FETCH_MAX_BODY_BYTES: usize = 1_048_576;
 
 const WEB_FETCH_USER_AGENT: &str = "JiaClaw/0.1 (web_fetch)";
 
@@ -1391,13 +1391,35 @@ fn format_web_fetch_output(
 /// 网页抓取工具：GET URL，HTML 去标签为可读文本
 pub struct WebFetchTool {
     allow_private: bool,
+    permission: Option<jiaclaw_core::TenantWebFetchPolicy>,
 }
 
 impl WebFetchTool {
     /// 创建工具；`allow_private` 为 `true` 时允许 localhost / 私网。
     #[must_use]
     pub fn new(allow_private: bool) -> Self {
-        Self { allow_private }
+        Self {
+            allow_private,
+            permission: None,
+        }
+    }
+    /// Reuse the original HTTP reader with an exact grant on every redirect hop.
+    /// # Errors
+    /// Invalid grant or private access without the original administrator override.
+    pub fn restricted(
+        policy: &jiaclaw_core::TenantWebFetchPolicy,
+        allow_private: bool,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        if policy.allow_private && !allow_private {
+            return Err(JiaClawError::Configuration(
+                "tenant web_fetch private grant requires tools.web_fetch.allow_private".into(),
+            ));
+        }
+        Ok(Self {
+            allow_private: policy.allow_private,
+            permission: Some(policy.clone()),
+        })
     }
 }
 
@@ -1418,7 +1440,7 @@ impl Tool for WebFetchTool {
     }
 
     fn parameters_schema(&self) -> Value {
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "type": "object",
             "properties": {
                 "url": {
@@ -1434,17 +1456,44 @@ impl Tool for WebFetchTool {
                 }
             },
             "required": ["url"]
-        })
+        });
+        if let Some(permission) = &self.permission {
+            schema["additionalProperties"] = serde_json::json!(false);
+            schema["properties"]["url"]["enum"] = serde_json::json!(permission.urls);
+        }
+        schema
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(permission) = &self.permission {
+            let invalid =
+                || JiaClawError::ToolExecution("invalid tenant web_fetch arguments".into());
+            let object = args.as_object().ok_or_else(invalid)?;
+            if object.keys().any(|key| key != "url" && key != "max_chars")
+                || !object
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| permission.urls.iter().any(|u| u == url))
+                || object
+                    .get("max_chars")
+                    .is_some_and(|v| !v.as_u64().is_some_and(|n| (500..=50000).contains(&n)))
+            {
+                return Err(invalid());
+            }
+        }
         let (url, max_chars) = parse_web_fetch_args(&args)?;
         validate_web_fetch_url(&url, self.allow_private)?;
         let allow_private = self.allow_private;
 
-        tokio::task::spawn_blocking(move || perform_web_fetch(&url, max_chars, allow_private))
-            .await
-            .map_err(|e| JiaClawError::ToolExecution(format!("任务执行失败: {e}")))?
+        let permission = self.permission.clone();
+        tokio::task::spawn_blocking(move || match permission {
+            Some(policy) => {
+                perform_web_fetch_with_permission(&url, max_chars, allow_private, Some(&policy))
+            }
+            None => perform_web_fetch(&url, max_chars, allow_private),
+        })
+        .await
+        .map_err(|e| JiaClawError::ToolExecution(format!("任务执行失败: {e}")))?
     }
 }
 
@@ -1453,12 +1502,26 @@ fn perform_web_fetch(
     max_chars: usize,
     allow_private: bool,
 ) -> Result<String, JiaClawError> {
+    perform_web_fetch_with_permission(start_url, max_chars, allow_private, None)
+}
+
+fn perform_web_fetch_with_permission(
+    start_url: &str,
+    max_chars: usize,
+    allow_private: bool,
+    permission: Option<&jiaclaw_core::TenantWebFetchPolicy>,
+) -> Result<String, JiaClawError> {
     use std::io::Read;
 
     let deadline = Instant::now() + Duration::from_secs(WEB_FETCH_HTTP_TIMEOUT_SECS);
     let mut current = start_url.to_string();
 
     for redirect_count in 0..=WEB_FETCH_MAX_REDIRECTS {
+        if permission.is_some_and(|p| !p.urls.iter().any(|url| url == &current)) {
+            return Err(JiaClawError::ToolExecution(
+                "tenant web_fetch destination not granted".into(),
+            ));
+        }
         validate_web_fetch_url(&current, allow_private)?;
         let timeout_secs = remaining_timeout_secs(deadline)?;
         tracing::debug!("web_fetch 请求: {current}");

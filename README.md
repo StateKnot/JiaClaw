@@ -4,6 +4,8 @@ JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记�
 
 **当前边界**：SQLite 保存会话，不提供工具调用的持久化执行、断点恢复或 exactly-once 保证。StateKnot alpha 与 Brokerrouter 的真实供应商工具闭环仍有生产认证门槛，详见[上游状态](docs/roadmap.md)。不能把本仓库的单机测试通过解释为完整个人 Agent 栈已经生产认证。
 
+个人 Key 可显式授权读取管理员批准的精确网页 URL；默认关闭、逐跳检查，沿用原 `web_fetch`。见[配置与隐私边界](docs/tenant-web-fetch.md)和[本批源码验收范围](docs/tenant-web-fetch-validation.md)。
+
 ## 从源码安装
 
 需要 Rust 1.88.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。

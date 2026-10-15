@@ -1588,6 +1588,85 @@ pub type TenantGlobPolicy = TenantTreePolicy;
 /// Independent subtree content-search grant using the same canonical roots.
 pub type TenantGrepPolicy = TenantTreePolicy;
 
+/// Exact HTTP(S) destinations delegated to a tenant; never a host or prefix grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantWebFetchPolicy {
+    /// Sorted unique ASCII URLs, including an explicit path, at most 1024 bytes each.
+    pub urls: Vec<String>,
+    /// Explicitly delegate the original private-network override as well.
+    #[serde(default)]
+    pub allow_private: bool,
+}
+
+impl TenantWebFetchPolicy {
+    /// Validate permission metadata without DNS or HTTP requests.
+    /// # Errors
+    /// Noncanonical URL strings or an oversized/unsorted destination set.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        let invalid = || JiaClawError::Configuration("invalid tenant web_fetch URL grant".into());
+        if !(1..=8).contains(&self.urls.len()) {
+            return Err(invalid());
+        }
+        for (i, url) in self.urls.iter().enumerate() {
+            if !Self::valid_url(url) || (i > 0 && self.urls[i - 1] >= *url) {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared syntax contract. Permission matches the complete original string.
+    #[must_use]
+    pub fn valid_url(url: &str) -> bool {
+        if url.len() > 1024
+            || !url.is_ascii()
+            || url
+                .bytes()
+                .any(|b| b <= b' ' || b == 127 || b == b'\\' || b == b'#')
+        {
+            return false;
+        }
+        let Some(rest) = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+        else {
+            return false;
+        };
+        let Some((authority, _)) = rest.split_once('/') else {
+            return false;
+        };
+        let host = if let Some((host, port)) = authority.split_once(':') {
+            if !port.bytes().all(|b| b.is_ascii_digit())
+                || port.starts_with('0')
+                || port.parse::<u16>().ok().is_none_or(|v| v == 0)
+            {
+                return false;
+            }
+            host
+        } else {
+            authority
+        };
+        !host.is_empty()
+            && host.len() <= 253
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .as_bytes()
+                        .last()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+    }
+}
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -1615,6 +1694,9 @@ pub struct HttpConfig {
     /// Explicit content-search permission; includes hidden ordinary file bodies. Default off.
     #[serde(default)]
     pub tenant_grep: Option<TenantGrepPolicy>,
+    /// Default-off exact destinations for the existing web_fetch tool.
+    #[serde(default)]
+    pub tenant_web_fetch: Option<TenantWebFetchPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1793,6 +1875,7 @@ impl Default for HttpConfig {
             tenant_tree: None,
             tenant_glob: None,
             tenant_grep: None,
+            tenant_web_fetch: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

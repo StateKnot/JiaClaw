@@ -45,6 +45,7 @@
     if (Object.hasOwn(c || {}, 'tree')) fields.push('tree');
     if (Object.hasOwn(c || {}, 'glob')) fields.push('glob');
     if (Object.hasOwn(c || {}, 'grep')) fields.push('grep');
+    if (Object.hasOwn(c || {}, 'web_fetch')) fields.push('web_fetch');
     if (Object.hasOwn(c || {}, 'feedback_protocol')) fields.push('feedback_protocol');
     require(object(c) && Object.keys(c).length === fields.length && fields.every(k => Object.hasOwn(c,k)));
     require(c.protocol === 1 && [1,2].includes(c.gateway_protocol) && c.scope === 'gateway' && c.enabled === true && c.streaming === (c.gateway_protocol === 2) && c.listing === true);
@@ -131,6 +132,19 @@
       require(f.roots.every((r,i) => f.roots.slice(0,i).every(p => !r.startsWith(p+'/'))));
       allowed.push('grep');
     }
+    if (c.web_fetch !== undefined) {
+      const f = c.web_fetch, keys = ['protocol','urls','allow_private','max_capture_bytes','max_body_bytes','timeout_seconds','max_redirects','max_chars','policy_sha256'];
+      require(c.gateway_protocol === 2 && object(f) && Object.keys(f).length === keys.length && keys.every(k => Object.hasOwn(f,k)));
+      require(f.protocol === 1 && typeof f.allow_private === 'boolean' && f.max_capture_bytes === 1048577 && f.max_body_bytes === 1048576 && f.timeout_seconds === 15 && f.max_redirects === 5 && f.max_chars === 50000);
+      require(typeof f.policy_sha256 === 'string' && hash.test(f.policy_sha256) && Array.isArray(f.urls) && f.urls.length >= 1 && f.urls.length <= 8);
+      require(f.urls.every((url,i) => typeof url === 'string' && url.length <= 1024 && !/[^\x21-\x7e]|[\\#]/.test(url) && (i === 0 || f.urls[i-1] < url) && (() => {
+        const m = /^https?:\/\/([^/]+)\//.exec(url); if (!m) return false;
+        const parts = m[1].split(':'); if (parts.length > 2) return false;
+        if (parts.length === 2 && (!/^[1-9][0-9]*$/.test(parts[1]) || Number(parts[1]) > 65535)) return false;
+        return parts[0].length <= 253 && parts[0].split('.').every(label => label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
+      })()));
+      allowed.push('web_fetch');
+    }
     require(Array.isArray(c.enabled_tools) && c.enabled_tools.length === allowed.length && new Set(c.enabled_tools).size === allowed.length && c.enabled_tools.every(t => allowed.includes(t)));
     return c;
   }
@@ -209,7 +223,7 @@
     snapshot(value, expected, tools);
     // Historical file receipts remain readable after the operator withdraws a
     // grant. This validates facts, while captured attempt tools validate authority.
-    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep'].includes(t)));
+    require(!value.receipt.result || value.receipt.result.tool_names.every(t => ['datetime_now','json_query','file_read','file_write','skill_read','memory_search','tree','glob','grep','web_fetch'].includes(t)));
     return value;
   }
   class Parser {
