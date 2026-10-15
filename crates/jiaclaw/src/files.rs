@@ -879,6 +879,15 @@ pub fn grep_workspace(
     args: &GrepArgs,
     file_max_bytes: usize,
 ) -> Result<GrepOutput, JiaClawError> {
+    grep_workspace_root(workspace, args, file_max_bytes, false)
+}
+
+fn grep_workspace_root(
+    workspace: &Path,
+    args: &GrepArgs,
+    file_max_bytes: usize,
+    directory_only: bool,
+) -> Result<GrepOutput, JiaClawError> {
     if args.path.len() > crate::memory_io::MAX_PATH_BYTES
         || args.pattern.is_empty()
         || args.pattern.len() > GREP_PATTERN_MAX_BYTES
@@ -908,7 +917,8 @@ pub fn grep_workspace(
     } else {
         args.pattern.clone()
     };
-    output.truncated = crate::memory_io::search_files(workspace, &args.path, |file, budget| {
+    let visit = |file: crate::memory_io::SearchFile<'_>,
+                 budget: &mut crate::memory_io::SearchBudget| {
         if args
             .glob
             .as_deref()
@@ -949,7 +959,12 @@ pub fn grep_workspace(
             }
         }
         Ok(false)
-    })?;
+    };
+    output.truncated = if directory_only {
+        crate::memory_io::search_files_root(workspace, &args.path, true, visit)?
+    } else {
+        crate::memory_io::search_files(workspace, &args.path, visit)?
+    };
     output.match_count = output.matches.len();
     Ok(output)
 }
@@ -1690,6 +1705,7 @@ impl Tool for WorkspaceStrReplaceTool {
 pub struct WorkspaceGrepTool {
     workspace_path: PathBuf,
     file_max_bytes: usize,
+    roots: Option<Vec<String>>,
 }
 
 impl WorkspaceGrepTool {
@@ -1699,6 +1715,7 @@ impl WorkspaceGrepTool {
         Self {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
             file_max_bytes: GREP_FILE_MAX_BYTES,
+            roots: None,
         }
     }
 
@@ -1708,7 +1725,22 @@ impl WorkspaceGrepTool {
         Self {
             workspace_path: canonicalize_existing_or_clone(workspace_path),
             file_max_bytes,
+            roots: None,
         }
+    }
+    /// Restrict the original literal scanner to exact approved directory roots.
+    /// # Errors
+    /// Invalid grant metadata. Does not probe the filesystem.
+    pub fn restricted(
+        workspace_path: &Path,
+        policy: &jiaclaw_core::TenantGrepPolicy,
+    ) -> Result<Self, JiaClawError> {
+        policy.validate()?;
+        Ok(Self {
+            workspace_path: canonicalize_existing_or_clone(workspace_path),
+            file_max_bytes: GREP_FILE_MAX_BYTES,
+            roots: Some(policy.roots.clone()),
+        })
     }
 }
 
@@ -1723,10 +1755,22 @@ impl Tool for WorkspaceGrepTool {
     }
 
     fn description(&self) -> &str {
+        if self.roots.is_some() {
+            return "在完整批准目录子树内按字面量搜索正文（含隐藏普通文件），返回路径/行号/最多200字符摘录。path 必须是完整批准根；pattern 原始UTF8非空最多512字节，无控制字符，空白原样；可选glob原始最多128字节且无首尾空白/控制字符、case_insensitive布尔和max_matches整数1..200默认50。跳过.git/链接/硬链接/特殊项/二进制/无效UTF8/超过256KiB文件；原16MiB总读/2000条目/32层/2秒协作/64KiB完整JSON预算，耗尽truncated，不保证搜全或原子快照。";
+        }
         "在工作区内按字面量搜索文本（非正则，避免 ReDoS）。pattern 必填；可选 path（相对目录或文件，默认 .）、glob（如 *.rs）、case_insensitive（默认 false）、max_matches（默认 50，钳制 1..=200）。禁止 .. / 绝对路径 / symlink 逃逸。直接路径拒绝链接/特殊文件，目录跳过链接、硬链接、特殊文件、二进制及超过 256KiB 的文件。全条目/深度/时间/总读取及 64KiB JSON 预算耗尽时 truncated=true。返回 {path, line, snippet} 列表。不执行 shell，不调用 LLM。"
     }
 
     fn parameters_schema(&self) -> Value {
+        if let Some(roots) = &self.roots {
+            return serde_json::json!({"type":"object","additionalProperties":false,"properties":{
+                "path":{"type":"string","enum":roots},
+                "pattern":{"type":"string","minLength":1,"maxLength":512,"description":"原始UTF8最多512字节；字面量而非正则，保留空白，拒绝控制字符"},
+                "glob":{"type":"string","minLength":1,"maxLength":128,"description":"原始UTF8最多128字节，无首尾空白；无/匹配文件名，有/匹配工作区相对路径"},
+                "case_insensitive":{"type":"boolean","default":false},
+                "max_matches":{"type":"integer","minimum":1,"maximum":200,"default":50}
+            },"required":["path","pattern"]});
+        }
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -1760,12 +1804,48 @@ impl Tool for WorkspaceGrepTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, JiaClawError> {
+        if let Some(roots) = &self.roots {
+            let valid = args.as_object().is_some_and(|o| {
+                o.keys().all(|k| {
+                    matches!(
+                        k.as_str(),
+                        "path" | "pattern" | "glob" | "case_insensitive" | "max_matches"
+                    )
+                }) && o
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| roots.iter().any(|r| r == p))
+                    && o.get("pattern").and_then(Value::as_str).is_some_and(|p| {
+                        !p.is_empty()
+                            && p.len() <= GREP_PATTERN_MAX_BYTES
+                            && !p.chars().any(char::is_control)
+                    })
+                    && o.get("glob").is_none_or(|g| {
+                        g.as_str().is_some_and(|g| {
+                            !g.is_empty()
+                                && g.len() <= GREP_GLOB_MAX_BYTES
+                                && g.trim() == g
+                                && !g.chars().any(char::is_control)
+                        })
+                    })
+                    && o.get("case_insensitive").is_none_or(Value::is_boolean)
+                    && o.get("max_matches")
+                        .is_none_or(|n| n.as_u64().is_some_and(|n| (1..=200).contains(&n)))
+            });
+            if !valid {
+                return Err(JiaClawError::ToolExecution(
+                    "grep 参数超出本次批准的目录或预算".into(),
+                ));
+            }
+        }
         let parsed = parse_grep_args(&args)?;
         let workspace = self.workspace_path.clone();
         let maximum = self.file_max_bytes;
-        let output =
-            crate::memory_io::run_blocking(move || grep_workspace(&workspace, &parsed, maximum))
-                .await?;
+        let directory_only = self.roots.is_some();
+        let output = crate::memory_io::run_blocking(move || {
+            grep_workspace_root(&workspace, &parsed, maximum, directory_only)
+        })
+        .await?;
         serde_json::to_string_pretty(&output)
             .map_err(|e| JiaClawError::ToolExecution(format!("序列化搜索结果失败: {e}")))
     }

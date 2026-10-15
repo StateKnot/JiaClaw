@@ -68,6 +68,8 @@ struct Capability {
     tree: Option<jiaclaw::TenantTreeCapability>,
     #[serde(default)]
     glob: Option<jiaclaw::TenantGlobCapability>,
+    #[serde(default)]
+    grep: Option<jiaclaw::TenantGrepCapability>,
 }
 
 pub(super) async fn check_backend(
@@ -81,6 +83,7 @@ pub(super) async fn check_backend(
     memory_search: Option<&jiaclaw::TenantMemorySearchCapability>,
     tree: Option<&jiaclaw::TenantTreeCapability>,
     glob: Option<&jiaclaw::TenantGlobCapability>,
+    grep: Option<&jiaclaw::TenantGrepCapability>,
     file_download: bool,
 ) -> Result<bool> {
     tokio::time::timeout(IO_BUDGET, async {
@@ -121,7 +124,8 @@ pub(super) async fn check_backend(
                 && c.skill_read.as_ref() == skill_read
                 && c.memory_search.as_ref() == memory_search
                 && c.tree.as_ref() == tree
-                && c.glob.as_ref() == glob,
+                && c.glob.as_ref() == glob
+                && c.grep.as_ref() == grep,
             "backend exact tenant permission contract mismatch"
         );
         Ok(c.enabled)
@@ -216,7 +220,7 @@ fn valid_submission(s: &Submission) -> bool {
         .is_some()
         && !s.prompt.trim().is_empty()
         && s.prompt.len() <= 32 * 1024
-        && (1..=8).contains(&s.enabled_tools.len())
+        && (1..=9).contains(&s.enabled_tools.len())
         && s.enabled_skills.is_empty()
         && s.enabled_tools.iter().all(|t| {
             matches!(
@@ -229,6 +233,7 @@ fn valid_submission(s: &Submission) -> bool {
                     | "memory_search"
                     | "tree"
                     | "glob"
+                    | "grep"
             )
         })
         && s.enabled_tools
@@ -295,6 +300,16 @@ fn valid_submission(s: &Submission) -> bool {
             })
         } else {
             s.glob_policy_sha256.is_none()
+        }
+        && if s.enabled_tools.iter().any(|t| t == "grep") {
+            s.grep_policy_sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            s.grep_policy_sha256.is_none()
         }
 }
 
@@ -503,6 +518,7 @@ async fn remote_feedback(
                                                     | "memory_search"
                                                     | "tree"
                                                     | "glob"
+                                                    | "grep"
                                             )
                                         })
                                     })
@@ -637,6 +653,7 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                         backend.memory_search.as_ref(),
                         backend.tree.as_ref(),
                         backend.glob.as_ref(),
+                        backend.grep.as_ref(),
                         backend.file_download
                     )
                     .await?,
@@ -730,6 +747,13 @@ pub(super) async fn handle(state: Arc<State>, request: Request) -> Response {
                     .expect("static tool list")
                     .push(json!("glob"));
                 value["glob"] = json!(permission);
+            }
+            if let Some(permission) = &backend.grep {
+                value["enabled_tools"]
+                    .as_array_mut()
+                    .expect("static tool list")
+                    .push(json!("grep"));
+                value["grep"] = json!(permission);
             }
             if let Some(permission) = &backend.memory_search {
                 value["enabled_tools"]
@@ -1085,6 +1109,19 @@ async fn execute(
         ));
         return true;
     }
+    if body.enabled_tools.iter().any(|t| t == "grep")
+        && !backend
+            .grep
+            .as_ref()
+            .is_some_and(|p| body.grep_policy_sha256.as_deref() == Some(p.policy_sha256.as_str()))
+    {
+        let _ = sender.send(error(
+            StatusCode::BAD_REQUEST,
+            "tenant grep permission disabled or changed",
+            request_id,
+        ));
+        return true;
+    }
     if !matches!(
         tokio::time::timeout_at(
             deadline,
@@ -1099,6 +1136,7 @@ async fn execute(
                 backend.memory_search.as_ref(),
                 backend.tree.as_ref(),
                 backend.glob.as_ref(),
+                backend.grep.as_ref(),
                 backend.file_download
             )
         )

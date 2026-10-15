@@ -1585,6 +1585,9 @@ impl TenantTreePolicy {
 /// Glob uses the same canonical directory-grant rules as tree; permission remains independent.
 pub type TenantGlobPolicy = TenantTreePolicy;
 
+/// Independent subtree content-search grant using the same canonical roots.
+pub type TenantGrepPolicy = TenantTreePolicy;
+
 /// HTTP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -1609,6 +1612,9 @@ pub struct HttpConfig {
     /// Explicit filename discovery permission; default off, independent of tree and reads.
     #[serde(default)]
     pub tenant_glob: Option<TenantGlobPolicy>,
+    /// Explicit content-search permission; includes hidden ordinary file bodies. Default off.
+    #[serde(default)]
+    pub tenant_grep: Option<TenantGrepPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1786,6 +1792,7 @@ impl Default for HttpConfig {
             tenant_memory_search: None,
             tenant_tree: None,
             tenant_glob: None,
+            tenant_grep: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

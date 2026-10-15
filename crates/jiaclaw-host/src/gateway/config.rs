@@ -81,6 +81,9 @@ pub struct BackendConfig {
     /// Independent default-off filename discovery below exact directory roots.
     #[serde(default)]
     pub tenant_glob: Option<jiaclaw_core::TenantGlobPolicy>,
+    /// Independent default-off content search below complete directory roots.
+    #[serde(default)]
+    pub tenant_grep: Option<jiaclaw_core::TenantGrepPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -467,6 +470,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_grep {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant grep grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -622,6 +632,7 @@ mod tests {
             tenant_memory_search: None,
             tenant_tree: None,
             tenant_glob: None,
+            tenant_grep: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();

@@ -1297,7 +1297,7 @@ pub(crate) fn tree_directory(
 // Search has its own walker: listing's output/entry limits must not silently
 // remove candidates before grep/glob can examine them.
 pub(crate) const SEARCH_OUTPUT_BYTES: usize = 64 * 1024;
-const SEARCH_READ_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const SEARCH_READ_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) struct SearchBudget {
     scanned: usize,
@@ -1464,7 +1464,7 @@ pub(crate) fn search_files(
     search_files_root(workspace, raw, false, visit)
 }
 
-// The restricted glob requires an actual directory, opened by this same walker.
+// The restricted glob/grep requires an actual directory, opened by this same walker.
 // Checking the path separately would introduce another observation and a race.
 pub(crate) fn search_files_root(
     workspace: &Path,
