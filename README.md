@@ -6,6 +6,8 @@ JiaClaw 是用 Rust 实现的个人 Agent：CLI 对话、工作区文件和记�
 
 个人 Key 可显式授权读取管理员批准的精确网页 URL；默认关闭、逐跳检查，沿用原 `web_fetch`。见[配置与隐私边界](docs/tenant-web-fetch.md)和[本批源码验收范围](docs/tenant-web-fetch-validation.md)。
 
+个人 Key 也可显式选择原 `copy` [制作完整文件副本](docs/tenant-copy.md)：管理员双端批准完整源→目标组合，含二进制、最多64 MiB，目标已存在时拒绝覆盖；不向模型读取源正文。[本批验收范围](docs/tenant-copy-validation.md)。
+
 ## 从源码安装
 
 需要 Rust 1.88.0、C 编译器与 Git。SQLite 随二进制编译，无须单独安装数据库。

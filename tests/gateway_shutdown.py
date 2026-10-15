@@ -8,6 +8,7 @@ The production 10s request timeout + 5s shared grace is never extended.
 """
 import argparse
 from datetime import datetime
+import hashlib
 import http.client
 import json
 import os
@@ -123,14 +124,41 @@ class Fixture:
     def start(self):
         self.process = subprocess.Popen([binary, 'gateway', 'serve', '--config', str(self.config)],
                                         env=env, stdout=self.output, stderr=self.output)
+        began = time.monotonic()
+        deadline = began + 15
+        attempts = 0
+        elapsed_ms = 0
         def ready():
+            nonlocal attempts, elapsed_ms
             assert self.process.poll() is None, self.log.read_text()
-            try:
-                with socket.create_connection(('127.0.0.1', self.port), timeout=.2):
-                    return True
-            except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False
-        until(ready, 15)
+            connection = http.client.HTTPConnection('127.0.0.1', self.port,
+                                                    timeout=min(.2, remaining))
+            try:
+                attempts += 1
+                connection.request('GET', '/health')
+                response = connection.getresponse()
+                body = response.read(65)
+                observed = time.monotonic()
+                assert observed < deadline, 'gateway HTTP readiness exceeded 15s'
+                assert response.status == 200 and body == b'{"status":"ok"}', (response.status, body)
+                elapsed_ms = int((observed - began) * 1000)
+                return True
+            except (OSError, http.client.HTTPException):
+                return False
+            finally:
+                connection.close()
+        # A listening socket can queue requests before axum is polled. Keep
+        # startup inside its original deadline before spending a header budget.
+        until(ready, max(0, deadline - time.monotonic()))
+        print('ACTUAL gateway HTTP readiness ' + json.dumps({
+            'protocol': 1, 'pid': self.process.pid, 'path': '/health', 'status': 200,
+            'body_sha256': hashlib.sha256(b'{"status":"ok"}').hexdigest(),
+            'body_bytes': 15, 'deadline_ms': 15000,
+            'elapsed_ms': elapsed_ms, 'attempts': attempts,
+        }), flush=True)
 
     def request(self, method='GET', body=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=13)

@@ -599,6 +599,7 @@ $('chat-form').addEventListener('submit', event => {
       if (tenantTurns() && tools.includes('glob')) body.glob_policy_sha256 = turnCapabilities.glob.policy_sha256;
       if (tenantTurns() && tools.includes('grep')) body.grep_policy_sha256 = turnCapabilities.grep.policy_sha256;
       if (tenantTurns() && tools.includes('web_fetch')) body.web_fetch_policy_sha256 = turnCapabilities.web_fetch.policy_sha256;
+      if (tenantTurns() && tools.includes('copy')) body.copy_policy_sha256 = turnCapabilities.copy.policy_sha256;
       if (Turn.bytes(JSON.stringify(body)) > 65536) throw new Error('完整请求超过 64 KiB 上限。');
       const attempt = trackTurn(createId(), body); await submitTurn(attempt); return;
     }
@@ -1355,6 +1356,13 @@ async function connectTurns(gateway) {
     const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
     if (actual !== f.policy_sha256) throw new Error('网页授权摘要不匹配；请重新连接。');
   }
+  if (gateway && c.copy) {
+    if (!isSecureContext || !crypto.subtle) throw new Error('文件副本授权核验需要安全页面与 WebCrypto。');
+    const f = c.copy;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([1,f.pairs.map(p => [p.from,p.to]),f.mode,f.max_bytes])));
+    const actual = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2,'0')).join('');
+    if (actual !== f.policy_sha256) throw new Error('文件副本授权摘要不匹配；请重新连接。');
+  }
   if (owner !== identity) throw new StaleIdentity();
   turnCapabilities = c;
   clearFileDownload();
@@ -1371,6 +1379,7 @@ async function connectTurns(gateway) {
     if (c.glob) tools.push({name:'glob',description:'在批准目录内按文件名模式找普通文件；含隐藏名称，不读取正文。文件名可能发送给本次模型。'});
     if (c.grep) tools.push({name:'grep',description:'在批准目录内按字面量查找正文行；包含隐藏普通文件，跳过二进制与超大文件。匹配摘录可能发送给本次模型。'});
     if (c.web_fetch) tools.push({name:'web_fetch',description:'仅本次允许模型读取下方精确网页；每次重定向也须已批准。URL 与正文可能发送给模型；外站可记录请求，停止不撤销已发请求。'});
+    if (c.copy) tools.push({name:'copy',description:'仅本次允许按下方完整源→目标组合制作文件副本（含二进制，64 MiB）；目标存在则拒绝。文件路径与复制结果可能发给模型，停止不撤销已完成副本，失败勿自动重试。'});
     if (c.tree) tools.push({name:'tree',description:'列出批准目录的整个子树元数据，含隐藏名称；不读取正文、不跟随链接。名称和大小可能发送给本次模型。'});
     renderPermissionList('turn-tools', tools); renderPermissionList('turn-skills', []);
     if (c.file_read) {
@@ -1402,6 +1411,12 @@ async function connectTurns(gateway) {
       details.textContent = 'web_fetch 允许的完整 URL（最多1 MiB正文/15秒/5次重定向；不是浏览器，不执行脚本，不发送登录 Cookie；私网授权：' + (c.web_fetch.allow_private ? '已显式批准' : '关闭') + '）：\n' + c.web_fetch.urls.join('\n');
       $('turn-tools').append(details);
     }
+    if (c.copy) {
+      const details = document.createElement('pre'); details.className = 'tenant-file-paths';
+      details.textContent = 'copy 允许的完整组合（只新建，不覆盖；父目录必须存在；不会向模型读取源正文）：\n' + c.copy.pairs.map(p => p.from + ' → ' + p.to).join('\n');
+      $('turn-tools').append(details);
+    }
+
 
     if (c.memory_search) {
       const details = document.createElement('pre'); details.className = 'tenant-file-paths'; details.textContent = 'memory_search 关键词范围（每源完整读取上限 512 KiB，摘录可能发送给模型）：\n' + c.memory_search.paths.join('\n');

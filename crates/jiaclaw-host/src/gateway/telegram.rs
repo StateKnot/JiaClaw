@@ -1184,6 +1184,7 @@ mod tests {
                 glob: None,
                 grep: None,
                 web_fetch: None,
+                copy: None,
             },
         )]);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1557,6 +1558,7 @@ mod tests {
             glob: None,
             grep: None,
             web_fetch: None,
+            copy: None,
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = configure(

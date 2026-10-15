@@ -3,6 +3,7 @@
 import json
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 import http_turns as h
@@ -37,7 +38,28 @@ try:
                     status, value, _ = f.request(port, '/api/turns/' + identity, cfg['token'])
                     assert status == 200
                     return value if value['receipt']['state'] == 'completed' and not value['active'] else None
-                result = f.wait(done, 'real completed comparison source')
+                if app:
+                    deadline = time.monotonic() + 15
+                    f.wait(lambda: not f.sql(app.registry,
+                           'SELECT request_id,state FROM write_holds WHERE user_id=?',
+                           (app.users['alice']['user_id'],)),
+                           'original comparison source gateway settlement',
+                           seconds=max(0, deadline - time.monotonic()))
+                    assert time.monotonic() < deadline, 'comparison source settlement exceeded original deadline'
+                    result = f.wait(done, 'real completed comparison source',
+                                    seconds=max(0, deadline - time.monotonic()))
+                    elapsed = time.monotonic()
+                    assert elapsed < deadline, 'comparison source receipt exceeded original deadline'
+                    with f.lock:
+                        model_posts = len([p for p in f.posts if p['who'] == 'alice' and p['prompt'] == prompt])
+                    assert model_posts == 1
+                    print('ACTUAL comparison source settlement ' + json.dumps({
+                        'protocol': 1, 'mode': mode, 'index': index, 'id': identity,
+                        'gateway_hold_empty': True, 'before_client_receipt': True,
+                        'deadline_ms': 15000, 'elapsed_ms': int((elapsed - deadline + 15) * 1000),
+                        'model_posts': model_posts}), flush=True)
+                else:
+                    result = f.wait(done, 'real completed comparison source')
                 assert result['receipt']['result']['reply'] == reply
                 assert result['receipt']['result']['tool_names'] == []
                 ids.append(identity)

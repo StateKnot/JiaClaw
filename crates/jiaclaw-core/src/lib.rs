@@ -1467,6 +1467,49 @@ impl TenantFileWritePolicy {
     }
 }
 
+/// One administrator-approved copy; grants cannot be recombined.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantCopyPair {
+    /// Exact existing source file, under tenant-documents/.
+    pub from: String,
+    /// Exact create-only destination; its parent must already exist.
+    pub to: String,
+}
+
+/// Explicit copy permission, independent of reading or overwriting file bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantCopyPolicy {
+    /// 1..=8 sorted unique (from, to) pairs, ordered by UTF-8 source then target.
+    pub pairs: Vec<TenantCopyPair>,
+}
+impl TenantCopyPolicy {
+    /// Validate complete canonical pairs without opening either path.
+    ///
+    /// # Errors
+    /// Empty, excessive, duplicate, unsorted, identical or noncanonical pairs.
+    pub fn validate(&self) -> Result<(), JiaClawError> {
+        if !(1..=8).contains(&self.pairs.len())
+            || !self.pairs.windows(2).all(|p| p[0] < p[1])
+            || self.pairs.iter().any(|p| p.from == p.to)
+        {
+            return Err(JiaClawError::Configuration(
+                "tenant copy requires 1..8 sorted unique distinct source/target pairs".into(),
+            ));
+        }
+        for pair in &self.pairs {
+            for path in [&pair.from, &pair.to] {
+                TenantFileReadPolicy {
+                    paths: vec![path.clone()],
+                }
+                .validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One exact loaded skill body version explicitly approved for tenant tasks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1697,6 +1740,9 @@ pub struct HttpConfig {
     /// Default-off exact destinations for the existing web_fetch tool.
     #[serde(default)]
     pub tenant_web_fetch: Option<TenantWebFetchPolicy>,
+    /// Explicit create-only copies; disabled unless complete pairs are configured.
+    #[serde(default)]
+    pub tenant_copy: Option<TenantCopyPolicy>,
     /// Opt-in private memory review for authenticated standalone operators.
     #[serde(default)]
     pub memory_review: bool,
@@ -1876,6 +1922,7 @@ impl Default for HttpConfig {
             tenant_glob: None,
             tenant_grep: None,
             tenant_web_fetch: None,
+            tenant_copy: None,
             memory_review: false,
             memory_edit: false,
             semantic_review: false,

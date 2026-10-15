@@ -87,6 +87,9 @@ pub struct BackendConfig {
     /// Independent exact HTTP destination permission; default off.
     #[serde(default)]
     pub tenant_web_fetch: Option<jiaclaw_core::TenantWebFetchPolicy>,
+    /// Exact create-only copy pairs; disabled unless explicitly configured.
+    #[serde(default)]
+    pub tenant_copy: Option<jiaclaw_core::TenantCopyPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -487,6 +490,13 @@ impl Config {
                 );
                 policy.validate()?;
             }
+            if let Some(policy) = &backend.tenant_copy {
+                ensure!(
+                    self.tracked_turns,
+                    "tenant copy grants require tracked_turns"
+                );
+                policy.validate()?;
+            }
             if let Some(policy) = &backend.tenant_memory_search {
                 ensure!(
                     self.tracked_turns,
@@ -644,6 +654,7 @@ mod tests {
             tenant_glob: None,
             tenant_grep: None,
             tenant_web_fetch: None,
+            tenant_copy: None,
         });
         assert!(c.validate().is_err());
         c.backends[1].url = "http://127.0.0.1:9002".into();
